@@ -66,6 +66,7 @@ private MCP의 직접 실행은 adapter 개발·진단용이며 제품 실행 �
 - [책임·데이터 소유권](docs/refactor/RESPONSIBILITY_AND_DATA_OWNERSHIP.md)
 - [로컬 3-repository 작업 흐름](docs/refactor/LOCAL_THREE_REPO_WORKFLOW.md)
 - [패키징/BOM 경계](docs/refactor/PACKAGING.md)
+- [단일 제품 배포·독립 버전·업데이트 정책](docs/refactor/PRODUCT_DISTRIBUTION_AND_VERSIONING.md)
 - [리팩터링 검증 증거](docs/refactor/REFACTOR_VALIDATION_EVIDENCE.md)
 - [XG5000 회귀 범위](docs/refactor/XG5000_REGRESSION_EVIDENCE.md)
 

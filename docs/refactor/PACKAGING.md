@@ -1,5 +1,10 @@
 # Windows product installer, internal portable payload, and BOM
 
+소비자 배포와 독립 컴포넌트 버전, 업데이트 및 rollback의 권위 정책은
+[PRODUCT_DISTRIBUTION_AND_VERSIONING.md](PRODUCT_DISTRIBUTION_AND_VERSIONING.md)를
+따른다. 특히 installer는 private Git 저장소나 source를 내려받지 않으며, private
+release pipeline이 미리 빌드하고 검증한 immutable artifact만 설치한다.
+
 The ordinary-user distribution is one file: `ControlStudio-Setup.exe`.
 Installation exposes one Start Menu entry and one top-level application,
 `ControlStudio.exe`. The Agent and PLC MCP remain separate supervised
@@ -69,6 +74,12 @@ renames the Platform artifact to the single public entry point
 Platform validates its own hash and all internal runtime hashes and contract
 versions before binding the verified Agent/MCP commands. Missing or changed
 runtime artifacts fail closed.
+
+Component repositories may advance their implementation versions independently,
+but consumer releases never resolve a component named `latest`. Every change
+creates a new product release whose exact Platform, Agent, MCP, contracts, hashes,
+and signature metadata are pinned in the BOM. Updates and rollback operate on
+that complete BOM-bound product release, not on one sidecar in isolation.
 
 ## Signing policy
 

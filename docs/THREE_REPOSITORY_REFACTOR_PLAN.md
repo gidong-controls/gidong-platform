@@ -465,10 +465,21 @@ ControlStudio-workspace/          # Git 아님
 
 ### 단계 6 — 패키징·서명·설치본
 
+이 단계의 제품 배포 및 버전 관리 불변조건은
+`docs/refactor/PRODUCT_DISTRIBUTION_AND_VERSIONING.md`를 권위 기준으로 삼는다.
+
 - Platform build, private Agent build, private MCP build를 독립 생성한다.
 - Agent와 MCP는 release에서 소스 wheel이 아닌 compiled artifact로 배포한다.
 - 각 artifact에 version, contract version, SHA-256과 서명 정보를 남긴다.
 - private release pipeline이 exact artifact를 조합해 하나의 설치본을 만든다.
+- 소비자 installer는 private Git 저장소를 clone/pull하거나 private source를
+  다운로드하지 않는다. 설치 시 source-control 자격 증명을 요구해서도 안 된다.
+- 각 저장소의 구현 버전은 독립적으로 진행하되, 소비자 release는 exact component
+  version·contract set·hash를 BOM으로 고정한다.
+- 한 component만 변경되어도 새 product release와 새 BOM을 만들고 전체 packaged
+  E2E를 다시 통과한다. 일반 사용자에게 component별 `latest`를 조합하지 않는다.
+- 업데이트와 rollback은 개별 Agent/MCP가 아니라 BOM으로 결속된 제품 조합 전체를
+  원자적 단위로 처리한다.
 - 사용자가 ControlStudio 아이콘을 누르면 Host가 Agent와 MCP를 시작하고 Web/PWA를
   연다. Windows 로그인만으로 자동 실행하지 않는다.
 
@@ -490,6 +501,8 @@ ControlStudio-workspace/          # Git 아님
 완료 조건:
 
 - Python·Node·uv가 없는 clean Windows 환경에서 설치·실행된다.
+- 일반 사용자에게 설치 파일·실행 진입점·시작 메뉴 항목이 각각 하나만 노출된다.
+- 설치 중 private repository나 source archive에 대한 네트워크 접근이 0개다.
 - 서명·hash·contract 불일치 artifact는 실행하지 않는다.
 - 사용자 DB·원본 문서·workspace는 업그레이드 시 보존된다.
 - 제거 시 사용자 데이터를 기본적으로 자동 삭제하지 않는다.
