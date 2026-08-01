@@ -1,0 +1,17 @@
+{
+  "repositories": [
+    {"id": "platform", "path": "C:/candidate/controlstudio-platform", "build": ["uv", "build"], "test": ["uv", "run", "pytest"]},
+    {"id": "agent", "path": "C:/candidate/controlstudio-agent", "build": ["uv", "build"], "test": ["uv", "run", "pytest"]},
+    {"id": "plc-mcp", "path": "C:/candidate/controlstudio-plc-mcp", "build": ["uv", "build"], "test": ["uv", "run", "pytest"]}
+  ],
+  "platform_mock": {
+    "cwd": "C:/isolated/platform-mock",
+    "command": ["controlstudio-platform", "--mock-agent", "--mock-mcp", "--healthcheck"]
+  },
+  "packaged_e2e": {
+    "artifact_only": true,
+    "artifacts": ["C:/release/platform.zip", "C:/release/agent.exe", "C:/release/plc-mcp.exe"],
+    "cwd": "C:/isolated/black-box-e2e",
+    "command": ["powershell", "-File", "C:/release/run-packaged-e2e.ps1"]
+  }
+}

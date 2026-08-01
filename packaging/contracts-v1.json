@@ -1,0 +1,8 @@
+{
+  "agent_contract": "1.0",
+  "api_contract": "1.0",
+  "audit_contract": "1.0",
+  "event_contract": "1.0",
+  "mcp_product_contract": "1.0",
+  "workspace_contract": "1.0"
+}

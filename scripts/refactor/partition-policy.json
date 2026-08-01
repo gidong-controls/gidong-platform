@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "repositories": {
+    "platform": {
+      "visibility": "public",
+      "allowed_top_level": ["host", "web", "launcher", "schemas", "packages", "mocks", "conformance", "docs", "scripts", "packaging", "README.md", "LICENSE", "NOTICE"],
+      "forbidden_path_prefixes": ["agent", "mcp", "artifacts"],
+      "forbidden_content_patterns": {
+        "raw-mcp-or-private-agent-import": "(?m)^\\s*(?:from|import)\\s+(?:pydantic_ai|xg5000_control|mcp)\\b",
+        "private-agent-or-mcp-path": "(?i)(?:^|[\\\"'])\\.\\.?/(?:agent|mcp)/(?:src|tests|profiles|fixtures)"
+      }
+    },
+    "agent": {
+      "visibility": "private",
+      "allowed_top_level": ["src", "tests", "pyproject.toml", "uv.lock", "docs", "scripts", "packaging", "README.md", "LICENSE", "NOTICE"],
+      "forbidden_path_prefixes": ["agent", "mcp", "artifacts"],
+      "forbidden_content_patterns": {
+        "raw-mcp-client": "(?i)\\b(?:MCPToolset|stdio_client|mcp_client|xg5000_control)\\b",
+        "approval-or-target-secret": "(?i)\\b(?:approval[_ -]?(?:token|secret|signature)|target[_ -]?(?:pid|hwnd|path|digest))\\b"
+      }
+    },
+    "plc-mcp": {
+      "visibility": "private",
+      "allowed_top_level": ["src", "tests", "tools", "pyproject.toml", "uv.lock", "docs", "scripts", "packaging", "README.md", "LICENSE", "NOTICE"],
+      "forbidden_path_prefixes": ["agent", "mcp", "artifacts"],
+      "forbidden_content_patterns": {
+        "agent-runtime": "(?i)\\b(?:pydantic_ai|openai[_ -]?api[_ -]?key|rag[_ -]?(?:policy|ranking))\\b",
+        "platform-ui": "(?i)\\b(?:react|fastapi|controlstudio_host)\\b"
+      }
+    }
+  }
+}

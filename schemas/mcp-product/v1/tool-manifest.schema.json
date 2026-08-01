@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://controlstudio.dev/schemas/mcp-product/v1/tool-manifest.schema.json",
+  "title": "ControlStudio MCP Product Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "manifest_schema", "product", "manifest_digest", "tools"],
+  "properties": {
+    "contract_version": {"const": "1.0"},
+    "manifest_schema": {"const": "controlstudio-mcp-product-manifest/v1"},
+    "product": {"type": "string", "minLength": 1},
+    "manifest_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "tools": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "tool-contract.schema.json"}
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://controlstudio.dev/schemas/agent/v1/external-tool-request.schema.json",
+  "title": "ControlStudio External Tool Request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "request_id", "conversation_id", "run_id", "tool_name", "tool_call_id", "arguments"],
+  "properties": {
+    "protocol_version": {"const": "1.0"},
+    "request_id": {"type": "string", "minLength": 1},
+    "conversation_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "tool_name": {"type": "string", "minLength": 1},
+    "tool_call_id": {"type": ["string", "null"]},
+    "arguments": {"type": "object"}
+  }
+}

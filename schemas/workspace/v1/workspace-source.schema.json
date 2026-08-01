@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://controlstudio.dev/schemas/workspace/v1/workspace-source.schema.json",
+  "title": "ControlStudio Workspace Source v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["original_artifact_id", "original_sha256", "captured_at", "original_state"],
+  "properties": {
+    "original_artifact_id": {"type": "string", "minLength": 1},
+    "original_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "captured_at": {"type": "string", "format": "date-time"},
+    "original_state": {"enum": ["unchanged", "changed", "missing", "unreadable"]}
+  }
+}

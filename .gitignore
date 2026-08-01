@@ -1,0 +1,20 @@
+# Local environments, caches, credentials, and build output
+.venv/
+.contract-*/
+__pycache__/
+.pytest_cache/
+.pytest-*/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+node_modules/
+artifacts/
+.env
+.env.*
+!.env.example
+*.db
+*.sqlite
+*.sqlite3
+*.log

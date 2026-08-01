@@ -1,0 +1,358 @@
+from __future__ import annotations
+
+import ctypes
+import os
+import socket
+import subprocess
+import sys
+from collections.abc import Callable, Sequence
+from pathlib import Path
+from typing import Protocol
+
+from .errors import ElevationError
+
+_XG5000_EXECUTABLE = "xg5000.exe"
+_HIGH_INTEGRITY_RID = 0x3000
+
+
+class ElevationBroker(Protocol):
+    def relaunch_if_required(
+        self,
+        *,
+        verified_host: bool,
+        parent_opens_ui: bool,
+    ) -> bool: ...
+
+
+class NoopElevationBroker:
+    def relaunch_if_required(
+        self,
+        *,
+        verified_host: bool,
+        parent_opens_ui: bool,
+    ) -> bool:
+        return False
+
+
+class WindowsElevationBroker:
+    """Match an already-running elevated XG5000 before starting the Host."""
+
+    def __init__(
+        self,
+        arguments: Sequence[str],
+        *,
+        platform_name: str = os.name,
+        process_integrity: Callable[[int], int] | None = None,
+        xg5000_processes: Callable[[], tuple[int, ...]] | None = None,
+        host_processes: Callable[[], tuple[int, ...]] | None = None,
+        relaunch: Callable[[Sequence[str]], None] | None = None,
+    ) -> None:
+        self._arguments = tuple(arguments)
+        self._platform_name = platform_name
+        self._process_integrity = process_integrity or _process_integrity_level
+        self._xg5000_processes = xg5000_processes or _current_session_xg5000_pids
+        self._host_processes = host_processes or _canonical_listener_pids
+        self._relaunch = relaunch or _relaunch_current_launcher_elevated
+
+    def relaunch_if_required(
+        self,
+        *,
+        verified_host: bool,
+        parent_opens_ui: bool,
+    ) -> bool:
+        if self._platform_name != "nt":
+            return False
+
+        try:
+            current_integrity = self._process_integrity(os.getpid())
+            xg5000_processes = self._xg5000_processes()
+        except OSError as exc:
+            raise ElevationError(
+                f"could not verify the XG5000/ControlStudio privilege boundary: {exc}"
+            ) from exc
+        if not xg5000_processes:
+            return False
+
+        xg5000_integrities: list[int] = []
+        for pid in xg5000_processes:
+            try:
+                xg5000_integrities.append(self._process_integrity(pid))
+            except OSError:
+                # A same-session XG5000 whose token cannot be queried from a
+                # medium-integrity launcher must not be automated blindly.
+                xg5000_integrities.append(_HIGH_INTEGRITY_RID)
+        target_integrity = max(xg5000_integrities)
+
+        if verified_host:
+            try:
+                host_processes = self._host_processes()
+                host_integrities = [
+                    self._process_integrity(pid) for pid in host_processes
+                ]
+            except OSError as exc:
+                raise ElevationError(
+                    f"could not verify the running ControlStudio Host privilege: {exc}"
+                ) from exc
+            if not host_integrities:
+                raise ElevationError(
+                    "the verified ControlStudio Host listener owner could not be identified"
+                )
+            if any(
+                host_integrity < target_integrity
+                for host_integrity in host_integrities
+            ):
+                raise ElevationError(
+                    "ControlStudio Host is running with lower privileges than XG5000. "
+                    "Close ControlStudio Host and launch ControlStudio again so Windows "
+                    "can request the matching privilege level."
+                )
+            return False
+
+        if target_integrity > current_integrity:
+            arguments = self._arguments
+            if parent_opens_ui and "--no-open" not in arguments:
+                arguments = (*arguments, "--no-open")
+            self._relaunch(arguments)
+            return True
+        return False
+
+
+def create_elevation_broker(arguments: Sequence[str]) -> ElevationBroker:
+    if os.name == "nt":
+        return WindowsElevationBroker(arguments)
+    return NoopElevationBroker()
+
+
+def _relaunch_current_launcher_elevated(arguments: Sequence[str]) -> None:
+    target, target_arguments = _current_launcher_command(arguments)
+    parameters = subprocess.list2cmdline(list(target_arguments))
+    result_value = _shell_execute_runas(target, parameters)
+    if result_value <= 32:
+        raise ElevationError(
+            "XG5000 is running with administrator privileges. "
+            "ControlStudio needs the same privilege level; elevation was not approved."
+        )
+
+
+def _shell_execute_runas(target: str, parameters: str) -> int:
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    shell_execute = shell32.ShellExecuteW
+    shell_execute.argtypes = (
+        ctypes.c_void_p,
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.c_int,
+    )
+    shell_execute.restype = ctypes.c_void_p
+    result = shell_execute(None, "runas", target, parameters, None, 1)
+    return int(result or 0)
+
+
+def _current_launcher_command(arguments: Sequence[str]) -> tuple[str, tuple[str, ...]]:
+    argv0 = Path(sys.argv[0])
+    if argv0.suffix.casefold() == ".exe":
+        return str(argv0.resolve()), tuple(arguments)
+    return sys.executable, ("-m", "controlstudio_launcher", *arguments)
+
+
+def _current_session_xg5000_pids() -> tuple[int, ...]:
+    from ctypes import wintypes
+
+    class _ProcessEntry32W(ctypes.Structure):
+        _fields_ = (
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        )
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    current_session = _process_session_id(os.getpid())
+    create_snapshot = kernel32.CreateToolhelp32Snapshot
+    create_snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+    create_snapshot.restype = wintypes.HANDLE
+    snapshot = create_snapshot(0x00000002, 0)
+    invalid_handle = ctypes.c_void_p(-1).value
+    if snapshot == invalid_handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    entry = _ProcessEntry32W()
+    entry.dwSize = ctypes.sizeof(entry)
+    process_first = kernel32.Process32FirstW
+    process_first.argtypes = (wintypes.HANDLE, ctypes.POINTER(_ProcessEntry32W))
+    process_first.restype = wintypes.BOOL
+    process_next = kernel32.Process32NextW
+    process_next.argtypes = (wintypes.HANDLE, ctypes.POINTER(_ProcessEntry32W))
+    process_next.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+
+    pids: list[int] = []
+    try:
+        has_entry = bool(process_first(snapshot, ctypes.byref(entry)))
+        while has_entry:
+            pid = int(entry.th32ProcessID)
+            if entry.szExeFile.casefold() == _XG5000_EXECUTABLE:
+                try:
+                    same_session = _process_session_id(pid) == current_session
+                except OSError:
+                    # The process may have exited between the snapshot and the
+                    # session lookup.
+                    same_session = False
+                if same_session:
+                    pids.append(pid)
+            has_entry = bool(process_next(snapshot, ctypes.byref(entry)))
+    finally:
+        close_handle(snapshot)
+    return tuple(pids)
+
+
+def _process_session_id(pid: int) -> int:
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    process_id_to_session_id = kernel32.ProcessIdToSessionId
+    process_id_to_session_id.argtypes = (wintypes.DWORD, ctypes.POINTER(wintypes.DWORD))
+    process_id_to_session_id.restype = wintypes.BOOL
+    session_id = wintypes.DWORD()
+    if not process_id_to_session_id(pid, ctypes.byref(session_id)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return int(session_id.value)
+
+
+def _process_integrity_level(pid: int) -> int:
+    from ctypes import wintypes
+
+    class _SidAndAttributes(ctypes.Structure):
+        _fields_ = (("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD))
+
+    class _TokenMandatoryLabel(ctypes.Structure):
+        _fields_ = (("Label", _SidAndAttributes),)
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    open_process.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    open_process_token = advapi32.OpenProcessToken
+    open_process_token.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    )
+    open_process_token.restype = wintypes.BOOL
+    get_token_information = advapi32.GetTokenInformation
+    get_token_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    get_token_information.restype = wintypes.BOOL
+    get_sid_sub_authority_count = advapi32.GetSidSubAuthorityCount
+    get_sid_sub_authority_count.argtypes = (ctypes.c_void_p,)
+    get_sid_sub_authority_count.restype = ctypes.POINTER(ctypes.c_ubyte)
+    get_sid_sub_authority = advapi32.GetSidSubAuthority
+    get_sid_sub_authority.argtypes = (ctypes.c_void_p, wintypes.DWORD)
+    get_sid_sub_authority.restype = ctypes.POINTER(wintypes.DWORD)
+
+    process = open_process(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not process:
+        raise ctypes.WinError(ctypes.get_last_error())
+    token = wintypes.HANDLE()
+    try:
+        if not open_process_token(process, 0x0008, ctypes.byref(token)):  # TOKEN_QUERY
+            raise ctypes.WinError(ctypes.get_last_error())
+        required = wintypes.DWORD()
+        get_token_information(token, 25, None, 0, ctypes.byref(required))
+        if not required.value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        buffer = ctypes.create_string_buffer(required.value)
+        if not get_token_information(
+            token,
+            25,  # TokenIntegrityLevel
+            buffer,
+            required.value,
+            ctypes.byref(required),
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        label = ctypes.cast(buffer, ctypes.POINTER(_TokenMandatoryLabel)).contents
+        count_pointer = get_sid_sub_authority_count(label.Label.Sid)
+        if not count_pointer:
+            raise ctypes.WinError(ctypes.get_last_error())
+        sub_authority_count = int(count_pointer.contents.value)
+        rid_pointer = get_sid_sub_authority(
+            label.Label.Sid,
+            sub_authority_count - 1,
+        )
+        if not rid_pointer:
+            raise ctypes.WinError(ctypes.get_last_error())
+        return int(rid_pointer.contents.value)
+    finally:
+        if token:
+            close_handle(token)
+        close_handle(process)
+
+
+def _canonical_listener_pids() -> tuple[int, ...]:
+    """Return PIDs listening on the canonical IPv4 loopback port."""
+
+    from ctypes import wintypes
+
+    class _MibTcpRowOwnerPid(ctypes.Structure):
+        _fields_ = (
+            ("dwState", wintypes.DWORD),
+            ("dwLocalAddr", wintypes.DWORD),
+            ("dwLocalPort", wintypes.DWORD),
+            ("dwRemoteAddr", wintypes.DWORD),
+            ("dwRemotePort", wintypes.DWORD),
+            ("dwOwningPid", wintypes.DWORD),
+        )
+
+    iphlpapi = ctypes.WinDLL("iphlpapi", use_last_error=True)
+    get_table = iphlpapi.GetExtendedTcpTable
+    get_table.argtypes = (
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.BOOL,
+        wintypes.ULONG,
+        ctypes.c_int,
+        wintypes.ULONG,
+    )
+    get_table.restype = wintypes.DWORD
+    size = wintypes.DWORD()
+    result = get_table(None, ctypes.byref(size), False, 2, 3, 0)
+    if result not in {0, 122}:  # NO_ERROR / ERROR_INSUFFICIENT_BUFFER
+        raise ctypes.WinError(result)
+    buffer = ctypes.create_string_buffer(size.value)
+    result = get_table(buffer, ctypes.byref(size), False, 2, 3, 0)
+    if result != 0:
+        raise ctypes.WinError(result)
+
+    count = ctypes.cast(buffer, ctypes.POINTER(wintypes.DWORD)).contents.value
+    first_row_address = ctypes.addressof(buffer) + ctypes.sizeof(wintypes.DWORD)
+    rows = ctypes.cast(
+        first_row_address,
+        ctypes.POINTER(_MibTcpRowOwnerPid * count),
+    ).contents
+    pids = {
+        int(row.dwOwningPid)
+        for row in rows
+        if row.dwState == 2  # MIB_TCP_STATE_LISTEN
+        and socket.ntohs(row.dwLocalPort & 0xFFFF) == 8765
+        and row.dwLocalAddr in {0, 0x0100007F}  # 0.0.0.0 / 127.0.0.1
+    }
+    return tuple(sorted(pids))

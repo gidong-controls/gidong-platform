@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">ControlStudio</title>
+  <rect width="512" height="512" rx="116" fill="#111d1b"/>
+  <path d="M143 139h226v62H205v110h164v62H143z" fill="#d7ff62"/>
+  <circle cx="366" cy="342" r="42" fill="#ffb84d"/>
+</svg>

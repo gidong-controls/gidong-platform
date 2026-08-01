@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://controlstudio.dev/schemas/mcp-product/v1/tool-contract.schema.json",
+  "title": "ControlStudio MCP Product Tool Contract v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "tool_name", "schema_digest", "required_capability", "risk_class", "side_effect_class", "target_binding_required", "approval_required", "reversible", "idempotency_behavior", "evidence_schema", "operation_timeout_seconds", "supported_product"],
+  "properties": {
+    "contract_version": {"const": "1.0"},
+    "tool_name": {"type": "string", "minLength": 1},
+    "schema_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "required_capability": {"type": "string", "minLength": 1},
+    "risk_class": {"type": "string", "minLength": 1},
+    "side_effect_class": {"type": "string", "minLength": 1},
+    "target_binding_required": {"type": "boolean"},
+    "approval_required": {"type": "boolean"},
+    "reversible": {"type": "boolean"},
+    "idempotency_behavior": {"type": "string", "minLength": 1},
+    "evidence_schema": {"type": "string", "minLength": 1},
+    "operation_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+    "supported_product": {"type": "string", "minLength": 1}
+  }
+}

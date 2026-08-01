@@ -1,0 +1,13 @@
+{
+  "schemas/agent/v1/agent-manifest.schema.json": "04c834f0de3552db581b9deec6a0b833f623d068e606e375d710a6808836f6c5",
+  "schemas/agent/v1/agent-tool-definition.schema.json": "3469cd81a8fe73838175dce6c02fc9305de9d20e6cfaf6ba631eab7875efab49",
+  "schemas/agent/v1/external-tool-request.schema.json": "a8abba14c58c9ed3814771efea772af6ec970f19ddac2f1cc00ab9190f6d477a",
+  "schemas/agent/v1/external-tool-result.schema.json": "5e267cb8b81bf921aafea6501728921ece4d6faf27e9ca421c9312109a78f8e3",
+  "schemas/audit/v1/audit-record.schema.json": "921ff627ce5b755c671d23c95fd17c0cab349ed1a7fc1010cb129c8eb198e971",
+  "schemas/events/v1/event-envelope.schema.json": "89827749adcc7557eb2fe59098cf7cbc1723da3ba42b8b73267d1996f25a0c8f",
+  "schemas/http/v1/openapi.json": "4b4f78f3eaa00ab8c835a03cfafa05d1a4f25dc6aac9ef7053c597a97c1cab65",
+  "schemas/mcp-product/v1/tool-contract.schema.json": "d4eae3b71a5511dcb4ea5a7671364113cd0da611f9e11180b024c5cc43c903e4",
+  "schemas/mcp-product/v1/tool-manifest.schema.json": "2640a11069059fb2c09f84a3e2b3bb812e99ae44058bc4d5c4bf806893988d31",
+  "schemas/workspace/v1/working-copy.schema.json": "e82336b93f481a8c903f8ce7d58694e7b89ae9e8080fea81bb29be83b47b213f",
+  "schemas/workspace/v1/workspace-source.schema.json": "c0e560d31e72031d3d11784cf5be2bd165f43346369a6460d38339f03b04612f"
+}

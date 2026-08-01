@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "repositories": {
+    "platform": {"visibility": "public", "license_path": "C:/reviewed/public/LICENSE", "notice_path": "C:/reviewed/public/NOTICE"},
+    "agent": {"visibility": "private", "license_path": "C:/reviewed/private/LICENSE", "notice_path": "C:/reviewed/private/NOTICE"},
+    "plc-mcp": {"visibility": "private", "license_path": "C:/reviewed/private/LICENSE", "notice_path": "C:/reviewed/private/NOTICE"}
+  }
+}

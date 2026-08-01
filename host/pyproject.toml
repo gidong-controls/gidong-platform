@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "controlstudio-host"
+version = "0.1.0"
+description = "Local server-authority host for the ControlStudio web client"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{name = "OpenAI"}]
+dependencies = [
+  "controlstudio-contracts",
+  "fastmcp-slim[client]>=3.4,<4",
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "pypdf>=6.1,<7",
+  "uvicorn>=0.35,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9",
+  "ruff>=0.11,<1",
+]
+
+[tool.uv.sources]
+controlstudio-contracts = { path = "../packages/python/controlstudio-contracts", editable = true }
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --basetemp=.pytest-host-core"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

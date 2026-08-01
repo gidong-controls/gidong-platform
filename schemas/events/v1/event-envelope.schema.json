@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://controlstudio.dev/schemas/events/v1/event-envelope.schema.json",
+  "title": "ControlStudio Event Envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "sequence", "occurred_at", "trace_id", "conversation_id", "run_id", "operation_id", "event_type", "payload_schema_version", "payload"],
+  "properties": {
+    "event_id": {"type": "string", "minLength": 1},
+    "sequence": {"type": "integer", "minimum": 0},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "trace_id": {"type": "string", "minLength": 1},
+    "conversation_id": {"type": ["string", "null"]},
+    "run_id": {"type": ["string", "null"]},
+    "operation_id": {"type": ["string", "null"]},
+    "event_type": {"type": "string", "minLength": 1},
+    "payload_schema_version": {"type": "string", "minLength": 1},
+    "payload": {"type": "object"}
+  }
+}

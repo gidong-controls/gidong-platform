@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://controlstudio.dev/schemas/agent/v1/agent-tool-definition.schema.json",
+  "title": "ControlStudio Agent Tool Definition v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "tool_name", "description", "parameters_json_schema"],
+  "properties": {
+    "protocol_version": {"const": "1.0"},
+    "tool_name": {"type": "string", "minLength": 1},
+    "description": {"type": ["string", "null"]},
+    "parameters_json_schema": {"type": "object"}
+  }
+}

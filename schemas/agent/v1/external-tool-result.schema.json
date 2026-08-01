@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://controlstudio.dev/schemas/agent/v1/external-tool-result.schema.json",
+  "title": "ControlStudio External Tool Result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "request_id", "tool_name", "status", "failure_kind"],
+  "properties": {
+    "protocol_version": {"const": "1.0"},
+    "request_id": {"type": "string", "minLength": 1},
+    "tool_name": {"type": "string", "minLength": 1},
+    "status": {"enum": ["completed", "failed"]},
+    "failure_kind": {"enum": ["tool_error", "host_policy", "cancelled", "transport", null]}
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "ControlStudio",
+  "short_name": "ControlStudio",
+  "description": "PLC 엔지니어링 분석과 안전 변경을 위한 에이전트 작업 공간",
+  "lang": "ko-KR",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f2f3ed",
+  "theme_color": "#111d1b",
+  "icons": [
+    {
+      "src": "/icons/controlstudio-mark.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/controlstudio-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://controlstudio.dev/schemas/workspace/v1/working-copy.schema.json",
+  "title": "ControlStudio Workspace Working Copy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["workspace_id", "revision_id", "baseline_sha256", "current_sha256", "state"],
+  "properties": {
+    "workspace_id": {"type": "string", "minLength": 1},
+    "revision_id": {"type": "string", "minLength": 1},
+    "baseline_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "current_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "state": {"enum": ["clean", "modified", "quarantined"]}
+  }
+}
