@@ -2,8 +2,9 @@
 
 최종 갱신: 2026-08-01
 
-이 문서는 [three-repository plan](../THREE_REPOSITORY_REFACTOR_PLAN.md)의 실행
-경계를 코드·test·release 검토에 적용하는 기준이다. Platform은 공개,
+이 문서는 [제품 아키텍처](../PRODUCT_ARCHITECTURE.md)와
+[제품 배포·버전 정책](PRODUCT_DISTRIBUTION_AND_VERSIONING.md)의 실행 경계를
+코드·test·release 검토에 적용하는 기준이다. Platform은 공개,
 `controlstudio-agent`와 `controlstudio-plc-mcp`는 비공개다. 이 구분은 PRD의
 기능·안전 범위를 축소하지 않는다.
 

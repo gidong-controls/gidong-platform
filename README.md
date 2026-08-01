@@ -13,9 +13,11 @@ controlstudio-plc-mcp   (private) ← PLC MCP: vendor execution, journal, readba
 
 공개 Platform은 private Agent/MCP 소스나 기존 monorepo 이력을 포함하지 않는다.
 공개 contracts의 원본은 이 저장소의 `schemas/`이며 Python/TypeScript SDK는
-`packages/`에 있다. 제품·안전 범위는 [PRD](docs/PRD.md)가 우선하고, 이 분리의
-완료 조건은 [three-repository plan](docs/THREE_REPOSITORY_REFACTOR_PLAN.md)과
-[responsibility/data ownership](docs/refactor/RESPONSIBILITY_AND_DATA_OWNERSHIP.md)에
+`packages/`에 있다. 제품·안전 범위는 [PRD](docs/PRD.md)가 우선한다. 현재 분리
+경계는 [responsibility/data ownership](docs/refactor/RESPONSIBILITY_AND_DATA_OWNERSHIP.md),
+소비자 조립·버전·업데이트 불변조건은
+[product distribution/versioning policy](docs/refactor/PRODUCT_DISTRIBUTION_AND_VERSIONING.md),
+완료 증거는 [refactor validation evidence](docs/refactor/REFACTOR_VALIDATION_EVIDENCE.md)에
 고정한다.
 
 ## 현재 상태와 안전한 해석
@@ -62,7 +64,6 @@ private MCP의 직접 실행은 adapter 개발·진단용이며 제품 실행 �
 
 - [제품 요구사항](docs/PRD.md)
 - [제품 아키텍처](docs/PRODUCT_ARCHITECTURE.md)
-- [3-repository 실행 계획](docs/THREE_REPOSITORY_REFACTOR_PLAN.md)
 - [책임·데이터 소유권](docs/refactor/RESPONSIBILITY_AND_DATA_OWNERSHIP.md)
 - [로컬 3-repository 작업 흐름](docs/refactor/LOCAL_THREE_REPO_WORKFLOW.md)
 - [패키징/BOM 경계](docs/refactor/PACKAGING.md)
