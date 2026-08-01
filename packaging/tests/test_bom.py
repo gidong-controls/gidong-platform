@@ -16,15 +16,21 @@ from controlstudio_packaging.bom import (
 )
 
 CONTRACTS = {
-    "api_contract": "1.0", "event_contract": "1.0", "agent_contract": "1.0",
-    "mcp_product_contract": "1.0", "workspace_contract": "1.0", "audit_contract": "1.0",
+    "api_contract": "1.0",
+    "event_contract": "1.0",
+    "agent_contract": "1.0",
+    "mcp_product_contract": "1.0",
+    "workspace_contract": "1.0",
+    "audit_contract": "1.0",
 }
 
 
 class BomTests(unittest.TestCase):
     def test_platform_builder_never_reaches_into_private_source_trees(self):
         root = Path(__file__).resolve().parents[2]
-        builder = (root / "packaging" / "scripts" / "build_standalone.py").read_text(encoding="utf-8")
+        builder = (root / "packaging" / "scripts" / "build_standalone.py").read_text(
+            encoding="utf-8"
+        )
         self.assertIn('"controlstudio-platform"', builder)
         self.assertNotIn('REPO / "agent"', builder)
         self.assertNotIn('REPO / "mcp"', builder)
@@ -32,9 +38,9 @@ class BomTests(unittest.TestCase):
 
     def test_platform_builds_the_public_contract_artifact_without_private_sources(self):
         root = Path(__file__).resolve().parents[2]
-        builder = (root / "packaging" / "scripts" / "build_contracts_wheel.py").read_text(
-            encoding="utf-8"
-        )
+        builder = (
+            root / "packaging" / "scripts" / "build_contracts_wheel.py"
+        ).read_text(encoding="utf-8")
         self.assertIn("controlstudio-contracts", builder)
         self.assertNotIn('REPOSITORY / "agent"', builder)
         self.assertNotIn('REPOSITORY / "mcp"', builder)
@@ -42,13 +48,16 @@ class BomTests(unittest.TestCase):
     def test_platform_snapshot_contains_only_platform_packaging_entrypoint(self):
         root = Path(__file__).resolve().parents[2]
         entrypoints = root / "packaging" / "entrypoints"
-        self.assertEqual(sorted(path.name for path in entrypoints.glob("*_main.py")), ["platform_main.py"])
+        self.assertEqual(
+            sorted(path.name for path in entrypoints.glob("*_main.py")),
+            ["platform_main.py"],
+        )
 
     def test_platform_entrypoint_dispatches_same_executable_as_internal_host(self):
         root = Path(__file__).resolve().parents[2]
-        entrypoint = (root / "packaging" / "entrypoints" / "platform_main.py").read_text(
-            encoding="utf-8"
-        )
+        entrypoint = (
+            root / "packaging" / "entrypoints" / "platform_main.py"
+        ).read_text(encoding="utf-8")
         self.assertIn('"--host-executable"', entrypoint)
         self.assertIn("sys.executable", entrypoint)
         self.assertIn("controlstudio_host.__main__", entrypoint)
@@ -56,9 +65,9 @@ class BomTests(unittest.TestCase):
 
     def test_portable_launcher_supports_windows_powershell_and_artifact_probe(self):
         root = Path(__file__).resolve().parents[2]
-        launcher = (root / "packaging" / "scripts" / "Start-ControlStudio.ps1").read_text(
-            encoding="utf-8"
-        )
+        launcher = (
+            root / "packaging" / "scripts" / "Start-ControlStudio.ps1"
+        ).read_text(encoding="utf-8")
         self.assertNotIn("ConvertFrom-Json -Depth", launcher)
         self.assertIn("$ArtifactSelfTest", launcher)
         self.assertIn("--controlstudio-artifact-self-test", launcher)
@@ -66,6 +75,21 @@ class BomTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("Start-ControlStudio.ps1", assembler)
+
+    def test_consumer_installer_has_one_user_entrypoint_and_hidden_runtime(self):
+        root = Path(__file__).resolve().parents[2]
+        installer = (
+            root / "packaging" / "scripts" / "Install-ControlStudio.ps1"
+        ).read_text(encoding="utf-8")
+        builder = (
+            root / "packaging" / "scripts" / "build_windows_installer.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("ControlStudio.exe", installer)
+        self.assertIn("'runtime'", installer)
+        self.assertIn("ControlStudio.lnk", installer)
+        self.assertIn("IEXPRESS", builder)
+        self.assertNotIn('REPOSITORY / "agent"', builder)
+        self.assertNotIn('REPOSITORY / "mcp"', builder)
 
     def create_release(self, directory: Path):
         components = {}
@@ -93,8 +117,10 @@ class BomTests(unittest.TestCase):
             self.assertEqual(
                 {p.name for p in output.iterdir()},
                 {
-                    "controlstudio.bom.json", "controlstudio-platform.exe",
-                    "controlstudio-agent.exe", "controlstudio-plc-mcp.exe",
+                    "controlstudio.bom.json",
+                    "controlstudio-platform.exe",
+                    "controlstudio-agent.exe",
+                    "controlstudio-plc-mcp.exe",
                     "controlstudio_contracts-0.1.0-py3-none-any.whl",
                 },
             )
@@ -144,9 +170,15 @@ class BomTests(unittest.TestCase):
             os.environ["CONTROLSTUDIO_PACKAGING_DEV_SIGNING_KEY"] = "local-test-key"
             try:
                 bom = build_bom(
-                    product_release="0.1.0", components=components, contracts=CONTRACTS,
-                    contract_artifact={"artifact": str(contract_artifact), "version": "0.1.0"},
-                    signing="development-hmac-sha256", signing_key="local-test-key",
+                    product_release="0.1.0",
+                    components=components,
+                    contracts=CONTRACTS,
+                    contract_artifact={
+                        "artifact": str(contract_artifact),
+                        "version": "0.1.0",
+                    },
+                    signing="development-hmac-sha256",
+                    signing_key="local-test-key",
                 )
                 verify_bom(bom, root)
                 bom["components"][0]["version"] = "0.2.0"

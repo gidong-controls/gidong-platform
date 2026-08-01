@@ -1,11 +1,21 @@
-# Portable Windows packaging and BOM
+# Windows product installer, internal portable payload, and BOM
 
-`packaging/` composes three pre-built immutable files and the public
+The ordinary-user distribution is one file: `ControlStudio-Setup.exe`.
+Installation exposes one Start Menu entry and one top-level application,
+`ControlStudio.exe`. The Agent and PLC MCP remain separate supervised
+processes for isolation, but are installed under the application's private
+`runtime/` directory and are not presented as separately installed products.
+An independently distributed MCP package is a separate, opt-in product for
+users who deliberately want to run the MCP without ControlStudio Platform.
+
+The release-engineering-only portable payload composes three pre-built immutable files and the public
 `controlstudio-contracts` wheel: `controlstudio-platform.exe`,
 `controlstudio-agent.exe`, `controlstudio-plc-mcp.exe`, and
 `controlstudio_contracts-<version>-py3-none-any.whl`. A portable release
-contains those files, `controlstudio.bom.json`, and `Start-ControlStudio.ps1`;
-it has no source checkout, Python, Node, or uv runtime dependency.
+contains those files, `controlstudio.bom.json`, and `Start-ControlStudio.ps1`.
+It is an internal assembly and black-box validation boundary, not the normal
+consumer download. Neither form has a source checkout, Python, Node, or uv
+runtime dependency.
 
 ## Build boundary
 
@@ -45,6 +55,20 @@ python packaging/scripts/assemble_release.py --output dist/release --platform-ar
 contracts-wheel hash, all six contract versions, safe artifact names, and
 SHA-256 before it starts Platform. It passes immutable sidecar paths to
 Platform, which retains supervision and creates the child transports.
+
+Create the consumer installer only from that verified portable payload:
+
+```powershell
+python packaging/scripts/build_windows_installer.py --portable dist/release/portable --output dist/ControlStudio-Setup.exe
+```
+
+The installer re-verifies every payload hash before copying anything. It
+renames the Platform artifact to the single public entry point
+`ControlStudio.exe`, places Agent, MCP, the contracts wheel, and the BOM under
+`runtime/`, and creates only `ControlStudio.lnk`. On every installed launch,
+Platform validates its own hash and all internal runtime hashes and contract
+versions before binding the verified Agent/MCP commands. Missing or changed
+runtime artifacts fail closed.
 
 ## Signing policy
 
