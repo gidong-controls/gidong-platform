@@ -19,7 +19,7 @@ online 기능을 완료로 선언하지 않는다.
                          ┌────────┴────────┐
              Agent Protocol v1          MCP stdio + Product Contract v1
                        │                           │
-      private controlstudio-agent      private controlstudio-plc-mcp
+      private gidong-agent            private gidong-plc-mcp
        Pydantic AI / model / RAG       vendor action / operation journal
        proposal only                   precondition / readback / rollback
 ```
@@ -32,9 +32,9 @@ Agent prompt/model credential/user conversation을 갖지 않는다.
 
 | 컴포넌트 | 소유·수행 | 소유하지 않는 것 |
 | --- | --- | --- |
-| `controlstudio-platform` (public) | Launcher, UI, HTTP/SSE, 사용자 원본·workspace/working copy, conversation/run/approval/audit, Agent/MCP supervision, `ExecutionBroker`, 공개 schemas/SDK, mocks/conformance | Pydantic AI prompt/retrieval ranking, vendor UI/native payload 구현, MCP operation journal의 execution truth |
-| `controlstudio-agent` (private) | Pydantic AI sidecar, model adapter, prompt·structured output, analysis/planning, disposable RAG index/ranking/evaluation, `ExternalToolRequest` proposal | MCP 연결/PID/HWND/target raw identity, approval secret, 실제 apply/save/online/rollback, 원본 문서의 authority |
-| `controlstudio-plc-mcp` (private) | MCP Product Contract 구현, vendor adapter, target/precondition 재검증, operation lock/journal, apply/check/readback/rollback/reconciliation | Agent/model, Platform UI/HTTP, 사용자 전체 대화·원본 문서 authority |
+| `gidong-platform` (public) | Launcher, UI, HTTP/SSE, 사용자 원본·workspace/working copy, conversation/run/approval/audit, Agent/MCP supervision, `ExecutionBroker`, 공개 schemas/SDK, mocks/conformance | Pydantic AI prompt/retrieval ranking, vendor UI/native payload 구현, MCP operation journal의 execution truth |
+| `gidong-agent` (private) | Pydantic AI sidecar, model adapter, prompt·structured output, analysis/planning, disposable RAG index/ranking/evaluation, `ExternalToolRequest` proposal | MCP 연결/PID/HWND/target raw identity, approval secret, 실제 apply/save/online/rollback, 원본 문서의 authority |
+| `gidong-plc-mcp` (private) | MCP Product Contract 구현, vendor adapter, target/precondition 재검증, operation lock/journal, apply/check/readback/rollback/reconciliation | Agent/model, Platform UI/HTTP, 사용자 전체 대화·원본 문서 authority |
 
 세부 ownership과 데이터 흐름은
 [RESPONSIBILITY_AND_DATA_OWNERSHIP.md](refactor/RESPONSIBILITY_AND_DATA_OWNERSHIP.md)를

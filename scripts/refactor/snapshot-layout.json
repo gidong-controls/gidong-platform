@@ -2,7 +2,7 @@
   "schema_version": 1,
   "components": {
     "platform": {
-      "target_directory": "controlstudio-platform",
+      "target_directory": "gidong-platform",
       "mappings": [
         {"from": "README.md", "to": "README.md"},
         {"from": "host", "to": "host"},
@@ -37,7 +37,7 @@
       ]
     },
     "agent": {
-      "target_directory": "controlstudio-agent",
+      "target_directory": "gidong-agent",
       "mappings": [{"from": "agent", "to": "."}],
       "required_paths": [
         "pyproject.toml",
@@ -49,7 +49,7 @@
       ]
     },
     "plc-mcp": {
-      "target_directory": "controlstudio-plc-mcp",
+      "target_directory": "gidong-plc-mcp",
       "mappings": [{"from": "mcp", "to": "."}],
       "required_paths": [
         "pyproject.toml",

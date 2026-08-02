@@ -1,8 +1,8 @@
 {
   "repositories": [
-    {"id": "platform", "path": "C:/candidate/controlstudio-platform", "build": ["uv", "build"], "test": ["uv", "run", "pytest"]},
-    {"id": "agent", "path": "C:/candidate/controlstudio-agent", "build": ["uv", "build"], "test": ["uv", "run", "pytest"]},
-    {"id": "plc-mcp", "path": "C:/candidate/controlstudio-plc-mcp", "build": ["uv", "build"], "test": ["uv", "run", "pytest"]}
+    {"id": "platform", "path": "C:/candidate/gidong-platform", "build": ["uv", "build"], "test": ["uv", "run", "pytest"]},
+    {"id": "agent", "path": "C:/candidate/gidong-agent", "build": ["uv", "build"], "test": ["uv", "run", "pytest"]},
+    {"id": "plc-mcp", "path": "C:/candidate/gidong-plc-mcp", "build": ["uv", "build"], "test": ["uv", "run", "pytest"]}
   ],
   "platform_mock": {
     "cwd": "C:/isolated/platform-mock",

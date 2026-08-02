@@ -1,14 +1,14 @@
-# ControlStudio Platform
+# 기동 Platform
 
 ControlStudio는 PLC 엔지니어링 제품이다. 이 저장소는 공개될 수 있는
-`controlstudio-platform` 경계(웹/PWA, Launcher, FastAPI Host, 공개 contracts,
+`gidong-platform` 경계(웹/PWA, Launcher, FastAPI Host, 공개 contracts,
 mocks, conformance, 패키징 조립 규칙)를 담는다. 전체 제품은 다음 세 컴포넌트를
 함께 사용한다.
 
 ```text
-controlstudio-platform  (public)  ← Platform: UI, Host, ExecutionBroker, data/audit authority
-controlstudio-agent     (private) ← Pydantic AI sidecar: reasoning and derived RAG
-controlstudio-plc-mcp   (private) ← PLC MCP: vendor execution, journal, readback, rollback
+gidong-platform  (public)  ← Platform: UI, Host, ExecutionBroker, data/audit authority
+gidong-agent     (private) ← Pydantic AI sidecar: reasoning and derived RAG
+gidong-plc-mcp   (private) ← PLC MCP: vendor execution, journal, readback, rollback
 ```
 
 공개 Platform은 private Agent/MCP 소스나 기존 monorepo 이력을 포함하지 않는다.
@@ -64,6 +64,7 @@ private MCP의 직접 실행은 adapter 개발·진단용이며 제품 실행 �
 
 - [제품 요구사항](docs/PRD.md)
 - [제품 아키텍처](docs/PRODUCT_ARCHITECTURE.md)
+- [GIDONG 저장소 이름과 제품 경계](docs/REPOSITORY_NAMING.md)
 - [책임·데이터 소유권](docs/refactor/RESPONSIBILITY_AND_DATA_OWNERSHIP.md)
 - [로컬 3-repository 작업 흐름](docs/refactor/LOCAL_THREE_REPO_WORKFLOW.md)
 - [패키징/BOM 경계](docs/refactor/PACKAGING.md)

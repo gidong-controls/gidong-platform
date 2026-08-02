@@ -1,6 +1,6 @@
 # 단일 제품 배포와 독립 컴포넌트 버전 정책
 
-이 문서는 ControlStudio의 소비자 배포, 컴포넌트 버전 조합, 업데이트 및
+이 문서는 기동(GIDONG)의 소비자 배포, 컴포넌트 버전 조합, 업데이트 및
 rollback에 대한 권위 기준이다. 구현이나 다른 문서가 이 정책과 충돌하면 릴리스를
 중단하고 충돌을 해소한다.
 
@@ -26,9 +26,9 @@ rollback에 대한 권위 기준이다. 구현이나 다른 문서가 이 정책
 
 | 대상 | 공개 여부 | 소비자 설치 시 동작 |
 |---|---|---|
-| `controlstudio-platform` | 공개 | 미리 빌드된 Platform artifact를 설치 |
-| `controlstudio-agent` | 비공개 | private release pipeline이 미리 빌드한 artifact를 내부 runtime에 설치 |
-| `controlstudio-plc-mcp` | 비공개 | private release pipeline이 미리 빌드한 artifact를 내부 runtime에 설치 |
+| `gidong-platform` | 공개 | 미리 빌드된 Platform artifact를 설치 |
+| `gidong-agent` | 비공개 | private release pipeline이 미리 빌드한 artifact를 내부 runtime에 설치 |
+| `gidong-plc-mcp` | 비공개 | private release pipeline이 미리 빌드한 artifact를 내부 runtime에 설치 |
 
 소비자 설치 프로그램은 다음 작업을 **절대 하지 않는다**.
 
@@ -75,9 +75,9 @@ source repository가 아니라 명시적으로 전달된 immutable artifact만 �
 
 네 종류의 버전을 서로 구분한다.
 
-1. **Platform version** — `controlstudio-platform`의 독립 제품 코드 버전
-2. **Agent version** — `controlstudio-agent`의 독립 구현 버전
-3. **PLC MCP version** — `controlstudio-plc-mcp`의 독립 구현 버전
+1. **Platform version** — `gidong-platform`의 독립 제품 코드 버전
+2. **Agent version** — `gidong-agent`의 독립 구현 버전
+3. **PLC MCP version** — `gidong-plc-mcp`의 독립 구현 버전
 4. **Contract versions** — API, Event, Agent Protocol, MCP Product,
    Workspace, Audit 계약 버전
 5. **Product release version** — 검증된 전체 조합에 부여하는 소비자 릴리스 버전
@@ -215,4 +215,3 @@ standalone MCP를 설치했다고 해서 ControlStudio Platform이 그 임의 �
 - 계획서가 요구하는 실제 XG5000 검증 gate의 충족
 
 실제 PLC/online capability는 별도 검증 환경의 증거가 없으면 완료로 표시하지 않는다.
-

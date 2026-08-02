@@ -9,10 +9,10 @@ rewrite하지 않으며 remote 생성과 push는 사용자 지시 전까지 하�
 ## 목표 topology
 
 ```text
-ControlStudio-workspace/           # Git repository가 아닌 상위 directory
-├─ controlstudio-platform/         # public local Git, clean genesis
-├─ controlstudio-agent/            # private local Git, clean genesis
-└─ controlstudio-plc-mcp/          # private local Git, clean genesis
+GIDONG-workspace/                  # Git repository가 아닌 상위 directory
+├─ gidong-platform/                # public local Git, clean genesis
+├─ gidong-agent/                   # private local Git, clean genesis
+└─ gidong-plc-mcp/                 # private local Git, clean genesis
 ```
 
 Platform은 `web/`, `host/`, `launcher/`, `schemas/`, public
@@ -55,7 +55,7 @@ clean genesis commit을 만든다. 기존 monorepo history는 private archive/bu
 통과해야 한다.
 
 각 repository의 runtime/build dependency는 published/immutable artifact 또는
-explicit local compose input을 사용한다. `../controlstudio-agent`, `../mcp` 같은
+explicit local compose input을 사용한다. `../gidong-agent`, `../gidong-plc-mcp` 같은
 sibling source path를 package metadata에 커밋하지 않는다. local compose command와
 sidecar paths는 ignored file 또는 command argument로 주입한다.
 
