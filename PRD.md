@@ -28,7 +28,8 @@
 6. 현재 검증된 것과 아직 주장할 수 없는 것은 무엇인가?
 
 이 문서와 세부 문서가 충돌하면 제품 범위와 완료 판정에는 이 문서가 우선한다.
-세부 기능은 [상세 제품 요구사항](docs/PRD.md), 실행 책임은
+세부 사용자 경험은 [GUI 명세](docs/CONTROLSTUDIO_GUI_HANDOFF.md)와
+[엔지니어링 작업 흐름](docs/ENGINEERING_COLLABORATION_WORKFLOWS.md), 실행 책임은
 [제품 아키텍처](docs/PRODUCT_ARCHITECTURE.md), 배포와 버전 결속은
 [제품 배포·버전 정책](docs/refactor/PRODUCT_DISTRIBUTION_AND_VERSIONING.md)을
 따른다.
@@ -482,7 +483,8 @@ pilot 전에 대표 LS 프로젝트와 실제 사용자 작업 집합을 고정�
 
 ## 14. 근거 문서
 
-- [상세 PLC 제품 요구사항](docs/PRD.md)
+- [사용자 GUI와 실행 경험](docs/CONTROLSTUDIO_GUI_HANDOFF.md)
+- [사람·에이전트 엔지니어링 작업 흐름](docs/ENGINEERING_COLLABORATION_WORKFLOWS.md)
 - [제품 아키텍처](docs/PRODUCT_ARCHITECTURE.md)
 - [책임과 데이터 소유권](docs/refactor/RESPONSIBILITY_AND_DATA_OWNERSHIP.md)
 - [단일 제품 배포와 독립 버전 정책](docs/refactor/PRODUCT_DISTRIBUTION_AND_VERSIONING.md)
@@ -491,4 +493,3 @@ pilot 전에 대표 LS 프로젝트와 실제 사용자 작업 집합을 고정�
 - [리팩터링 검증 기준](docs/refactor/REFACTOR_VALIDATION_EVIDENCE.md)
 - [XG5000 회귀 증거와 미검증 범위](docs/refactor/XG5000_REGRESSION_EVIDENCE.md)
 - [GIDONG 저장소 이름과 라이선스 경계](docs/REPOSITORY_NAMING.md)
-

@@ -4,11 +4,10 @@
 
 결정 상태: 제품 구현 기준 확정, 읽기·분석과 제한된 오프라인 작업 UI 구현
 
-이 문서는 [PRD.md](PRD.md)의 사용자 제품을 어떤 형태로 제공할지 고정한다.
-기능 범위와 안전 정책은 PRD가 우선하며, 에이전트 구현 계약은
-[CONTROLSTUDIO_AGENT_RUNTIME_HANDOFF.md](CONTROLSTUDIO_AGENT_RUNTIME_HANDOFF.md)를
-따른다. 전체 계층의 한 페이지 요약은
-[PRODUCT_ARCHITECTURE.md](PRODUCT_ARCHITECTURE.md)를 기준으로 한다.
+이 문서는 [루트 PRD](../PRD.md)의 사용자 제품을 어떤 형태로 제공할지 고정한다.
+기능 범위와 안전 정책은 PRD가 우선하며, 현재 Agent·Platform·MCP 실행 계약은
+[PRODUCT_ARCHITECTURE.md](PRODUCT_ARCHITECTURE.md)와
+[책임·데이터 소유권](refactor/RESPONSIBILITY_AND_DATA_OWNERSHIP.md)을 따른다.
 신규 구축과 기존 설비 부분 수정의 실제 화면·검토 순서는
 [ENGINEERING_COLLABORATION_WORKFLOWS.md](ENGINEERING_COLLABORATION_WORKFLOWS.md)를
 따른다.

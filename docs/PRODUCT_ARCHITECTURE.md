@@ -1,10 +1,10 @@
-# ControlStudio 제품 아키텍처
+# GIDONG 제품 아키텍처
 
 최종 갱신: 2026-08-01
-결정 상태: three-repository 논리 경계 구현 기준. 물리 Git 분리와 production
-release는 별도 evidence gate가 남아 있다.
+결정 상태: three-repository 논리·물리 경계는 로컬에서 완료됐다. production
+release와 실제 PLC online 기능은 별도 evidence gate가 남아 있다.
 
-제품 기능·안전·출시 범위는 [PRD.md](PRD.md)가 우선한다. 이 문서는 공개
+제품 기능·안전·출시 범위는 [루트 PRD](../PRD.md)가 우선한다. 이 문서는 공개
 Platform과 비공개 Agent/PLC MCP가 결합되는 실행 책임을 고정하며, 실제 PLC
 online 기능을 완료로 선언하지 않는다.
 

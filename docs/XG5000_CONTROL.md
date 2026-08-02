@@ -52,7 +52,8 @@ level 불일치를 확실히 판별하지 못하면 UI 작업을 시작하지 �
   - `17`: RST
   - `33`: 응용명령
 
-구현은 [ladder.py](../mcp/src/xg5000_control/ladder.py)에 있다.
+구현은 비공개 `gidong-plc-mcp` 저장소의
+`src/xg5000_control/ladder.py`에 있다.
 해석하지 않은 배선 토큰도 각 행의 `raw_tokens`에 보존한다.
 
 ### 현재 해석 범위

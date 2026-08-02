@@ -2,12 +2,12 @@
 
 최종 갱신: 2026-07-30
 
-이 문서는 [PRD.md](PRD.md)의 두 핵심 결과인 `신규 구축`과
+이 문서는 [루트 PRD](../PRD.md)의 두 핵심 결과인 `신규 구축`과
 `기존 설비 엔지니어링`을 사람이 실제로 사용하는 화면과 상태 전이로 구체화한다.
 기능·안전 범위는 PRD가 우선하고, GUI 및 런타임의 기술 경계는
-[CONTROLSTUDIO_GUI_HANDOFF.md](CONTROLSTUDIO_GUI_HANDOFF.md)와
-[CONTROLSTUDIO_AGENT_RUNTIME_HANDOFF.md](CONTROLSTUDIO_AGENT_RUNTIME_HANDOFF.md)를
-따른다.
+[CONTROLSTUDIO_GUI_HANDOFF.md](CONTROLSTUDIO_GUI_HANDOFF.md),
+[PRODUCT_ARCHITECTURE.md](PRODUCT_ARCHITECTURE.md)와
+[책임·데이터 소유권](refactor/RESPONSIBILITY_AND_DATA_OWNERSHIP.md)을 따른다.
 
 ## 1. 공통 원칙
 
@@ -65,7 +65,8 @@ ControlStudio는 빈 채팅창에서 곧바로 코드를 생성하거나, 변경
   version이 둘 다 증명되고 정확히 일치할 때만 사용한다. 둘 중 하나가 없거나
   다른 경우에는 유사한 내용이어도 fail-closed하고 추가 확인 질문으로 남긴다.
 
-상세 계약은 [KNOWLEDGE_MEMORY.md](KNOWLEDGE_MEMORY.md)를 따른다.
+원본·파생 지식과 확인 상태의 현재 계약은
+[책임·데이터 소유권](refactor/RESPONSIBILITY_AND_DATA_OWNERSHIP.md)을 따른다.
 
 ## 2. 신규 프로젝트 협업
 

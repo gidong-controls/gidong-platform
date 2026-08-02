@@ -1,6 +1,6 @@
 # 기동 Platform
 
-ControlStudio는 PLC 엔지니어링 제품이다. 이 저장소는 공개될 수 있는
+기동(GIDONG)은 PLC 엔지니어링 제품이다. 이 저장소는 공개될 수 있는
 `gidong-platform` 경계(웹/PWA, Launcher, FastAPI Host, 공개 contracts,
 mocks, conformance, 패키징 조립 규칙)를 담는다. 전체 제품은 다음 세 컴포넌트를
 함께 사용한다.
@@ -13,7 +13,7 @@ gidong-plc-mcp   (private) ← PLC MCP: vendor execution, journal, readback, rol
 
 공개 Platform은 private Agent/MCP 소스나 기존 monorepo 이력을 포함하지 않는다.
 공개 contracts의 원본은 이 저장소의 `schemas/`이며 Python/TypeScript SDK는
-`packages/`에 있다. 제품·안전 범위는 [PRD](docs/PRD.md)가 우선한다. 현재 분리
+`packages/`에 있다. 제품·안전 범위는 [PRD](PRD.md)가 우선한다. 현재 분리
 경계는 [responsibility/data ownership](docs/refactor/RESPONSIBILITY_AND_DATA_OWNERSHIP.md),
 소비자 조립·버전·업데이트 불변조건은
 [product distribution/versioning policy](docs/refactor/PRODUCT_DISTRIBUTION_AND_VERSIONING.md),
@@ -62,7 +62,7 @@ private MCP의 직접 실행은 adapter 개발·진단용이며 제품 실행 �
 
 ## 문서
 
-- [제품 요구사항](docs/PRD.md)
+- [제품 요구사항](PRD.md)
 - [제품 아키텍처](docs/PRODUCT_ARCHITECTURE.md)
 - [GIDONG 저장소 이름과 제품 경계](docs/REPOSITORY_NAMING.md)
 - [책임·데이터 소유권](docs/refactor/RESPONSIBILITY_AND_DATA_OWNERSHIP.md)
@@ -72,6 +72,5 @@ private MCP의 직접 실행은 adapter 개발·진단용이며 제품 실행 �
 - [리팩터링 검증 증거](docs/refactor/REFACTOR_VALIDATION_EVIDENCE.md)
 - [XG5000 회귀 범위](docs/refactor/XG5000_REGRESSION_EVIDENCE.md)
 
-remote를 만들거나 push하지 않는다. 물리 저장소 생성도 원본 monorepo의 bundle과
-mirror가 복원 검증되고, 논리 경계·독립 test·artifact-only E2E·공개 history audit가
-통과한 뒤에만 수행한다.
+세 local Git과 검증된 artifact-only 조립 경계는 만들어졌다. remote 생성과 push는
+사용자 지시 전까지 수행하지 않는다.
