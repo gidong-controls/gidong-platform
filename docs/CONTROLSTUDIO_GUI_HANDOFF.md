@@ -216,11 +216,12 @@ foreground 실패는 다른 창을 추측해 닫거나 추가 창을 여는 대�
 초기 기본 주소는 다음으로 고정한다.
 
 ```text
-http://localhost:8765
+http://127.0.0.1:8765
 ```
 
 - 기본 bind는 loopback뿐이다.
-- `localhost`를 canonical local origin으로 사용한다.
+- `127.0.0.1`을 canonical local origin으로 사용한다. `localhost` 이름 해석에
+  의존하지 않는다.
 - 포트 충돌 시 다른 포트로 몰래 이동하지 않고 명확한 오류와 설정 변경 절차를
   제공한다.
 - Launcher는 기존 포트가 열렸다는 이유만으로 브라우저를 열지 않는다. 자신이
@@ -363,7 +364,7 @@ GUI가 직접 호출할 수 없는 항목:
 
 ## 8. 웹 보안 기본값
 
-localhost도 무신뢰 웹페이지의 요청 대상이 될 수 있으므로 다음을 강제한다.
+loopback 주소도 무신뢰 웹페이지의 요청 대상이 될 수 있으므로 다음을 강제한다.
 
 - `Host`와 `Origin` allowlist
 - CORS 기본 차단
@@ -374,7 +375,7 @@ localhost도 무신뢰 웹페이지의 요청 대상이 될 수 있으므로 다
 - handoff ticket을 origin별 단기 browser session token으로 원자적으로 한 번 교환
 - launcher secret은 browser URL·process argv에 전달하지 않음
 - 파생 session만 `sessionStorage`에 두고 모든 API와 fetch 기반 SSE에
-  `Authorization` header로 전달; localhost-wide cookie, query string,
+  `Authorization` header로 전달; loopback-wide cookie, query string,
   `localStorage`에는 secret을 두지 않음
 - CSP와 정적 asset 무결성
 - WebSocket/SSE를 포함한 모든 원격 요청 인증

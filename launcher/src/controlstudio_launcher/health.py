@@ -42,6 +42,7 @@ class HealthResult:
 class LaunchVerificationResult:
     verified: bool
     detail: str
+    retryable: bool = False
 
 
 @dataclass(frozen=True)
@@ -154,10 +155,30 @@ class HttpHealthProbe:
                         f"launch challenge returned HTTP {response.status}",
                     )
                 body = response.read(_MAX_HEALTH_BYTES + 1)
-        except (HTTPError, URLError, TimeoutError, OSError) as exc:
+        except HTTPError as exc:
             return LaunchVerificationResult(
                 False,
                 f"launch challenge could not be verified: {exc}",
+            )
+        except URLError as exc:
+            return LaunchVerificationResult(
+                False,
+                f"launch challenge could not be verified: {exc}",
+                retryable=(
+                    _is_connection_refused(exc.reason) or _is_timeout(exc.reason)
+                ),
+            )
+        except TimeoutError as exc:
+            return LaunchVerificationResult(
+                False,
+                f"launch challenge could not be verified: {exc}",
+                retryable=True,
+            )
+        except OSError as exc:
+            return LaunchVerificationResult(
+                False,
+                f"launch challenge could not be verified: {exc}",
+                retryable=_is_connection_refused(exc) or _is_timeout(exc),
             )
         if len(body) > _MAX_HEALTH_BYTES:
             return LaunchVerificationResult(False, "launch challenge response is too large")

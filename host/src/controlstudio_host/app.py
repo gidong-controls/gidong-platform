@@ -125,7 +125,7 @@ from .knowledge_ingestion import (
     KnowledgeIngestionError,
     extract_local_knowledge_document,
 )
-from .mcp_client import MCPGateway, MCPStartupError, MCPToolError
+from .mcp_client import AGENT_TOOL_NAMES, MCPGateway, MCPStartupError, MCPToolError
 from .model_connection import (
     MODEL_PROTOCOL,
     ModelConnectionRepository,
@@ -335,7 +335,8 @@ def _agent_tool_evidence_ref(
     tool_name: str,
     tool_call_id: str | None,
 ) -> dict[str, Any] | None:
-    definition = _AGENT_TOOL_EVIDENCE.get(tool_name)
+    canonical_tool_name = AGENT_TOOL_NAMES.get(tool_name, tool_name)
+    definition = _AGENT_TOOL_EVIDENCE.get(canonical_tool_name)
     if definition is None:
         return None
     kind, title, summary, confidence = definition
@@ -345,7 +346,7 @@ def _agent_tool_evidence_ref(
             uuid.NAMESPACE_URL,
             (
                 "controlstudio-agent-evidence:"
-                f"{conversation_id}:{run_id}:{tool_name}:{call_identity}"
+                f"{conversation_id}:{run_id}:{canonical_tool_name}:{call_identity}"
             ),
         )
     )
@@ -353,7 +354,7 @@ def _agent_tool_evidence_ref(
         "evidenceId": evidence_id,
         "title": title,
         "kind": kind,
-        "toolName": tool_name,
+        "toolName": canonical_tool_name,
         "summary": summary,
         "confidence": confidence,
     }

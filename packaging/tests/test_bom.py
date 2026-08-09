@@ -5,7 +5,11 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
+from importlib.util import module_from_spec, spec_from_file_location
+from io import StringIO
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from controlstudio_packaging.bom import (
@@ -26,6 +30,18 @@ CONTRACTS = {
 
 
 class BomTests(unittest.TestCase):
+    @staticmethod
+    def standalone_builder():
+        root = Path(__file__).resolve().parents[2]
+        spec = spec_from_file_location(
+            "controlstudio_build_standalone",
+            root / "packaging" / "scripts" / "build_standalone.py",
+        )
+        assert spec and spec.loader
+        module = module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
     def test_platform_builder_never_reaches_into_private_source_trees(self):
         root = Path(__file__).resolve().parents[2]
         builder = (root / "packaging" / "scripts" / "build_standalone.py").read_text(
@@ -36,11 +52,75 @@ class BomTests(unittest.TestCase):
         self.assertNotIn('REPO / "mcp"', builder)
         self.assertNotIn("xg5000_control", builder)
 
+    def test_platform_builder_requires_launcher_runtime_modules_and_bundles_them(self):
+        builder = self.standalone_builder()
+        self.assertEqual(
+            builder.REQUIRED_RUNTIME_MODULES,
+            ("pywinauto", "pywinauto.keyboard", "win32cred", "win32timezone"),
+        )
+        with patch.object(
+            builder.importlib.util,
+            "find_spec",
+            side_effect=lambda name: (
+                object()
+                if name in {"pywinauto", "win32cred", "win32timezone"}
+                else None
+            ),
+        ):
+            self.assertEqual(builder.missing_required_runtime_modules(), ("pywinauto.keyboard",))
+
+        source = (
+            Path(__file__).resolve().parents[2] / "packaging" / "scripts" / "build_standalone.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"--hidden-import", module', source)
+
+    def test_platform_builder_restores_the_pywin32_runtime_import_path(self):
+        root = Path(__file__).resolve().parents[2]
+        hook = root / "packaging" / "runtime_hooks" / "pywin32_path.py"
+        self.assertTrue(hook.is_file())
+        hook_source = hook.read_text(encoding="utf-8")
+        self.assertIn("sys._MEIPASS", hook_source)
+        self.assertIn('"win32"', hook_source)
+        self.assertIn('os.path.join("win32", "lib")', hook_source)
+
+        builder_source = (
+            root / "packaging" / "scripts" / "build_standalone.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"--runtime-hook"', builder_source)
+        self.assertIn("pywin32_path.py", builder_source)
+
+    def test_platform_builder_fails_closed_before_pyinstaller_for_missing_runtime_module(self):
+        builder = self.standalone_builder()
+        stderr = StringIO()
+        pyinstaller = Mock()
+        with (
+            patch.object(
+                builder,
+                "missing_required_runtime_modules",
+                return_value=("pywinauto.keyboard",),
+            ),
+            patch.object(builder.subprocess, "run", pyinstaller),
+            patch.object(sys, "argv", ["build_standalone.py", "--output", "unused"]),
+            redirect_stderr(stderr),
+        ):
+            self.assertEqual(builder.main(), 2)
+        self.assertIn("pywinauto.keyboard", stderr.getvalue())
+        pyinstaller.assert_not_called()
+
+    def test_packaging_document_uses_launcher_environment_for_platform_build(self):
+        root = Path(__file__).resolve().parents[2]
+        packaging = (root / "docs" / "refactor" / "PACKAGING.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "uv run --directory launcher --with pyinstaller python "
+            "../packaging/scripts/build_standalone.py",
+            packaging,
+        )
+
     def test_platform_builds_the_public_contract_artifact_without_private_sources(self):
         root = Path(__file__).resolve().parents[2]
-        builder = (
-            root / "packaging" / "scripts" / "build_contracts_wheel.py"
-        ).read_text(encoding="utf-8")
+        builder = (root / "packaging" / "scripts" / "build_contracts_wheel.py").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("controlstudio-contracts", builder)
         self.assertNotIn('REPOSITORY / "agent"', builder)
         self.assertNotIn('REPOSITORY / "mcp"', builder)
@@ -55,9 +135,9 @@ class BomTests(unittest.TestCase):
 
     def test_platform_entrypoint_dispatches_same_executable_as_internal_host(self):
         root = Path(__file__).resolve().parents[2]
-        entrypoint = (
-            root / "packaging" / "entrypoints" / "platform_main.py"
-        ).read_text(encoding="utf-8")
+        entrypoint = (root / "packaging" / "entrypoints" / "platform_main.py").read_text(
+            encoding="utf-8"
+        )
         self.assertIn('"--host-executable"', entrypoint)
         self.assertIn("sys.executable", entrypoint)
         self.assertIn("controlstudio_host.__main__", entrypoint)
@@ -65,9 +145,9 @@ class BomTests(unittest.TestCase):
 
     def test_portable_launcher_supports_windows_powershell_and_artifact_probe(self):
         root = Path(__file__).resolve().parents[2]
-        launcher = (
-            root / "packaging" / "scripts" / "Start-ControlStudio.ps1"
-        ).read_text(encoding="utf-8")
+        launcher = (root / "packaging" / "scripts" / "Start-ControlStudio.ps1").read_text(
+            encoding="utf-8"
+        )
         self.assertNotIn("ConvertFrom-Json -Depth", launcher)
         self.assertIn("$ArtifactSelfTest", launcher)
         self.assertIn("--controlstudio-artifact-self-test", launcher)
@@ -78,12 +158,12 @@ class BomTests(unittest.TestCase):
 
     def test_consumer_installer_has_one_user_entrypoint_and_hidden_runtime(self):
         root = Path(__file__).resolve().parents[2]
-        installer = (
-            root / "packaging" / "scripts" / "Install-ControlStudio.ps1"
-        ).read_text(encoding="utf-8")
-        builder = (
-            root / "packaging" / "scripts" / "build_windows_installer.py"
-        ).read_text(encoding="utf-8")
+        installer = (root / "packaging" / "scripts" / "Install-ControlStudio.ps1").read_text(
+            encoding="utf-8"
+        )
+        builder = (root / "packaging" / "scripts" / "build_windows_installer.py").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("ControlStudio.exe", installer)
         self.assertIn("'runtime'", installer)
         self.assertIn("ControlStudio.lnk", installer)

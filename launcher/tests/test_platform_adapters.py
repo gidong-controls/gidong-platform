@@ -97,7 +97,7 @@ def test_host_starter_uses_canonical_endpoint_without_a_shell(
     assert kwargs["env"]["CONTROLSTUDIO_LAUNCH_TOKEN"] == "secret-token"
     assert kwargs["env"]["CONTROLSTUDIO_BIND_HOST"] == "127.0.0.1"
     assert kwargs["env"]["CONTROLSTUDIO_PORT"] == "8765"
-    assert kwargs["env"]["CONTROLSTUDIO_CANONICAL_ORIGIN"] == "http://localhost:8765"
+    assert kwargs["env"]["CONTROLSTUDIO_CANONICAL_ORIGIN"] == "http://127.0.0.1:8765"
     if os.name == "nt":
         assert (
             kwargs["env"]["CONTROLSTUDIO_LAUNCH_JOB_NAME"]

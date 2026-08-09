@@ -122,7 +122,7 @@ class ToolProgressRuntime(FakeRuntime):
         await on_tool_event(
             "tool.started",
             {
-                "tool_name": "project.list_programs",
+                "tool_name": "list_project_programs",
                 "tool_call_id": "model-call-1",
                 "ignored_untrusted_field": "must-not-be-persisted",
             },
@@ -130,7 +130,7 @@ class ToolProgressRuntime(FakeRuntime):
         await on_tool_event(
             "tool.completed",
             {
-                "tool_name": "project.list_programs",
+                "tool_name": "list_project_programs",
                 "tool_call_id": "model-call-1",
             },
         )
@@ -638,7 +638,7 @@ def test_v1_read_only_agent_path_is_idempotent_and_replayable(
                 conversation_id,
                 first.json()["runId"],
                 {
-                    "tool_name": "project.list_programs",
+                    "tool_name": "list_project_programs",
                     "tool_call_id": "model-call-1",
                 },
             ),
@@ -647,7 +647,7 @@ def test_v1_read_only_agent_path_is_idempotent_and_replayable(
                 conversation_id,
                 first.json()["runId"],
                 {
-                    "tool_name": "project.list_programs",
+                    "tool_name": "list_project_programs",
                     "tool_call_id": "model-call-1",
                 },
             ),

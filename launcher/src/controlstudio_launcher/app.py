@@ -71,9 +71,7 @@ class ControlStudioLauncher:
                     "elevated Host became ready but its launch session token "
                     "is unavailable"
                 )
-            verification = self._health_probe.verify_launch_token(launch_token)
-            if not verification.verified:
-                raise UnexpectedServiceError(verification.detail)
+            self._verify_launch_token_until_ready(launch_token, None)
             if open_ui:
                 self._open_elevation_handoff_under_instance_guard(launch_token)
             return
@@ -128,9 +126,7 @@ class ControlStudioLauncher:
                 if initial.state is not HealthState.READY:
                     self._wait_until_ready(process)
 
-                verification = self._health_probe.verify_launch_token(launch_token)
-                if not verification.verified:
-                    raise UnexpectedServiceError(verification.detail)
+                self._verify_launch_token_until_ready(launch_token, process)
 
                 if open_ui:
                     self._open_ui(
@@ -219,3 +215,40 @@ class ControlStudioLauncher:
             f"{self._settings.startup_timeout_seconds:g} seconds "
             f"(last state: {last_result.detail})"
         )
+
+    def _verify_launch_token_until_ready(
+        self,
+        launch_token: str,
+        process: HostProcess | None,
+    ) -> None:
+        """Retry only transient transport loss while retaining exact Host ownership."""
+
+        deadline = self._monotonic() + self._settings.startup_timeout_seconds
+        last_detail = "launch challenge has not answered yet"
+        while self._monotonic() < deadline:
+            if process is not None:
+                return_code = process.poll()
+                if return_code is not None:
+                    raise HostStartError(
+                        "ControlStudio Host exited before launch challenge "
+                        f"verification (exit code {return_code})"
+                    )
+
+            verification = self._health_probe.verify_launch_token(launch_token)
+            if verification.verified:
+                return
+            if not verification.retryable:
+                raise UnexpectedServiceError(verification.detail)
+
+            last_detail = verification.detail
+            write_launcher_diagnostic(
+                f"launch challenge transient failure detail={last_detail!r}"
+            )
+            self._sleep(self._settings.poll_interval_seconds)
+
+        write_launcher_diagnostic(
+            "launch challenge timeout "
+            f"seconds={self._settings.startup_timeout_seconds:g} "
+            f"detail={last_detail!r}"
+        )
+        raise UnexpectedServiceError(last_detail)

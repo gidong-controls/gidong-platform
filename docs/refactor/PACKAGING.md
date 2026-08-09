@@ -29,8 +29,15 @@ Windows build environment with pinned build dependencies:
 
 ```powershell
 python packaging/scripts/build_contracts_wheel.py --output dist/contracts
-uv run --directory host --with pyinstaller python ../packaging/scripts/build_standalone.py --output dist/platform --clean
+uv run --directory launcher --with pyinstaller python ../packaging/scripts/build_standalone.py --output dist/platform --clean
 ```
+
+The Platform executable is built from the launcher project environment. On
+Windows that environment pins `pywinauto` for the launcher's owned UI handoff;
+the standalone builder refuses to invoke PyInstaller when either `pywinauto`
+or `pywinauto.keyboard` is unavailable, and explicitly bundles both runtime
+modules. A build environment that cannot resolve those Windows-only modules
+must be repaired before producing a release artifact.
 
 Agent build/test tooling takes an explicit public wheel and a caller-owned
 environment. It never discovers sibling checkout paths or checked-in binary

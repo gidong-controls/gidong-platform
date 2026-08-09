@@ -59,12 +59,14 @@ class Probe:
         self,
         *states: HealthState,
         verified: bool = True,
+        verification_results: list[LaunchVerificationResult] | None = None,
         handoff_issued: bool = True,
         starting_payload: dict[str, str] | None = None,
     ) -> None:
         self.states = list(states)
         self.calls = 0
         self.verified = verified
+        self.verification_results = list(verification_results or ())
         self.handoff_issued = handoff_issued
         self.starting_payload = starting_payload
         self.challenge_tokens: list[str] = []
@@ -79,6 +81,8 @@ class Probe:
 
     def verify_launch_token(self, launch_token: str) -> LaunchVerificationResult:
         self.challenge_tokens.append(launch_token)
+        if self.verification_results:
+            return self.verification_results.pop(0)
         return LaunchVerificationResult(
             self.verified,
             "verified" if self.verified else "proof mismatch",
@@ -242,7 +246,7 @@ def test_existing_verified_host_is_opened_without_start() -> None:
 
     assert starter.calls == []
     assert opener.urls == [
-        "http://localhost:8765/#handoff_ticket=browser-handoff-ticket-that-is-long-enough"
+        "http://127.0.0.1:8765/#handoff_ticket=browser-handoff-ticket-that-is-long-enough"
     ]
     assert guard.entered and guard.exited
 
@@ -282,7 +286,7 @@ def test_absent_host_is_started_once_then_opened() -> None:
         )
     ]
     assert opener.urls == [
-        "http://localhost:8765/#handoff_ticket=browser-handoff-ticket-that-is-long-enough"
+        "http://127.0.0.1:8765/#handoff_ticket=browser-handoff-ticket-that-is-long-enough"
     ]
 
 
@@ -300,7 +304,7 @@ def test_new_host_replaces_stale_window_instead_of_reusing_its_session() -> None
     assert starter.calls
     assert opener.focus_calls == 0
     assert opener.urls == [
-        "http://localhost:8765/#handoff_ticket=browser-handoff-ticket-that-is-long-enough"
+        "http://127.0.0.1:8765/#handoff_ticket=browser-handoff-ticket-that-is-long-enough"
     ]
     assert probe.handoff_tokens == ["launcher-test-token"]
 
@@ -318,7 +322,7 @@ def test_elevated_relaunch_hands_off_without_starting_a_second_host() -> None:
     assert elevation_broker.arguments == [(False, True)]
     assert starter.calls == []
     assert opener.urls == [
-        "http://localhost:8765/#handoff_ticket=browser-handoff-ticket-that-is-long-enough"
+        "http://127.0.0.1:8765/#handoff_ticket=browser-handoff-ticket-that-is-long-enough"
     ]
     assert guard.entered and guard.exited
 
@@ -336,7 +340,7 @@ def test_network_timeout_hands_off_elevation_before_instance_lock() -> None:
     assert elevation_broker.arguments == [(False, True)]
     assert starter.calls == []
     assert opener.urls == [
-        "http://localhost:8765/#handoff_ticket=browser-handoff-ticket-that-is-long-enough"
+        "http://127.0.0.1:8765/#handoff_ticket=browser-handoff-ticket-that-is-long-enough"
     ]
     assert guard.entered and guard.exited
 
@@ -433,7 +437,7 @@ def test_existing_starting_host_is_waited_for_without_duplicate_start() -> None:
 
     assert starter.calls == []
     assert opener.urls == [
-        "http://localhost:8765/#handoff_ticket=browser-handoff-ticket-that-is-long-enough"
+        "http://127.0.0.1:8765/#handoff_ticket=browser-handoff-ticket-that-is-long-enough"
     ]
 
 
@@ -454,7 +458,7 @@ def test_timeout_with_no_existing_token_starts_host_instead_of_waiting_forever()
         )
     ]
     assert opener.urls == [
-        "http://localhost:8765/#handoff_ticket=browser-handoff-ticket-that-is-long-enough"
+        "http://127.0.0.1:8765/#handoff_ticket=browser-handoff-ticket-that-is-long-enough"
     ]
 
 
@@ -496,6 +500,47 @@ def test_wrong_service_challenge_is_rejected_before_secret_reaches_ui() -> None:
     assert process.terminated
     assert opener.urls == []
     assert probe.challenge_tokens == ["launcher-test-token"]
+
+
+def test_transient_launch_challenge_timeout_retries_same_started_host() -> None:
+    process = Process()
+    starter = Starter(process)
+    probe = Probe(
+        HealthState.ABSENT,
+        HealthState.ABSENT,
+        HealthState.READY,
+        verification_results=[
+            LaunchVerificationResult(
+                False,
+                "launch challenge could not be verified: timed out",
+                retryable=True,
+            ),
+            LaunchVerificationResult(True, "verified Host launch challenge"),
+        ],
+    )
+    clock = Clock()
+    guard = Guard()
+    opener = Opener()
+    launcher = ControlStudioLauncher(
+        settings=settings(),
+        health_probe=probe,
+        host_starter=starter,
+        ui_opener=opener,
+        instance_guard=guard,
+        token_store=TokenStore(),
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    launcher.run()
+
+    assert len(starter.calls) == 1
+    assert probe.challenge_tokens == ["launcher-test-token"] * 2
+    assert not process.terminated
+    assert opener.urls == [
+        "http://127.0.0.1:8765/#handoff_ticket=browser-handoff-ticket-that-is-long-enough"
+    ]
+    assert clock.now == pytest.approx(0.1)
 
 
 def test_early_host_exit_is_reported() -> None:
