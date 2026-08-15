@@ -34,6 +34,7 @@ AMBIGUOUS_STRUCTURAL_SCOPE_LIMITATION = (
 )
 
 _FACT_COUNT_LIMIT = 200
+_MODEL_CONTEXT_ITEM_LIMIT = 32
 _PAYLOAD_BINDING_LIMIT = 200
 _LOCATION_FACT_BYTE_LIMIT = 80_000
 _RELATION_FACT_BYTE_LIMIT = 120_000
@@ -233,15 +234,37 @@ def _application_data_write_targets(operand: str) -> list[str] | None:
     transfer_targets = _application_data_transfer_targets(operand)
     if transfer_targets is not None:
         return transfer_targets
+    mutation = _application_in_place_mutation(operand)
+    return list(mutation["writeDevices"]) if mutation is not None else None
+
+
+def _application_in_place_mutation(operand: str) -> dict[str, Any] | None:
+    """Return the bounded direct-D semantics independently verified by the Host."""
+
     parts = [part.strip().upper() for part in re.split(r"[,\s]+", operand) if part.strip()]
     width_words = (
         _IN_PLACE_MUTATION_WIDTH_WORDS.get(parts[0]) if len(parts) == 2 else None
     )
-    return (
-        _direct_data_register_span(parts[1], width_words)
-        if width_words is not None
-        else None
-    )
+    if width_words is None:
+        return None
+    target_devices = _direct_data_register_span(parts[1], width_words)
+    if target_devices is None:
+        return None
+    base = parts[0].removesuffix("P")
+    return {
+        "mnemonic": parts[0],
+        "operation": (
+            "decrement_in_place" if "DEC" in base else "increment_in_place"
+        ),
+        "execution": "rising_edge" if parts[0].endswith("P") else "scan",
+        "dataType": (
+            f"{'unsigned' if base.endswith('U') else 'signed'}_{width_words * 16}_bit"
+        ),
+        "target": parts[1],
+        "readDevices": target_devices,
+        "writeDevices": target_devices,
+        "widthWords": width_words,
+    }
 
 
 def _action_target(action: str, operand: Any) -> str | None:
@@ -3466,6 +3489,52 @@ def build_structural_evidence_contract(
     return builder(result) if builder is not None else None
 
 
+def state_model_context(result: Any) -> dict[str, Any] | None:
+    """Project static meaning after the same raw result produced a valid receipt."""
+
+    raw_name = "program.state_model"
+    envelope = _validated_result(result, raw_name)
+    model = _mapping(envelope.get("state_model"), "state model")
+    projected: list[dict[str, Any]] = []
+    for action_value in _items(model.get("actions"), "state model actions"):
+        action = _mapping(action_value, "state model action")
+        if action.get("record_kind") != "APPLICATION":
+            continue
+        raw_value = _text(
+            action.get("raw_value"),
+            "state model application operand",
+            maximum=4_000,
+        )
+        semantics = _application_in_place_mutation(raw_value)
+        if semantics is None:
+            continue
+        expected_metadata = {
+            "mnemonic": semantics["mnemonic"],
+            "operation": semantics["operation"],
+            "execution": semantics["execution"],
+            "data_type": semantics["dataType"],
+            "target": semantics["target"],
+            "read_devices": semantics["readDevices"],
+            "write_devices": semantics["writeDevices"],
+            "width_words": semantics["widthWords"],
+        }
+        metadata = _mapping(
+            action.get("in_place_mutation"),
+            "state model in-place mutation",
+        )
+        if dict(metadata) != expected_metadata:
+            raise MCPToolError("state model in-place mutation semantics are inconsistent")
+        projected.append(semantics)
+
+    if not projected:
+        return None
+    return {
+        "inPlaceMutations": projected[:_MODEL_CONTEXT_ITEM_LIMIT],
+        "totalCount": len(projected),
+        "truncated": len(projected) > _MODEL_CONTEXT_ITEM_LIMIT,
+    }
+
+
 def _validate_location_fact(value: Any) -> dict[str, Any]:
     fact = _mapping(value, "structural location fact")
     allowed = {
@@ -4182,6 +4251,7 @@ __all__ = [
     "location_membership_value",
     "relation_membership_value",
     "structure_membership_value",
+    "state_model_context",
     "structural_observation_statement",
     "validate_structural_evidence_contract",
 ]

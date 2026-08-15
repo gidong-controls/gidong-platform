@@ -6,12 +6,12 @@
 ## 저장소와 브랜치
 
 - `gidong-platform`: `dev` (이 문서를 포함한 commit)
-- `gidong-agent`: `dev` @ `5343130fe9d3c805ec365f54c8a524baf4069d5c`
+- `gidong-agent`: `dev` @ `e4b6b367cd61bffe9b04f89a152cad1560b42a4e`
 - `gidong-plc-mcp`: `dev` @ `0aae83b2ec8d55616255988452daa4985136afbc`
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
 2026-08-16 세션은 GitHub 443 연결이 차단돼 최종 push를 수행하지 못했다. Platform은
-`origin/dev`보다 3 commit, Agent와 MCP는 각각 1 commit 앞서 있다. 네트워크 가능한
+`origin/dev`보다 4 commit, Agent는 2 commit, MCP는 1 commit 앞서 있다. 네트워크 가능한
 세션에서 세 저장소의 `git push origin dev`를 먼저 실행한다.
 
 ## 현재 제품 경계
@@ -50,6 +50,10 @@
   rising-edge 실행이고 double-word variant는 두 연속 D word를 read/write한다. Condition
   causal impact, state/behavior inventory와 Host evidence 검증이 같은 의미 경계를 공유하며
   non-D, indirect, 추가 operand 형식은 계속 `partial`이다.
+- Structural raw 결과를 줄일 때 위 명령의 operation/execution/data type/read-write width가
+  모델 입력에서 사라지던 경계를 닫았다. Host가 동일 raw state model을 독립 재검증해
+  receipt digest에 결속된 bounded `modelContext`만 Agent에 전달하며, Agent는 이를
+  observation이 아닌 inference에만 사용한다. HTTP/DB/evidence/event contract는 불변이다.
 - 이 리팩터링에서 새 테스트는 추가하지 않았다. 임시 C# compile executable 네 개와
   잘못 생성된 빈 파일 하나를 제거했다.
 
@@ -57,6 +61,7 @@
 
 - Agent, MCP, Host, Launcher, packaging, Python contract compile/import 성공
 - Host/Agent/MCP 변경 Python에 Ruff `F,E9,I` 성공
+- 실제 Host→sidecar wire projection에서 16개 명령의 exact semantics와 변조 거부 확인
 - TypeScript contracts build 성공
 - Web TypeScript + Vite production build 성공
 - HTTP contract guard 성공

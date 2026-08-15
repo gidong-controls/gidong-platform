@@ -48,6 +48,7 @@ from .models import Message, MessageRole
 from .structural_evidence import (
     STRUCTURAL_ANALYSIS_EVIDENCE_SCHEMA,
     STRUCTURAL_ANALYSIS_TOOL_COVERAGE,
+    state_model_context,
     structural_observation_statement,
     validate_structural_evidence_contract,
 )
@@ -86,7 +87,9 @@ _STRUCTURAL_TOOL_RESULT_FRAME_MAX_BYTES = min(
 _STRUCTURAL_TOOL_RESULT_GUIDANCE = (
     "The raw MCP result was intentionally omitted. Use "
     "_controlstudio_evidence.receipt as the authoritative source for canonical "
-    "structural facts, scope, coverage, and evidence citation."
+    "structural facts, scope, coverage, and evidence citation. modelContext, when "
+    "present, is a bounded Host-revalidated interpretation for inferences only; "
+    "do not copy it into observations."
 )
 _OUTPUT_CONTRACT_STAGES = frozenset(
     {
@@ -790,8 +793,9 @@ class SubprocessAgentClient:
                     request_id=request.request_id,
                     tool_alias=request.tool_name,
                     evidence_ref=evidence_ref,
+                    raw_result=value,
                 )
-            except AgentProtocolError:
+            except (AgentProtocolError, MCPToolError):
                 logger.warning(
                     "Host withheld an invalid structural-analysis Agent result frame"
                 )
@@ -1094,6 +1098,7 @@ def _structural_tool_result_payload(
     request_id: str,
     tool_alias: str,
     evidence_ref: Mapping[str, Any] | None,
+    raw_result: Any,
 ) -> dict[str, Any]:
     """Project a structural result to its bounded Host-authored receipt."""
 
@@ -1173,17 +1178,28 @@ def _structural_tool_result_payload(
     ):
         raise AgentProtocolError("Structural analysis evidence receipt is invalid")
 
+    result: dict[str, Any] = {
+        "schema": _STRUCTURAL_TOOL_RESULT_PROJECTION_SCHEMA,
+        "toolName": expected_tool_name,
+        "rawResultOmitted": True,
+        "authoritativeResultPath": "_controlstudio_evidence.receipt",
+        "guidance": _STRUCTURAL_TOOL_RESULT_GUIDANCE,
+        "_controlstudio_evidence": safe_evidence_ref,
+    }
+    model_context = (
+        state_model_context(raw_result)
+        if expected_tool_name == "program.state_model"
+        else None
+    )
+    if model_context is not None:
+        result["modelContext"] = {
+            "sourceReceiptDigest": receipt["receiptDigest"],
+            **model_context,
+        }
     payload = {
         "request_id": request_id,
         "status": "completed",
-        "result": {
-            "schema": _STRUCTURAL_TOOL_RESULT_PROJECTION_SCHEMA,
-            "toolName": expected_tool_name,
-            "rawResultOmitted": True,
-            "authoritativeResultPath": "_controlstudio_evidence.receipt",
-            "guidance": _STRUCTURAL_TOOL_RESULT_GUIDANCE,
-            "_controlstudio_evidence": safe_evidence_ref,
-        },
+        "result": result,
     }
     assert_agent_safe_payload(payload)
     encoded = encode_message("tool.result", payload)
