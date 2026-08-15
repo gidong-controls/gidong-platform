@@ -14,6 +14,7 @@ $sessionToken = $null
 $csrfToken = $null
 $hostPid = $null
 $launcherProcess = $null
+$ownsHost = $false
 
 function Get-DevelopmentListenerPid {
     $netstat = Join-Path $env:SystemRoot 'System32\netstat.exe'
@@ -29,24 +30,24 @@ function Get-DevelopmentListenerPid {
     return $null
 }
 
-if (Get-DevelopmentListenerPid) {
-    throw 'Development smoke requires port 8767 to be free before it starts.'
-}
-
 try {
-    $launcherProcess = Start-Process `
-        -FilePath $systemPowerShell `
-        -ArgumentList @(
-            '-NoLogo',
-            '-NoProfile',
-            '-ExecutionPolicy',
-            'Bypass',
-            '-File',
-            $start,
-            '-NoOpen'
-        ) `
-        -WindowStyle Hidden `
-        -PassThru
+    $hostPid = Get-DevelopmentListenerPid
+    if ($null -eq $hostPid) {
+        $launcherProcess = Start-Process `
+            -FilePath $systemPowerShell `
+            -ArgumentList @(
+                '-NoLogo',
+                '-NoProfile',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-File',
+                $start,
+                '-NoOpen'
+            ) `
+            -WindowStyle Hidden `
+            -PassThru
+        $ownsHost = $true
+    }
 
     $startupDeadline = [DateTimeOffset]::UtcNow.AddSeconds(120)
     $health = $null
@@ -56,7 +57,11 @@ try {
             break
         }
         catch {
-            if ($launcherProcess.HasExited -and $launcherProcess.ExitCode -ne 0) {
+            if (
+                $null -ne $launcherProcess -and
+                $launcherProcess.HasExited -and
+                $launcherProcess.ExitCode -ne 0
+            ) {
                 throw "Development launcher failed with exit code $($launcherProcess.ExitCode)."
             }
             Start-Sleep -Milliseconds 250
@@ -66,10 +71,14 @@ try {
         throw 'Development Host did not become healthy within 120 seconds.'
     }
 
-    $hostPid = Get-DevelopmentListenerPid
-    if ($null -eq $hostPid) {
+    $readyHostPid = Get-DevelopmentListenerPid
+    if ($null -eq $readyHostPid) {
         throw 'Development Host health was ready without the expected loopback listener.'
     }
+    if ($null -ne $hostPid -and $readyHostPid -ne $hostPid) {
+        throw 'Development Host listener changed while the smoke check was starting.'
+    }
+    $hostPid = $readyHostPid
     if (
         $health.status -ne 'ready' -or
         $health.database -ne 'ready' -or
@@ -152,7 +161,7 @@ try {
     } | ConvertTo-Json -Depth 3
 }
 finally {
-    if (-not $KeepRunning) {
+    if ($ownsHost -and -not $KeepRunning) {
         if ($sessionToken -and $csrfToken) {
             try {
                 Invoke-RestMethod `

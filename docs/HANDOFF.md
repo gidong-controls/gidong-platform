@@ -60,11 +60,14 @@ Windows UAC 승인 화면을 통과할 수 없어 Host 시작 전에 중단됐�
 
 1. 보이는 PowerShell에서 `gidong-platform\scripts\Start-ControlStudio-Development.ps1` 실행
 2. Windows UAC 승인
-3. UI에서 Development/Debug 표면과 `nemotron-3-ultra` 연결 확인
-4. 실제 working-copy XG5000 project를 attach하고 Agent에 read/analyze 요청
-5. tool started/completed/failed activity와 evidence가 UI에 보이는지 확인
-6. 승인된 작은 MNE 변경 한 건을 candidate → approval → apply → check/save/reopen까지 실행
-7. XG-SIM scope를 선택했다면 receipt를 확인한 뒤 keep 또는 revert까지 완료
+3. `scripts\Test-ControlStudio-Development.cmd -RequireAgent` 실행. 이 smoke는 기존
+   Development Host를 같은 launcher token으로 검증하고 자신이 시작하지 않은 Host는
+   종료하지 않는다.
+4. UI에서 Development/Debug 표면과 `nemotron-3-ultra` 연결 확인
+5. 실제 working-copy XG5000 project를 attach하고 Agent에 read/analyze 요청
+6. tool started/completed/failed activity와 evidence가 UI에 보이는지 확인
+7. 승인된 작은 MNE 변경 한 건을 candidate → approval → apply → check/save/reopen까지 실행
+8. XG-SIM scope를 선택했다면 receipt를 확인한 뒤 keep 또는 revert까지 완료
 
 실기 증거 없이 native/XG-SIM/PLC 성공을 문서 상태만으로 선언하지 않는다.
 

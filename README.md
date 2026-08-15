@@ -56,6 +56,12 @@ Windows의 사용자별 PowerShell 실행 정책을 변경하지 않고, 저장�
 .\scripts\Test-ControlStudio-Development.cmd -RequireAgent
 ```
 
+이미 8767의 Development Host가 실행 중이면 smoke 명령은 같은 launcher token으로
+그 Host를 검증하고 종료하지 않는다. XG5000 때문에 UAC 승인이 필요한 장비에서는 먼저
+보이는 창에서 `Start-ControlStudio-Development.cmd -NoOpen`을 실행해 승인한 뒤 smoke
+명령을 실행한다. 실행 중인 Host가 없을 때만 smoke가 Host를 시작하고, 그 경우에만 검사
+후 자신이 시작한 Host를 종료한다.
+
 Beta는 source checkout을 beta라고 표시해 실행하지 않는다. 세 immutable artifact와
 public contracts wheel을 `assemble_release.py --channel beta`로 조립하고 생성된
 `ControlStudio Beta` 설치본을 실행해야 한다. 실제 채널 권위는 branch 이름이 아니라
