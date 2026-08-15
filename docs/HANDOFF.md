@@ -10,8 +10,8 @@
 - `gidong-plc-mcp`: `dev` @ `7e9cbf7d586c1e0f308833a0787b81656644b7c6`
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
-2026-08-16 05:27 KST에 세 저장소 push를 다시 시도했지만 GitHub 443 연결 거부로 실패했다. 이 문서
-commit 뒤 Platform은 `origin/dev`보다 10 commit, Agent는 5 commit, MCP는 4 commit
+2026-08-16 05:44 KST에 Platform push를 다시 시도했지만 GitHub 443 연결 거부로 실패했다. 이 문서
+commit 기준 Platform은 `origin/dev`보다 11 commit, Agent는 5 commit, MCP는 4 commit
 앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
 먼저 실행한다.
 
@@ -78,6 +78,11 @@ commit 뒤 Platform은 `origin/dev`보다 10 commit, Agent는 5 commit, MCP는 4
 - Windows launcher가 소유한 Host stdout/stderr를 UTF-8로 고정했다. CP949와 UTF-8이 한
   startup log에 섞여 모델·Agent 실패 사유가 깨지던 실제 Development 진단 문제만
   제거했으며 실행 상태나 공개 계약은 바꾸지 않았다.
+- Development 자동 모델 검사에서 이미 분류된 실패 사유를 로그에서 버리지 않고 기존
+  `recent_model_verification` 한 곳에 성공·실패 모두 보존한다. 현재 저장 모델과 cache key가
+  정확히 일치할 때만 기존 `status.agent.detail`과 `host.status` 이벤트로 투영하므로 새 상태,
+  DB/API/event schema 또는 Web 분기를 만들지 않았다. 실패 결과는 설정 저장의 성공 cache로
+  재사용하지 않아 재검사를 막지 않는다.
 - 이 리팩터링에서 새 테스트는 추가하지 않았다. 임시 C# compile executable 네 개와
   잘못 생성된 빈 파일 하나를 제거했다.
 - 종료 자체 리뷰에서 별도 DB migration backup/recovery 구현은 새 동작·상태·파일을
@@ -116,15 +121,20 @@ commit 뒤 Platform은 `origin/dev`보다 10 commit, Agent는 5 commit, MCP는 4
 - 2026-08-16 종료 검증에서 Agent/Host/MCP 대상 Python compile과 Ruff `F,E9,I`,
   TypeScript contracts build, Web typecheck/Vite production build, 세 저장소 diff-check를
   각각 한 번 통과. `origin/dev..HEAD`에 새로 추가·수정된 test 파일은 0개
+- 실제 Development Host를 workspace 격리 data root로 재기동해 Host/DB/static UI/MCP
+  `ready`, MCP 67개·Agent-visible 23개 도구를 확인. private model socket이 정책상 차단된
+  상태에서 API와 인앱 브라우저 AGENT DEBUG가 모두 generic 문구 대신 정확한 정제 사유
+  `모델 엔드포인트에 연결할 수 없습니다.`를 표시하는지 확인
 
 ## 아직 실기 검증이 필요한 것
 
 이 Windows 장비에는 XG5000이 설치돼 있고 vendor integrity가 필요하다. 2026-08-16의
-격리 smoke는 쓰기 가능한 임시 Development data root에서 Host/DB/static UI/MCP까지 실제
+격리 smoke는 쓰기 가능한 workspace Development data root에서 Host/DB/static UI/MCP까지 실제
 기동했다. Agent는 코드 실패가 아니라 Codex 격리 정책이 configured private model endpoint
 `100.65.0.1:8978` 소켓을 차단해 unavailable이었고 `/models`와 최소 completion도 같은
-소켓 거부를 재현했다. launcher UI root 요청은 도달했지만 격리 계정이 Windows app window
-ownership을 열람하지 못해 시각 UI 검증은 완료되지 않았다. 임시 Host는 검증 뒤 종료했다.
+소켓 거부를 재현했다. 인앱 브라우저로 Development/Debug 화면과 정제된 Agent 실패 사유는
+직접 확인했지만 실제 Agent tool started/completed 흐름과 XG5000 창 제어는 사용자 세션에서
+이어가야 한다.
 실제 사용자 세션에서는 아래 절차로 다시 시작한다.
 
 다음 세션의 첫 작업은 아래 한 번의 수직 검증이다.

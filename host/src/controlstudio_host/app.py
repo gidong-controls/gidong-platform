@@ -3672,6 +3672,7 @@ def create_app(
         )
 
         async def verify_development_model() -> None:
+            nonlocal recent_model_verification
             if config.release_channel != "development":
                 return
             settings = model_repository.get()
@@ -3691,6 +3692,10 @@ def create_app(
                     type(exc).__name__,
                 )
                 return
+            recent_model_verification = (
+                _model_capability_cache_key(settings),
+                result,
+            )
             if not _required_model_capabilities_ready(result):
                 logger.warning(
                     "Development model verification incomplete model=%s "
@@ -3703,6 +3708,10 @@ def create_app(
                     result.tool_result_continuation,
                     result.structured_output,
                     result.message,
+                )
+                store.append_event(
+                    event_type="host.status",
+                    payload=current_status_v1().model_dump(mode="json", by_alias=True),
                 )
                 return
             model_repository.save(
@@ -3940,7 +3949,17 @@ def create_app(
             agent_detail = "OpenAI 호환 모델 연결을 설정해 주세요."
         elif model_connection.capability_verified_at is None:
             agent_state = "unavailable"
-            agent_detail = "저장된 모델 연결의 에이전트 기능 검사가 필요합니다."
+            if (
+                recent_model_verification is not None
+                and recent_model_verification[0]
+                == _model_capability_cache_key(model_connection)
+                and not _required_model_capabilities_ready(
+                    recent_model_verification[1]
+                )
+            ):
+                agent_detail = recent_model_verification[1].message
+            else:
+                agent_detail = "저장된 모델 연결의 에이전트 기능 검사가 필요합니다."
         else:
             agent_state = "ready"
             agent_detail = (
@@ -7610,6 +7629,7 @@ def create_app(
             recent_model_verification[1]
             if recent_model_verification is not None
             and recent_model_verification[0] == cache_key
+            and _required_model_capabilities_ready(recent_model_verification[1])
             and datetime.now(timezone.utc) - recent_model_verification[1].tested_at
             <= timedelta(minutes=5)
             else None
@@ -7685,11 +7705,10 @@ def create_app(
                     "model name, TLS certificate, and tool-calling support"
                 ),
             ) from exc
-        if _required_model_capabilities_ready(result):
-            recent_model_verification = (
-                _model_capability_cache_key(candidate),
-                result,
-            )
+        recent_model_verification = (
+            _model_capability_cache_key(candidate),
+            result,
+        )
         return ModelCapabilityResultV1(
             success=result.success,
             tested_at=result.tested_at,
