@@ -21,6 +21,7 @@ from .mcp_client import MCPToolError
 STRUCTURAL_ANALYSIS_EVIDENCE_SCHEMA = "controlstudio-structural-analysis-evidence/v1"
 STRUCTURAL_ANALYSIS_TOOL_COVERAGE: dict[str, str] = {
     "project.structure_index": "project_structure",
+    "workspace.structure_index": "project_structure",
     "project.search": "programs",
     "program.logic_graph": "logic_graph",
     "program.state_model": "state_model",
@@ -28,6 +29,18 @@ STRUCTURAL_ANALYSIS_TOOL_COVERAGE: dict[str, str] = {
     "device.causal_impact": "causal_paths",
     "project.behavior_report": "programs",
 }
+
+
+def structural_receipt_tool_name(tool_name: str) -> str:
+    """Return the durable structural receipt tool for an Agent-visible tool."""
+
+    return (
+        "project.structure_index"
+        if tool_name == "workspace.structure_index"
+        else tool_name
+    )
+
+
 AMBIGUOUS_STRUCTURAL_SCOPE_LIMITATION = (
     "Coverage counts are omitted because selected structural receipts overlap or "
     "have an ambiguous scope."
@@ -2800,6 +2813,7 @@ def _structure_index_contract(
     result: Any,
     *,
     expected_session_identity: Mapping[str, Any] | None,
+    allow_workspace_static_identity: bool = False,
 ) -> dict[str, Any]:
     index = _exact_raw_mapping(
         result,
@@ -2852,8 +2866,23 @@ def _structure_index_contract(
         },
     )
     _raw_text(binding["session_id"], "project structure session id", maximum=500, allow_empty=False)
-    _raw_integer(binding["pid"], "project structure process id", minimum=1)
-    _raw_integer(binding["hwnd"], "project structure window handle", minimum=1)
+    expected_workspace_static = (
+        allow_workspace_static_identity
+        and isinstance(expected_session_identity, Mapping)
+        and set(expected_session_identity)
+        == {"session_id", "pid", "hwnd", "project_path", "project_hash"}
+        and isinstance(expected_session_identity.get("session_id"), str)
+        and expected_session_identity["session_id"].startswith("workspace:")
+        and expected_session_identity.get("pid") == 0
+        and expected_session_identity.get("hwnd") == 0
+    )
+    identity_minimum = 0 if expected_workspace_static else 1
+    _raw_integer(
+        binding["pid"], "project structure process id", minimum=identity_minimum
+    )
+    _raw_integer(
+        binding["hwnd"], "project structure window handle", minimum=identity_minimum
+    )
     project_path = _raw_text(
         binding["project_path"],
         "project structure path",
@@ -3543,6 +3572,7 @@ def build_structural_evidence_contract(
     result: Any,
     *,
     expected_session_identity: Mapping[str, Any] | None = None,
+    allow_workspace_static_identity: bool = False,
 ) -> dict[str, Any] | None:
     """Build a common bounded receipt for the structural analysis tools."""
 
@@ -3550,6 +3580,7 @@ def build_structural_evidence_contract(
         return _structure_index_contract(
             result,
             expected_session_identity=expected_session_identity,
+            allow_workspace_static_identity=allow_workspace_static_identity,
         )
     builders = {
         "project.search": _project_search_contract,
@@ -4418,6 +4449,7 @@ __all__ = [
     "relation_membership_value",
     "structure_membership_value",
     "state_model_context",
+    "structural_receipt_tool_name",
     "structural_observation_statement",
     "validate_structural_evidence_contract",
 ]

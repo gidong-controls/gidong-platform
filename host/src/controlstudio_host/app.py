@@ -241,6 +241,7 @@ from .structural_evidence import (
     location_membership_value,
     relation_membership_value,
     structural_observation_statement,
+    structural_receipt_tool_name,
     structure_membership_value,
     validate_structural_evidence_contract,
 )
@@ -310,6 +311,12 @@ _AGENT_TOOL_EVIDENCE: dict[str, tuple[str, str, str, str]] = {
         "Workspace hardware context",
         "Observed CPU, timer-area, and I/O configuration from the bound working copy.",
         "confirmed",
+    ),
+    "workspace.structure_index": (
+        "artifact",
+        "Workspace file structure index",
+        "Observed a bounded SHA-bound structure inventory from the selected working copy; it is not live runtime, wiring, or PLC evidence.",
+        "supported",
     ),
     "project.structure_index": (
         "artifact",
@@ -478,7 +485,6 @@ _CHANGE_COVERAGE_MUST_BE_CONFIRMED = frozenset(
         "rollback",
     }
 )
-
 _MNE_FULL_PROGRAM_REQUIRED_EVIDENCE_TOOLS = frozenset(
     {
         "project.structure_index",
@@ -2782,6 +2788,10 @@ def create_app(
                 for evidence_ref in item.evidence_refs
                 if evidence_ref in evidence_by_id
             }
+            if "workspace.structure_index" in observed_tools:
+                raise ChangeExecutionPreconditionError(
+                    "static workspace file evidence cannot satisfy change-plan coverage"
+                )
             if not observed_tools.intersection(allowed_tools):
                 raise ChangeExecutionPreconditionError(
                     f"change-plan coverage {item.area} has no applicable "
@@ -2852,6 +2862,10 @@ def create_app(
                 str(evidence_by_id[evidence_ref].get("toolName") or "")
                 for evidence_ref in item.evidence_refs
             }
+            if "workspace.structure_index" in observed_tools:
+                raise ChangeExecutionPreconditionError(
+                    "static workspace file evidence cannot satisfy MNE coverage"
+                )
             allowed_tools = _MNE_COVERAGE_ALLOWED_TOOLS[item.area]
             if not observed_tools.intersection(allowed_tools):
                 raise ChangeExecutionPreconditionError(
@@ -2905,7 +2919,7 @@ def create_app(
                 try:
                     receipt = validate_structural_evidence_contract(
                         evidence.get("receipt"),
-                        expected_tool=tool_name,
+                        expected_tool=structural_receipt_tool_name(tool_name),
                     )
                 except (TypeError, ValueError, MCPToolError) as exc:
                     raise ChangeExecutionPreconditionError(
@@ -3226,7 +3240,7 @@ def create_app(
                 try:
                     receipt = validate_structural_evidence_contract(
                         evidence.get("receipt"),
-                        expected_tool=tool_name,
+                        expected_tool=structural_receipt_tool_name(tool_name),
                     )
                 except (TypeError, ValueError, MCPToolError) as exc:
                     raise AgentOutputContractError(
@@ -8467,7 +8481,9 @@ def create_app(
         try:
             receipt = validate_structural_evidence_contract(
                 evidence[0].get("receipt"),
-                expected_tool=str(evidence[0]["toolName"]),
+                expected_tool=structural_receipt_tool_name(
+                    str(evidence[0]["toolName"])
+                ),
             )
         except (TypeError, ValueError, MCPToolError) as exc:
             raise HTTPException(

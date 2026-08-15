@@ -49,6 +49,7 @@ from .structural_evidence import (
     canonical_digest,
     state_model_context,
     structural_observation_statement,
+    structural_receipt_tool_name,
     validate_structural_evidence_contract,
 )
 
@@ -1092,9 +1093,10 @@ def _structural_tool_result_payload(
 ) -> dict[str, Any]:
     """Project a structural result to its bounded Host-authored receipt."""
 
-    expected_tool_name = _STRUCTURAL_ANALYSIS_TOOL_ALIASES.get(tool_alias)
-    if expected_tool_name is None or not isinstance(evidence_ref, Mapping):
+    evidence_tool_name = _STRUCTURAL_ANALYSIS_TOOL_ALIASES.get(tool_alias)
+    if evidence_tool_name is None or not isinstance(evidence_ref, Mapping):
         raise AgentProtocolError("Structural analysis result has no Host evidence receipt")
+    expected_tool_name = structural_receipt_tool_name(evidence_tool_name)
     receipt = evidence_ref.get("receipt")
     try:
         validated_receipt = validate_structural_evidence_contract(

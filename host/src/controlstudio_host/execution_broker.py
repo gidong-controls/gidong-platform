@@ -73,6 +73,12 @@ _WORKSPACE_HARDWARE_CONTEXT_FIELDS = {
     "hardware_context",
     "receipt_digest",
 }
+_WORKSPACE_STRUCTURE_INDEX_FIELDS = {
+    "schema",
+    "workspace_binding",
+    "structure_index",
+    "receipt_digest",
+}
 
 
 def _canonical_digest(value: Any) -> str:
@@ -86,10 +92,27 @@ def _canonical_digest(value: Any) -> str:
     ).hexdigest()
 
 
+def _is_sha256(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(
+        character in "0123456789abcdef" for character in value
+    )
+
+
+def _expected_workspace_identity(
+    value: Mapping[str, Any] | None,
+) -> tuple[str, str]:
+    workspace_id = value.get("workspace_id") if isinstance(value, Mapping) else None
+    revision_id = value.get("revision_id") if isinstance(value, Mapping) else None
+    if not isinstance(workspace_id, str) or not isinstance(revision_id, str):
+        raise MCPToolError("workspace target is not bound")
+    return workspace_id, revision_id
+
+
 def validate_workspace_compare_result(
     result: Any,
     *,
     expected_workspace_id: str,
+    expected_revision_id: str | None = None,
 ) -> LocalWorkspaceCompareV1:
     if not isinstance(result, Mapping):
         raise MCPToolError("workspace comparison returned no structured result")
@@ -115,6 +138,11 @@ def validate_workspace_compare_result(
         raise MCPToolError("workspace comparison contract is invalid") from exc
     if comparison.workspace_id != expected_workspace_id:
         raise MCPToolError("workspace comparison target changed")
+    if (
+        expected_revision_id is not None
+        and comparison.revision_id != expected_revision_id
+    ):
+        raise MCPToolError("workspace comparison revision changed")
     return comparison
 
 
@@ -268,6 +296,11 @@ class MCPExecutionBroker:
                 result,
                 expected_session_identity=expected_session_identity,
             )
+        if raw_name == "workspace.structure_index":
+            return cls._workspace_structure_index_evidence_contract(
+                result,
+                expected_session_identity=expected_session_identity,
+            )
         if raw_name == "program.change_target_analysis":
             return cls._change_target_evidence_contract(result)
         if raw_name in {
@@ -290,16 +323,13 @@ class MCPExecutionBroker:
         *,
         expected_session_identity: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
-        expected_workspace_id = (
-            expected_session_identity.get("workspace_id")
-            if isinstance(expected_session_identity, Mapping)
-            else None
+        expected_workspace_id, expected_revision_id = _expected_workspace_identity(
+            expected_session_identity
         )
-        if not isinstance(expected_workspace_id, str):
-            raise MCPToolError("workspace comparison target is not bound")
         comparison = validate_workspace_compare_result(
             result,
             expected_workspace_id=expected_workspace_id,
+            expected_revision_id=expected_revision_id,
         )
         sections = comparison.structure.sections if comparison.structure is not None else {}
         contract = {
@@ -400,21 +430,9 @@ class MCPExecutionBroker:
         *,
         expected_session_identity: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
-        expected_workspace_id = (
-            expected_session_identity.get("workspace_id")
-            if isinstance(expected_session_identity, Mapping)
-            else None
+        expected_workspace_id, expected_revision_id = _expected_workspace_identity(
+            expected_session_identity
         )
-        expected_revision_id = (
-            expected_session_identity.get("revision_id")
-            if isinstance(expected_session_identity, Mapping)
-            else None
-        )
-        if not isinstance(expected_workspace_id, str) or not isinstance(
-            expected_revision_id,
-            str,
-        ):
-            raise MCPToolError("workspace hardware target is not bound")
         if not isinstance(result, Mapping) or set(result) != (
             _WORKSPACE_HARDWARE_CONTEXT_FIELDS | {"operation", "schema_version"}
         ):
@@ -433,12 +451,7 @@ class MCPExecutionBroker:
             or result.get("schema") != "xg5000.workspace-hardware-context/1.0"
             or workspace_id != expected_workspace_id
             or revision_id != expected_revision_id
-            or not all(
-                isinstance(value, str)
-                and len(value) == 64
-                and all(character in "0123456789abcdef" for character in value)
-                for value in (source_sha256, working_sha256)
-            )
+            or not all(_is_sha256(value) for value in (source_sha256, working_sha256))
             or result.get("receipt_digest") != cls._canonical_digest(unsigned)
         ):
             raise MCPToolError("workspace hardware context binding is invalid")
@@ -481,6 +494,64 @@ class MCPExecutionBroker:
             raise MCPToolError("workspace hardware source kind is invalid")
         contract["receiptDigest"] = cls._canonical_digest(contract)
         return contract
+
+    @classmethod
+    def _workspace_structure_index_evidence_contract(
+        cls,
+        result: Any,
+        *,
+        expected_session_identity: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        expected_workspace_id, expected_revision_id = _expected_workspace_identity(
+            expected_session_identity
+        )
+        if not isinstance(result, Mapping) or set(result) != (
+            _WORKSPACE_STRUCTURE_INDEX_FIELDS | {"operation", "schema_version"}
+        ):
+            raise MCPToolError("workspace structure index shape mismatched")
+        unsigned = {
+            name: result[name]
+            for name in _WORKSPACE_STRUCTURE_INDEX_FIELDS
+            if name != "receipt_digest"
+        }
+        binding = result.get("workspace_binding")
+        if not isinstance(binding, Mapping) or set(binding) != {
+            "workspace_id",
+            "revision_id",
+            "source_sha256",
+            "working_path",
+            "working_sha256",
+        }:
+            raise MCPToolError("workspace structure binding is invalid")
+        workspace_id = binding.get("workspace_id")
+        revision_id = binding.get("revision_id")
+        source_sha256 = binding.get("source_sha256")
+        working_path = binding.get("working_path")
+        working_sha256 = binding.get("working_sha256")
+        if (
+            result.get("operation") != "workspace.structure_index"
+            or result.get("schema") != "xg5000.workspace-structure-index/1.0"
+            or workspace_id != expected_workspace_id
+            or revision_id != expected_revision_id
+            or not isinstance(working_path, str)
+            or not working_path.casefold().endswith(".xgwx")
+            or not all(_is_sha256(value) for value in (source_sha256, working_sha256))
+            or result.get("receipt_digest") != cls._canonical_digest(unsigned)
+        ):
+            raise MCPToolError("workspace structure binding is invalid")
+        structure_index = result.get("structure_index")
+        return build_structural_evidence_contract(
+            "project.structure_index",
+            structure_index,
+            expected_session_identity={
+                "session_id": f"workspace:{workspace_id}:{revision_id}",
+                "pid": 0,
+                "hwnd": 0,
+                "project_path": working_path,
+                "project_hash": working_sha256,
+            },
+            allow_workspace_static_identity=True,
+        )
 
     @classmethod
     def _change_target_evidence_contract(

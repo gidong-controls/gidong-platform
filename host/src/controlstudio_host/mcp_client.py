@@ -70,6 +70,7 @@ AGENT_TOOL_NAMES: dict[str, str] = {
     "trace_ls_controller_devices": "controller.ls.trace",
     "compare_workspace_source": "workspace.compare",
     "inspect_workspace_hardware_context": "workspace.hardware_context",
+    "inspect_workspace_structure": "workspace.structure_index",
 }
 AGENT_CONTROLLER_MCP_TOOLS = frozenset(
     {
@@ -149,6 +150,7 @@ SESSION_IDENTITY_FIELDS = ("session_id", "pid", "hwnd", "project_path", "project
 AGENT_TOOL_REQUIRED_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
     "workspace.compare": ("workspace_id",),
     "workspace.hardware_context": ("workspace_id", "revision_id"),
+    "workspace.structure_index": ("workspace_id", "revision_id"),
     "xg5000.session_status": ("session_id",),
     "project.list_programs": SESSION_IDENTITY_FIELDS,
     "program.focus": SESSION_IDENTITY_FIELDS,

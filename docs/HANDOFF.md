@@ -6,13 +6,13 @@
 ## 저장소와 브랜치
 
 - `gidong-platform`: `dev` (이 문서를 포함한 commit)
-- `gidong-agent`: `dev` @ `a100122` (`Teach agent static workspace hardware limits`)
-- `gidong-plc-mcp`: `dev` @ `74b726b` (`Expose static workspace hardware context`)
+- `gidong-agent`: `dev` @ `f3eac1e` (`Teach agent static workspace structure limits`)
+- `gidong-plc-mcp`: `dev` @ `6aa174f` (`Expose static workspace structure index`)
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
-2026-08-16 07:54 KST에 세 저장소의 최신 `dev` push를 다시 시도했지만 모두 GitHub 443
-연결 거부로 실패했다. 이 문서 commit 기준 Platform은 `origin/dev`보다 18 commit,
-Agent는 7 commit, MCP는 7 commit
+2026-08-16 08:37 KST에 세 저장소의 최신 `dev` push를 다시 시도했지만 모두 GitHub 443
+연결 거부로 실패했다. 이 문서 commit 기준 Platform은 `origin/dev`보다 19 commit,
+Agent는 8 commit, MCP는 8 commit
 앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
 먼저 실행한다.
 
@@ -97,10 +97,10 @@ Agent는 7 commit, MCP는 7 commit
   잘못 생성된 빈 파일 하나를 제거했다.
 ## 마지막 수직 연결
 
-- 보존된 local working copy는 이제 XG5000 process가 없어도 기존 `workspace.compare` 한 개만
-  Agent에 노출한다. Host의 workspace-only binding은 `workspace_id`만 주입하며 PID/HWND/path/
-  hash가 필요한 LD·behavior·hardware·mutation 도구는 catalog에서 계속 빠지고 직접 호출도
-  거부된다. 별도 MCP tool이나 DB/API/event schema는 추가하지 않았다.
+- 보존된 local working copy는 XG5000 process가 없어도 `workspace.compare`,
+  `workspace.hardware_context`, `workspace.structure_index` 세 read tool을 Agent에 노출한다.
+  Host의 workspace-only binding은 exact workspace/revision을 숨겨 주입하며 PID/HWND/path/hash가
+  필요한 live LD·behavior·mutation 도구는 catalog에서 계속 빠지고 직접 호출도 거부된다.
 - 동일한 source/working SHA-256도 조기 반환하지 않고 두 path-bound structure index를 만든다.
   파일 동일성은 exact hash로, 부분 구조 inventory는 `partial`로 각각 표현하므로 partial parser를
   LD 의미나 runtime 증거로 오해하지 않는다.
@@ -119,6 +119,11 @@ Agent는 7 commit, MCP는 7 commit
   working SHA, inner context digest를 한 receipt로 결속한다. XG5000 query와 live hardware cache는
   사용하지 않으며 이 evidence는 변경 승인 coverage에 들어가지 않는다. UI Activity에는
   `작업공간 하드웨어 확인`으로 started/completed가 표시된다.
+- 같은 working copy의 기존 `ProjectStructureIndex`도 `workspace.structure_index`로 직접
+  전달한다. 새 parser나 HTTP/DB schema는 없고 프로그램·태스크·심볼·device·module·통신의
+  bounded facts를 기존 structure receipt와 Agent citation validator가 소비한다. top evidence는
+  static tool 이름을 유지해 live 변경 evidence와 구분하고 UI Activity는 `작업공간 구조 분석`으로
+  실행을 표시한다. compare evidence도 conversation에 결속된 revision과 다르면 거부한다.
 
 ## 검증된 것
 
@@ -145,9 +150,9 @@ Agent는 7 commit, MCP는 7 commit
 - TypeScript contracts build 성공
 - Web TypeScript + Vite production build 성공
 - 실제 보존 XGWX(SHA-256 `bee3b1a6e69469c0e1384cb8d9d758fef2f95a92f0cc7ac6486deea941a9a68f`)
-  를 workspace-only compare로 실행해 `identical/partial`, configurations 1, tasks 1,
+  를 workspace-only path로 실행해 `identical/partial`, configurations 1, tasks 1,
   code units 4, symbols 302, devices 495, modules 2, parameters 6, communications 6을 확인.
-  같은 binding에서 `workspace.compare`만 Agent catalog에 남고 `program.read_ld`가 숨겨지는 것도
+  Agent catalog에는 compare/hardware/structure 세 도구만 남고 `program.read_ld`가 숨겨지는 것도
   확인
 - 새 Development Host와 launcher handoff로 인앱 UI를 다시 인증해 header/target proof의
   `오프라인 구조 분석`, exact workspace/revision ID, local chooser의 `구조만 분석` 버튼을 확인
@@ -156,11 +161,15 @@ Agent는 7 commit, MCP는 7 commit
   다음 시작이 marker를 소비해 18/1 preimage부터 다시 19/2로 완료하는 것도 확인
 - 실제 Development data root의 현재 19/2 DB로 최종 Host를 재기동해 Host/DB/static UI/MCP
   `ready`, migration marker·backup directory 미생성을 확인
-- 실제 보존 XGWX의 Host→MCP stdio 경로에서 MCP 68 tools, static Agent tools 2개를 확인했다.
+- 실제 보존 XGWX의 Host→MCP stdio 경로에서 MCP 69 tools, static Agent tools 3개를 확인했다.
   `workspace.hardware_context`는 CPU `XBC-DN/DP64H`, timer areas 3, I/O modules 2, configured
   I/O channels 4를 SHA-bound receipt로 반환했고 external wiring은 false로 유지했다. LD tool은
   catalog에서 숨겨졌고, stale revision은 `tool.started` 뒤 `tool.failed`로 거부됐으며 live
   hardware cache는 비어 있었다.
+- 같은 stdio 경로의 `workspace.structure_index`는 `tool.started → tool.completed`, project
+  `대동인덱스-0917-2`, code-unit names `NewProgram/출력/알람/초기동작`, structure fact 817개를
+  발급했다. Host model-safe projection은 bounded 188 facts를 Agent runtime citation validator까지
+  전달했고 MCP와 Host 모두 stale revision을 거부했다.
 - HTTP contract guard 성공
 - 세 저장소 staged diff whitespace check 성공
 - 원격 모델 catalog와 짧은 completion 호출 성공
