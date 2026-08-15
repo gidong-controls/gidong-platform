@@ -7,11 +7,11 @@
 
 - `gidong-platform`: `dev` (이 문서를 포함한 commit)
 - `gidong-agent`: `dev` @ `0737be2ef706923c8c08abc79ff555ad2680abde`
-- `gidong-plc-mcp`: `dev` @ `7e9cbf7d586c1e0f308833a0787b81656644b7c6`
+- `gidong-plc-mcp`: `dev` @ `d642aa868883d8aa9086229fe81f3f65dd2c85f5`
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
 2026-08-16 06:00 KST에 Platform push를 다시 시도했지만 GitHub 443 연결 거부로 실패했다. 이 문서
-commit 기준 Platform은 `origin/dev`보다 13 commit, Agent는 5 commit, MCP는 4 commit
+commit 기준 Platform은 `origin/dev`보다 14 commit, Agent는 5 commit, MCP는 5 commit
 앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
 먼저 실행한다.
 
@@ -88,6 +88,10 @@ commit 기준 Platform은 `origin/dev`보다 13 commit, Agent는 5 commit, MCP�
   sidecar의 중복 필드 구성을 제거했다. 기존 `ServiceState.starting`은 실제 검사가 진행 중일
   때만 쓰고 terminal `unavailable`은 즉시 반환한다. `-RequireAgent` smoke도 문자열이 아니라
   이 상태 enum을 소비하므로 확정 실패를 deadline까지 기다리지 않는다.
+- XG5000 controlled launch의 창 생성 대기와 project title 대기 루프를 하나로 합쳤다. PID
+  lifetime과 exact title을 같은 순회에서 확인하며 vendor process가 먼저 종료되면 title
+  deadline을 더 기다리지 않는다. 제거된 helper를 포함해 14줄 추가/36줄 삭제이고, 정상
+  PID/HWND/path/hash 검증은 그대로다.
 - 이 리팩터링에서 새 테스트는 추가하지 않았다. 임시 C# compile executable 네 개와
   잘못 생성된 빈 파일 하나를 제거했다.
 - 종료 자체 리뷰에서 별도 DB migration backup/recovery 구현은 새 동작·상태·파일을
@@ -135,17 +139,26 @@ commit 기준 Platform은 `origin/dev`보다 13 commit, Agent는 5 commit, MCP�
   120초 대기 대신 0.44초에 정확한 정제 사유와 함께 반환하는지 확인. 새 launcher handoff로
   인앱 UI를 다시 인증해 `DEVELOPMENT source-dev`, `Host 준비됨`, AGENT DEBUG 자동 활성화와
   동일 Agent runtime 사유를 확인
+- 보존 artifact에서 새 Development working copy를 만든 뒤 실제 XG5000 V4.82.1 controlled
+  launch를 재현했다. 이 sandbox 사용자에서는 vendor process가 약 6초 뒤
+  `0xC0000409`로 자체 종료했으며, 변경 전 약 19.6초 generic title failure 대신 변경 후
+  6.16초에 `exit_code=3221226505, ntstatus=0xC0000409`가 startup log에 남는 것을 확인했다.
+  working copy 원본 hash는 보존됐고 XG5000 PID는 남지 않았다. Vendor가 분리 생성한
+  `XGProjectServer.exe`는 crash 뒤 남아 이번에 생성한 PID만 수동 정리했으므로, process-tree
+  cleanup 완료를 아직 주장하지 않는다.
 
 ## 아직 실기 검증이 필요한 것
 
-이 Windows 장비에는 XG5000이 설치돼 있고 vendor integrity가 필요하다. 2026-08-16의
+이 Windows 장비에는 XG5000 V4.82.1이 설치돼 있고 vendor integrity가 필요하다. 2026-08-16의
 격리 smoke는 쓰기 가능한 workspace Development data root에서 Host/DB/static UI/MCP까지 실제
 기동했다. Agent는 코드 실패가 아니라 Codex 격리 정책이 configured private model endpoint
 `100.65.0.1:8978` 소켓을 차단해 unavailable이었고 `/models`와 최소 completion도 같은
 소켓 거부를 재현했다. 인앱 브라우저로 Development/Debug 화면과 정제된 Agent 실패 사유는
 직접 확인했지만 실제 Agent tool started/completed 흐름과 XG5000 창 제어는 사용자 세션에서
 이어가야 한다.
-실제 사용자 세션에서는 아래 절차로 다시 시작한다.
+Codex 실행 identity는 `CodexSandboxOffline`이며 이 identity에서 bare XG5000도 동일
+`0xC0000409`로 종료됐다. 따라서 project argument나 ControlStudio binding 성공을 거짓으로
+판정하지 않았고, 실제 Administrator desktop/UAC 세션에서 아래 절차로 다시 시작한다.
 
 다음 세션의 첫 작업은 아래 한 번의 수직 검증이다.
 
