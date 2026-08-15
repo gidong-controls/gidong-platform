@@ -21,7 +21,6 @@ IMPORT_PATHS = [
 REQUIRED_RUNTIME_MODULES = (
     "pywinauto",
     "pywinauto.keyboard",
-    "win32cred",
     "win32timezone",
 )
 
@@ -75,6 +74,7 @@ def main() -> int:
         executable,
         "--noconfirm",
         "--onefile",
+        "--uac-admin",
         "--name",
         "controlstudio-platform",
         "--distpath",

@@ -1,7 +1,6 @@
 [CmdletBinding()]
 param(
-    [switch]$RequireProductionSignature,
-    [switch]$ArtifactSelfTest
+    [switch]$RequireProductionSignature
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,6 +9,8 @@ $bomPath = Join-Path $root 'controlstudio.bom.json'
 if (-not (Test-Path -LiteralPath $bomPath -PathType Leaf)) { throw 'ControlStudio BOM is missing.' }
 $bom = Get-Content -LiteralPath $bomPath -Raw | ConvertFrom-Json
 if ($bom.bom_schema -ne 'controlstudio-bom/v1') { throw 'Unsupported ControlStudio BOM schema.' }
+if ($bom.release_channel -notin @('development', 'beta', 'production')) { throw 'Unsupported ControlStudio release channel.' }
+$RequireProductionSignature = $RequireProductionSignature -or $bom.release_channel -eq 'production'
 $names = @('api_contract', 'event_contract', 'agent_contract', 'mcp_product_contract', 'workspace_contract', 'audit_contract')
 $ids = @('platform', 'agent', 'plc-mcp')
 if (@($bom.components).Count -ne 3) { throw 'BOM must contain exactly three components.' }
@@ -48,9 +49,5 @@ for ($index = 0; $index -lt 3; $index++) {
 # creates the stdio transports itself.
 $env:CONTROLSTUDIO_AGENT_COMMAND = '"' + $executables['agent'] + '"'
 $env:CONTROLSTUDIO_MCP_COMMAND = $executables['plc-mcp']
-if ($ArtifactSelfTest) {
-    & $executables['platform'] --controlstudio-artifact-self-test
-} else {
-    & $executables['platform']
-}
+& $executables['platform']
 exit $LASTEXITCODE

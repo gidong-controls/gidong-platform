@@ -1,7 +1,0 @@
-{
-  "component": "platform",
-  "history": "clean-genesis",
-  "remote": "git@github.com:gidong-controls/gidong-platform.git",
-  "schema_version": 1,
-  "visibility": "public"
-}

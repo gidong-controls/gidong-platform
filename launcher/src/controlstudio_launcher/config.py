@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from .constants import DEFAULT_EXPECTED_HOST_BUILD
+from .constants import DEFAULT_EXPECTED_HOST_BUILD, PRODUCT_DATA_DIRECTORY_NAME
 from .errors import ConfigurationError
 
 _ALLOWED_CONFIG_KEYS = {
@@ -52,8 +52,13 @@ def default_config_path(environ: dict[str, str] | None = None) -> Path:
     values = os.environ if environ is None else environ
     local_app_data = values.get("LOCALAPPDATA")
     if local_app_data:
-        return Path(local_app_data) / "ControlStudio" / "launcher.json"
-    return Path.home() / ".config" / "controlstudio" / "launcher.json"
+        return Path(local_app_data) / PRODUCT_DATA_DIRECTORY_NAME / "launcher.json"
+    return (
+        Path.home()
+        / ".config"
+        / PRODUCT_DATA_DIRECTORY_NAME.casefold().replace(" ", "-")
+        / "launcher.json"
+    )
 
 
 def load_config_file(path: Path, *, required: bool = False) -> dict[str, Any]:

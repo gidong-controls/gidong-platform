@@ -20,7 +20,6 @@ controlstudio-app = "controlstudio_launcher.cli:gui_main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.4,<10",
     "ruff>=0.12,<1",
 ]
 
@@ -30,10 +29,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/controlstudio_launcher"]
-
-[tool.pytest.ini_options]
-addopts = "-q --basetemp=.pytest-tmp"
-testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100

@@ -23,8 +23,11 @@ GIDONG-workspace/
 `controlstudio-contracts` 식별자를 유지하고, 다음 별도 마이그레이션에서만
 package·artifact namespace를 바꾼다. 저장소 이름을 바꿨다고 해서 Platform이
 private source를 설치 시 clone하거나 sibling checkout을 탐색하지 않는다.
+단, 위 구조의 Git 개발 작업 공간에서는 Platform Host가 private source를 import하지
+않고 각 sibling `.venv`에 이미 설치된 console entry point만 개발 fallback으로
+해결한다. `.git`이 없는 배포 artifact에서는 이 경로가 비활성화된다.
 
-각 저장소는 하나의 Git repository로 독립 build/test하고, remote 생성과 push는
+각 저장소는 하나의 Git repository로 독립 production build를 수행하고, remote 생성과 push는
 사용자 지시 전까지 하지 않는다. 일반 사용자에게는 세 저장소가 아니라 하나의
 `기동` 설치 제품만 노출한다.
 

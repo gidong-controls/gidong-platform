@@ -7,20 +7,63 @@ serializable results and callback shapes needed to supervise that process.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal, Protocol
-
-from .models import Message
+from typing import Any, Literal
 
 TokenCallback = Callable[[str], Awaitable[None]]
-ToolEventCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
+ProgressCallback = Callable[[str, int], Awaitable[None]]
+MissionCheckpointCallback = Callable[
+    [
+        dict[str, Any],
+        str,
+        int,
+        Literal["continue", "respond"],
+        dict[str, Any],
+        str,
+    ],
+    Awaitable[None],
+]
+ToolEventCallback = Callable[
+    [str, dict[str, Any]],
+    Awaitable[dict[str, Any] | None],
+]
 ChangePlanCallback = Callable[..., Awaitable[dict[str, Any]]]
+
+MAX_ENGINEERING_AUTONOMOUS_CYCLES = 8
+
+
+@dataclass(frozen=True)
+class AgentOutputValidationIssue:
+    """A non-sensitive schema location and Pydantic error category."""
+
+    loc: tuple[str | int, ...]
+    error_type: str
+
+
+@dataclass(frozen=True)
+class AgentOutputContractDiagnostic:
+    """Allowlisted structured-output diagnostics accepted from the sidecar."""
+
+    stage: str
+    exception_kind: str
+    reason_code: str
+    validator_code: str
+    validation_errors: tuple[AgentOutputValidationIssue, ...]
 
 
 class AgentOutputContractError(RuntimeError):
     """A sidecar rejected model output against its structured contract."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostic: AgentOutputContractDiagnostic | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.diagnostic = diagnostic
 
 
 @dataclass(frozen=True)
@@ -34,6 +77,11 @@ class AgentRunOutput:
     project_name: str | None = None
     plan_artifact: dict[str, Any] | None = None
     plan_digest: str | None = None
+    engineering_analysis: dict[str, Any] | None = None
+    engineering_analysis_digest: str | None = None
+    engineering_mission: dict[str, Any] | None = None
+    digest: str | None = None
+    cycle_disposition: Literal["continue", "respond"] | None = None
 
 
 @dataclass(frozen=True)
@@ -46,19 +94,3 @@ class ModelCapabilityResult:
     tool_result_continuation: bool
     structured_output: bool
     message: str
-
-
-class AgentRuntime(Protocol):
-    async def run(
-        self,
-        *,
-        prompt: str,
-        history: Sequence[Message],
-        conversation_id: str,
-        run_id: str,
-        trusted_context: dict[str, Any] | None = None,
-        on_token: TokenCallback | None = None,
-        on_tool_event: ToolEventCallback | None = None,
-    ) -> AgentRunOutput: ...
-
-    async def test_capabilities(self) -> ModelCapabilityResult: ...

@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { hostApi, HostApiError } from "../api/client";
+import {
+  isLegacyChangePlanV1,
+  isMneFullProgramReplacementPlan,
+} from "../api/changeContracts";
 import type {
   ChangeTransaction,
   XG5000Instance,
@@ -33,19 +37,52 @@ function recoveryCheckpoint(
   const abort = nestedRecord(reconciliation, "abort");
   const lookup = nestedRecord(reconciliation, "lookup");
   const status = nestedRecord(reconciliation, "status");
+  const rollbackOperation = nestedRecord(reconciliation, "rollback_operation");
   return (
     nestedRecord(finalStatus, "transaction_checkpoint") ??
     nestedRecord(abort, "transaction_checkpoint") ??
     nestedRecord(lookup, "transaction_checkpoint") ??
-    nestedRecord(status, "transaction_checkpoint")
+    nestedRecord(status, "transaction_checkpoint") ??
+    nestedRecord(rollbackOperation, "transaction_checkpoint")
+  );
+}
+
+function hasSupportedRecoveryContract(transaction: ChangeTransaction): boolean {
+  const plan = transaction.plan;
+  if (isMneFullProgramReplacementPlan(plan)) {
+    return (
+      plan.verificationScope === "offline_native_reopen" &&
+      plan.validation.join("\u0000") ===
+        [
+          "structural_diff",
+          "xg5000_program_check",
+          "project_save",
+          "project_reopen",
+        ].join("\u0000")
+    );
+  }
+  return (
+    isLegacyChangePlanV1(plan) &&
+    plan.verificationScope === "offline_native_check_only" &&
+    plan.validation.join("\u0000") ===
+      ["structural_diff", "xg5000_program_check", "project_save"].join(
+        "\u0000",
+      )
   );
 }
 
 function recoveryOutcome(transaction: ChangeTransaction): string {
-  if (transaction.errorCode === "explicit_recovery_aborted_before_mutation") {
+  if (
+    transaction.errorCode === "explicit_recovery_aborted_before_mutation" ||
+    transaction.errorCode === "mne_recovery_aborted_before_mutation"
+  ) {
     return "변경 전에 중단된 사실을 확인하고 작업 잠금을 해제했습니다.";
   }
-  if (transaction.errorCode === "explicit_recovery_rolled_back") {
+  if (
+    transaction.errorCode === "explicit_recovery_rolled_back" ||
+    transaction.errorCode === "explicit_mne_recovery_rolled_back" ||
+    transaction.errorCode === "mne_verification_failed_rolled_back"
+  ) {
     return "원래 상태로 원복하고 저장한 사실을 확인했습니다.";
   }
   if (transaction.state === "completed") {
@@ -67,10 +104,11 @@ export function ChangeRecoveryPanel({
   busy,
   onReconcile,
 }: ChangeRecoveryPanelProps) {
+  const recoverySupported = hasSupportedRecoveryContract(transaction);
   const [instances, setInstances] = useState<XG5000Instance[]>([]);
   const [selectedHwnd, setSelectedHwnd] = useState("");
   const [instancesLoading, setInstancesLoading] = useState(
-    transaction.state === "quarantined",
+    transaction.state === "quarantined" && recoverySupported,
   );
   const [instanceNotice, setInstanceNotice] = useState("");
 
@@ -106,12 +144,14 @@ export function ChangeRecoveryPanel({
   };
 
   useEffect(() => {
-    if (transaction.state === "quarantined") {
+    if (transaction.state === "quarantined" && recoverySupported) {
       void loadInstances();
+    } else {
+      setInstancesLoading(false);
     }
     // Reloading is explicit after the first recovery-only target scan.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transaction.transactionId, transaction.state]);
+  }, [recoverySupported, transaction.transactionId, transaction.state]);
 
   const checkpoint = recoveryCheckpoint(transaction);
   const reconciliation = asRecord(transaction.result.reconciliation);
@@ -149,7 +189,7 @@ export function ChangeRecoveryPanel({
         </div>
       </header>
 
-      {transaction.state === "quarantined" && (
+      {transaction.state === "quarantined" && recoverySupported && (
         <form
           className="change-recovery-form"
           onSubmit={(event) => {
@@ -192,7 +232,16 @@ export function ChangeRecoveryPanel({
         </form>
       )}
 
-      {instanceNotice && transaction.state === "quarantined" && (
+      {transaction.state === "quarantined" && !recoverySupported && (
+        <p className="change-recovery-hold" role="alert">
+          알 수 없거나 잘못된 변경 계약에는 복구 명령을 보낼 수 없습니다. Host에서
+          planKind와 검증 범위를 다시 확인하세요.
+        </p>
+      )}
+
+      {instanceNotice &&
+        transaction.state === "quarantined" &&
+        recoverySupported && (
         <p className="change-recovery-notice" role="status">
           {instanceNotice}
         </p>

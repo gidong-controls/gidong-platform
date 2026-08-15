@@ -1,5 +1,5 @@
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react()],
@@ -15,14 +15,5 @@ export default defineConfig({
   },
   build: {
     sourcemap: true,
-  },
-  test: {
-    environment: "jsdom",
-    globals: true,
-    setupFiles: "./src/test/setup.ts",
-    css: true,
-    pool: "threads",
-    maxWorkers: 1,
-    testTimeout: 15_000,
   },
 });

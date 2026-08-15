@@ -252,7 +252,7 @@ def _metadata(value: Mapping[str, Any] | None) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise TypeError("metadata must be a mapping")
     copied = _sanitize_json_value(dict(value))
-    if not isinstance(copied, dict):  # pragma: no cover - mapping input guarantees this
+    if not isinstance(copied, dict):  # Mapping input guarantees this.
         raise TypeError("metadata must be an object")
     encoded = _json_dump(copied)
     if len(encoded.encode("utf-8")) > 4 * 1024 * 1024:
@@ -797,7 +797,7 @@ class KnowledgeStore:
                 connection.rollback()
                 raise
         confirmed = self.get_source(source_id)
-        if confirmed is None:  # pragma: no cover - guarded by the transaction above
+        if confirmed is None:  # Guarded by the transaction above.
             raise KnowledgeError("confirmed memory disappeared")
         return confirmed
 
@@ -1173,7 +1173,7 @@ class KnowledgeStore:
                 raise
 
         source = self.get_source(source_id)
-        if source is None:  # pragma: no cover - guarded by successful commit
+        if source is None:  # Guarded by successful commit.
             raise KnowledgeError("imported source disappeared")
         return source
 

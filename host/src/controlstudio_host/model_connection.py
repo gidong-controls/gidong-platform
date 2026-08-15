@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import ipaddress
 import json
-import os
-import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 from .store import HostStore
@@ -41,97 +38,8 @@ class ModelSettingsError(ValueError):
     pass
 
 
-class SecretStoreError(RuntimeError):
+class StoredModelSettingsError(RuntimeError):
     pass
-
-
-class SecretStore(Protocol):
-    def put(self, reference: str, value: bytes) -> None: ...
-
-    def get(self, reference: str) -> bytes: ...
-
-    def delete(self, reference: str) -> None: ...
-
-
-class WindowsCredentialSecretStore:
-    """Store model secrets in the current user's Windows Credential Manager."""
-
-    def __init__(self, *, username: str = "ControlStudio") -> None:
-        self._username = username
-        if os.name != "nt":
-            raise SecretStoreError("Windows Credential Manager is unavailable")
-
-    def put(self, reference: str, value: bytes) -> None:
-        try:
-            import win32cred
-
-            credential_text = value.decode("utf-8")
-            win32cred.CredWrite(
-                {
-                    "Type": win32cred.CRED_TYPE_GENERIC,
-                    "TargetName": reference,
-                    "UserName": self._username,
-                    # pywin32's Unicode CredWrite binding requires text here.
-                    # The repository contract remains UTF-8 bytes so other
-                    # secret-store implementations do not depend on pywin32.
-                    "CredentialBlob": credential_text,
-                    "Persist": win32cred.CRED_PERSIST_LOCAL_MACHINE,
-                    "Comment": "ControlStudio OpenAI-compatible model credentials",
-                },
-                0,
-            )
-        except Exception as exc:
-            raise SecretStoreError("could not store model credentials securely") from exc
-
-    def get(self, reference: str) -> bytes:
-        try:
-            import win32cred
-
-            credential = win32cred.CredRead(
-                reference,
-                win32cred.CRED_TYPE_GENERIC,
-                0,
-            )
-            value = credential["CredentialBlob"]
-            if isinstance(value, bytes):
-                # CredRead returns the Unicode blob as UTF-16LE bytes even
-                # though CredWrite accepts a Python string.
-                return value.decode("utf-16-le").encode("utf-8")
-            if isinstance(value, str):
-                return value.encode("utf-8")
-            return bytes(value)
-        except Exception as exc:
-            raise SecretStoreError("stored model credentials are unavailable") from exc
-
-    def delete(self, reference: str) -> None:
-        import pywintypes
-        import win32cred
-
-        try:
-            win32cred.CredDelete(reference, win32cred.CRED_TYPE_GENERIC, 0)
-        except pywintypes.error as exc:
-            # ERROR_NOT_FOUND: a prior cleanup or user action already removed it.
-            if getattr(exc, "winerror", None) != 1168:
-                raise SecretStoreError("could not remove old model credentials") from exc
-
-
-class MemorySecretStore:
-    """Test-only secret store; never selected by the production app factory."""
-
-    def __init__(self) -> None:
-        self.values: dict[str, bytes] = {}
-
-    def put(self, reference: str, value: bytes) -> None:
-        self.values[reference] = bytes(value)
-
-    def get(self, reference: str) -> bytes:
-        try:
-            return self.values[reference]
-        except KeyError as exc:
-            raise SecretStoreError("stored model credentials are unavailable") from exc
-
-    def delete(self, reference: str) -> None:
-        self.values.pop(reference, None)
 
 
 @dataclass(frozen=True)
@@ -163,28 +71,30 @@ class StoredModelConnection:
     base_url: str
     model: str
     timeout_seconds: float
-    secret_ref: str
     updated_at: datetime
     capability_verified_at: datetime | None
     secrets: ModelSecrets
 
 
 class ModelConnectionRepository:
-    def __init__(self, store: HostStore, secrets: SecretStore) -> None:
+    def __init__(self, store: HostStore) -> None:
         self._store = store
-        self._secrets = secrets
 
     def get(self) -> StoredModelConnection | None:
         record = self._store.get_model_settings_record()
         if record is None:
             return None
-        secret_payload = self._decode_secret_payload(self._secrets.get(str(record["secret_ref"])))
+        encoded = record.get("secret_payload_json")
+        if not isinstance(encoded, str):
+            raise StoredModelSettingsError(
+                "stored model configuration has no inline credentials"
+            )
+        secret_payload = self._decode_secret_payload(encoded.encode("utf-8"))
         return StoredModelConnection(
             protocol=str(record["protocol"]),
             base_url=str(record["base_url"]),
             model=str(record["model"]),
             timeout_seconds=float(record["timeout_seconds"]),
-            secret_ref=str(record["secret_ref"]),
             updated_at=datetime.fromisoformat(str(record["updated_at"])),
             capability_verified_at=(
                 datetime.fromisoformat(str(record["capability_verified_at"]))
@@ -247,29 +157,14 @@ class ModelConnectionRepository:
                 custom_headers=resolved_headers,
             )
         )
-        credential_blob_size = len(encoded.decode("utf-8").encode("utf-16-le"))
-        if credential_blob_size > 2560:
-            raise ModelSettingsError(
-                "API key and custom headers are too large for the secure store"
-            )
-
-        new_reference = f"ControlStudio/model/default/{uuid.uuid4()}"
-        self._secrets.put(new_reference, encoded)
-        try:
-            self._store.upsert_model_settings_record(
-                protocol=MODEL_PROTOCOL,
-                base_url=normalized_url,
-                model=normalized_model,
-                secret_ref=new_reference,
-                timeout_seconds=normalized_timeout,
-                capability_verified_at=capability_verified_at,
-            )
-        except BaseException:
-            self._secrets.delete(new_reference)
-            raise
-
-        if previous is not None and previous.secret_ref != new_reference:
-            self._secrets.delete(previous.secret_ref)
+        self._store.upsert_model_settings_record(
+            protocol=MODEL_PROTOCOL,
+            base_url=normalized_url,
+            model=normalized_model,
+            secret_payload_json=encoded.decode("utf-8"),
+            timeout_seconds=normalized_timeout,
+            capability_verified_at=capability_verified_at,
+        )
         saved = self.get()
         assert saved is not None
         return saved
@@ -309,7 +204,7 @@ class ModelConnectionRepository:
             TypeError,
             ValueError,
         ) as exc:
-            raise SecretStoreError("stored model credentials are invalid") from exc
+            raise StoredModelSettingsError("stored inline model settings are invalid") from exc
 
 
 def validate_model_base_url(

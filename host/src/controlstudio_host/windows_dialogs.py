@@ -56,10 +56,11 @@ _XG5000_FILTER = (
     "XGWX projects (*.xgwx)\0*.xgwx\0"
     "XGW projects (*.xgw)\0*.xgw\0\0"
 )
-_KNOWLEDGE_SUFFIXES = {".pdf", ".md", ".markdown", ".txt"}
+_KNOWLEDGE_SUFFIXES = {".pdf", ".md", ".markdown", ".txt", ".csv", ".tsv"}
 _KNOWLEDGE_FILTER = (
-    "Engineering knowledge (*.pdf;*.md;*.markdown;*.txt)\0"
-    "*.pdf;*.md;*.markdown;*.txt\0"
+    "Engineering knowledge (*.pdf;*.md;*.markdown;*.txt;*.csv;*.tsv)\0"
+    "*.pdf;*.md;*.markdown;*.txt;*.csv;*.tsv\0"
+    "I/O lists (*.csv;*.tsv)\0*.csv;*.tsv\0"
     "PDF manuals (*.pdf)\0*.pdf\0"
     "Markdown and text (*.md;*.markdown;*.txt)\0*.md;*.markdown;*.txt\0\0"
 )
@@ -94,7 +95,7 @@ def select_knowledge_document_file() -> str | None:
         default_extension="pdf",
         unavailable_message="The knowledge document picker is available only on Windows.",
         invalid_selection_message=(
-            "The selected file is not a PDF, Markdown, or plain-text document."
+            "The selected file is not a PDF, Markdown, plain-text, CSV, or TSV document."
         ),
     )
 

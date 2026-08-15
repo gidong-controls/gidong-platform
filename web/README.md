@@ -8,7 +8,6 @@ ControlStudio의 React + TypeScript 웹/PWA 표시 계층이다. PLC 래더 IDE�
 ```powershell
 npm install
 npm run dev
-npm test
 npm run build
 ```
 
@@ -108,24 +107,32 @@ Host가 `activeOperation.runId`와 비종료 run 상태를 반환하면 UI에
 - 로컬 `.xgw`/`.xgwx`의 immutable source capture와 working copy 생성,
   XG5000 open/attach와 읽기·분석
 - 실제 프로그램 목록을 stable `programId`로 표시하고 해당 위치를 XG5000에서
-  여는 읽기 전용 호출. Host/Web 연결은 자동 검증됐지만 실제 XG5000 창
-  전면화는 아직 미검증
+  여는 읽기 전용 호출. 실제 XG5000 창 전면화 증거가 없으면 완료로 표시하지 않음
+- reviewed Engineering Plan 전체, typed I/O·mode·STEP sequence·TON timer·latched
+  alarm·recovery·control network·process interlock과 기술 설정을
+  `engineered_control_program` build bundle로 고정하고 exact PID/HWND의 빈
+  XG5000 창에 네이티브 프로젝트와 제어 프로그램을 생성. dialog, mnemonic
+  readback, LD 변환, Program Check, project path/hash와 bundle receipt가 모두
+  일치한 뒤, 보호 working copy를 생성 PID와 다른 XG5000 프로세스에서 다시 열어
+  exact 재추출·Program Check·disk hash 불변의 `REOPEN_VERIFIED` receipt까지
+  확인. sequence 검토 화면은 STEP별 완료 조건과 `START 해제 필요/연속 반복`
+  재기동 정책을 노출하며, 같은 bundle의 XG-SIM 정상·인터록·모드 해제·고장
+  래치·복구·TON 완료·START 해제 재기동 시나리오, CPU STOP과 입력 원복 receipt가
+  모두 일치하면 `OBSERVING`으로 표시. 사용자가 digest-bound receipt를 명시적으로
+  채택한 뒤에만 완료 처리하고 보호 working copy를 현재 대상으로 연결
+- 사용자가 지정한 사설망 LS XGT FEnet TCP 2004 endpoint의 상태, 최대 16개
+  device 단발 읽기와 최대 30초 값 변화 trace를 제공하는 명시적 읽기 전용 연결.
+  trace는 샘플·전이·최소/최대·변화 횟수와 전후 CPU 상태를 표시한다. 반환
+  controller identity는 provisional이며 PLC 쓰기나 project upload 권한을 만들지 않음
 - 동일 길이 LD operand 한 개의 구조화 proposal, 승인·거절, 실행과
   `QUARANTINED` 항목의 명시적 PID/HWND reconcile. 단, verified workspace와
   strong XG5000 identity가 없으면 `offline_mutate/currentReady=false`로 차단
 
-## 구현됐지만 일반 실행이 비활성인 preview
-
-- exact XG5000 PID/HWND를 선택하는 LS native project 생성 요청
-- LS XGT FEnet TCP 2004의 상태와 device 읽기 전용 연결
-
-두 기능 모두 일반 제품 Host에서 `preview/fake_only/currentReady=false`이며
-직접 API 호출도 MCP 호출 전에 `409`로 거부한다. native project는 fake
-backend에서 검증됐고 현재 실제 XG5000에서는 modal/elevation precondition
-때문에 변경 전에 거부됐다. FEnet은 fake TCP server에서만 검증됐으며 actual
-PLC identity나 project upload를 제공하지 않는다. 변경 transaction도 한
-operand와 `offline_native_check_only` 범위이며 외부 재열기·XG-SIM·online
-readback을 완료로 표시하지 않는다.
+네이티브 프로젝트 생성과 FEnet 관찰은 MCP가 준비된 경우 열리며, 각 작업의
+대상·정체성·권한 조건을 충족하지 못하면 해당 요청만 거부한다. 신규 생성은
+독립 재열기와 신규 build XG-SIM 인수까지 포함한다. 기존 프로젝트의 한 operand 변경 transaction은
+`offline_native_check_only` 범위이며 XG-SIM·online readback을 완료로 표시하지
+않는다.
 
 XG5000 IDE attach와 LS FEnet controller connection은 서로 다른 상태다.
 선택한 PID와 로컬 프로젝트 정체성이 증명돼도 실제 PLC에 연결됐거나 PLC
@@ -137,9 +144,9 @@ XG5000 IDE attach와 LS FEnet controller connection은 서로 다른 상태다.
 
 - PLC에서 프로그램·파라미터를 읽어 workspace로 복원
 - 강한 controller identity와 로컬/PLC project compare
-- STEP·timer·scan·통신 trace
+- 실제 PLC/XG-SIM의 STEP·timer·scan·통신 trace
 - 실제 PLC write, run edit, force, mode change와 download
-- 일반 LD 런·접점·분기 생성·삭제
+- 임의 기존 프로그램의 일반 LD 런·접점·분기 생성·삭제
 - 요구사항 기반 신규 하드웨어·I/O·태스크·심볼 구성
 - Mitsubishi/Rockwell adapter
 
@@ -157,8 +164,9 @@ UI는 capability가 없다는 사실을 숨기거나 성공 상태를 추정하�
 ## 모델 자격 증명
 
 설정 화면은 OpenAI 호환 Chat Completions의 Base URL, 모델, API 키와 선택적
-사용자 지정 헤더를 Host에 전달한다. 저장된 API 키와 헤더 값은 다시 받거나
-표시하지 않고 `hasApiKey`와 `customHeaderNames`만 보여 준다. localhost가 아닌
+사용자 지정 헤더를 Host에 전달한다. 키와 헤더는 별도 OS 자격 증명 저장소 없이
+Host의 로컬 SQLite `model_settings` 행에 함께 저장한다. 저장된 값은 API로 다시
+받거나 표시하지 않고 `hasApiKey`와 `customHeaderNames`만 보여 준다. localhost가 아닌
 엔드포인트는 명시적인 `externalModelConsent` 없이는 테스트하거나 저장할 수 없다.
 localhost가 아닌 HTTP endpoint는 여기에 더해 정확한 설정 후보에 대한
 `insecureHttpConsent`가 필요하며 TLS로 보호되지 않는다는 경고를 표시한다.

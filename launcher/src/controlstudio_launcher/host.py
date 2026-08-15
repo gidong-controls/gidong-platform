@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
-from .constants import CANONICAL_BASE_URL, CANONICAL_BIND_HOST, CANONICAL_PORT
+from .constants import (
+    CANONICAL_BASE_URL,
+    CANONICAL_BIND_HOST,
+    CANONICAL_PORT,
+    PRODUCT_DATA_DIRECTORY_NAME,
+)
 
 LAUNCH_JOB_ENVIRONMENT_VARIABLE = "CONTROLSTUDIO_LAUNCH_JOB_NAME"
 
@@ -206,7 +211,7 @@ def _create_windows_job() -> tuple[int, str]:
 def _open_startup_log():
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
-        log_directory = Path(local_app_data) / "ControlStudio" / "logs"
+        log_directory = Path(local_app_data) / PRODUCT_DATA_DIRECTORY_NAME / "logs"
         try:
             log_directory.mkdir(parents=True, exist_ok=True)
             return (log_directory / "host-startup.log").open("ab")

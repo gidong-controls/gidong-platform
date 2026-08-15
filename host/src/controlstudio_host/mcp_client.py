@@ -12,6 +12,7 @@ import os
 import secrets
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 from controlstudio_contracts import MCPProductManifestV1
@@ -47,28 +48,48 @@ AGENT_TOOL_NAMES: dict[str, str] = {
     "list_project_programs": "project.list_programs",
     "focus_xg5000_program": "program.focus",
     "read_ladder_program": "program.read_ld",
+    "inspect_project_hardware_context": "project.hardware_context",
+    "inspect_project_structure": "project.structure_index",
+    "search_project_evidence": "project.search",
+    "analyze_change_target": "program.change_target_analysis",
+    "compile_instruction_batch_patch_candidate": (
+        "program.compile_mne_instruction_batch_patch_candidate"
+    ),
+    "compile_instruction_patch_candidate": "program.compile_mne_instruction_patch_candidate",
+    "compile_rung_patch_candidate": "program.compile_mne_rung_patch_candidate",
+    "compile_series_guard_candidate": "program.compile_mne_series_guard_candidate",
     "build_program_logic_graph": "program.logic_graph",
     "build_program_state_model": "program.state_model",
+    "trace_device_causal_impact": "device.causal_impact",
     "find_device_references": "device.references",
     "build_project_behavior_report": "project.behavior_report",
     "capture_project_snapshot": "project.snapshot",
     "get_session_evidence": "evidence.get",
     "get_ls_controller_status": "controller.ls.status",
     "read_ls_controller_devices": "controller.ls.read",
+    "trace_ls_controller_devices": "controller.ls.trace",
+    "compare_workspace_source": "workspace.compare",
 }
 AGENT_CONTROLLER_MCP_TOOLS = frozenset(
     {
         "controller.ls.status",
         "controller.ls.read",
+        "controller.ls.trace",
     }
 )
 AGENT_READ_ANALYZE_MCP_TOOLS = frozenset(AGENT_TOOL_NAMES.values())
 HOST_SESSION_MCP_TOOLS = frozenset({"xg5000.instances", "xg5000.attach"})
+HOST_NAVIGATION_MCP_TOOLS = frozenset(
+    {"program.focus_location", "program.focus_mne_anchor"}
+)
 HOST_WORKSPACE_MCP_TOOLS = frozenset(
     {
         "project.create_native",
+        "project.verify_native_reopen",
+        "project.verify_native_simulation",
         "workspace.open_native",
         "workspace.status",
+        "workspace.compare",
         "xg5000.open_project",
     }
 )
@@ -78,6 +99,14 @@ HOST_CHANGE_MCP_TOOLS = frozenset(
         "project.backup",
         "program.plan_change",
         "program.apply_ld_patch",
+        "program.plan_mne_replacement",
+        "program.plan_mne_instruction_batch_patch",
+        "program.plan_mne_instruction_patch",
+        "program.plan_mne_rung_patch",
+        "program.plan_mne_series_guard_patch",
+        "program.apply_mne_replacement",
+        "program.verify_mne_replacement",
+        "program.rollback_mne_replacement",
         "project.diff",
         "project.validate_change",
         "project.commit_save",
@@ -89,27 +118,52 @@ HOST_CHANGE_MCP_TOOLS = frozenset(
 )
 HOST_RECOVERY_MCP_TOOLS = frozenset(
     {
+        "change.release_terminal_lease",
         "change.transaction_lookup",
         "xg5000.attach",
     }
 )
 HOST_CONTROLLER_MCP_TOOLS = AGENT_CONTROLLER_MCP_TOOLS
-READ_ANALYZE_MCP_TOOLS = AGENT_READ_ANALYZE_MCP_TOOLS | HOST_SESSION_MCP_TOOLS
+HOST_RESTORE_MCP_TOOLS = frozenset(
+    {
+        "controller.restore_preflight",
+        "controller.begin_restore_handoff",
+        "controller.complete_restore_handoff",
+    }
+)
+READ_ANALYZE_MCP_TOOLS = (
+    AGENT_READ_ANALYZE_MCP_TOOLS
+    | HOST_SESSION_MCP_TOOLS
+    | HOST_NAVIGATION_MCP_TOOLS
+)
 REQUIRED_PRODUCT_MCP_TOOLS = (
     READ_ANALYZE_MCP_TOOLS
     | HOST_WORKSPACE_MCP_TOOLS
     | HOST_CHANGE_MCP_TOOLS
     | HOST_RECOVERY_MCP_TOOLS
+    | HOST_RESTORE_MCP_TOOLS
     | frozenset({MCP_PRODUCT_MANIFEST_TOOL})
 )
 SESSION_IDENTITY_FIELDS = ("session_id", "pid", "hwnd", "project_path", "project_hash")
 AGENT_TOOL_REQUIRED_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
+    "workspace.compare": ("workspace_id",),
     "xg5000.session_status": ("session_id",),
     "project.list_programs": SESSION_IDENTITY_FIELDS,
     "program.focus": SESSION_IDENTITY_FIELDS,
+    "program.focus_location": SESSION_IDENTITY_FIELDS,
+    "program.focus_mne_anchor": SESSION_IDENTITY_FIELDS,
     "program.read_ld": SESSION_IDENTITY_FIELDS,
+    "project.hardware_context": SESSION_IDENTITY_FIELDS,
+    "project.structure_index": SESSION_IDENTITY_FIELDS,
+    "project.search": SESSION_IDENTITY_FIELDS,
+    "program.change_target_analysis": SESSION_IDENTITY_FIELDS,
+    "program.compile_mne_instruction_batch_patch_candidate": SESSION_IDENTITY_FIELDS,
+    "program.compile_mne_instruction_patch_candidate": SESSION_IDENTITY_FIELDS,
+    "program.compile_mne_rung_patch_candidate": SESSION_IDENTITY_FIELDS,
+    "program.compile_mne_series_guard_candidate": SESSION_IDENTITY_FIELDS,
     "program.logic_graph": SESSION_IDENTITY_FIELDS,
     "program.state_model": SESSION_IDENTITY_FIELDS,
+    "device.causal_impact": SESSION_IDENTITY_FIELDS,
     "device.references": SESSION_IDENTITY_FIELDS,
     "project.behavior_report": SESSION_IDENTITY_FIELDS,
     "project.snapshot": SESSION_IDENTITY_FIELDS,
@@ -120,11 +174,18 @@ CONTROLLER_ENDPOINT_FIELDS = ("host", "port", "timeout_seconds")
 MUTATING_MCP_TOOLS = frozenset(
     {
         "project.create_native",
+        "controller.begin_restore_handoff",
+        "controller.complete_restore_handoff",
+        "project.verify_native_reopen",
+        "project.verify_native_simulation",
         "workspace.open_native",
         "xg5000.open_project",
         "project.backup",
-        "program.plan_change",
         "program.apply_ld_patch",
+        "program.apply_mne_replacement",
+        "program.verify_mne_replacement",
+        "program.rollback_mne_replacement",
+        "program.probe_mne_replacement_capability",
         "project.validate_change",
         "project.rollback_change",
         "project.diff",
@@ -134,6 +195,7 @@ MUTATING_MCP_TOOLS = frozenset(
         "project.commit_save",
         "change.commit",
         "change.abort",
+        "change.release_terminal_lease",
         "sim.start",
         "sim.write_program",
         "sim.run",
@@ -153,6 +215,23 @@ class MCPToolError(RuntimeError):
 
 class MCPTransportError(MCPToolError):
     """The MCP transport failed after the gateway marked it unavailable."""
+
+
+def _monorepo_mcp_command() -> str | None:
+    """Resolve the installed PLC MCP console entry point in a Git dev workspace."""
+
+    platform_repository = Path(__file__).resolve().parents[3]
+    if not (platform_repository / ".git").exists():
+        return None
+    development_root = platform_repository.parent
+    repository = development_root / "gidong-plc-mcp"
+    for executable in (
+        repository / ".venv" / "Scripts" / "controlstudio-plc-mcp.exe",
+        repository / ".venv" / "bin" / "controlstudio-plc-mcp",
+    ):
+        if executable.is_file():
+            return str(executable)
+    return None
 
 
 @dataclass(frozen=True)
@@ -192,6 +271,9 @@ class MCPGateway:
         configured_command = command or os.environ.get("CONTROLSTUDIO_MCP_COMMAND")
         if configured_command is not None:
             self._command = configured_command
+            self._args = list(args) if args is not None else []
+        elif development_command := _monorepo_mcp_command():
+            self._command = development_command
             self._args = list(args) if args is not None else []
         else:
             self._command = "controlstudio-plc-mcp"
@@ -241,6 +323,13 @@ class MCPGateway:
     def agent_session_bound(self) -> bool:
         return self._active_session_identity is not None
 
+    @property
+    def agent_session_identity_snapshot(self) -> dict[str, Any] | None:
+        """Return a copy of the Host-owned identity used for Agent tool injection."""
+
+        identity = self._active_session_identity
+        return dict(identity) if identity is not None else None
+
     def bind_agent_session(self, session: dict[str, Any]) -> None:
         missing = [
             field
@@ -251,7 +340,17 @@ class MCPGateway:
             raise MCPToolError(
                 "cannot bind an incomplete engineering session: " + ", ".join(missing)
             )
-        self._active_session_identity = {field: session[field] for field in SESSION_IDENTITY_FIELDS}
+        identity = {field: session[field] for field in SESSION_IDENTITY_FIELDS}
+        workspace_id = session.get("workspace_id")
+        metadata = session.get("metadata")
+        workspace_identity = (
+            metadata.get("workspace_identity") if isinstance(metadata, dict) else None
+        )
+        if not workspace_id and isinstance(workspace_identity, dict):
+            workspace_id = workspace_identity.get("workspace_id")
+        if isinstance(workspace_id, str) and workspace_id:
+            identity["workspace_id"] = workspace_id
+        self._active_session_identity = identity
 
     def clear_agent_session(self) -> None:
         self._active_session_identity = None
@@ -287,7 +386,11 @@ class MCPGateway:
             if self._client is not None:
                 return self._status
 
-            self._status = MCPStatus(status="starting")
+            def startup_stage(stage: str) -> None:
+                self._status = MCPStatus(status="starting", error=stage)
+                logger.info("MCP startup stage=%s", stage)
+
+            startup_stage("process_initialize")
             transport = StdioTransport(
                 command=self._command,
                 args=self._args,
@@ -301,6 +404,7 @@ class MCPGateway:
             )
             try:
                 await client.__aenter__()
+                startup_stage("tool_catalog")
                 initialize_result = client.initialize_result
                 if initialize_result is None:
                     raise MCPStartupError("MCP initialize result is missing")
@@ -314,6 +418,7 @@ class MCPGateway:
                     raise MCPStartupError("MCP server version is missing")
 
                 tools = await client.list_tools()
+                startup_stage("contract_manifest")
                 tool_names = {tool.name for tool in tools}
                 missing = sorted(REQUIRED_PRODUCT_MCP_TOOLS - tool_names)
                 if missing:
@@ -338,11 +443,19 @@ class MCPGateway:
                     tool_count=len(tools),
                     agent_tool_count=len(AGENT_READ_ANALYZE_MCP_TOOLS),
                 )
+                logger.info(
+                    "MCP startup ready server=%s version=%s tools=%d agent_tools=%d",
+                    server_name,
+                    server_version,
+                    len(tools),
+                    len(AGENT_READ_ANALYZE_MCP_TOOLS),
+                )
                 self._monitor_task = asyncio.create_task(
                     self._monitor_connection(),
                     name="controlstudio-mcp-monitor",
                 )
             except BaseException as exc:
+                logger.exception("MCP startup failed")
                 await client.__aexit__(type(exc), exc, exc.__traceback__)
                 self._client = None
                 self._active_session_identity = None
@@ -393,10 +506,10 @@ class MCPGateway:
             raise MCPToolError(f"{name} failed because MCP disconnected") from exc
         if result.is_error:
             raise MCPToolError(f"{name} failed: {self._result_text(result)}")
-        if result.data is not None:
-            return self._unwrap_success_envelope(result.data)
         if result.structured_content is not None:
             return self._unwrap_success_envelope(result.structured_content)
+        if result.data is not None:
+            return self._unwrap_success_envelope(result.data)
         text = self._result_text(result)
         try:
             return self._unwrap_success_envelope(json.loads(text))
@@ -425,10 +538,10 @@ class MCPGateway:
             raise MCPToolError(f"{name} failed because MCP disconnected") from exc
         if result.is_error:
             raise MCPToolError(f"{name} failed: {self._result_text(result)}")
-        if result.data is not None:
-            return self._unwrap_success_envelope(result.data)
         if result.structured_content is not None:
             return self._unwrap_success_envelope(result.structured_content)
+        if result.data is not None:
+            return self._unwrap_success_envelope(result.data)
         text = self._result_text(result)
         try:
             return self._unwrap_success_envelope(json.loads(text))
@@ -457,10 +570,10 @@ class MCPGateway:
             raise MCPToolError(f"{name} failed because MCP disconnected") from exc
         if result.is_error:
             raise MCPToolError(f"{name} failed: {self._result_text(result)}")
-        if result.data is not None:
-            return self._unwrap_success_envelope(result.data)
         if result.structured_content is not None:
             return self._unwrap_success_envelope(result.structured_content)
+        if result.data is not None:
+            return self._unwrap_success_envelope(result.data)
         text = self._result_text(result)
         try:
             return self._unwrap_success_envelope(json.loads(text))
@@ -489,10 +602,10 @@ class MCPGateway:
             raise MCPToolError(f"{name} failed because MCP disconnected") from exc
         if result.is_error:
             raise MCPToolError(f"{name} failed: {self._result_text(result)}")
-        if result.data is not None:
-            return self._unwrap_success_envelope(result.data)
         if result.structured_content is not None:
             return self._unwrap_success_envelope(result.structured_content)
+        if result.data is not None:
+            return self._unwrap_success_envelope(result.data)
         text = self._result_text(result)
         try:
             return self._unwrap_success_envelope(json.loads(text))
@@ -528,10 +641,42 @@ class MCPGateway:
             raise MCPToolError(f"{name} failed because MCP disconnected") from exc
         if result.is_error:
             raise MCPToolError(f"{name} failed: {self._result_text(result)}")
-        if result.data is not None:
-            return self._unwrap_success_envelope(result.data)
         if result.structured_content is not None:
             return self._unwrap_success_envelope(result.structured_content)
+        if result.data is not None:
+            return self._unwrap_success_envelope(result.data)
+        text = self._result_text(result)
+        try:
+            return self._unwrap_success_envelope(json.loads(text))
+        except (json.JSONDecodeError, TypeError):
+            return text
+
+    async def call_restore_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> Any:
+        """Call a Host-only XG5000 restore-surface observation tool."""
+
+        if name not in HOST_RESTORE_MCP_TOOLS:
+            raise MCPToolError(f"tool is not allowed in Host restore mode: {name}")
+        client = self._client
+        if client is None or self._status.status != "ready":
+            raise MCPToolError("MCP is not ready")
+        try:
+            async with self._call_lock:
+                result = await client.call_tool(name, dict(arguments or {}))
+        except ToolError as exc:
+            raise MCPToolError(f"{name} was rejected by MCP: {exc}") from exc
+        except Exception as exc:
+            self._mark_connection_lost(exc)
+            raise MCPToolError(f"{name} failed because MCP disconnected") from exc
+        if result.is_error:
+            raise MCPToolError(f"{name} failed: {self._result_text(result)}")
+        if result.structured_content is not None:
+            return self._unwrap_success_envelope(result.structured_content)
+        if result.data is not None:
+            return self._unwrap_success_envelope(result.data)
         text = self._result_text(result)
         try:
             return self._unwrap_success_envelope(json.loads(text))
@@ -558,6 +703,15 @@ class MCPGateway:
             hashlib.sha256,
         ).hexdigest()
         return {**unsigned, "signature": signature}
+
+    def mne_capability_status(self) -> str:
+        """Inspect configured capability authority without exposing its key."""
+
+        from .mne_capability import inspect_mne_capability_bundle
+
+        return inspect_mne_capability_bundle(
+            authorization_key=self._authorization_signing_key,
+        )
 
     async def call_agent_tool(
         self,
@@ -613,10 +767,10 @@ class MCPGateway:
         )
         if result.is_error:
             raise MCPToolError(f"{name} failed: {self._result_text(result)}")
-        if result.data is not None:
-            return self._unwrap_success_envelope(result.data)
         if result.structured_content is not None:
             return self._unwrap_success_envelope(result.structured_content)
+        if result.data is not None:
+            return self._unwrap_success_envelope(result.data)
         text = self._result_text(result)
         try:
             return self._unwrap_success_envelope(json.loads(text))
@@ -654,7 +808,7 @@ class MCPGateway:
                     "the Host-bound XG5000 engineering session is incomplete: "
                     + ", ".join(missing)
                 )
-            for field in SESSION_IDENTITY_FIELDS:
+            for field in set(SESSION_IDENTITY_FIELDS) | set(required_identity_fields):
                 if field in safe_arguments and str(safe_arguments[field]) != str(identity[field]):
                     raise MCPToolError(
                         f"agent supplied stale or mismatched session identity: {field}"
@@ -736,9 +890,10 @@ class MCPGateway:
             required = schema.get("required")
             if not isinstance(properties, dict) or not isinstance(required, list):
                 raise MCPStartupError(f"{name} has an invalid MCP input schema")
-            declared_identity = set(properties).intersection(SESSION_IDENTITY_FIELDS)
-            required_identity = set(required).intersection(SESSION_IDENTITY_FIELDS)
             expected_identity = set(expected_fields)
+            relevant_identity = set(SESSION_IDENTITY_FIELDS) | expected_identity
+            declared_identity = set(properties).intersection(relevant_identity)
+            required_identity = set(required).intersection(relevant_identity)
             if declared_identity != expected_identity or required_identity != expected_identity:
                 raise MCPStartupError(
                     f"{name} MCP identity contract changed; expected required fields "
@@ -766,14 +921,67 @@ class MCPGateway:
                 raise MCPStartupError(
                     f"{name} MCP endpoint authority or read-only contract changed"
                 )
+        restore_tool = tools_by_name.get("controller.restore_preflight")
+        if restore_tool is not None:
+            properties = restore_tool.inputSchema.get("properties")
+            required = restore_tool.inputSchema.get("required")
+            meta = getattr(restore_tool, "meta", None)
+            if (
+                not isinstance(properties, dict)
+                or set(properties) != {"pid", "hwnd", "schema_version"}
+                or set(required or ()) != {"pid", "hwnd"}
+                or not isinstance(meta, dict)
+                or meta.get("controlstudio/endpointAuthority")
+                != "host-selected-xg5000-window"
+                or meta.get("controlstudio/readOnly") is not True
+                or meta.get("controlstudio/agentCallable") is not False
+                or meta.get("controlstudio/canAuthorizeWrite") is not False
+            ):
+                raise MCPStartupError(
+                    "controller restore preflight read-only target contract changed"
+                )
+        restore_action_fields = {
+            "controller.begin_restore_handoff": {
+                "pid",
+                "hwnd",
+                "operation_id",
+                "preflight_receipt_digest",
+                "profile_digest",
+                "timeout_seconds",
+                "schema_version",
+            },
+            "controller.complete_restore_handoff": {
+                "pid",
+                "hwnd",
+                "operation_id",
+                "handoff",
+                "timeout_seconds",
+                "schema_version",
+            },
+        }
+        for name, expected_fields in restore_action_fields.items():
+            tool = tools_by_name.get(name)
+            if tool is None:
+                continue
+            meta = getattr(tool, "meta", None)
+            if (
+                set(tool.inputSchema.get("properties") or ()) != expected_fields
+                or not isinstance(meta, dict)
+                or meta.get("controlstudio/endpointAuthority")
+                != "host-selected-xg5000-window"
+                or meta.get("controlstudio/readOnly") is not False
+                or meta.get("controlstudio/agentCallable") is not False
+                or meta.get("controlstudio/canAuthorizeWrite") is not False
+            ):
+                raise MCPStartupError(f"{name} Host-owned restore contract changed")
 
     @staticmethod
     def _manifest_result_data(result: Any) -> dict[str, Any]:
         if getattr(result, "is_error", False):
             raise MCPStartupError("MCP product contract manifest request failed")
-        value = getattr(result, "data", None)
+        value = getattr(result, "structured_content", None)
         if value is None:
-            value = getattr(result, "structured_content", None)
+            value = getattr(result, "data", None)
         if value is None:
             try:
                 value = json.loads(MCPGateway._result_text(result))
@@ -840,14 +1048,49 @@ class MCPGateway:
                 raise MCPStartupError(
                     f"MCP mutation contract is incomplete for {name}"
                 )
-        apply_contract = contracts.get("program.apply_ld_patch")
+        restore_contract = contracts.get("controller.restore_preflight")
         if (
-            apply_contract is None
-            or not apply_contract.target_binding_required
-            or not apply_contract.approval_required
-            or apply_contract.idempotency_behavior != "single-use-approval-and-journal"
+            restore_contract is None
+            or restore_contract.required_capability != "read"
+            or restore_contract.side_effect_class != "read_only"
+            or restore_contract.target_binding_required is not True
+            or restore_contract.approval_required is not False
+            or restore_contract.idempotency_behavior != "read-only"
         ):
-            raise MCPStartupError("MCP apply authorization contract is incompatible")
+            raise MCPStartupError(
+                "MCP controller restore preflight manifest contract is incompatible"
+            )
+        for name in (
+            "controller.begin_restore_handoff",
+            "controller.complete_restore_handoff",
+        ):
+            contract = contracts.get(name)
+            if (
+                contract is None
+                or contract.required_capability != "workspace_write"
+                or contract.side_effect_class != "mutation"
+                or contract.target_binding_required is not True
+                or contract.approval_required is not False
+                or contract.idempotency_behavior != "operation-lock"
+            ):
+                raise MCPStartupError(
+                    f"MCP {name} manifest contract is incompatible"
+                )
+        for apply_tool in (
+            "program.apply_ld_patch",
+            "program.apply_mne_replacement",
+        ):
+            apply_contract = contracts.get(apply_tool)
+            if (
+                apply_contract is None
+                or not apply_contract.target_binding_required
+                or not apply_contract.approval_required
+                or apply_contract.idempotency_behavior
+                != "single-use-approval-and-journal"
+            ):
+                raise MCPStartupError(
+                    f"MCP apply authorization contract is incompatible for {apply_tool}"
+                )
 
     @staticmethod
     def _unwrap_success_envelope(value: Any) -> Any:

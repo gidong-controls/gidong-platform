@@ -53,11 +53,11 @@ Compiled artifact 배포는 private 저장소와 Git history를 공개하지 않
 
 ```text
 public Platform source ─┐
-private Agent source ───┼─ 독립 build/test ─ immutable artifacts
+private Agent source ───┼─ 독립 production build ─ immutable artifacts
 private MCP source ─────┘                         │
 public contracts wheel ───────────────────────────┤
                                                   ▼
-                                  compatibility + black-box E2E
+                             runtime compatibility + artifact verification
                                                   │
                                        exact BOM + signatures
                                                   │
@@ -98,7 +98,7 @@ source repository가 아니라 명시적으로 전달된 immutable artifact만 �
     {"id": "plc-mcp", "version": "2.1.1", "sha256": "..."}
   ],
   "contracts": {
-    "api_contract": "1.0",
+    "api_contract": "3.0",
     "event_contract": "1.0",
     "agent_contract": "1.0",
     "mcp_product_contract": "1.0",
@@ -117,10 +117,11 @@ set을 세 컴포넌트가 동일하게 가져야 한다. 현재 runtime 검사�
 
 컴포넌트 하나만 변경되어도 다음 절차 전체를 다시 거친다.
 
-1. 변경된 저장소가 독립 build/test를 통과한다.
+1. 변경된 저장소가 독립 production build와 runtime contract 검증을 통과한다.
 2. public contracts와의 compatibility를 검사한다.
 3. 세 packaged artifact의 exact 후보 조합을 선택한다.
-4. Platform mock 실행과 공식 Agent/MCP black-box E2E를 수행한다.
+4. 패키지 후보의 실제 Agent/MCP를 기동해 contract manifest, 프로세스 결속과
+   제품 경로 readback을 확인한다.
 5. 기존 XG5000 검증 범위의 회귀 gate를 수행한다.
 6. artifact version, contract set, SHA-256, 서명 정보를 BOM에 기록한다.
 7. BOM에 고정된 파일만 사용해 하나의 installer를 생성한다.
@@ -189,6 +190,16 @@ release를 만들고 전체 compatibility 및 black-box gate를 통과시킨다.
 standalone MCP를 설치했다고 해서 ControlStudio Platform이 그 임의 설치본을
 자동 채택하지 않는다. 제품은 자기 BOM에 포함된 내부 MCP만 사용한다.
 
+소스 개발은 세 저장소의 같은 이름 `dev` integration branch에서 수행하고
+`main`은 검증된 production 기준선만 받는다. `development` BOM은 portable 실행만,
+`beta` BOM은 `ControlStudio Beta` 설치 경로·바로가기로 production과 나란히 설치하며,
+`production` BOM은 Authenticode 검증 없이는 조립·설치·실행하지 않는다. branch 이름은
+배포 권위가 아니며 실제 채널은 immutable artifact의 BOM `release_channel`이 결정한다.
+세 채널은 설치 경로뿐 아니라 local data/token/log, launcher mutex와 loopback port도
+분리한다: production `ControlStudio`/8765, beta `ControlStudio Beta`/8766,
+development `ControlStudio Development`/8767. 따라서 beta 검증이 production DB나
+실행 세션을 재사용하지 않는다.
+
 ## 9. 소유권
 
 - Platform 팀: product release, installer/updater, BOM 검증, 프로세스 supervision,
@@ -196,22 +207,27 @@ standalone MCP를 설치했다고 해서 ControlStudio Platform이 그 임의 �
 - Agent 팀: Agent artifact와 manifest, 추론·프롬프트·파생 RAG, 지원 contract 범위
 - MCP 팀: MCP artifact와 manifest, mutation/journal/readback/rollback 강제,
   지원 vendor/product 범위
-- Release pipeline: exact 조합 선택, signing, compatibility/E2E evidence,
+- Release pipeline: exact 조합 선택, signing, runtime compatibility/readback evidence,
   배포 채널 승격과 rollback 대상 보존
 
 ## 10. 현재 구현 상태와 production 전 조건
 
 현재 로컬 구현은 offline single-installer, exact BOM/hash 검증, 단일 사용자
-진입점, 내부 sidecar 자동 기동과 black-box 검증을 제공한다.
+진입점, 내부 sidecar 자동 기동과 black-box 검증을 제공한다. Beta installer는
+같은 채널의 기존 설치 전체를 검증한 뒤 sibling staging에서 새 BOM 조합을 만들고,
+실행 중인 구성요소가 없을 때만 전체 runtime을 교체한다. 직전의 검증된 설치는
+`previous`로 한 세대 보존하며 별도 local data 디렉터리는 건드리지 않는다.
+실제 digest가 다른 두 Beta 조합의 연속 설치와 SQLite 사용자 데이터 byte 보존을
+한 Windows 환경에서 replay했다.
 
 현재 installer는 unsigned 개발 artifact이며 production 배포 완료를 의미하지
 않는다. production 전에 최소한 다음이 추가로 필요하다.
 
 - 신뢰 가능한 Windows code-signing 인증서와 WinVerifyTrust 기반 검증
 - 접근 통제된 immutable artifact registry
-- 서명된 release manifest와 안전한 업데이트/rollback 구현
+- 서명된 release manifest와 원격 배포·복구까지 포함한 production updater
 - 사용자 데이터 migration·backup 복구 시험
-- 지원 Windows 환경의 설치·업데이트·제거 행렬 검증
+- 지원 Windows 전체 환경의 설치·업데이트·제거 행렬 검증
 - 계획서가 요구하는 실제 XG5000 검증 gate의 충족
 
 실제 PLC/online capability는 별도 검증 환경의 증거가 없으면 완료로 표시하지 않는다.

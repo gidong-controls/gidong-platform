@@ -18,6 +18,7 @@ REQUIRED_CONTRACTS = (
     "audit_contract",
 )
 SUPPORTED_SIGNATURE_KINDS = {"unsigned", "development-hmac-sha256", "authenticode"}
+RELEASE_CHANNELS = {"development", "beta", "production"}
 
 
 class PackagingError(ValueError):
@@ -25,7 +26,9 @@ class PackagingError(ValueError):
 
 
 def _canonical(value: Any) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
 
 
 def sha256_file(path: Path) -> str:
@@ -42,11 +45,16 @@ def _require_text(value: Any, field: str) -> str:
     return value
 
 
-def _validate_contracts(manifest: dict[str, Any], expected: dict[str, str] | None = None) -> dict[str, str]:
+def _validate_contracts(
+    manifest: dict[str, Any], expected: dict[str, str] | None = None
+) -> dict[str, str]:
     contracts = manifest.get("contracts")
     if not isinstance(contracts, dict):
         raise PackagingError("contracts must be an object")
-    normalized = {name: _require_text(contracts.get(name), f"contracts.{name}") for name in REQUIRED_CONTRACTS}
+    normalized = {
+        name: _require_text(contracts.get(name), f"contracts.{name}")
+        for name in REQUIRED_CONTRACTS
+    }
     if expected and normalized != expected:
         raise PackagingError("component contract versions do not exactly match the BOM")
     return normalized
@@ -67,30 +75,50 @@ def _validate_signature(component: dict[str, Any], *, require_production: bool) 
         raise PackagingError("unsupported signature kind")
     if kind == "unsigned":
         if signature.get("status") != "not-for-production":
-            raise PackagingError("unsigned artifacts must be labelled not-for-production")
+            raise PackagingError(
+                "unsigned artifacts must be labelled not-for-production"
+            )
         if require_production:
-            raise PackagingError("production signing is required; unsigned artifact rejected")
+            raise PackagingError(
+                "production signing is required; unsigned artifact rejected"
+            )
         return
     if kind == "development-hmac-sha256":
         if signature.get("status") != "not-for-production":
-            raise PackagingError("development signature must be labelled not-for-production")
+            raise PackagingError(
+                "development signature must be labelled not-for-production"
+            )
         key = os.environ.get("CONTROLSTUDIO_PACKAGING_DEV_SIGNING_KEY")
         if not key:
-            raise PackagingError("development signing key is required to verify this artifact")
-        actual = hmac.new(key.encode("utf-8"), _canonical(_signature_payload(component)), hashlib.sha256).hexdigest()
+            raise PackagingError(
+                "development signing key is required to verify this artifact"
+            )
+        actual = hmac.new(
+            key.encode("utf-8"),
+            _canonical(_signature_payload(component)),
+            hashlib.sha256,
+        ).hexdigest()
         if not hmac.compare_digest(actual, str(signature.get("value", ""))):
             raise PackagingError("development signature does not verify")
         if require_production:
-            raise PackagingError("production signing is required; development signature rejected")
+            raise PackagingError(
+                "production signing is required; development signature rejected"
+            )
         return
     # Authenticode metadata is intentionally fail-closed here. A release pipeline
     # must attach the verified publisher/thumbprint assertion after WinVerifyTrust.
-    if signature.get("status") != "verified" or not _require_text(signature.get("publisher"), "signature.publisher") or not _require_text(signature.get("thumbprint"), "signature.thumbprint"):
+    if (
+        signature.get("status") != "verified"
+        or not _require_text(signature.get("publisher"), "signature.publisher")
+        or not _require_text(signature.get("thumbprint"), "signature.thumbprint")
+    ):
         raise PackagingError("invalid Authenticode signature metadata")
 
 
 def _artifact_record(supplied: dict[str, Any], *, field: str) -> dict[str, str]:
-    artifact = Path(_require_text(supplied.get("artifact"), f"{field}.artifact")).resolve()
+    artifact = Path(
+        _require_text(supplied.get("artifact"), f"{field}.artifact")
+    ).resolve()
     if not artifact.is_file():
         raise PackagingError(f"artifact does not exist: {artifact}")
     return {
@@ -100,32 +128,55 @@ def _artifact_record(supplied: dict[str, Any], *, field: str) -> dict[str, str]:
     }
 
 
-def _verify_artifact_record(record: Any, artifact_directory: Path, *, field: str) -> dict[str, str]:
+def _verify_artifact_record(
+    record: Any, artifact_directory: Path, *, field: str
+) -> dict[str, str]:
     if not isinstance(record, dict):
         raise PackagingError(f"{field} must be an object")
     artifact_name = _require_text(record.get("artifact"), f"{field}.artifact")
     artifact = (artifact_directory / artifact_name).resolve()
     if artifact.parent != artifact_directory or not artifact.is_file():
         raise PackagingError(f"{field} path is missing or escapes artifact directory")
-    if not hmac.compare_digest(sha256_file(artifact), _require_text(record.get("sha256"), f"{field}.sha256")):
+    if not hmac.compare_digest(
+        sha256_file(artifact), _require_text(record.get("sha256"), f"{field}.sha256")
+    ):
         raise PackagingError(f"SHA-256 mismatch for {field}")
     _require_text(record.get("version"), f"{field}.version")
-    return {"artifact": artifact_name, "version": str(record["version"]), "sha256": str(record["sha256"])}
+    return {
+        "artifact": artifact_name,
+        "version": str(record["version"]),
+        "sha256": str(record["sha256"]),
+    }
 
 
 def build_bom(
-    *, product_release: str, components: dict[str, dict[str, Any]], contracts: dict[str, str],
+    *,
+    product_release: str,
+    release_channel: str,
+    components: dict[str, dict[str, Any]],
+    contracts: dict[str, str],
     contract_artifact: dict[str, Any],
-    signing: str = "unsigned", signing_key: str | None = None,
+    signing: str = "unsigned",
+    signing_key: str | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic BOM from immutable artifact files.
 
     `development-hmac-sha256` is only a local tamper-evidence mode. It is not
     and cannot be represented as a production publisher signature.
     """
-    normalized_contracts = {name: _require_text(contracts.get(name), name) for name in REQUIRED_CONTRACTS}
+    normalized_contracts = {
+        name: _require_text(contracts.get(name), name) for name in REQUIRED_CONTRACTS
+    }
+    if release_channel not in RELEASE_CHANNELS:
+        raise PackagingError("release_channel must be development, beta, or production")
+    if release_channel == "production":
+        raise PackagingError(
+            "production BOMs must be composed by the Authenticode signing pipeline"
+        )
     if set(components) != set(COMPONENT_IDS):
-        raise PackagingError("exactly platform, agent, and plc-mcp components are required")
+        raise PackagingError(
+            "exactly platform, agent, and plc-mcp components are required"
+        )
     result: list[dict[str, Any]] = []
     for component_id in COMPONENT_IDS:
         supplied = components[component_id]
@@ -138,57 +189,101 @@ def build_bom(
             "contracts": dict(normalized_contracts),
         }
         if signing == "unsigned":
-            component["signature"] = {"kind": "unsigned", "status": "not-for-production"}
+            component["signature"] = {
+                "kind": "unsigned",
+                "status": "not-for-production",
+            }
         elif signing == "development-hmac-sha256":
             if not signing_key:
                 raise PackagingError("a development signing key is required")
             component["signature"] = {
-                "kind": "development-hmac-sha256", "status": "not-for-production",
+                "kind": "development-hmac-sha256",
+                "status": "not-for-production",
                 "key_id": "local-development",
-                "value": hmac.new(signing_key.encode("utf-8"), _canonical(component), hashlib.sha256).hexdigest(),
+                "value": hmac.new(
+                    signing_key.encode("utf-8"), _canonical(component), hashlib.sha256
+                ).hexdigest(),
             }
         else:
-            raise PackagingError("this tool cannot create a production Authenticode signature")
+            raise PackagingError(
+                "this tool cannot create a production Authenticode signature"
+            )
         result.append(component)
     return {
         "bom_schema": "controlstudio-bom/v1",
         "product_release": _require_text(product_release, "product_release"),
+        "release_channel": release_channel,
         "contracts": normalized_contracts,
-        "contract_artifact": _artifact_record(contract_artifact, field="contract_artifact"),
+        "contract_artifact": _artifact_record(
+            contract_artifact, field="contract_artifact"
+        ),
         "components": result,
     }
 
 
-def verify_bom(bom: dict[str, Any], artifact_directory: Path, *, require_production: bool = False) -> None:
+def verify_bom(
+    bom: dict[str, Any], artifact_directory: Path, *, require_production: bool = False
+) -> None:
     if bom.get("bom_schema") != "controlstudio-bom/v1":
         raise PackagingError("unsupported BOM schema")
     expected_contracts = _validate_contracts(bom)
+    release_channel = bom.get("release_channel")
+    if release_channel not in RELEASE_CHANNELS:
+        raise PackagingError("BOM release channel is invalid")
+    require_production = require_production or release_channel == "production"
     components = bom.get("components")
-    if not isinstance(components, list) or [item.get("id") if isinstance(item, dict) else None for item in components] != list(COMPONENT_IDS):
-        raise PackagingError("BOM components must be the complete ordered component set")
+    if not isinstance(components, list) or [
+        item.get("id") if isinstance(item, dict) else None for item in components
+    ] != list(COMPONENT_IDS):
+        raise PackagingError(
+            "BOM components must be the complete ordered component set"
+        )
     root = artifact_directory.resolve()
-    _verify_artifact_record(bom.get("contract_artifact"), root, field="contract_artifact")
+    _verify_artifact_record(
+        bom.get("contract_artifact"), root, field="contract_artifact"
+    )
     for component in components:
         artifact_name = _require_text(component.get("artifact"), "component.artifact")
         artifact = (root / artifact_name).resolve()
         if artifact.parent != root or not artifact.is_file():
-            raise PackagingError("artifact path is missing or escapes artifact directory")
-        if not hmac.compare_digest(sha256_file(artifact), _require_text(component.get("sha256"), "component.sha256")):
+            raise PackagingError(
+                "artifact path is missing or escapes artifact directory"
+            )
+        if not hmac.compare_digest(
+            sha256_file(artifact),
+            _require_text(component.get("sha256"), "component.sha256"),
+        ):
             raise PackagingError(f"SHA-256 mismatch for {component.get('id')}")
         _require_text(component.get("version"), "component.version")
         _validate_contracts(component, expected_contracts)
         _validate_signature(component, require_production=require_production)
 
 
-def assemble(bom_path: Path, artifact_directory: Path, output_directory: Path, *, require_production: bool = False) -> Path:
+def assemble(
+    bom_path: Path,
+    artifact_directory: Path,
+    output_directory: Path,
+    *,
+    require_production: bool = False,
+) -> Path:
     bom = json.loads(bom_path.read_text(encoding="utf-8"))
     verify_bom(bom, artifact_directory, require_production=require_production)
     if output_directory.exists():
         raise PackagingError(f"output already exists: {output_directory}")
     output_directory.mkdir(parents=True)
     shutil.copy2(bom_path, output_directory / "controlstudio.bom.json")
-    contract_artifact = _verify_artifact_record(bom["contract_artifact"], artifact_directory.resolve(), field="contract_artifact")
-    shutil.copy2(artifact_directory / contract_artifact["artifact"], output_directory / contract_artifact["artifact"])
+    contract_artifact = _verify_artifact_record(
+        bom["contract_artifact"],
+        artifact_directory.resolve(),
+        field="contract_artifact",
+    )
+    shutil.copy2(
+        artifact_directory / contract_artifact["artifact"],
+        output_directory / contract_artifact["artifact"],
+    )
     for component in bom["components"]:
-        shutil.copy2(artifact_directory / component["artifact"], output_directory / component["artifact"])
+        shutil.copy2(
+            artifact_directory / component["artifact"],
+            output_directory / component["artifact"],
+        )
     return output_directory

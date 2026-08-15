@@ -41,9 +41,16 @@ _FORBIDDEN_AGENT_PAYLOAD_FIELDS = frozenset(
         "hwnd",
         "project_path",
         "project_hash",
+        "project_sha256",
+        "projectpath",
+        "projecthash",
+        "projectsha256",
         "engineering_process_id",
         "engineering_window_handle",
+        "engineeringprocessid",
+        "engineeringwindowhandle",
         "controller_endpoint",
+        "controllerendpoint",
     }
 )
 
@@ -55,6 +62,12 @@ _REDACTED_AGENT_RESULT_FIELDS = _FORBIDDEN_AGENT_PAYLOAD_FIELDS | frozenset(
         "host",
         "port",
         "timeout_seconds",
+        "timeoutseconds",
+        # MCP analysis artifacts stay Host-owned. The model receives their
+        # structured facts and evidence receipt, never local artifact paths.
+        "payload_path",
+        "markdown_path",
+        "receipt_path",
     }
 )
 

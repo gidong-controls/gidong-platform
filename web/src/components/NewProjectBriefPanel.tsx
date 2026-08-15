@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { hostApi } from "../api/client";
+import type { KnowledgeSource } from "../api/types";
 import { Icon } from "./Icon";
 
 export interface NewProjectBrief {
@@ -9,14 +11,25 @@ export interface NewProjectBrief {
   safetyAndInterlocks: string;
   operatingModes: string;
   performanceAndAcceptance: string;
+  attachmentSourceIds: string[];
 }
 
 interface NewProjectBriefPanelProps {
   initialBrief?: NewProjectBrief;
   busy: boolean;
   onCancel: () => void;
+  onManageKnowledge: () => void;
   onSubmit: (brief: NewProjectBrief) => void;
 }
+
+const ATTACHMENT_KIND_LABELS: Record<
+  "manual" | "standard" | "project_document",
+  string
+> = {
+  manual: "매뉴얼",
+  standard: "표준",
+  project_document: "프로젝트 문서",
+};
 
 export function ProjectFlowStepper({
   activeStep,
@@ -36,9 +49,9 @@ export function ProjectFlowStepper({
     },
     {
       number: 4,
-      label: "로직·검사·시뮬레이션",
-      available: false,
-      unavailableLabel: "아직 구현되지 않음",
+      label: "로직·프로그램 검사",
+      available: nativeProjectAvailable,
+      unavailableLabel: "현재 환경에서 비활성",
     },
   ] as const;
 
@@ -69,6 +82,7 @@ export function NewProjectBriefPanel({
   initialBrief,
   busy,
   onCancel,
+  onManageKnowledge,
   onSubmit,
 }: NewProjectBriefPanelProps) {
   const [projectName, setProjectName] = useState(
@@ -90,6 +104,13 @@ export function NewProjectBriefPanel({
   const [performanceAndAcceptance, setPerformanceAndAcceptance] = useState(
     initialBrief?.performanceAndAcceptance ?? "",
   );
+  const [attachmentSourceIds, setAttachmentSourceIds] = useState<string[]>(
+    initialBrief?.attachmentSourceIds ?? [],
+  );
+  const [attachmentSources, setAttachmentSources] = useState<KnowledgeSource[]>([]);
+  const [attachmentLoading, setAttachmentLoading] = useState(false);
+  const [attachmentError, setAttachmentError] = useState("");
+  const [attachmentRefresh, setAttachmentRefresh] = useState(0);
   const [safetyTouched, setSafetyTouched] = useState(false);
   const [optionalDetailsOpen, setOptionalDetailsOpen] = useState(
     Boolean(
@@ -104,6 +125,42 @@ export function NewProjectBriefPanel({
   const safetyReady = Boolean(safetyAndInterlocks.trim());
   const briefReady =
     projectNameReady && machinePurposeReady && safetyReady && !busy;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setAttachmentLoading(true);
+    setAttachmentError("");
+    void hostApi
+      .listKnowledgeSources({
+        kinds: ["manual", "standard", "project_document"],
+        statuses: ["confirmed"],
+        limit: 200,
+        signal: controller.signal,
+      })
+      .then((page) => setAttachmentSources(page.items))
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          setAttachmentError(
+            error instanceof Error
+              ? error.message
+              : "첨부 가능한 자료를 불러오지 못했습니다.",
+          );
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setAttachmentLoading(false);
+        }
+      });
+    return () => controller.abort();
+  }, [attachmentRefresh]);
+
+  const availableAttachmentIds = new Set(
+    attachmentSources.map((source) => source.sourceId),
+  );
+  const missingAttachmentSourceIds = attachmentSourceIds.filter(
+    (sourceId) => !availableAttachmentIds.has(sourceId),
+  );
 
   return (
     <section
@@ -148,6 +205,7 @@ export function NewProjectBriefPanel({
             safetyAndInterlocks: safetyAndInterlocks.trim(),
             operatingModes: operatingModes.trim(),
             performanceAndAcceptance: performanceAndAcceptance.trim(),
+            attachmentSourceIds,
           });
         }}
       >
@@ -272,6 +330,114 @@ export function NewProjectBriefPanel({
             </label>
           </div>
         </details>
+
+        <fieldset className="brief-attachments">
+          <legend>계획에 참고 자료 첨부</legend>
+          <div className="brief-attachment-heading">
+            <p>
+              확인된 매뉴얼·표준·프로젝트 문서만 선택할 수 있습니다. 자료의
+              ID·해시·리비전은 계획서에 고정되며, 문서 내용은 승인된 사실이
+              아니라 인용이 필요한 참고 근거로 취급됩니다.
+            </p>
+            <div>
+              <button
+                className="button secondary-button"
+                type="button"
+                disabled={busy}
+                onClick={onManageKnowledge}
+              >
+                <Icon name="database" size={15} />
+                자료 관리
+              </button>
+              <button
+                className="button secondary-button"
+                type="button"
+                disabled={busy || attachmentLoading}
+                onClick={() => setAttachmentRefresh((value) => value + 1)}
+              >
+                <Icon name="refresh" size={15} />
+                새로고침
+              </button>
+            </div>
+          </div>
+
+          {attachmentError ? (
+            <p className="brief-attachment-error" role="alert">
+              {attachmentError}
+            </p>
+          ) : null}
+
+          <div className="brief-attachment-list" aria-busy={attachmentLoading}>
+            {attachmentSources.map((source) => {
+              const selected = attachmentSourceIds.includes(source.sourceId);
+              const kindLabel =
+                ATTACHMENT_KIND_LABELS[
+                  source.kind as keyof typeof ATTACHMENT_KIND_LABELS
+                ] ?? source.kind;
+              return (
+                <label key={source.sourceId}>
+                  <input
+                    type="checkbox"
+                    checked={selected}
+                    disabled={
+                      busy || (!selected && attachmentSourceIds.length >= 20)
+                    }
+                    onChange={(event) =>
+                      setAttachmentSourceIds((current) =>
+                        event.target.checked
+                          ? [...current, source.sourceId]
+                          : current.filter((item) => item !== source.sourceId),
+                      )
+                    }
+                  />
+                  <Icon name="file" size={17} />
+                  <span>
+                    <strong>{source.title}</strong>
+                    <small>
+                      {kindLabel} · {source.scope}
+                      {source.vendor ? ` · ${source.vendor}` : ""}
+                      {source.productFamily
+                        ? ` · ${source.productFamily}`
+                        : ""}
+                      {source.version ? ` · v${source.version}` : ""}
+                    </small>
+                  </span>
+                </label>
+              );
+            })}
+
+            {missingAttachmentSourceIds.map((sourceId) => (
+              <label className="brief-attachment-missing" key={sourceId}>
+                <input
+                  type="checkbox"
+                  checked
+                  disabled={busy}
+                  onChange={() =>
+                    setAttachmentSourceIds((current) =>
+                      current.filter((item) => item !== sourceId),
+                    )
+                  }
+                />
+                <Icon name="warning" size={17} />
+                <span>
+                  <strong>현재 사용할 수 없는 첨부 자료</strong>
+                  <small>{sourceId} · 선택을 해제하거나 자료를 복구하세요.</small>
+                </span>
+              </label>
+            ))}
+
+            {!attachmentLoading &&
+            attachmentSources.length === 0 &&
+            missingAttachmentSourceIds.length === 0 ? (
+              <p>
+                첨부 가능한 확인 자료가 없습니다. 자료 관리에서 문서를 가져온 뒤
+                새로고침하세요.
+              </p>
+            ) : null}
+            {attachmentLoading ? <p>첨부 가능한 자료를 불러오는 중…</p> : null}
+          </div>
+          <small>{attachmentSourceIds.length}/20개 선택</small>
+        </fieldset>
 
         <div className="new-project-brief-note">
           <Icon name="shield" size={17} />

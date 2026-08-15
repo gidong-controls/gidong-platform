@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit
 
+from .constants import CANONICAL_PORT
 from .errors import UiOpenError
 
 CONTROLSTUDIO_WINDOW_TITLE = "ControlStudio"
@@ -38,11 +39,9 @@ def _is_allowed_browser_process_path(
     browser_paths: tuple[Path, ...],
 ) -> bool:
     normalized_process = _normalized_windows_path(process_path)
-    return (
-        process_path.name.casefold() in _BROWSER_EXECUTABLE_NAMES
-        and normalized_process
-        in {_normalized_windows_path(browser_path) for browser_path in browser_paths}
-    )
+    return process_path.name.casefold() in _BROWSER_EXECUTABLE_NAMES and normalized_process in {
+        _normalized_windows_path(browser_path) for browser_path in browser_paths
+    }
 
 
 def _window_process_path(window: int) -> Path:
@@ -173,9 +172,7 @@ def _controlstudio_windows(
 
     user32.EnumWindows(inspect_window, 0)
     if ambiguous_window:
-        raise OSError(
-            "a ControlStudio-titled Chromium window has an unverified owner process"
-        )
+        raise OSError("a ControlStudio-titled Chromium window has an unverified owner process")
     return tuple(matching_window)
 
 
@@ -194,9 +191,7 @@ def _launcher_owned_controlstudio_windows(
         # the Launcher. Recover ownership only when the allowed browser process
         # also exposes the exact loopback ControlStudio origin through UIA.
         if not _window_shows_controlstudio_origin(window):
-            raise OSError(
-                "a matching ControlStudio window is not marked as launcher-owned"
-            )
+            raise OSError("a matching ControlStudio window is not marked as launcher-owned")
         if not _set_launcher_owned_marker(window):
             raise OSError("the ControlStudio window ownership marker could not be restored")
 
@@ -206,9 +201,7 @@ def _launcher_owned_controlstudio_windows(
             require_launcher_marker=True,
         )
         if set(candidates) - set(launcher_owned):
-            raise OSError(
-                "a matching ControlStudio window is not marked as launcher-owned"
-            )
+            raise OSError("a matching ControlStudio window is not marked as launcher-owned")
     return launcher_owned
 
 
@@ -236,7 +229,7 @@ def _window_shows_controlstudio_origin(window: int) -> bool:
         if (
             parsed.scheme == "http"
             and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
-            and port == 8765
+            and port == CANONICAL_PORT
             and parsed.path in {"", "/"}
             and not parsed.username
             and not parsed.password
@@ -450,9 +443,7 @@ def _focus_controlstudio_window(
         current_thread = int(get_current_thread())
         target_thread = int(get_window_thread(window, None))
         foreground = int(get_foreground_window() or 0)
-        foreground_thread = (
-            int(get_window_thread(foreground, None)) if foreground else 0
-        )
+        foreground_thread = int(get_window_thread(foreground, None)) if foreground else 0
         attached: list[int] = []
         try:
             for thread_id in dict.fromkeys((target_thread, foreground_thread)):
@@ -494,17 +485,22 @@ def wait_for_single_controlstudio_window(
         matching_windows = _controlstudio_windows((browser,))
         if matching_windows:
             if len(matching_windows) != 1:
-                return False
+                # Chromium app-mode can expose transient top-level windows.
+                sleep(0.05)
+                continue
             window = matching_windows[0]
             if not _set_launcher_owned_marker(window):
                 return False
-            if _controlstudio_windows(
-                (browser,),
-                require_launcher_marker=True,
-            ) != matching_windows:
+            if (
+                _controlstudio_windows(
+                    (browser,),
+                    require_launcher_marker=True,
+                )
+                != matching_windows
+            ):
                 return False
-            if not _focus_controlstudio_window(window):
-                return False
+            # Verified rendering, not foreground-steal permission, is authoritative.
+            _focus_controlstudio_window(window)
 
             # Give the first navigation a short chance to render normally. If
             # Edge only created a white native frame, reload this exact verified
@@ -515,13 +511,14 @@ def wait_for_single_controlstudio_window(
             )
             while monotonic() < initial_render_deadline:
                 if rendered_probe(window):
+                    _focus_controlstudio_window(window)
                     return True
                 sleep(0.05)
-            if not refresher(window):
-                return False
+            refresher(window)
             while monotonic() < deadline:
                 if rendered_probe(window):
-                    return _focus_controlstudio_window(window)
+                    _focus_controlstudio_window(window)
+                    return True
                 sleep(0.05)
             return False
         sleep(0.05)
@@ -568,9 +565,7 @@ class SystemUiOpener:
         existing_window_closer: Callable[
             [tuple[Path, ...]], bool
         ] = close_existing_controlstudio_windows,
-        opened_window_waiter: Callable[
-            [Path], bool
-        ] = wait_for_single_controlstudio_window,
+        opened_window_waiter: Callable[[Path], bool] = wait_for_single_controlstudio_window,
     ) -> None:
         self._platform_name = platform_name
         self._popen = popen
@@ -595,9 +590,7 @@ class SystemUiOpener:
         try:
             matching_windows = _launcher_owned_controlstudio_windows(browsers)
         except OSError as exc:
-            raise UiOpenError(
-                "could not verify the existing ControlStudio window safely"
-            ) from exc
+            raise UiOpenError("could not verify the existing ControlStudio window safely") from exc
 
         if not matching_windows:
             return False
@@ -609,9 +602,7 @@ class SystemUiOpener:
                     "could not repair multiple existing ControlStudio windows safely"
                 ) from exc
             if not closed:
-                raise UiOpenError(
-                    "could not repair multiple existing ControlStudio windows safely"
-                )
+                raise UiOpenError("could not repair multiple existing ControlStudio windows safely")
             return False
 
         if not _focus_controlstudio_window(matching_windows[0]):
@@ -630,9 +621,7 @@ class SystemUiOpener:
                 )
             try:
                 if not self._existing_window_closer(browsers):
-                    raise UiOpenError(
-                        "could not replace the existing ControlStudio window safely"
-                    )
+                    raise UiOpenError("could not replace the existing ControlStudio window safely")
             except OSError as exc:
                 raise UiOpenError(
                     "could not verify and replace the existing ControlStudio window safely"
@@ -660,12 +649,9 @@ class SystemUiOpener:
                     self._existing_window_closer(browsers)
                 if window_error is not None:
                     raise UiOpenError(
-                        "ControlStudio opened but its app window ownership "
-                        "could not be verified"
+                        "ControlStudio opened but its app window ownership could not be verified"
                     ) from window_error
-                raise UiOpenError(
-                    "ControlStudio did not produce exactly one foreground app window"
-                )
+                raise UiOpenError("ControlStudio did not produce exactly one foreground app window")
             raise UiOpenError("could not start Microsoft Edge or Google Chrome")
 
         if not self._browser_open(url, new=1, autoraise=True):

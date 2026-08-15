@@ -6,6 +6,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Protocol
 
+from .constants import PRODUCT_DATA_DIRECTORY_NAME
+
 
 class LaunchTokenStore(Protocol):
     def load(self) -> str | None: ...
@@ -17,8 +19,13 @@ def default_token_path(environ: dict[str, str] | None = None) -> Path:
     values = os.environ if environ is None else environ
     local_app_data = values.get("LOCALAPPDATA")
     if local_app_data:
-        return Path(local_app_data) / "ControlStudio" / "session.token"
-    return Path.home() / ".config" / "controlstudio" / "session.token"
+        return Path(local_app_data) / PRODUCT_DATA_DIRECTORY_NAME / "session.token"
+    return (
+        Path.home()
+        / ".config"
+        / PRODUCT_DATA_DIRECTORY_NAME.casefold().replace(" ", "-")
+        / "session.token"
+    )
 
 
 class FileLaunchTokenStore:

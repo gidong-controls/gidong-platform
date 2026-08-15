@@ -226,7 +226,7 @@ export function ModelSettingsDialog({
         newHeaderName: "",
         newHeaderValue: "",
       }));
-      setNotice("모델 연결 설정을 Windows 보안 저장소에 저장했습니다.");
+      setNotice("모델 연결 설정을 Development 프로필에 저장했습니다.");
       onSaved();
     } catch (error) {
       setNotice(errorMessage(error));
@@ -346,7 +346,7 @@ export function ModelSettingsDialog({
             />
             <span className="field-hint">
               {hasSavedApiKey
-                ? "Windows 보안 저장소에 키가 있습니다. 값은 표시하지 않습니다."
+                ? "Development 모델 프로필에 키가 저장되어 있습니다. 값은 표시하지 않습니다."
                 : "저장된 API 키가 없습니다."}
             </span>
           </label>

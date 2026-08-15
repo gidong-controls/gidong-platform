@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Callable
 from urllib.parse import quote
@@ -19,6 +20,22 @@ from .instance import InstanceGuard
 from .integrity import ElevationBroker, NoopElevationBroker
 from .token import LaunchTokenStore
 from .ui import UiOpener
+
+_HOST_ONLY_DEVELOPMENT_MODEL_ENVIRONMENT = (
+    "CONTROLSTUDIO_DEVELOPMENT_MODEL_BASE_URL",
+    "CONTROLSTUDIO_DEVELOPMENT_MODEL_NAME",
+    "CONTROLSTUDIO_DEVELOPMENT_MODEL_TIMEOUT_SECONDS",
+    "CONTROLSTUDIO_DEVELOPMENT_MODEL_API_KEY",
+)
+
+
+def _take_host_only_environment() -> dict[str, str]:
+    result: dict[str, str] = {}
+    for name in _HOST_ONLY_DEVELOPMENT_MODEL_ENVIRONMENT:
+        value = os.environ.pop(name, None)
+        if value is not None:
+            result[name] = value
+    return result
 
 
 class ControlStudioLauncher:
@@ -61,6 +78,7 @@ class ControlStudioLauncher:
             verified_host=verified_host,
             parent_opens_ui=open_ui,
         ):
+            _take_host_only_environment()
             write_launcher_diagnostic(
                 "elevation handoff started before launcher instance lock"
             )
@@ -75,6 +93,8 @@ class ControlStudioLauncher:
             if open_ui:
                 self._open_elevation_handoff_under_instance_guard(launch_token)
             return
+
+        host_only_environment = _take_host_only_environment()
 
         with self._instance_guard:
             initial = self._health_probe.probe()
@@ -112,7 +132,10 @@ class ControlStudioLauncher:
                         process = self._host_starter.start(
                             self._settings.host_command,
                             self._settings.host_cwd,
-                            {"CONTROLSTUDIO_LAUNCH_TOKEN": launch_token},
+                            {
+                                **host_only_environment,
+                                "CONTROLSTUDIO_LAUNCH_TOKEN": launch_token,
+                            },
                         )
                     except OSError as exc:
                         raise HostStartError(

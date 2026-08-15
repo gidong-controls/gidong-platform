@@ -87,6 +87,7 @@ class ChangeVerificationResult:
 
     def __post_init__(self) -> None:
         allowed = {
+            ChangeTransactionState.OBSERVING,
             ChangeTransactionState.COMPLETED,
             ChangeTransactionState.ROLLED_BACK,
             ChangeTransactionState.FAILED,
@@ -159,7 +160,16 @@ class MCPChangeExecutionService:
             raise ChangeExecutionPreconditionError(
                 "a verified engineering session is required before offline mutation"
             )
-        self._native_plan_arguments(transaction)
+        native_plan = self._native_plan_arguments(transaction)
+        if not {
+            "analysis_digest",
+            "hardware_context_digest",
+            "network_id",
+            "network_digest",
+        }.issubset(native_plan):
+            raise ChangeExecutionPreconditionError(
+                "offline execution requires a native change-target analysis receipt"
+            )
         self._validate_verification_contract(transaction)
 
     async def apply(self, transaction: ChangeTransaction) -> ChangeApplyResult:
@@ -958,12 +968,34 @@ class MCPChangeExecutionService:
         )
         expected = current.get("value", current.get("operand"))
         replacement = proposed.get("value", proposed.get("operand"))
-        values = {
+        analysis_digest = target.get(
+            "analysis_digest",
+            target.get("analysisDigest"),
+        )
+        network_id = target.get("network_id", target.get("networkId"))
+        network_digest = target.get(
+            "network_digest",
+            target.get("networkDigest"),
+        )
+        hardware_context_digest = target.get(
+            "hardware_context_digest",
+            target.get("hardwareContextDigest"),
+        )
+        values: dict[str, Any] = {
             "program_id": program,
             "token_offset": token,
             "expected": expected,
             "replacement": replacement,
         }
+        analysis_values = {
+            "analysis_digest": analysis_digest,
+            "network_id": network_id,
+            "network_digest": network_digest,
+        }
+        if any(value not in {None, ""} for value in analysis_values.values()):
+            values.update(analysis_values)
+        if hardware_context_digest not in {None, ""}:
+            values["hardware_context_digest"] = hardware_context_digest
         missing = [
             name for name, value in values.items() if value is None or value == ""
         ]
@@ -972,13 +1004,40 @@ class MCPChangeExecutionService:
                 "change plan is missing native mutation fields: "
                 + ", ".join(missing)
             )
-        if not isinstance(program, str) or not isinstance(token, int) or token < 0:
+        if (
+            not isinstance(program, str)
+            or not isinstance(token, int)
+            or isinstance(token, bool)
+            or token < 0
+        ):
             raise ChangeExecutionPreconditionError(
                 "program_id must be text and token_offset must be a non-negative integer"
             )
         if not isinstance(expected, str) or not isinstance(replacement, str):
             raise ChangeExecutionPreconditionError(
                 "expected and replacement operands must be text"
+            )
+        if analysis_values.keys() <= values.keys() and (
+            not isinstance(analysis_digest, str)
+            or len(analysis_digest) != 64
+            or not isinstance(network_id, str)
+            or not network_id
+            or not isinstance(network_digest, str)
+            or len(network_digest) != 64
+        ):
+            raise ChangeExecutionPreconditionError(
+                "native change-target analysis and network identity are incomplete"
+            )
+        if "hardware_context_digest" in values and (
+            not isinstance(hardware_context_digest, str)
+            or len(hardware_context_digest) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in hardware_context_digest.casefold()
+            )
+        ):
+            raise ChangeExecutionPreconditionError(
+                "native hardware context digest is incomplete"
             )
         return values
 
@@ -1039,6 +1098,10 @@ class MCPChangeExecutionService:
             "backup_id": plan_arguments["backup_id"],
             "program_id": plan_arguments["program_id"],
             "token_offset": plan_arguments["token_offset"],
+            "analysis_digest": plan_arguments["analysis_digest"],
+            "hardware_context_digest": plan_arguments["hardware_context_digest"],
+            "network_id": plan_arguments["network_id"],
+            "network_digest": plan_arguments["network_digest"],
             "expected": plan_arguments["expected"],
             "replacement": plan_arguments["replacement"],
             "project_hash": target.artifact_hash,
@@ -1244,6 +1307,45 @@ class MCPChangeExecutionService:
         if any(not payload[field] for field in required):
             raise ChangeExecutionPreconditionError(
                 "program.plan_change returned an incomplete digest contract"
+            )
+        analysis_values = {
+            "analysis_digest": plan.get("analysis_digest"),
+            "network_id": plan.get("network_id"),
+            "network_digest": plan.get("network_digest"),
+        }
+        if any(value not in {None, ""} for value in analysis_values.values()):
+            if not all(value not in {None, ""} for value in analysis_values.values()):
+                raise ChangeExecutionPreconditionError(
+                    "program.plan_change returned an incomplete target analysis identity"
+                )
+            payload.update(
+                {
+                    "schema": "controlstudio-ld-plan-digest/v2",
+                    "analysis_digest": cls._normalize_sha256(
+                        analysis_values["analysis_digest"],
+                        "analysis_digest",
+                    ),
+                    "network_id": str(analysis_values["network_id"]),
+                    "network_digest": cls._normalize_sha256(
+                        analysis_values["network_digest"],
+                        "network_digest",
+                    ),
+                }
+            )
+        hardware_context_digest = plan.get("hardware_context_digest")
+        if hardware_context_digest not in {None, ""}:
+            if not all(value not in {None, ""} for value in analysis_values.values()):
+                raise ChangeExecutionPreconditionError(
+                    "hardware-bound MCP plan omitted its target analysis identity"
+                )
+            payload.update(
+                {
+                    "schema": "controlstudio-ld-plan-digest/v3",
+                    "hardware_context_digest": cls._normalize_sha256(
+                        hardware_context_digest,
+                        "hardware_context_digest",
+                    ),
+                }
             )
         return hashlib.sha256(
             json.dumps(

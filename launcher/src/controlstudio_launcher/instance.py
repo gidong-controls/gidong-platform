@@ -6,7 +6,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Protocol
 
-from .constants import WINDOWS_MUTEX_NAME
+from .constants import PORTABLE_LOCK_NAME, WINDOWS_MUTEX_NAME
 from .errors import LauncherAlreadyRunning
 
 
@@ -76,10 +76,10 @@ class WindowsNamedMutex:
 
 
 class PortableFileLock:
-    """Cross-platform development/test fallback with an OS-backed lock."""
+    """Non-Windows launcher guard backed by the host operating system."""
 
     def __init__(self, path: Path | None = None) -> None:
-        self._path = path or Path(tempfile.gettempdir()) / "controlstudio-launcher.lock"
+        self._path = path or Path(tempfile.gettempdir()) / PORTABLE_LOCK_NAME
         self._file = None
 
     def __enter__(self) -> PortableFileLock:

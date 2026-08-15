@@ -1,0 +1,173 @@
+import type {
+  EngineeringMission,
+  EngineeringMissionStatus,
+  EngineeringMissionStepStatus,
+} from "../api/types";
+
+export interface EngineeringMissionPanelProps {
+  mission: EngineeringMission;
+  availableEvidenceIds: readonly string[];
+  onOpenEvidence: (evidenceId: string, trigger: HTMLButtonElement) => void;
+  resumeAvailable: boolean;
+  resumeBusy: boolean;
+  onResume: () => void;
+  startNewAvailable: boolean;
+  startNewBusy: boolean;
+  onStartNew: () => void;
+}
+
+const STATUS_LABEL: Record<EngineeringMissionStatus, string> = {
+  active: "진행 중",
+  waiting_for_user: "사용자 입력 대기",
+  waiting_for_approval: "사람 승인 대기",
+  completed: "목표 달성",
+  blocked: "차단됨",
+};
+
+const STEP_STATUS_LABEL: Record<EngineeringMissionStepStatus, string> = {
+  pending: "대기",
+  active: "수행 중",
+  completed: "완료",
+  blocked: "차단",
+};
+
+export function EngineeringMissionPanel({
+  mission,
+  availableEvidenceIds,
+  onOpenEvidence,
+  resumeAvailable,
+  resumeBusy,
+  onResume,
+  startNewAvailable,
+  startNewBusy,
+  onStartNew,
+}: EngineeringMissionPanelProps) {
+  const { snapshot } = mission;
+  const completed = snapshot.steps.filter(
+    (step) => step.status === "completed",
+  ).length;
+  const canResume = snapshot.status === "active" && resumeAvailable;
+
+  return (
+    <section className="engineering-mission" aria-label="엔지니어링 에이전트 작업 계획">
+      <header className="engineering-mission__header">
+        <div>
+          <p className="eyebrow">ENGINEERING MISSION</p>
+          <h3>{snapshot.objective}</h3>
+        </div>
+        <div className="engineering-mission__status">
+          <span className={`mission-status mission-status--${snapshot.status}`}>
+            {STATUS_LABEL[snapshot.status]}
+          </span>
+          <small>
+            {completed}/{snapshot.steps.length} 단계 · revision {mission.revision}
+          </small>
+        </div>
+      </header>
+
+      <ol className="engineering-mission__steps">
+        {snapshot.steps.map((step) => (
+          <li
+            key={step.stepId}
+            className={`mission-step mission-step--${step.status}`}
+          >
+            <span className="mission-step__marker" aria-hidden="true" />
+            <div>
+              <div className="mission-step__heading">
+                <strong>{step.title}</strong>
+                <span>{STEP_STATUS_LABEL[step.status]}</span>
+              </div>
+              {step.outcome && <p>{step.outcome}</p>}
+              {step.evidenceRefs.length > 0 && (
+                <details>
+                  <summary>결속된 근거 {step.evidenceRefs.length}건</summary>
+                  <ul>
+                    {step.evidenceRefs.map((evidenceRef) => (
+                      <li key={evidenceRef}>
+                        <button
+                          type="button"
+                          className="mission-evidence-link"
+                          disabled={!availableEvidenceIds.includes(evidenceRef)}
+                          title={
+                            availableEvidenceIds.includes(evidenceRef)
+                              ? "이 단계의 근거 열기"
+                              : "현재 대화의 근거 목록에 아직 불러오지 못했습니다."
+                          }
+                          onClick={(event) =>
+                            onOpenEvidence(evidenceRef, event.currentTarget)
+                          }
+                        >
+                          <code>{evidenceRef}</code>
+                          <span>
+                            {availableEvidenceIds.includes(evidenceRef)
+                              ? "근거 열기"
+                              : "불러오지 못함"}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          </li>
+        ))}
+      </ol>
+
+      {snapshot.blockingQuestions.length > 0 && (
+        <div className="engineering-mission__blockers">
+          <strong>진행에 필요한 답변</strong>
+          <ul>
+            {snapshot.blockingQuestions.map((question) => (
+              <li key={question}>{question}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <details className="engineering-mission__criteria">
+        <summary>완료 조건 {snapshot.completionCriteria.length}개</summary>
+        <ol>
+          {snapshot.completionCriteria.map((criterion) => (
+            <li key={criterion}>{criterion}</li>
+          ))}
+        </ol>
+      </details>
+
+      <footer className="engineering-mission__footer">
+        <div>
+          {snapshot.nextAction && (
+            <p>
+              <strong>다음 행동</strong> {snapshot.nextAction}
+            </p>
+          )}
+          <small title={mission.digest}>
+            mission digest <code>{mission.digest.slice(0, 12)}…</code>
+          </small>
+        </div>
+        {snapshot.status === "active" && (
+          <button
+            type="button"
+            className="button primary-button"
+            disabled={!canResume || resumeBusy}
+            aria-busy={resumeBusy || undefined}
+            onClick={onResume}
+          >
+            {resumeBusy ? "작업 재개 중…" : "작업 계속 실행"}
+          </button>
+        )}
+        {(snapshot.status === "completed" || snapshot.status === "blocked") && (
+          <button
+            type="button"
+            className="button secondary-button"
+            disabled={!startNewAvailable || startNewBusy}
+            aria-busy={startNewBusy || undefined}
+            onClick={onStartNew}
+          >
+            {startNewBusy ? "새 작업 준비 중…" : "새 엔지니어링 작업"}
+          </button>
+        )}
+      </footer>
+    </section>
+  );
+}

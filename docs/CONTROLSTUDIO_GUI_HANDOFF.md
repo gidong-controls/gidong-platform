@@ -53,8 +53,8 @@ ControlStudio가 제공할 핵심 화면은 다음이다.
 - 현재 workspace, 벤더, CPU, 프로젝트, XG5000 세션과 PLC 연결 상태
 - 분석 진행 단계와 사용한 증거
 - 확인된 사실, 추론, 가설, 불확실성과 추가 측정 항목
-- 관련 프로그램·네트워크·명령 위치와 `XG5000에서 열기`
-- 직접·간접 영향, 인과 경로, 상태와 시간축의 구조화된 결과
+- 관련 program·network/rung·visual row·token 위치와 `XG5000에서 열기`
+- 직접·간접 영향, full causal device chain, 상태와 시간축의 구조화된 결과
 - 여러 해결안의 효과, 위험, 변경 범위와 추천 근거
 - 대상·현재값·제안·영향·검증·복구를 갖춘 변경 계약
 - 승인·거절·중단, 실행, readback, 검사, 복구와 감사 증거
@@ -131,17 +131,17 @@ START
    - vendor·CPU·project path·language 같은 생성 필드 확정
    - 계획 승인과 native project 생성 승인을 분리
 
-6. 생성 이후 단계
-   - 로직 생성·변경
-   - program check
-   - 저장·재열기
-   - simulator
+6. 생성과 이후 단계
+   - reviewed typed 설계의 XGK/XGB STEP·TON·alarm·recovery·interlock 생성
+   - exact mnemonic readback·LD 변환·program check·저장
+   - 독립 재열기·재추출
+   - simulator 정상·경계·고장·복구 시나리오
    - online download/run edit는 각각 별도 capability와 승인
 ```
 
 계획 검토 완료는 프로젝트 생성 또는 PLC 작업 승인이 아니다. 아직 지원되지 않는
-단계는 버튼을 비활성화하고 정확한 이유를 표시하며, 계획이나 빈 프로젝트 골격을
-완성품이라고 부르지 않는다.
+단계는 버튼을 비활성화하고 정확한 이유를 표시하며, 계획이나 기본 조합 프로그램을
+독립 재열기·simulation까지 끝난 완성품이라고 부르지 않는다.
 
 ## 3. 실행 수명주기
 
@@ -428,6 +428,8 @@ API가 인증됐다는 사실은 MCP capability를 대신하지 않는다. Host�
   동시에 표시하지 않음
 - 계획 상태가 `ready_for_review`이고 사용자가 명시적으로 검토 완료를 선택한
   뒤에만 지원되는 벤더 기술 설정으로 이동
+- 계획에서 항목별로 검토한 프로젝트 이름·PLC 시리즈·CPU·프로그램·언어·설명은
+  기술 설정 화면에 그대로 인계하고 다시 입력하거나 바꾸게 하지 않음
 - 계획 검토와 native project 생성, 로직 변경, 검사·시뮬레이션, 온라인 작업의
   승인을 서로 재사용하지 않음
 - 자연어 요청에서 실제 MCP 읽기 도구와 결과까지 연결
@@ -482,41 +484,37 @@ API가 인증됐다는 사실은 MCP capability를 대신하지 않는다. Host�
 - XG5000 인스턴스 선택, 대화·활동·모델 설정, run 취소와 명시적 종료
 - 실제 XG5000 프로그램 목록을 보여 주는 좁은 읽기 전용 탐색 패널과
   `XG5000에서 열기` Host/Web 호출
+- `Engineering Analysis v4`의 evidence-bound exact program·network/rung·visual
+  row·token 위치, relation/full causal chain, explicit coverage·truncation·
+  limitations를 `근거 위치`, `신호 관계`, `조사 범위`로 나누어 표시하는 분석 패널.
+  위치의 프로그램명이 현재 프로그램 목록에서 exact하게 하나만 일치할 때만
+  해당 위치에 프로그램 전면화용 `XG5000에서 열기`를 표시. exact network/rung/token
+  이동은 아직 지원하지 않음
 - MCP tool 진행을 이름·tool-call ID·상태만 남긴 서버 이벤트로 표시하고
   도구 인자·결과·원시 오류는 사용자 화면에 노출하지 않는 활동 흐름
 - 동일 길이 LD operand 한 개에 한정된 구조화 변경 계약, 승인·거절·실행과
   `QUARANTINED` transaction의 명시적 PID/HWND 선택 복구 화면
 - 정확한 XG5000 PID/HWND를 선택해 LS 네이티브 프로젝트 생성을 요청하고
   서버의 idempotent 작업 상태·identity 검증 결과를 표시하는 화면
-- LS FEnet TCP 2004의 상태·device 읽기 전용 연결 화면
+- LS FEnet TCP 2004의 상태·device 단발 읽기와 최대 30초 bounded 값 변화 trace를
+  표시하는 읽기 전용 연결 화면
 
-UI가 존재한다는 사실과 현장 기능 검증을 구분한다.
+이 구조화 표시는 Host evidence에 결속된 정적 분석 범위를 전달한다. 현재 PLC
+runtime truth, 실제 field wiring 또는 프로그램 이름에서 추정한 목적을 증명하지
+않으며, 대표 production 프로젝트의 실제 분석 acceptance도 아직 완료되지 않았다.
 
-- 신규 프로젝트의 계획 전용 agent 경로는 MCP·mutation 도구 없이 동작하도록
-  구현됐다. 네이티브 XG5000 골격 생성 backend와 UI는 fake XG5000 backend에서
-  검증됐다. 현재 실제 XG5000 생성 시도는 visible modal/elevation 불일치 때문에
-  변경 전에 안전하게 거부됐으므로 live 생성 성공으로 표시하지 않는다.
-  일반 로직 생성·검사·재열기·XG-SIM까지 이어지는 신규 구축 경로도 아직
-  완료가 아니다.
-- FEnet 화면은 private/CGNAT/ULA 숫자 주소와 고정 포트 2004만 허용하며,
-  fake TCP server에서만 검증됐다. 실제 PLC identity나 프로젝트 복원을
-  제공하지 않는다. Host가 `online_observe=preview/fake_only/currentReady=false`
-  로 보고하므로 일반 사용자 진입은 활성화하지 않는다. 일반 제품 Host는
-  UI 우회 직접 API 요청도 MCP 호출 전에 거부한다.
-- 변경 화면은 한 operand transaction만 지원한다. 외부 재열기·XG-SIM·온라인
-  readback은 현재 검증 scope에 포함되지 않았음을 결과에 그대로 표시한다.
-- 프로그램 목록 읽기와 `program.focus`·`XG5000에서 열기`는 단위·MCP·
-  Host·Web 통합 시험에 더해 실제 대동 프로젝트의 프로그램 전면화와 프로젝트
-  hash 불변 read-only E2E까지 검증했다.
+UI는 실행 성공을 추정하지 않는다. Host와 MCP가 반환한 target identity,
+operation 상태, exact native readback과 evidence receipt를 그대로 표시하며,
+필수 receipt가 없는 기능은 활성 상태로 보여 주지 않는다.
 
 설치 프로그램과 서명된 배포물, 원격 접근, 기기 pairing, PLC에서 프로젝트
-복원, 강한 online identity·trace, 실제 PLC write/run edit/force/mode/download,
-일반 LD 생성과 전체 신규 설비 로직 구축은 아직 없다. 구현되지 않았거나
-fake-only인 기능은 준비됨으로 표시하지 않는다.
+복원, 강한 online identity·controller-native scan trace, 실제 PLC write/run edit/force/mode/download,
+일반 LD 생성과 전체 신규 설비 로직 구축은 아직 없다. 구현되지 않은 기능은
+준비됨으로 표시하지 않는다.
 
-현재 `xg5000_control.gui`는 이 문서의 GUI가 아니라 LS adapter용 읽기 전용
-Tkinter 개발·진단 콘솔이다. 문서가 추가됐다는 이유로 제품 GUI를 구현했다고
-주장하지 않는다.
+기존 `xg5000_control.gui` Tkinter 개발·진단 콘솔은 제품 실행 경로가 아니어서
+제거했다. 제품 UI는 Platform Web과 Host API만 사용하며, 문서가 추가됐다는
+이유로 구현되지 않은 기능을 완료로 주장하지 않는다.
 
 ## 12. 기술 근거
 

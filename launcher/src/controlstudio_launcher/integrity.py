@@ -9,10 +9,15 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
 
+from .constants import CANONICAL_PORT
 from .errors import ElevationError
 
 _XG5000_EXECUTABLE = "xg5000.exe"
+_SUPPORTED_XG5000_PATH = Path(r"C:\XG5000\XG5000.EXE")
 _HIGH_INTEGRITY_RID = 0x3000
+_TOKEN_ELEVATION_TYPE_DEFAULT = 1
+_TOKEN_ELEVATION_TYPE_FULL = 2
+_TOKEN_ELEVATION_TYPE_LIMITED = 3
 
 
 class ElevationBroker(Protocol):
@@ -35,7 +40,7 @@ class NoopElevationBroker:
 
 
 class WindowsElevationBroker:
-    """Match an already-running elevated XG5000 before starting the Host."""
+    """Start the Host at the integrity required by installed XG5000 automation."""
 
     def __init__(
         self,
@@ -45,6 +50,7 @@ class WindowsElevationBroker:
         process_integrity: Callable[[int], int] | None = None,
         xg5000_processes: Callable[[], tuple[int, ...]] | None = None,
         host_processes: Callable[[], tuple[int, ...]] | None = None,
+        installed_xg5000_target: Callable[[int], int] | None = None,
         relaunch: Callable[[Sequence[str]], None] | None = None,
     ) -> None:
         self._arguments = tuple(arguments)
@@ -52,6 +58,9 @@ class WindowsElevationBroker:
         self._process_integrity = process_integrity or _process_integrity_level
         self._xg5000_processes = xg5000_processes or _current_session_xg5000_pids
         self._host_processes = host_processes or _canonical_listener_pids
+        self._installed_xg5000_target = (
+            installed_xg5000_target or _installed_xg5000_target_integrity
+        )
         self._relaunch = relaunch or _relaunch_current_launcher_elevated
 
     def relaunch_if_required(
@@ -70,25 +79,28 @@ class WindowsElevationBroker:
             raise ElevationError(
                 f"could not verify the XG5000/ControlStudio privilege boundary: {exc}"
             ) from exc
-        if not xg5000_processes:
-            return False
-
-        xg5000_integrities: list[int] = []
-        for pid in xg5000_processes:
+        if xg5000_processes:
+            xg5000_integrities: list[int] = []
+            for pid in xg5000_processes:
+                try:
+                    xg5000_integrities.append(self._process_integrity(pid))
+                except OSError:
+                    # A same-session XG5000 whose token cannot be queried from a
+                    # medium-integrity launcher must not be automated blindly.
+                    xg5000_integrities.append(_HIGH_INTEGRITY_RID)
+            target_integrity = max(xg5000_integrities)
+        else:
             try:
-                xg5000_integrities.append(self._process_integrity(pid))
-            except OSError:
-                # A same-session XG5000 whose token cannot be queried from a
-                # medium-integrity launcher must not be automated blindly.
-                xg5000_integrities.append(_HIGH_INTEGRITY_RID)
-        target_integrity = max(xg5000_integrities)
+                target_integrity = self._installed_xg5000_target(current_integrity)
+            except OSError as exc:
+                raise ElevationError(
+                    f"could not verify the installed XG5000 privilege boundary: {exc}"
+                ) from exc
 
         if verified_host:
             try:
                 host_processes = self._host_processes()
-                host_integrities = [
-                    self._process_integrity(pid) for pid in host_processes
-                ]
+                host_integrities = [self._process_integrity(pid) for pid in host_processes]
             except OSError as exc:
                 raise ElevationError(
                     f"could not verify the running ControlStudio Host privilege: {exc}"
@@ -97,12 +109,10 @@ class WindowsElevationBroker:
                 raise ElevationError(
                     "the verified ControlStudio Host listener owner could not be identified"
                 )
-            if any(
-                host_integrity < target_integrity
-                for host_integrity in host_integrities
-            ):
+            if any(host_integrity < target_integrity for host_integrity in host_integrities):
                 raise ElevationError(
-                    "ControlStudio Host is running with lower privileges than XG5000. "
+                    "ControlStudio Host is running below the integrity required for "
+                    "XG5000 automation. "
                     "Close ControlStudio Host and launch ControlStudio again so Windows "
                     "can request the matching privilege level."
                 )
@@ -123,14 +133,74 @@ def create_elevation_broker(arguments: Sequence[str]) -> ElevationBroker:
     return NoopElevationBroker()
 
 
+def _installed_xg5000_target_integrity(current_integrity: int) -> int:
+    if not _SUPPORTED_XG5000_PATH.is_file():
+        return current_integrity
+    elevation_type = _current_token_elevation_type()
+    if elevation_type == _TOKEN_ELEVATION_TYPE_LIMITED:
+        return max(current_integrity, _HIGH_INTEGRITY_RID)
+    if elevation_type == _TOKEN_ELEVATION_TYPE_FULL:
+        return max(current_integrity, _HIGH_INTEGRITY_RID)
+    if elevation_type == _TOKEN_ELEVATION_TYPE_DEFAULT:
+        return current_integrity
+    raise OSError("Windows returned an unknown token elevation type")
+
+
+def _current_token_elevation_type() -> int:
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    get_current_process = kernel32.GetCurrentProcess
+    get_current_process.argtypes = ()
+    get_current_process.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    open_process_token = advapi32.OpenProcessToken
+    open_process_token.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    )
+    open_process_token.restype = wintypes.BOOL
+    get_token_information = advapi32.GetTokenInformation
+    get_token_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    get_token_information.restype = wintypes.BOOL
+
+    token = wintypes.HANDLE()
+    if not open_process_token(get_current_process(), 0x0008, ctypes.byref(token)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        elevation_type = wintypes.DWORD()
+        returned = wintypes.DWORD()
+        if not get_token_information(
+            token,
+            18,  # TokenElevationType
+            ctypes.byref(elevation_type),
+            ctypes.sizeof(elevation_type),
+            ctypes.byref(returned),
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return int(elevation_type.value)
+    finally:
+        close_handle(token)
+
+
 def _relaunch_current_launcher_elevated(arguments: Sequence[str]) -> None:
     target, target_arguments = _current_launcher_command(arguments)
     parameters = subprocess.list2cmdline(list(target_arguments))
     result_value = _shell_execute_runas(target, parameters)
     if result_value <= 32:
         raise ElevationError(
-            "XG5000 is running with administrator privileges. "
-            "ControlStudio needs the same privilege level; elevation was not approved."
+            "XG5000 automation requires ControlStudio to use the vendor integrity "
+            "level; elevation was not approved."
         )
 
 
@@ -352,7 +422,7 @@ def _canonical_listener_pids() -> tuple[int, ...]:
         int(row.dwOwningPid)
         for row in rows
         if row.dwState == 2  # MIB_TCP_STATE_LISTEN
-        and socket.ntohs(row.dwLocalPort & 0xFFFF) == 8765
+        and socket.ntohs(row.dwLocalPort & 0xFFFF) == CANONICAL_PORT
         and row.dwLocalAddr in {0, 0x0100007F}  # 0.0.0.0 / 127.0.0.1
     }
     return tuple(sorted(pids))

@@ -15,9 +15,16 @@ sys.path.insert(0, str(ROOT))
 from controlstudio_packaging.bom import PackagingError, verify_bom
 
 
-def _sed_text(*, source: Path, target: Path, files: list[str]) -> str:
+def _sed_text(
+    *, source: Path, target: Path, files: list[str], release_channel: str
+) -> str:
     strings = "\n".join(f'FILE{index}="{name}"' for index, name in enumerate(files))
     entries = "\n".join(f"%FILE{index}%=" for index in range(len(files)))
+    friendly_name = (
+        "ControlStudio Beta Setup"
+        if release_channel == "beta"
+        else "ControlStudio Setup"
+    )
     return f"""[Version]
 Class=IEXPRESS
 SEDVersion=3
@@ -34,7 +41,7 @@ InstallPrompt=
 DisplayLicense=
 FinishMessage=ControlStudio installation completed.
 TargetName={target}
-FriendlyName=ControlStudio Setup
+FriendlyName={friendly_name}
 AppLaunched=Install-ControlStudio.cmd
 PostInstallCmd=<None>
 AdminQuietInstCmd=Install-ControlStudio.cmd
@@ -73,7 +80,18 @@ def main() -> int:
     try:
         bom_path = portable / "controlstudio.bom.json"
         bom = json.loads(bom_path.read_text(encoding="utf-8"))
-        verify_bom(bom, portable)
+        release_channel = bom.get("release_channel")
+        if release_channel == "development":
+            raise PackagingError(
+                "development releases are portable-only; build a beta candidate to install"
+            )
+        if release_channel not in {"beta", "production"}:
+            raise PackagingError("installer release channel is invalid")
+        verify_bom(
+            bom,
+            portable,
+            require_production=release_channel == "production",
+        )
         component_files = [item["artifact"] for item in bom["components"]]
         contract_file = bom["contract_artifact"]["artifact"]
         payload_files = [*component_files, contract_file, "controlstudio.bom.json"]
@@ -96,7 +114,13 @@ def main() -> int:
             ]
             sed = staging / "ControlStudio.sed"
             sed.write_text(
-                _sed_text(source=staging, target=output, files=files), encoding="utf-8"
+                _sed_text(
+                    source=staging,
+                    target=output,
+                    files=files,
+                    release_channel=release_channel,
+                ),
+                encoding="utf-8",
             )
             completed = subprocess.run([str(iexpress), "/N", str(sed)], check=False)
             if completed.returncode or not output.is_file():

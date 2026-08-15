@@ -8,9 +8,7 @@
     "dev": "vite",
     "build": "npm run typecheck && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc -b",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "typecheck": "tsc -b"
   },
   "dependencies": {
     "@controlstudio/contracts": "file:../packages/typescript/controlstudio-contracts",
@@ -20,15 +18,10 @@
     "remark-gfm": "4.0.1"
   },
   "devDependencies": {
-    "@testing-library/jest-dom": "7.0.0",
-    "@testing-library/react": "16.3.2",
-    "@testing-library/user-event": "14.6.1",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.4",
-    "jsdom": "30.0.0",
     "typescript": "7.0.2",
-    "vite": "8.1.5",
-    "vitest": "4.1.10"
+    "vite": "8.1.5"
   }
 }

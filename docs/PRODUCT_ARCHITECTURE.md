@@ -1,6 +1,6 @@
 # GIDONG 제품 아키텍처
 
-최종 갱신: 2026-08-01
+최종 갱신: 2026-08-10
 결정 상태: three-repository 논리·물리 경계는 로컬에서 완료됐다. production
 release와 실제 PLC online 기능은 별도 evidence gate가 남아 있다.
 
@@ -32,7 +32,7 @@ Agent prompt/model credential/user conversation을 갖지 않는다.
 
 | 컴포넌트 | 소유·수행 | 소유하지 않는 것 |
 | --- | --- | --- |
-| `gidong-platform` (public) | Launcher, UI, HTTP/SSE, 사용자 원본·workspace/working copy, conversation/run/approval/audit, Agent/MCP supervision, `ExecutionBroker`, 공개 schemas/SDK, mocks/conformance | Pydantic AI prompt/retrieval ranking, vendor UI/native payload 구현, MCP operation journal의 execution truth |
+| `gidong-platform` (public) | Launcher, UI, HTTP/SSE, 사용자 원본·workspace/working copy, conversation/run/approval/audit, Agent/MCP supervision, `ExecutionBroker`, 공개 schemas/SDK | Pydantic AI prompt/retrieval ranking, vendor UI/native payload 구현, MCP operation journal의 execution truth |
 | `gidong-agent` (private) | Pydantic AI sidecar, model adapter, prompt·structured output, analysis/planning, disposable RAG index/ranking/evaluation, `ExternalToolRequest` proposal | MCP 연결/PID/HWND/target raw identity, approval secret, 실제 apply/save/online/rollback, 원본 문서의 authority |
 | `gidong-plc-mcp` (private) | MCP Product Contract 구현, vendor adapter, target/precondition 재검증, operation lock/journal, apply/check/readback/rollback/reconciliation | Agent/model, Platform UI/HTTP, 사용자 전체 대화·원본 문서 authority |
 
@@ -61,6 +61,8 @@ expiry, single-use nonce가 결합된 Platform approval 없이는 진행하지 �
   validation만 제공한다.
 - Agent Protocol은 NDJSON stdio `1.0`이다. Platform은 initialize manifest의
   protocol version/capabilities를 검사하고 stdout의 protocol framing만 신뢰한다.
+  장시간 model request 중 `run.progress`는 15초 heartbeat로 transport 생존만
+  증명하며, 계획 완료·도구 성공·mutation 증거로 사용하지 않는다.
 - MCP wire version과 Product Contract는 별개다. Platform은 product-contract major와
   required tool schema digest/manifest digest로 호환성을 판단한다.
 - breaking HTTP change, required field 삭제/추가는 해당 major와 snapshot을 함께
@@ -79,16 +81,13 @@ Platform run journal, Agent checkpoint, MCP operation journal은 대체 관계�
 Agent checkpoint가 side effect 성공을 확정하지 않으며, MCP journal만 mutation
 reconciliation의 기준이다.
 
-## 검증·패키징·실기 범위
+## 패키징·실기 범위
 
-Platform은 private artifact 없이 Mock Agent+Mock MCP로 실행·contract test할 수
-있어야 한다. 공식 Agent/MCP는 각자 독립 build/test 후 immutable packaged artifact
-만으로 black-box E2E를 수행한다. BOM은 platform/agent/plc-mcp 세 artifact의
-version, SHA-256, 여섯 contract version, signature metadata를 정확히 일치시킨다.
-unsigned/development HMAC artifact는 production이 아니다.
+공식 Platform/Agent/MCP는 각각 독립 artifact로 빌드한다. BOM은 세 artifact의
+version, SHA-256, 여섯 contract version과 signature metadata를 정확히 결속하며,
+Launcher는 이 값이 맞는 artifact만 시작한다. unsigned/development HMAC artifact는
+production 배포물이 아니다.
 
-과거 실제 XG5000 read/offline mutation/rollback evidence는 회귀 gate로 보존한다.
-현재 replay 진단은 `NOT_EXECUTED`이며, real PLC online identity/write/force/mode
-change/download/run edit은 미검증이고 fail-closed다. 자세한 구분은
-[XG5000 regression evidence](refactor/XG5000_REGRESSION_EVIDENCE.md)를 따른다.
-remote 생성·push는 사용자 지시 전까지 하지 않는다.
+실제 XG5000·XG-SIM·controller 작업은 현재 target identity, capability, operation
+journal과 native readback이 모두 갖춰진 경로만 연다. PLC write, force, mode change,
+download 또는 run edit이 이 조건을 충족하지 못하면 계속 fail-closed다.

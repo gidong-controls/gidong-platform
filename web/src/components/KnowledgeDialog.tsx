@@ -842,7 +842,10 @@ export function KnowledgeDialog({
                 <div className="knowledge-section-heading">
                   <div>
                     <h3>로컬 문서 가져오기</h3>
-                    <p>Host가 파일 선택 창을 엽니다. 경로를 직접 받지 않습니다.</p>
+                    <p>
+                      Host가 PDF·Markdown·텍스트와 CSV/TSV I/O 목록을 가져옵니다.
+                      표 파일은 행·열 이름을 보존해 설계 근거로 사용합니다.
+                    </p>
                   </div>
                   <button
                     className="button primary-button"

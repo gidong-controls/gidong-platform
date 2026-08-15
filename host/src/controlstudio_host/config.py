@@ -5,12 +5,29 @@ import os
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal, cast
 
 
 def _default_data_dir() -> Path:
+    release_channel = os.environ.get("CONTROLSTUDIO_RELEASE_CHANNEL", "development")
+    directory_name = {
+        "production": "ControlStudio",
+        "beta": "ControlStudio Beta",
+        "development": "ControlStudio Development",
+    }.get(release_channel)
+    if directory_name is None:
+        raise ValueError("CONTROLSTUDIO_RELEASE_CHANNEL is invalid")
     if local_app_data := os.environ.get("LOCALAPPDATA"):
-        return Path(local_app_data) / "ControlStudio"
-    return Path.home() / ".controlstudio"
+        return Path(local_app_data) / directory_name
+    return Path.home() / f".{directory_name.casefold().replace(' ', '-')}"
+
+
+def _default_port() -> int:
+    return {
+        "production": 8765,
+        "beta": 8766,
+        "development": 8767,
+    }.get(os.environ.get("CONTROLSTUDIO_RELEASE_CHANNEL", "development"), 8767)
 
 
 def _default_static_dir() -> Path:
@@ -26,7 +43,7 @@ class HostConfig:
     """
 
     bind_host: str = "127.0.0.1"
-    port: int = 8765
+    port: int = field(default_factory=_default_port)
     database_path: Path = field(
         default_factory=lambda: _default_data_dir() / "controlstudio.sqlite3"
     )
@@ -37,11 +54,12 @@ class HostConfig:
     event_poll_interval_seconds: float = 0.25
     event_heartbeat_seconds: float = 15.0
     launch_token: str = field(default_factory=lambda: secrets.token_urlsafe(48))
-    # These switches exist only for isolated fake-backend/validation harnesses.
-    # They are deliberately not configurable through environment variables, so
-    # a normal packaged Host cannot expose an unverified product capability.
-    validation_enable_native_project_create: bool = False
-    validation_enable_online_observe: bool = False
+    release_channel: Literal["development", "beta", "production"] = "development"
+    product_release: str = "source"
+    development_model_base_url: str | None = None
+    development_model_name: str | None = None
+    development_model_timeout_seconds: float = 300.0
+    development_model_api_key: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         try:
@@ -60,6 +78,10 @@ class HostConfig:
             raise ValueError("launch_token must contain between 32 and 512 characters")
         if any(character.isspace() or ord(character) < 33 for character in self.launch_token):
             raise ValueError("launch_token contains an invalid character")
+        if self.release_channel not in {"development", "beta", "production"}:
+            raise ValueError("release_channel is invalid")
+        if not self.product_release.strip() or len(self.product_release) > 128:
+            raise ValueError("product_release is invalid")
 
         canonical_origin = self.canonical_origin or f"http://localhost:{self.port}"
         if not canonical_origin.startswith(("http://localhost:", "http://127.0.0.1:")):
@@ -90,29 +112,51 @@ class HostConfig:
     @classmethod
     def from_env(cls) -> HostConfig:
         bind_host = os.environ.get("CONTROLSTUDIO_BIND_HOST", "127.0.0.1")
-        port = int(os.environ.get("CONTROLSTUDIO_PORT", "8765"))
+        port = int(os.environ.get("CONTROLSTUDIO_PORT", str(_default_port())))
         database_path = Path(
             os.environ.get(
                 "CONTROLSTUDIO_DATABASE",
                 str(_default_data_dir() / "controlstudio.sqlite3"),
             )
         )
-        knowledge_database_path_value = os.environ.get(
-            "CONTROLSTUDIO_KNOWLEDGE_DATABASE"
-        )
+        knowledge_database_path_value = os.environ.get("CONTROLSTUDIO_KNOWLEDGE_DATABASE")
         static_dir = Path(os.environ.get("CONTROLSTUDIO_WEB_DIST", str(_default_static_dir())))
         canonical_origin = os.environ.get("CONTROLSTUDIO_CANONICAL_ORIGIN")
         launch_token = os.environ.get("CONTROLSTUDIO_LAUNCH_TOKEN") or secrets.token_urlsafe(48)
+        release_channel = os.environ.get("CONTROLSTUDIO_RELEASE_CHANNEL", "development")
+        product_release = os.environ.get("CONTROLSTUDIO_PRODUCT_RELEASE", "source")
+        development_model_api_key = os.environ.pop(
+            "CONTROLSTUDIO_DEVELOPMENT_MODEL_API_KEY",
+            None,
+        )
         return cls(
             bind_host=bind_host,
             port=port,
             database_path=database_path,
             knowledge_database_path=(
-                Path(knowledge_database_path_value)
-                if knowledge_database_path_value
-                else None
+                Path(knowledge_database_path_value) if knowledge_database_path_value else None
             ),
             static_dir=static_dir,
             canonical_origin=canonical_origin,
             launch_token=launch_token,
+            release_channel=cast(Literal["development", "beta", "production"], release_channel),
+            product_release=product_release,
+            development_model_base_url=(
+                os.environ.get("CONTROLSTUDIO_DEVELOPMENT_MODEL_BASE_URL")
+                if release_channel == "development"
+                else None
+            ),
+            development_model_name=(
+                os.environ.get("CONTROLSTUDIO_DEVELOPMENT_MODEL_NAME")
+                if release_channel == "development"
+                else None
+            ),
+            development_model_timeout_seconds=float(
+                os.environ.get("CONTROLSTUDIO_DEVELOPMENT_MODEL_TIMEOUT_SECONDS", "300")
+                if release_channel == "development"
+                else "300"
+            ),
+            development_model_api_key=(
+                development_model_api_key if release_channel == "development" else None
+            ),
         )

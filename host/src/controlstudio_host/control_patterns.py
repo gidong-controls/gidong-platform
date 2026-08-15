@@ -69,15 +69,6 @@ class ControlPattern:
         )
 
 
-MANDATORY_BLOCKING_DECISION_IDS = frozenset(
-    {
-        "actual_io_mapping",
-        "signal_polarity_and_normal_state",
-        "timing_and_timeout_requirements",
-        "deenergized_or_commanded_safe_state",
-    }
-)
-
 _COMMON_REQUIRED_DECISIONS = (
     RequiredDecision(
         "actual_io_mapping",
@@ -1309,12 +1300,6 @@ _BUILTIN_PATTERNS = (
 )
 
 
-def iter_builtin_patterns() -> Iterator[ControlPattern]:
-    """Return the curated, immutable vendor-neutral control patterns."""
-
-    return iter(_BUILTIN_PATTERNS)
-
-
 def pattern_to_dict(pattern: ControlPattern) -> dict[str, object]:
     """Return a detached JSON-compatible representation of a pattern."""
 
@@ -1367,18 +1352,3 @@ def pattern_to_knowledge_document(pattern: ControlPattern) -> dict[str, object]:
 def iter_builtin_knowledge_documents() -> Iterator[dict[str, object]]:
     for pattern in _BUILTIN_PATTERNS:
         yield pattern_to_knowledge_document(pattern)
-
-
-__all__ = [
-    "MANDATORY_BLOCKING_DECISION_IDS",
-    "ControlPattern",
-    "RequiredDecision",
-    "SignalDirection",
-    "SignalRole",
-    "VerificationScenario",
-    "iter_builtin_knowledge_documents",
-    "iter_builtin_patterns",
-    "pattern_search_text",
-    "pattern_to_dict",
-    "pattern_to_knowledge_document",
-]

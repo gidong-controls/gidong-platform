@@ -19,7 +19,7 @@ class HostStartError(LauncherError):
 
 
 class ElevationError(HostStartError):
-    """The Host could not match an elevated XG5000 process."""
+    """The Host could not match the XG5000 execution integrity."""
 
 
 class UiOpenError(LauncherError):

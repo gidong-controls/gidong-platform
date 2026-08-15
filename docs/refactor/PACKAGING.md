@@ -39,19 +39,20 @@ or `pywinauto.keyboard` is unavailable, and explicitly bundles both runtime
 modules. A build environment that cannot resolve those Windows-only modules
 must be repaired before producing a release artifact.
 
-Agent build/test tooling takes an explicit public wheel and a caller-owned
+Agent build tooling takes an explicit public wheel and a caller-owned
 environment. It never discovers sibling checkout paths or checked-in binary
 artifacts:
 
 ```powershell
-python agent/scripts/with_contract_artifact.py --contracts-wheel dist/contracts/controlstudio_contracts-0.1.0-py3-none-any.whl --venv .contract-build-env -- python scripts/build_standalone.py --contracts-wheel dist/contracts/controlstudio_contracts-0.1.0-py3-none-any.whl --output dist/agent --pyinstaller .contract-build-env/Scripts/pyinstaller.exe --clean
+$platformRoot = (Get-Location).Path
+python ..\gidong-agent\scripts\with_contract_artifact.py --contracts-wheel "$platformRoot\dist\contracts\controlstudio_contracts-0.1.0-py3-none-any.whl" --venv "$platformRoot\.contract-build-env" -- python scripts/build_standalone.py --contracts-wheel "$platformRoot\dist\contracts\controlstudio_contracts-0.1.0-py3-none-any.whl" --output "$platformRoot\dist\agent" --pyinstaller "$platformRoot\.contract-build-env\Scripts\pyinstaller.exe" --clean
 ```
 
 Build the MCP artifact in its isolated build environment. Release composition
 then consumes only the immutable command-line inputs:
 
 ```powershell
-uv run --directory mcp --with pyinstaller python mcp/scripts/build_standalone.py --output dist/plc-mcp --clean
+uv run --directory ..\gidong-plc-mcp --with pyinstaller python scripts/build_standalone.py --output "$platformRoot\dist\plc-mcp" --clean
 ```
 
 Compose the release by passing every artifact and every component version
@@ -60,7 +61,7 @@ names, missing/tampered inputs, and a wheel whose embedded version differs
 from the version recorded in the BOM:
 
 ```powershell
-python packaging/scripts/assemble_release.py --output dist/release --platform-artifact dist/platform/controlstudio-platform.exe --platform-version 0.1.0 --agent-artifact dist/agent/controlstudio-agent.exe --agent-version 0.1.0 --mcp-artifact dist/plc-mcp/controlstudio-plc-mcp.exe --mcp-version 0.1.0 --contracts-wheel dist/contracts/controlstudio_contracts-0.1.0-py3-none-any.whl --contracts-version 0.1.0 --product-release 0.1.0 --contracts packaging/contracts-v1.json
+python packaging/scripts/assemble_release.py --output dist/release --channel beta --platform-artifact dist/platform/controlstudio-platform.exe --platform-version 0.1.0 --agent-artifact dist/agent/controlstudio-agent.exe --agent-version 0.1.0 --mcp-artifact dist/plc-mcp/controlstudio-plc-mcp.exe --mcp-version 0.1.0 --contracts-wheel dist/contracts/controlstudio_contracts-0.1.0-py3-none-any.whl --contracts-version 0.1.0 --product-release 0.1.0-beta.1 --contracts packaging/contracts-v1.json
 ```
 
 `Start-ControlStudio.ps1` validates the BOM schema, component identity, public
@@ -82,6 +83,19 @@ Platform validates its own hash and all internal runtime hashes and contract
 versions before binding the verified Agent/MCP commands. Missing or changed
 runtime artifacts fail closed.
 
+For a same-channel Beta update, the installer builds and verifies the complete
+new layout in a sibling staging directory, requires the installed Beta BOM and
+all installed artifact hashes to remain valid, and refuses to switch while a
+ControlStudio component is running. It then moves the old complete layout to
+`ControlStudio Beta.previous` and activates the staged layout as one directory
+switch. If activation fails, it restores the previous directory. The separate
+`%LOCALAPPDATA%\ControlStudio Beta` data directory is not moved or removed.
+Custom install roots that overlap that data directory are rejected, and an
+activated layout must pass the same BOM/hash validation before the old runtime
+is considered replaced.
+Production uses the same whole-product boundary but still requires the
+production signing and release-manifest gates below.
+
 Component repositories may advance their implementation versions independently,
 but consumer releases never resolve a component named `latest`. Every change
 creates a new product release whose exact Platform, Agent, MCP, contracts, hashes,
@@ -97,7 +111,3 @@ identity. `--RequireProductionSignature` rejects both. Production release must
 independently verify Authenticode and record exact publisher/thumbprint
 metadata in the BOM. No publisher certificate is present here, so this work
 does **not** claim production signing.
-
-```powershell
-python -m unittest discover -s packaging/tests -v
-```

@@ -4,11 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
-
-
-class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+from pydantic import BaseModel, Field
 
 
 class MessageRole(str, Enum):
@@ -19,10 +15,14 @@ class MessageRole(str, Enum):
 
 
 class ProjectPlanReview(BaseModel):
+    schema_version: Literal["1", "2"] = "1"
     conversation_id: str
     message_id: str
     plan_digest: str
     reviewed_section_ids: list[str]
+    reviewed_item_ids: list[str] = Field(default_factory=list)
+    project_brief_digest: str | None = None
+    attachment_revision_digest: str | None = None
     actor_id: str
     reviewed_at: datetime
 
@@ -53,6 +53,7 @@ class ChangeTransactionState(str, Enum):
     APPROVED = "APPROVED"
     EXECUTING = "EXECUTING"
     VERIFYING = "VERIFYING"
+    OBSERVING = "OBSERVING"
     COMPLETED = "COMPLETED"
     ROLLED_BACK = "ROLLED_BACK"
     FAILED = "FAILED"
@@ -114,22 +115,40 @@ class ChangeTransaction(BaseModel):
     receipt_acknowledged_by: str | None = None
 
 
-class ConversationCreate(StrictModel):
-    title: str | None = Field(default=None, min_length=1, max_length=200)
-
-
-class UserMessageCreate(StrictModel):
-    content: str = Field(min_length=1, max_length=1_000_000)
-
-
 class Conversation(BaseModel):
     id: str
     title: str | None
     workflow: Literal["engineering", "new_project_planning"] = "engineering"
-    project_brief: dict[str, str] | None = None
+    project_brief: dict[str, Any] | None = None
     workspace_id: str | None = None
     revision_id: str | None = None
     engineering_session_id: str | None = None
+    engineering_handoff: dict[str, Any] | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class EngineeringMission(BaseModel):
+    conversation_id: str = Field(min_length=1)
+    workspace_id: str = Field(min_length=1)
+    revision_id: str = Field(min_length=1)
+    revision: int = Field(ge=1)
+    engineering_mission: dict[str, Any]
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    updated_by_run_id: str = Field(min_length=1)
+    created_at: datetime
+    updated_at: datetime
+
+
+class EngineeringAgentCheckpoint(BaseModel):
+    conversation_id: str = Field(min_length=1)
+    workspace_id: str = Field(min_length=1)
+    revision_id: str = Field(min_length=1)
+    mission_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cycle: int = Field(ge=1, le=8)
+    checkpoint: dict[str, Any]
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    updated_by_run_id: str = Field(min_length=1)
     created_at: datetime
     updated_at: datetime
 
@@ -163,13 +182,6 @@ class ConversationDetail(Conversation):
     runs: list[Run]
 
 
-class ConversationPage(BaseModel):
-    items: list[Conversation]
-    total: int
-    limit: int
-    offset: int
-
-
 class StoredEvent(BaseModel):
     sequence: int
     conversation_id: str | None
@@ -186,21 +198,3 @@ class HealthResponse(BaseModel):
     status: Literal["ready", "degraded"]
     database: Literal["ready", "unavailable"]
     static_ui: Literal["ready", "unavailable"]
-
-
-class BootstrapFeatures(BaseModel):
-    conversations: bool = True
-    event_replay: bool = True
-    mutations: bool = False
-    service_worker: bool = False
-    remote_access: bool = False
-
-
-class BootstrapResponse(BaseModel):
-    service: Literal["controlstudio-host"] = "controlstudio-host"
-    build_id: str
-    api_version: Literal["1"] = "1"
-    host_instance_id: str
-    canonical_origin: str
-    latest_event_sequence: int
-    features: BootstrapFeatures

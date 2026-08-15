@@ -3,22 +3,28 @@ import type {
   ConversationCreate,
   ConversationPage,
   EngineeringProgramFocusResponse,
+  EngineeringLocation,
+  EngineeringLocationFocusResponse,
   EngineeringProgramsResponse,
   AttachXG5000Request,
   AttachXG5000Response,
   BrowserSessionResponse,
   CancelRunResponse,
   ChangeReconciliationResponse,
-  ChangeReceiptAcknowledgementResponse,
+  ChangeTargetFocusResponse,
   ChangeTransaction,
-  ChangeDecisionResponse,
-  ChangeExecutionResponse,
-  ChangeTransactionCreatedResponse,
   ConnectLSControllerRequest,
+  ControllerRestoreBeginRequest,
+  ControllerRestoreCompleteRequest,
+  ControllerRestoreCompleted,
+  ControllerRestoreHandoff,
+  ControllerRestorePreflight,
+  ControllerRestorePreflightRequest,
   CreateNativeProjectRequest,
   CreateChangeTransactionRequest,
   DecideChangeTransactionRequest,
   ExecuteChangeTransactionRequest,
+  FinalizeSimulationChangeRequest,
   CreateKnowledgeMemoryRequest,
   HostBootstrapResponse,
   HostShutdownResponse,
@@ -31,26 +37,37 @@ import type {
   KnowledgeSummary,
   LSControllerObservation,
   LSControllerRead,
+  LSControllerTrace,
+  LocalWorkspaceCompare,
   ModelCapabilityResult,
   ModelSettings,
   NativeProjectCreatedResponse,
   NativeProjectOperation,
   NativeProjectReconciliationResponse,
+  NativeSimulationTrialDecisionRequest,
+  NativeSimulationTrialDecisionResponse,
   OpenLocalWorkspaceRequest,
   OpenLocalWorkspaceResponse,
   ProblemDetails,
   ProjectPlanReviewRequest,
   ProjectPlanReviewResponse,
   ReadLSControllerRequest,
+  TraceLSControllerRequest,
   ReconcileChangeTransactionRequest,
   ReconcileNativeProjectRequest,
   ResumeLocalWorkspaceRequest,
+  ResumeEngineeringMissionRequest,
   SaveModelSettingsRequest,
   SendMessageRequest,
   SendMessageResponse,
   XG5000ProjectFileSelection,
   XG5000InstancesResponse,
 } from "./types";
+import {
+  isRecord,
+  parseChangeTransaction,
+  parseChangeTransactionList,
+} from "./changeContracts";
 
 export class HostApiError extends Error {
   readonly status: number;
@@ -74,6 +91,25 @@ function problemMessage(problem: ProblemDetails | undefined, status: number): st
     return problem.detail;
   }
   return problem?.title ?? `Host 요청에 실패했습니다. (${status})`;
+}
+
+function transactionFromEnvelope(value: unknown): ChangeTransaction {
+  if (!isRecord(value)) {
+    throw new Error("Host returned a malformed change transaction response.");
+  }
+  return parseChangeTransaction(value.transaction);
+}
+
+function reconciliationFromEnvelope(
+  value: unknown,
+): ChangeReconciliationResponse {
+  if (!isRecord(value) || typeof value.reconciled !== "boolean") {
+    throw new Error("Host returned a malformed change reconciliation response.");
+  }
+  return {
+    transaction: parseChangeTransaction(value.transaction),
+    reconciled: value.reconciled,
+  };
 }
 
 export class HostApiClient {
@@ -402,6 +438,60 @@ export class HostApiClient {
     );
   }
 
+  preflightControllerProjectRestore(
+    request: ControllerRestorePreflightRequest,
+  ): Promise<ControllerRestorePreflight> {
+    return this.request<ControllerRestorePreflight>(
+      "/api/v1/controller-project-restore/preflight",
+      { method: "POST", body: request },
+    );
+  }
+
+  beginControllerProjectRestore(
+    request: ControllerRestoreBeginRequest,
+  ): Promise<ControllerRestoreHandoff> {
+    return this.request<ControllerRestoreHandoff>(
+      "/api/v1/controller-project-restore/begin",
+      { method: "POST", body: request, operationId: request.operationId },
+    );
+  }
+
+  completeControllerProjectRestore(
+    request: ControllerRestoreCompleteRequest,
+  ): Promise<ControllerRestoreCompleted> {
+    return this.request<ControllerRestoreCompleted>(
+      "/api/v1/controller-project-restore/complete",
+      { method: "POST", body: request, operationId: request.operationId },
+    );
+  }
+
+  resumeEngineeringMission(
+    conversationId: string,
+    request: ResumeEngineeringMissionRequest,
+  ): Promise<SendMessageResponse> {
+    return this.request<SendMessageResponse>(
+      `/api/v1/conversations/${encodeURIComponent(conversationId)}/engineering-mission/resume`,
+      {
+        method: "POST",
+        body: request,
+        operationId: request.operationId,
+      },
+    );
+  }
+
+  decideNativeSimulationTrial(
+    nativeProjectId: string,
+    request: NativeSimulationTrialDecisionRequest,
+  ): Promise<NativeProjectOperation> {
+    return this.request<NativeSimulationTrialDecisionResponse>(
+      `/api/v1/native-projects/${encodeURIComponent(nativeProjectId)}/simulation-trial/decision`,
+      {
+        method: "POST",
+        body: request,
+      },
+    ).then((response) => response.operation);
+  }
+
   reconcileNativeProject(
     nativeProjectId: string,
     request: ReconcileNativeProjectRequest,
@@ -440,6 +530,12 @@ export class HostApiClient {
     );
   }
 
+  compareLocalWorkspace(workspaceId: string): Promise<LocalWorkspaceCompare> {
+    return this.request<LocalWorkspaceCompare>(
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/compare`,
+    );
+  }
+
   selectXG5000ProjectFile(): Promise<XG5000ProjectFileSelection> {
     return this.request<XG5000ProjectFileSelection>(
       "/api/v1/files/select-xg5000-project",
@@ -464,6 +560,20 @@ export class HostApiClient {
     return this.request<EngineeringProgramFocusResponse>(
       `/api/v1/engineering/programs/${encodeURIComponent(programId)}/focus`,
       { method: "POST" },
+    );
+  }
+
+  focusEngineeringLocation(
+    conversationId: string,
+    messageId: string,
+    location: EngineeringLocation,
+  ): Promise<EngineeringLocationFocusResponse> {
+    return this.request<EngineeringLocationFocusResponse>(
+      `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/engineering-location/focus`,
+      {
+        method: "POST",
+        body: { location },
+      },
     );
   }
 
@@ -504,6 +614,15 @@ export class HostApiClient {
     });
   }
 
+  traceLSController(
+    request: TraceLSControllerRequest,
+  ): Promise<LSControllerTrace> {
+    return this.request<LSControllerTrace>("/api/v1/controllers/ls/trace", {
+      method: "POST",
+      body: request,
+    });
+  }
+
   disconnectLSController(): Promise<void> {
     return this.request<void>("/api/v1/controllers/ls/connection", {
       method: "DELETE",
@@ -531,35 +650,42 @@ export class HostApiClient {
   createChangeTransaction(
     request: CreateChangeTransactionRequest,
   ): Promise<ChangeTransaction> {
-    return this.request<ChangeTransactionCreatedResponse>(
+    return this.request<unknown>(
       "/api/v1/change-transactions",
       {
         method: "POST",
         body: request,
         operationId: request.operationId,
       },
-    ).then((response) => response.transaction);
+    ).then(transactionFromEnvelope);
   }
 
   getChangeTransaction(
     transactionId: string,
     signal?: AbortSignal,
   ): Promise<ChangeTransaction> {
-    return this.request<ChangeTransaction>(
+    return this.request<unknown>(
       `/api/v1/change-transactions/${encodeURIComponent(transactionId)}`,
       { signal },
+    ).then(parseChangeTransaction);
+  }
+
+  focusChangeTarget(transactionId: string): Promise<ChangeTargetFocusResponse> {
+    return this.request<ChangeTargetFocusResponse>(
+      `/api/v1/change-transactions/${encodeURIComponent(transactionId)}/focus-target`,
+      { method: "POST" },
     );
   }
 
   acknowledgeChangeReceipt(
     transactionId: string,
   ): Promise<ChangeTransaction> {
-    return this.request<ChangeReceiptAcknowledgementResponse>(
+    return this.request<unknown>(
       `/api/v1/change-transactions/${encodeURIComponent(transactionId)}/receipt-acknowledgement`,
       {
         method: "POST",
       },
-    ).then((response) => response.transaction);
+    ).then(transactionFromEnvelope);
   }
 
   listChangeTransactions(
@@ -571,49 +697,59 @@ export class HostApiClient {
     if (conversationId) {
       query.set("conversation_id", conversationId);
     }
-    return this.request<ChangeTransaction[]>(
+    return this.request<unknown>(
       `/api/v1/change-transactions?${query.toString()}`,
       { signal },
-    );
+    ).then(parseChangeTransactionList);
   }
 
   decideChangeTransaction(
     transactionId: string,
     request: DecideChangeTransactionRequest,
   ): Promise<ChangeTransaction> {
-    return this.request<ChangeDecisionResponse>(
+    return this.request<unknown>(
       `/api/v1/change-transactions/${encodeURIComponent(transactionId)}/decision`,
       {
         method: "POST",
         body: request,
       },
-    ).then((response) => response.transaction);
+    ).then(transactionFromEnvelope);
   }
 
   executeChangeTransaction(
     transactionId: string,
     request: ExecuteChangeTransactionRequest,
   ): Promise<ChangeTransaction> {
-    return this.request<ChangeExecutionResponse>(
+    return this.request<unknown>(
       `/api/v1/change-transactions/${encodeURIComponent(transactionId)}/execute`,
       {
         method: "POST",
         body: request,
       },
-    ).then((response) => response.transaction);
+    ).then(transactionFromEnvelope);
+  }
+
+  finalizeSimulationChange(
+    transactionId: string,
+    request: FinalizeSimulationChangeRequest,
+  ): Promise<ChangeTransaction> {
+    return this.request<unknown>(
+      `/api/v1/change-transactions/${encodeURIComponent(transactionId)}/simulation-decision`,
+      { method: "POST", body: request },
+    ).then(transactionFromEnvelope);
   }
 
   reconcileChangeTransaction(
     transactionId: string,
     request: ReconcileChangeTransactionRequest,
   ): Promise<ChangeReconciliationResponse> {
-    return this.request<ChangeReconciliationResponse>(
+    return this.request<unknown>(
       `/api/v1/change-transactions/${encodeURIComponent(transactionId)}/reconcile`,
       {
         method: "POST",
         body: request,
       },
-    );
+    ).then(reconciliationFromEnvelope);
   }
 }
 

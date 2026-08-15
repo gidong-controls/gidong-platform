@@ -54,6 +54,12 @@ secret/signature를 저장하거나 받을 수 없다. `confirm: true` 같은 ca
 | Agent checkpoint | Agent | 모델 message, retrieval/result, deferred tool request/result, 재개 가능한 analysis | 실제 PLC/project 변경 성공의 권위가 아님 |
 | MCP operation journal | PLC MCP | target snapshot/hash/payload, plan/args digest, lock, apply, readback/check, rollback, terminal/quarantine evidence | mutation/reconciliation의 권위 |
 
+Agent checkpoint의 직렬화 형식은 Agent가 소유하고 Platform은 bounded opaque payload와
+digest, mission/target/run linkage만 내구화한다. 완료된 cycle의 model/tool history는
+재주입할 수 있지만, crash 시점의 미완료 tool request는 자동 재발행하지 않는다.
+read-only 결과는 Host evidence에서 다시 확인하고 mutation 결과는 MCP journal로만
+reconcile한다.
+
 세 record는 가능한 모든 event/receipt에서 `trace_id`, `conversation_id`, `run_id`,
 `agent_step_id`, `tool_call_id`, `operation_id`, `approval_id`, `target_id`와 연결한다.
 `request_id`는 Agent Protocol request/response 상관관계, `event_id`와 `sequence`는
@@ -70,9 +76,9 @@ metadata, source revision, citation, confirmation status와 audit를 소유한�
 정책을 적용한다.
 
 Agent는 Platform이 허용하고 sanitize하여 `knowledge.sync`로 전달한 source snapshot을
-받을 수 있다. chunking, token statistics, embedding/retrieval/ranking, prompt context,
-model inference, evaluation fixture와 checkpoint는 Agent private derived data이며
-재생성 가능해야 한다. Agent result는 `knowledge://` source reference와 chunk ID를
+받을 수 있다. chunking, token statistics, embedding/retrieval/ranking, prompt context와
+model inference는 Agent private derived data이며 재생성 가능해야 한다. Agent result는
+`knowledge://` source reference와 chunk ID를
 반환할 수 있지만 Platform 원본 또는 confirmation 상태를 변경할 권한은 없다.
 
 검색 문서, tool result, model output, provider error는 모두 비신뢰 입력이다. 권한,
@@ -84,12 +90,13 @@ Agent stdout protocol 및 public Git history에 기록하지 않는다.
 
 Platform `schemas/`가 HTTP/Event/Agent/MCP Product/Workspace/Audit v1의 source of
 truth다. `controlstudio-contracts` Python/TypeScript package에는 versioned DTO와
-validation만 둔다. private Agent prompt/RAG policy/evaluation 또는 private MCP
-source/profiles/fixture/vendor native payload는 public package나 history에 넣지 않는다.
+validation만 둔다. private Agent prompt/RAG policy 또는 private MCP
+source/profile/vendor native payload는 public package나 history에 넣지 않는다.
 
 - **Agent Protocol v1 (`1.0`)**: Platform↔Agent NDJSON stdio. initialize manifest,
-  health, run start/cancel, tool request/result, knowledge sync/search, final/error가
-  version/capability handshake 아래 동작한다.
+  health, run start/cancel/progress, tool request/result, knowledge sync/search,
+  final/error가 version/capability handshake 아래 동작한다. `run.progress`는
+  생존 heartbeat일 뿐 결과·checkpoint 또는 side effect 증거가 아니다.
 - **MCP Product Contract v1 (`1.0`)**: MCP wire와 별도인 tool manifest/schema
   digest·capability·risk·side-effect·approval/target policy·evidence/timeout contract다.
   Platform은 exact wire implementation version이 아니라 required product-contract
@@ -98,17 +105,14 @@ source/profiles/fixture/vendor native payload는 public package나 history에 �
   source/working-copy identity, append-only sanitized audit contract다. required HTTP
   field 제거 또는 추가는 major/snapshot 갱신 없이 허용되지 않는다.
 
-공개 Platform은 Mock Agent와 Mock MCP만으로 run할 수 있어야 한다. mocks에는 real
-target, approval secret, model credential 또는 private dependency가 없다. conformance는
-process stdin/stdout만 사용해 Agent Protocol, Product Contract digest와 unapproved
-mutation rejection을 검증한다.
+Platform은 설치된 공식 Agent와 MCP를 child process로만 실행한다. private source를
+import하지 않으며 target identity, approval secret과 model credential은 각 소유
+경계를 넘어 전달하지 않는다. 호환성은 initialize manifest와 versioned protocol,
+Product Contract digest로 판단한다.
 
 ## 현재 PLC evidence 경계
 
-historical real-XG5000 read/offline operand change/rollback 및 XG-SIM evidence는
-보존해야 할 regression scope다. 현재 refactor diagnostic은 `NOT_EXECUTED`이며
-historical working copy/PID/HWND가 현존하거나 새 Host orchestration packaged E2E가
-성공했다는 뜻이 아니다. actual PLC strong identity, project/parameter readback,
-online write, force, mode change, download와 run edit은 계속 미검증·fail-closed다.
-근거와 safe replay 조건은 [XG5000 regression evidence](XG5000_REGRESSION_EVIDENCE.md)를
-따른다.
+각 실행은 현재 workspace, exact PID/HWND, project hash, capability와 operation
+journal을 새로 결속해야 한다. 과거 기록만으로 현재 target 성공을 추정하지 않는다.
+strong controller identity, project/parameter readback, online write, force, mode
+change, download와 run edit이 이 조건을 충족하지 못하면 계속 fail-closed다.
