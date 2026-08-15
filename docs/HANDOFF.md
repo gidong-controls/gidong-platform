@@ -6,13 +6,13 @@
 ## 저장소와 브랜치
 
 - `gidong-platform`: `dev` (이 문서를 포함한 commit)
-- `gidong-agent`: `dev` @ `a6732c55246a8c2ffa4ab954c8ef949a22687eb2`
-- `gidong-plc-mcp`: `dev` @ `6653a29ae7bc397fedb5981af6f77c4c66af3ed0`
+- `gidong-agent`: `dev` @ `0737be2ef706923c8c08abc79ff555ad2680abde`
+- `gidong-plc-mcp`: `dev` @ `7e9cbf7d586c1e0f308833a0787b81656644b7c6`
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
-2026-08-16 04:00 KST에 세 저장소 push를 다시 시도했지만 GitHub 443 연결이 모두
-거부됐다. 이 문서 commit 뒤 Platform은 `origin/dev`보다 8 commit, Agent는 4 commit,
-MCP는 3 commit 앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
+2026-08-16 05:04 KST에 세 저장소 push를 시도했지만 GitHub 443 연결 거부로 실패했다. 이 문서
+commit 뒤 Platform은 `origin/dev`보다 9 commit, Agent는 5 commit, MCP는 4 commit
+앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
 먼저 실행한다.
 
 ## 현재 제품 경계
@@ -31,9 +31,10 @@ MCP는 3 commit 앞서 있다. 네트워크 가능한 세션에서 세 저장소
 
 ## 마지막 리팩터링
 
-- Agent runtime의 canonical JSON 직렬화 17곳을 `_canonical_json` 한 곳으로 합쳤다. digest,
+- Agent runtime의 canonical JSON 직렬화를 `_canonical_json` 한 곳으로 합쳤다. digest,
   checkpoint, model prompt의 JSON 바이트는 그대로이며 중복 옵션과 프로덕션 코드 72줄을
-  제거했다.
+  제거했다. 마지막 mission objective prompt 두 곳도 같은 serializer를 사용해 별도 옵션
+  조합을 남기지 않았다.
 - MCP behavior report가 같은 프로그램의 LD graph를 state model과 reference index에서 다시
   만들던 경로를 명시적 내부 graph 전달로 바꿨다. 프로그램당 graph 생성은 3회에서 1회로
   줄었고 공개 함수 시그니처와 report JSON은 그대로다. write action의 condition device
@@ -69,6 +70,11 @@ MCP는 3 commit 앞서 있다. 네트워크 가능한 세션에서 세 저장소
   보존한다. MCP 한 파서가 graph/state/reference를 공급하고 Host는 raw expression을 독립
   재검증한다. 지원하지 않는 suffix·operand는 rung과 network를 `partial`로 유지한다.
   상세 의미는 receipt digest에 결속된 bounded `modelContext`로만 Agent 추론에 전달된다.
+- 실제 보존 artifact에서 opcode 33이 raw `APPLICATION`으로 기록된 `>,C0001,6`도 확인했다.
+  raw record/opcode는 보존하고 strict 비교 parser가 성공한 경우에만 logical `COMPARE`로
+  정규화하는 판정을 한 함수로 모았다. 그 결과 같은 row의 `SET S050.01` condition,
+  device reference, causal edge, state/behavior가 같은 의미를 공유하며 TON/MOV/DMOV/DINCP/
+  CTR/TRTG/END 등 다른 application 경로는 바뀌지 않는다.
 - Windows launcher가 소유한 Host stdout/stderr를 UTF-8로 고정했다. CP949와 UTF-8이 한
   startup log에 섞여 모델·Agent 실패 사유가 깨지던 실제 Development 진단 문제만
   제거했으며 실행 상태나 공개 계약은 바꾸지 않았다.
@@ -81,8 +87,13 @@ MCP는 3 commit 앞서 있다. 네트워크 가능한 세션에서 세 저장소
 - Host/Agent/MCP 변경 Python에 Ruff `F,E9,I` 성공
 - 실제 Host→sidecar wire projection에서 16개 명령의 exact semantics와 변조 거부 확인
 - 실제 보존된 XG5000 ladder artifact에서 `D<>,0,M0320`, `>=,C0001,1`,
-  `<,C0001,1`의 모든 관측 occurrence가 ordered operand·signed width와 함께 구조화되는지
-  확인. `>,C0001,6`은 보존 artifact에 없어 exact synthetic 입력으로 동일 경로를 확인
+  `<,C0001,1`, 그리고 raw APPLICATION encoding의 `>,C0001,6`이 ordered
+  operand·signed width와 함께 구조화되는지 확인
+- 보존된 18개 파일의 6개 고유 LD payload에서 raw APPLICATION 비교는 action/output에서
+  제외되고 TON/MOV/DMOV/DINCP/CTR/TRTG/END의 logical node kind가 유지되는지 확인
+- `>,C0001,6`이 `SET S050.01`의 structured condition, `C0001` read reference와
+  downstream causal edge로 연결되고 Host logic/state receipt 및 modelContext 독립 검증을
+  통과하는지 확인
 - 잘못된 P suffix, extra operand, dotted device, 폭 밖 literal이 `partial`로 남고 Host가
   변조된 comparison metadata를 거부하는지 확인
 - Host→Agent wire에서 raw state model은 제외되고 receipt digest에 결속된 comparison
@@ -142,10 +153,13 @@ ownership을 열람하지 못해 시각 UI 검증은 완료되지 않았다. 임
 
 ## 주요 남은 위험
 
+- Host DB와 knowledge DB는 startup migration 전에 같은 operation의 SQLite-consistent pair
+  snapshot/restore authority가 아직 없다. 한 DB migration만 성공한 혼합 세대를 정상 기동하지
+  않도록, 다음 로컬 제품 vertical은 기존 schema/API를 바꾸지 않는 pre-migration backup,
+  integrity manifest, pair restore로 한정한다.
 - UAC 승인 뒤의 실제 UI/Agent/XG5000 end-to-end는 이 commit에서 아직 재실행되지 않았다.
 - 대표 실제 project fixture와 실제 XG5000 버전 변화에 대한 acceptance evidence가 더 필요하다.
 - 비교식의 정적 구문·operand order·signed width는 구조화됐지만 CPU별 device range,
   실제 runtime 값, scan 실행과 조건 참은 여전히 별도 관측 증거가 필요하다.
-  `>,C0001,6`은 현재 보존된 실제 artifact에는 없어 exact synthetic 경로만 검증됐다.
 - 대량의 과거 mock/implementation-coupled test는 정리됐으므로, 남은 핵심 경계는 build,
   contract guard, 최소 실기 acceptance가 실제로 실패를 드러내는지 계속 확인해야 한다.
