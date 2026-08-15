@@ -352,6 +352,11 @@ class MCPGateway:
             identity["workspace_id"] = workspace_id
         self._active_session_identity = identity
 
+    def bind_agent_workspace(self, workspace_id: str) -> None:
+        if not isinstance(workspace_id, str) or not workspace_id:
+            raise MCPToolError("cannot bind an empty engineering workspace")
+        self._active_session_identity = {"workspace_id": workspace_id}
+
     def clear_agent_session(self) -> None:
         self._active_session_identity = None
 
@@ -800,7 +805,7 @@ class MCPGateway:
                 raise MCPToolError("the agent has no Host-bound XG5000 engineering session")
             missing = [
                 field
-                for field in SESSION_IDENTITY_FIELDS
+                for field in required_identity_fields
                 if field not in identity or identity[field] is None or identity[field] == ""
             ]
             if missing:
@@ -808,8 +813,13 @@ class MCPGateway:
                     "the Host-bound XG5000 engineering session is incomplete: "
                     + ", ".join(missing)
                 )
-            for field in set(SESSION_IDENTITY_FIELDS) | set(required_identity_fields):
-                if field in safe_arguments and str(safe_arguments[field]) != str(identity[field]):
+            protected_fields = set(SESSION_IDENTITY_FIELDS) | set(required_identity_fields)
+            for field in protected_fields:
+                if (
+                    field in required_identity_fields
+                    and field in safe_arguments
+                    and str(safe_arguments[field]) != str(identity[field])
+                ):
                     raise MCPToolError(
                         f"agent supplied stale or mismatched session identity: {field}"
                     )

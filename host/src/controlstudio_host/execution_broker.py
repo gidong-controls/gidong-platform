@@ -110,6 +110,8 @@ def validate_workspace_compare_result(
 class ExecutionBroker(Protocol):
     def bind_agent_session(self, session: dict[str, Any]) -> None: ...
 
+    def bind_agent_workspace(self, workspace_id: str) -> None: ...
+
     def clear_agent_session(self) -> None: ...
 
     def bind_controller_preflight(self, callback: ControllerPreflight) -> None: ...
@@ -132,6 +134,9 @@ class MCPExecutionBroker:
 
     def bind_agent_session(self, session: dict[str, Any]) -> None:
         self._gateway.bind_agent_session(session)
+
+    def bind_agent_workspace(self, workspace_id: str) -> None:
+        self._gateway.bind_agent_workspace(workspace_id)
 
     def clear_agent_session(self) -> None:
         self._gateway.clear_agent_session()

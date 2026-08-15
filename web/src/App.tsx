@@ -404,7 +404,6 @@ function currentEngineeringTarget(
   status: HostStatusResponse,
 ): EngineeringTargetBinding | null {
   if (
-    status.engineeringSystem.readReady &&
     status.engineeringSystem.sessionId &&
     status.engineeringSystem.targetWorkspaceId &&
     status.engineeringSystem.targetRevisionId
@@ -1124,13 +1123,12 @@ function App() {
       : engineeringAgentReady) &&
     conversation !== null &&
     !canCancelActiveRun &&
-      (planningConversationActive ||
+    (planningConversationActive ||
       (!terminalEngineeringMission &&
         mcpReady &&
         (conversationMatchesCurrentTarget(conversation, status) ||
           conversationMissionMatchesCurrentTarget(conversation, status)) &&
-        (status.engineeringSystem.readReady ||
-          status.controller.state === "ready")));
+        currentEngineeringTarget(status) !== null));
   const canResumeEngineeringMission =
     hostReady &&
     engineeringAgentReady &&
@@ -2028,7 +2026,7 @@ function App() {
     }
   }, [applyHostStatus]);
 
-  const openLocalProject = async () => {
+  const openLocalProject = async (openInXg5000: boolean) => {
     const sourcePath = localProjectPath.trim();
     if (!sourcePath || localProjectBusy) {
       return;
@@ -2038,16 +2036,18 @@ function App() {
     try {
       const result = await hostApi.openLocalWorkspace({
         sourcePath,
-        openInXg5000: true,
+        openInXg5000,
         timeoutSeconds: 120,
       });
       const nextStatus = await hostApi.getStatus();
-      if (result.session && nextStatus.engineeringSystem.readReady) {
+      if (currentEngineeringTarget(nextStatus)) {
         await activateEngineeringTargetConversation(nextStatus);
         setWorkChooserOpen(false);
         setLocalProjectOpen(false);
         setConnectionMessage(
-          "원본을 보존한 작업 복사본을 XG5000에서 열고 분석 세션에 연결했습니다.",
+          result.session && nextStatus.engineeringSystem.readReady
+            ? "원본을 보존한 작업 복사본을 XG5000에서 열고 분석 세션에 연결했습니다."
+            : "원본을 보존한 작업 복사본의 정적 구조 분석을 시작했습니다. LD 의미 분석은 XG5000 연결 뒤 사용할 수 있습니다.",
         );
         if (nextStatus.agent.state === "ready") {
           composerRef.current?.focus();
@@ -2071,9 +2071,24 @@ function App() {
     } catch (error) {
       if (error instanceof HostApiError && error.status === 409) {
         // The Host commits the source-preserving workspace before it launches
-        // XG5000. Reflect that durable target even when only the launch fails.
+        // XG5000. Continue with its static target when only the launch fails.
         try {
-          applyHostStatus(await hostApi.getStatus());
+          const nextStatus = await hostApi.getStatus();
+          if (currentEngineeringTarget(nextStatus)) {
+            await activateEngineeringTargetConversation(nextStatus);
+            setWorkChooserOpen(false);
+            setLocalProjectOpen(false);
+            setConnectionMessage(
+              `${error.message} 작업 복사본의 정적 구조 분석은 계속 사용할 수 있습니다.`,
+            );
+            if (nextStatus.agent.state === "ready") {
+              composerRef.current?.focus();
+            } else {
+              setSettingsOpen(true);
+            }
+            return;
+          }
+          applyHostStatus(nextStatus);
         } catch {
           // Keep the original operation failure as the user-facing result.
         }
@@ -3470,19 +3485,20 @@ function App() {
   const selectedEngineeringTarget = currentEngineeringTarget(status);
   const workspaceRevision =
     status.workspace?.revision ?? status.workspace?.artifactHash ?? null;
-  const workspaceActive =
+  const workspaceTargetActive =
     Boolean(status.workspace) &&
-    status.engineeringSystem.readReady &&
     selectedEngineeringTarget?.workspaceId === status.workspace?.workspaceId &&
     selectedEngineeringTarget?.revisionId === workspaceRevision;
+  const workspaceStaticTargetActive =
+    workspaceTargetActive && !status.engineeringSystem.readReady;
   const directXgTargetActive =
-    status.engineeringSystem.readReady && !workspaceActive;
+    status.engineeringSystem.readReady && !workspaceTargetActive;
   const controllerTargetActive =
     !status.engineeringSystem.readReady &&
     status.controller.state === "ready" &&
     selectedEngineeringTarget !== null;
   const hasEngineeringTarget = selectedEngineeringTarget !== null;
-  const activeProjectHash = workspaceActive
+  const activeProjectHash = workspaceTargetActive
     ? status.workspace?.artifactHash ?? null
     : directXgTargetActive &&
         selectedEngineeringTarget &&
@@ -3690,6 +3706,8 @@ function App() {
       ? "읽기 대상 확인"
       : status.controller.state === "ready"
         ? "PLC 읽기 전용 연결"
+        : workspaceStaticTargetActive
+          ? "오프라인 구조 분석"
         : status.workspace
           ? "프로젝트 확인 제한"
           : planningConversationActive
@@ -3700,7 +3718,7 @@ function App() {
     : status.agent.detail ?? "모델 연결 대기";
   const headerTarget = newProjectPlanning?.brief.projectName
     ? newProjectPlanning.brief.projectName
-    : workspaceActive && status.workspace
+    : workspaceTargetActive && status.workspace
       ? status.workspace.displayName
       : status.engineeringSystem.readReady && status.engineeringSystem.processId
         ? `XG5000 PID ${status.engineeringSystem.processId}`
@@ -4485,7 +4503,7 @@ function App() {
                 className="local-project-form"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  void openLocalProject();
+                  void openLocalProject(true);
                 }}
               >
                 <label htmlFor="local-project-path">XG5000 프로젝트 경로</label>
@@ -4507,6 +4525,18 @@ function App() {
                     onClick={() => void browseLocalProject()}
                   >
                     {localProjectBrowseBusy ? "선택 창 여는 중…" : "찾아보기"}
+                  </button>
+                  <button
+                    className="button secondary-button"
+                    type="button"
+                    disabled={
+                      !localProjectPath.trim() ||
+                      localProjectBusy ||
+                      localProjectBrowseBusy
+                    }
+                    onClick={() => void openLocalProject(false)}
+                  >
+                    구조만 분석
                   </button>
                   <button
                     className="button primary-button"
@@ -4736,7 +4766,7 @@ function App() {
               <div className="target-proof-name">
                 <p className="eyebrow">ACTIVE ENGINEERING TARGET</p>
                 <strong>
-                  {workspaceActive && status.workspace
+                  {workspaceTargetActive && status.workspace
                     ? status.workspace.displayName
                     : directXgTargetActive && status.engineeringSystem.processId
                       ? `XG5000 PID ${status.engineeringSystem.processId}`
@@ -4749,7 +4779,7 @@ function App() {
                 <div>
                   <dt>벤더</dt>
                   <dd>
-                    {workspaceActive
+                    {workspaceTargetActive
                       ? status.workspace?.vendor?.toUpperCase() ?? "LS"
                       : "LS"}
                   </dd>

@@ -1639,6 +1639,22 @@ def create_app(
             active_ls_controller = {"endpoint": dict(persisted_endpoint)}
             store.set_host_state("active_ls_controller", active_ls_controller)
 
+    def clear_ls_controller_target() -> None:
+        nonlocal active_ls_controller
+        if active_ls_controller is None:
+            return
+        active_ls_controller = None
+        mcp.clear_controller_endpoint()
+        store.set_host_state("active_ls_controller", None)
+        store.append_event(
+            event_type="controller.disconnected",
+            payload={
+                "vendor": "ls",
+                "readOnly": True,
+                "strongEnoughForWrite": False,
+            },
+        )
+
     def current_change_target() -> ChangeTargetIdentity:
         workspace = active_workspace
         if not isinstance(workspace, dict):
@@ -1779,7 +1795,29 @@ def create_app(
             ).hexdigest()
             return direct_workspace_id, project_hash, session_id
 
-        return current_ls_controller_conversation_target()
+        controller_target = current_ls_controller_conversation_target()
+        if controller_target is not None:
+            return controller_target
+        workspace = active_workspace
+        if isinstance(workspace, dict):
+            workspace_id = str(workspace.get("workspace_id") or "")
+            revision_id = str(workspace.get("revision_id") or "")
+            bound_target = mcp.agent_session_identity_snapshot
+            if (
+                workspace_id
+                and revision_id
+                and isinstance(bound_target, dict)
+                and bound_target.get("workspace_id") == workspace_id
+            ):
+                target_digest = hashlib.sha256(
+                    json.dumps(
+                        [workspace_id, revision_id],
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+                return workspace_id, revision_id, f"workspace:{target_digest}"
+        return None
 
     def engineering_conversation_matches_current_target(
         detail: Conversation | ConversationDetail,
@@ -2248,7 +2286,7 @@ def create_app(
             execution_broker.bind_agent_session(broker_session)
         else:
             active_engineering_session = None
-            execution_broker.clear_agent_session()
+            execution_broker.bind_agent_workspace(str(active_workspace["workspace_id"]))
         return True
 
     async def engineering_target_run_guard() -> AsyncIterator[None]:
@@ -3659,12 +3697,33 @@ def create_app(
         store.supersede_stale_target_lease_for_durable_change_recovery()
 
         async def start_mcp() -> None:
+            nonlocal active_workspace
             try:
                 await mcp.start()
             except MCPStartupError:
                 # The Host and settings UI remain usable. The separate
                 # integration status is unavailable and calls fail closed.
-                pass
+                return
+            workspace = active_workspace
+            workspace_id = (
+                str(workspace.get("workspace_id") or "")
+                if isinstance(workspace, dict)
+                else ""
+            )
+            if not workspace_id or active_ls_controller is not None:
+                return
+            try:
+                restored = _local_workspace_v1(
+                    await mcp.call_workspace_tool(
+                        "workspace.status", {"workspace_id": workspace_id}
+                    )
+                )
+            except (MCPToolError, ValueError):
+                execution_broker.clear_agent_session()
+                return
+            active_workspace = restored.model_dump(mode="json")
+            store.set_host_state("active_workspace", active_workspace)
+            execution_broker.bind_agent_workspace(restored.workspace_id)
 
         mcp_start_task = asyncio.create_task(
             start_mcp(),
@@ -4023,6 +4082,13 @@ def create_app(
             if mcp_status.status == "ready"
             else None
         )
+        workspace_static_target = bool(
+            not selected_pid_read_ready
+            and engineering_target is not None
+            and isinstance(active_workspace, dict)
+            and active_workspace.get("workspace_id") == engineering_target[0]
+            and active_workspace.get("revision_id") == engineering_target[1]
+        )
         identity_assurance = str(active_metadata.get("project_identity_assurance") or "unverified")
         if identity_assurance not in {
             "strong_readback",
@@ -4204,10 +4270,15 @@ def create_app(
                             "열렸다는 증명은 아직 부분적입니다."
                             if active_session
                             else (
-                                "원본을 보존한 working copy가 준비됐으며 "
-                                "XG5000 분석 세션 연결을 기다립니다."
-                                if active_workspace
-                                else "XG5000 실행 인스턴스를 선택하기 전입니다."
+                                "원본을 보존한 working copy의 정적 구조 비교가 "
+                                "준비됐습니다. LD 의미 분석은 XG5000 연결 뒤 사용할 수 있습니다."
+                                if workspace_static_target
+                                else (
+                                    "원본을 보존한 working copy가 준비됐으며 "
+                                    "XG5000 분석 세션 연결을 기다립니다."
+                                    if active_workspace
+                                    else "XG5000 실행 인스턴스를 선택하기 전입니다."
+                                )
                             )
                         )
                     )
@@ -4220,7 +4291,7 @@ def create_app(
                 session_id=(
                     str(active_session["session_id"])
                     if active_session and active_session.get("session_id")
-                    else None
+                    else (engineering_target[2] if workspace_static_target else None)
                 ),
                 session_verified=selected_pid_identity_verified,
                 read_ready=selected_pid_read_ready,
@@ -4576,6 +4647,7 @@ def create_app(
             "endpoint": endpoint,
             "observation": observation.model_dump(mode="json", by_alias=True),
         }
+        execution_broker.clear_agent_session()
         mcp.bind_controller_endpoint(endpoint, observation_current=True)
         store.set_host_state("active_ls_controller", active_ls_controller)
         store.append_event(
@@ -4889,20 +4961,12 @@ def create_app(
     async def disconnect_ls_controller_v1(
         _target_lease: None = Depends(target_switch_lease),
     ) -> Response:
-        nonlocal active_ls_controller
         was_connected = active_ls_controller is not None
-        active_ls_controller = None
-        mcp.clear_controller_endpoint()
-        store.set_host_state("active_ls_controller", None)
-        if was_connected:
-            store.append_event(
-                event_type="controller.disconnected",
-                payload={
-                    "vendor": "ls",
-                    "readOnly": True,
-                    "strongEnoughForWrite": False,
-                },
-            )
+        clear_ls_controller_target()
+        if was_connected and isinstance(active_workspace, dict):
+            workspace_id = active_workspace.get("workspace_id")
+            if isinstance(workspace_id, str) and workspace_id:
+                execution_broker.bind_agent_workspace(workspace_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.post(
@@ -8059,6 +8123,8 @@ def create_app(
             if bound_workspace_id is not None:
                 broker_session["workspace_id"] = bound_workspace_id
             execution_broker.bind_agent_session(broker_session)
+        elif bound_workspace_id is not None:
+            execution_broker.bind_agent_workspace(bound_workspace_id)
         else:
             execution_broker.clear_agent_session()
         return active_engineering_session
@@ -8545,6 +8611,8 @@ def create_app(
         execution_broker.clear_agent_session()
         active_workspace = workspace.model_dump(mode="json")
         store.set_host_state("active_workspace", active_workspace)
+        clear_ls_controller_target()
+        execution_broker.bind_agent_workspace(workspace.workspace_id)
 
         launch: XG5000ProjectLaunchV1 | None = None
         session: dict[str, Any] | None = None
@@ -8654,6 +8722,8 @@ def create_app(
 
         active_workspace = workspace.model_dump(mode="json")
         store.set_host_state("active_workspace", active_workspace)
+        clear_ls_controller_target()
+        execution_broker.bind_agent_workspace(workspace.workspace_id)
         launch, session = await open_workspace_in_xg5000(
             workspace,
             timeout_seconds=body.timeout_seconds,
@@ -8715,6 +8785,11 @@ def create_app(
         ):
             active_workspace = workspace.model_dump(mode="json")
             store.set_host_state("active_workspace", active_workspace)
+            if (
+                active_ls_controller is None
+                and not _engineering_session_read_ready(active_engineering_session)
+            ):
+                execution_broker.bind_agent_workspace(workspace.workspace_id)
         return workspace
 
     @app.get(
@@ -9061,6 +9136,8 @@ def create_app(
         execution_broker.clear_agent_session()
         active_workspace = workspace.model_dump(mode="json")
         store.set_host_state("active_workspace", active_workspace)
+        clear_ls_controller_target()
+        execution_broker.bind_agent_workspace(workspace.workspace_id)
         store.set_host_state("controller_restore_handoff", None)
         launch: XG5000ProjectLaunchV1 | None = None
         session: dict[str, Any] | None = None
@@ -10176,6 +10253,7 @@ def create_app(
                     "프로젝트 정체성을 다시 확인해 주세요."
                 ),
             ) from exc
+        clear_ls_controller_target()
         session = bind_engineering_session(result)
         store.append_event(
             event_type="host.status",

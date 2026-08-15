@@ -6,12 +6,13 @@
 ## 저장소와 브랜치
 
 - `gidong-platform`: `dev` (이 문서를 포함한 commit)
-- `gidong-agent`: `dev` @ `0737be2ef706923c8c08abc79ff555ad2680abde`
-- `gidong-plc-mcp`: `dev` @ `d642aa868883d8aa9086229fe81f3f65dd2c85f5`
+- `gidong-agent`: `dev` @ `bfe982b` (`Clarify static workspace evidence limits`)
+- `gidong-plc-mcp`: `dev` @ `5637d8b` (`Parse identical workspace structure`)
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
-2026-08-16 06:00 KST에 Platform push를 다시 시도했지만 GitHub 443 연결 거부로 실패했다. 이 문서
-commit 기준 Platform은 `origin/dev`보다 14 commit, Agent는 5 commit, MCP는 5 commit
+2026-08-16 06:54 KST에 마지막 로컬 검증을 마치고 세 저장소의 `dev` push를 다시
+시도했지만 모두 GitHub 443 연결 거부로 실패했다. 이 문서
+commit 기준 Platform은 `origin/dev`보다 15 commit, Agent는 6 commit, MCP는 6 commit
 앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
 먼저 실행한다.
 
@@ -98,6 +99,21 @@ commit 기준 Platform은 `origin/dev`보다 14 commit, Agent는 5 commit, MCP�
   추가하므로 이번 기능 보존 리팩터링 범위에서 제외하고 미커밋 변경을 전부 제거했다.
   동일한 이유로 향후 제품 vertical과 내부 단순화 작업을 한 commit에 섞지 않는다.
 
+## 마지막 수직 연결
+
+- 보존된 local working copy는 이제 XG5000 process가 없어도 기존 `workspace.compare` 한 개만
+  Agent에 노출한다. Host의 workspace-only binding은 `workspace_id`만 주입하며 PID/HWND/path/
+  hash가 필요한 LD·behavior·hardware·mutation 도구는 catalog에서 계속 빠지고 직접 호출도
+  거부된다. 별도 MCP tool이나 DB/API/event schema는 추가하지 않았다.
+- 동일한 source/working SHA-256도 조기 반환하지 않고 두 path-bound structure index를 만든다.
+  파일 동일성은 exact hash로, 부분 구조 inventory는 `partial`로 각각 표현하므로 partial parser를
+  LD 의미나 runtime 증거로 오해하지 않는다.
+- Web에는 기존 local-open API의 `openInXg5000:false`를 쓰는 `구조만 분석` 선택만 추가했다.
+  XG5000 launch가 409로 실패해도 이미 보존된 workspace를 static target으로 계속 사용하며,
+  Debug 화면은 authoritative workspace/revision ID와 `오프라인 구조 분석`을 표시한다.
+- controller/XG/workspace 전환은 한 번에 하나의 Agent target binding만 남긴다. controller 선택은
+  workspace binding을 지우고, 명시적인 workspace/XG 선택은 controller binding을 지운다.
+
 ## 검증된 것
 
 - Agent, MCP, Host, Launcher, packaging, Python contract compile/import 성공
@@ -122,6 +138,13 @@ commit 기준 Platform은 `origin/dev`보다 14 commit, Agent는 5 commit, MCP�
 - 같은 입력에서 behavior report의 LD graph 생성 횟수 3회 → 1회 확인
 - TypeScript contracts build 성공
 - Web TypeScript + Vite production build 성공
+- 실제 보존 XGWX(SHA-256 `bee3b1a6e69469c0e1384cb8d9d758fef2f95a92f0cc7ac6486deea941a9a68f`)
+  를 workspace-only compare로 실행해 `identical/partial`, configurations 1, tasks 1,
+  code units 4, symbols 302, devices 495, modules 2, parameters 6, communications 6을 확인.
+  같은 binding에서 `workspace.compare`만 Agent catalog에 남고 `program.read_ld`가 숨겨지는 것도
+  확인
+- 새 Development Host와 launcher handoff로 인앱 UI를 다시 인증해 header/target proof의
+  `오프라인 구조 분석`, exact workspace/revision ID, local chooser의 `구조만 분석` 버튼을 확인
 - HTTP contract guard 성공
 - 세 저장소 staged diff whitespace check 성공
 - 원격 모델 catalog와 짧은 completion 호출 성공

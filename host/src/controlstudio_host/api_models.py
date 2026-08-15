@@ -3995,15 +3995,17 @@ class LocalWorkspaceCompareV1(ApiModel):
 
     @model_validator(mode="after")
     def validate_compare_state(self) -> LocalWorkspaceCompareV1:
-        structure_status = self.status.startswith("file_changed_structure_")
         if self.file_identical != (self.status == "identical"):
             raise ValueError("workspace compare file identity and status disagree")
+        if self.file_identical:
+            if self.structure is not None and self.structure.status not in {"same", "partial"}:
+                raise ValueError("identical workspace comparison structure is invalid")
+            return self
+        structure_status = self.status.startswith("file_changed_structure_")
         if structure_status != (self.structure is not None):
             raise ValueError("workspace compare structure and status disagree")
         if self.structure is not None and not self.status.endswith(self.structure.status):
             raise ValueError("workspace compare structure status disagrees with the result status")
-        if self.file_identical and self.limitations:
-            raise ValueError("identical workspace comparison cannot have limitations")
         return self
 
 
