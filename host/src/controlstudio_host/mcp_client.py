@@ -69,6 +69,7 @@ AGENT_TOOL_NAMES: dict[str, str] = {
     "read_ls_controller_devices": "controller.ls.read",
     "trace_ls_controller_devices": "controller.ls.trace",
     "compare_workspace_source": "workspace.compare",
+    "inspect_workspace_hardware_context": "workspace.hardware_context",
 }
 AGENT_CONTROLLER_MCP_TOOLS = frozenset(
     {
@@ -147,6 +148,7 @@ REQUIRED_PRODUCT_MCP_TOOLS = (
 SESSION_IDENTITY_FIELDS = ("session_id", "pid", "hwnd", "project_path", "project_hash")
 AGENT_TOOL_REQUIRED_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
     "workspace.compare": ("workspace_id",),
+    "workspace.hardware_context": ("workspace_id", "revision_id"),
     "xg5000.session_status": ("session_id",),
     "project.list_programs": SESSION_IDENTITY_FIELDS,
     "program.focus": SESSION_IDENTITY_FIELDS,
@@ -342,20 +344,28 @@ class MCPGateway:
             )
         identity = {field: session[field] for field in SESSION_IDENTITY_FIELDS}
         workspace_id = session.get("workspace_id")
+        revision_id = session.get("revision_id")
         metadata = session.get("metadata")
         workspace_identity = (
             metadata.get("workspace_identity") if isinstance(metadata, dict) else None
         )
         if not workspace_id and isinstance(workspace_identity, dict):
             workspace_id = workspace_identity.get("workspace_id")
+        if not revision_id and isinstance(workspace_identity, dict):
+            revision_id = workspace_identity.get("revision_id")
         if isinstance(workspace_id, str) and workspace_id:
             identity["workspace_id"] = workspace_id
+        if isinstance(revision_id, str) and revision_id:
+            identity["revision_id"] = revision_id
         self._active_session_identity = identity
 
-    def bind_agent_workspace(self, workspace_id: str) -> None:
-        if not isinstance(workspace_id, str) or not workspace_id:
-            raise MCPToolError("cannot bind an empty engineering workspace")
-        self._active_session_identity = {"workspace_id": workspace_id}
+    def bind_agent_workspace(self, workspace_id: str, revision_id: str) -> None:
+        if not workspace_id or not revision_id:
+            raise MCPToolError("cannot bind an incomplete engineering workspace")
+        self._active_session_identity = {
+            "workspace_id": workspace_id,
+            "revision_id": revision_id,
+        }
 
     def clear_agent_session(self) -> None:
         self._active_session_identity = None

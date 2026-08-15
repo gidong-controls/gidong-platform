@@ -6,13 +6,13 @@
 ## 저장소와 브랜치
 
 - `gidong-platform`: `dev` (이 문서를 포함한 commit)
-- `gidong-agent`: `dev` @ `bfe982b` (`Clarify static workspace evidence limits`)
-- `gidong-plc-mcp`: `dev` @ `5637d8b` (`Parse identical workspace structure`)
+- `gidong-agent`: `dev` @ `a100122` (`Teach agent static workspace hardware limits`)
+- `gidong-plc-mcp`: `dev` @ `74b726b` (`Expose static workspace hardware context`)
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
-2026-08-16 07:30 KST에 세 저장소의 최신 `dev` push를 다시 시도했지만 모두 GitHub 443
-연결 거부로 실패했다. 이 문서 commit 기준 Platform은 `origin/dev`보다 17 commit,
-Agent는 6 commit, MCP는 6 commit
+2026-08-16 07:54 KST에 세 저장소의 최신 `dev` push를 다시 시도했지만 모두 GitHub 443
+연결 거부로 실패했다. 이 문서 commit 기준 Platform은 `origin/dev`보다 18 commit,
+Agent는 7 commit, MCP는 7 commit
 앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
 먼저 실행한다.
 
@@ -114,6 +114,11 @@ Agent는 6 commit, MCP는 6 commit
   operation의 `sqlite3.backup` snapshot으로 보존하고, 두 초기화와 builtin seed가 모두 끝나야
   marker를 지운다. 두 번째 DB 실패는 즉시 두 preimage를 복원하며 hard crash로 marker가 남으면
   다음 시작이 먼저 같은 pair를 복원한다. 현재 schema에서는 backup I/O가 없다.
+- 같은 static workspace에서 기존 순수 XGWX hardware parser도 Agent가 사용할 수 있다.
+  `workspace.hardware_context`는 Host가 숨겨서 주입하는 workspace/revision 두 identity와 source·
+  working SHA, inner context digest를 한 receipt로 결속한다. XG5000 query와 live hardware cache는
+  사용하지 않으며 이 evidence는 변경 승인 coverage에 들어가지 않는다. UI Activity에는
+  `작업공간 하드웨어 확인`으로 started/completed가 표시된다.
 
 ## 검증된 것
 
@@ -151,6 +156,11 @@ Agent는 6 commit, MCP는 6 commit
   다음 시작이 marker를 소비해 18/1 preimage부터 다시 19/2로 완료하는 것도 확인
 - 실제 Development data root의 현재 19/2 DB로 최종 Host를 재기동해 Host/DB/static UI/MCP
   `ready`, migration marker·backup directory 미생성을 확인
+- 실제 보존 XGWX의 Host→MCP stdio 경로에서 MCP 68 tools, static Agent tools 2개를 확인했다.
+  `workspace.hardware_context`는 CPU `XBC-DN/DP64H`, timer areas 3, I/O modules 2, configured
+  I/O channels 4를 SHA-bound receipt로 반환했고 external wiring은 false로 유지했다. LD tool은
+  catalog에서 숨겨졌고, stale revision은 `tool.started` 뒤 `tool.failed`로 거부됐으며 live
+  hardware cache는 비어 있었다.
 - HTTP contract guard 성공
 - 세 저장소 staged diff whitespace check 성공
 - 원격 모델 catalog와 짧은 completion 호출 성공

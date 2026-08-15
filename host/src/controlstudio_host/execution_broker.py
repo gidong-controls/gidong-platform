@@ -22,6 +22,7 @@ from controlstudio_contracts import (
     ExternalToolResultV1,
 )
 
+from .agent_protocol import scrub_agent_tool_result
 from .api_models import (
     LocalWorkspaceCompareV1,
     MneInstructionBatchPatchCandidateV5,
@@ -61,6 +62,16 @@ _WORKSPACE_COMPARE_FIELDS = {
     "structure",
     "limitations",
     "compare_digest",
+}
+_WORKSPACE_HARDWARE_CONTEXT_FIELDS = {
+    "schema",
+    "workspace_id",
+    "revision_id",
+    "source_kind",
+    "source_sha256",
+    "working_sha256",
+    "hardware_context",
+    "receipt_digest",
 }
 
 
@@ -110,7 +121,7 @@ def validate_workspace_compare_result(
 class ExecutionBroker(Protocol):
     def bind_agent_session(self, session: dict[str, Any]) -> None: ...
 
-    def bind_agent_workspace(self, workspace_id: str) -> None: ...
+    def bind_agent_workspace(self, workspace_id: str, revision_id: str) -> None: ...
 
     def clear_agent_session(self) -> None: ...
 
@@ -135,8 +146,8 @@ class MCPExecutionBroker:
     def bind_agent_session(self, session: dict[str, Any]) -> None:
         self._gateway.bind_agent_session(session)
 
-    def bind_agent_workspace(self, workspace_id: str) -> None:
-        self._gateway.bind_agent_workspace(workspace_id)
+    def bind_agent_workspace(self, workspace_id: str, revision_id: str) -> None:
+        self._gateway.bind_agent_workspace(workspace_id, revision_id)
 
     def clear_agent_session(self) -> None:
         self._gateway.clear_agent_session()
@@ -249,6 +260,11 @@ class MCPExecutionBroker:
             return cls._hardware_context_evidence_contract(result)
         if raw_name == "workspace.compare":
             return cls._workspace_compare_evidence_contract(
+                result,
+                expected_session_identity=expected_session_identity,
+            )
+        if raw_name == "workspace.hardware_context":
+            return cls._workspace_hardware_context_evidence_contract(
                 result,
                 expected_session_identity=expected_session_identity,
             )
@@ -374,6 +390,95 @@ class MCPExecutionBroker:
             or not contract["projectHash"]
         ):
             raise MCPToolError("hardware context is missing its project hash")
+        contract["receiptDigest"] = cls._canonical_digest(contract)
+        return contract
+
+    @classmethod
+    def _workspace_hardware_context_evidence_contract(
+        cls,
+        result: Any,
+        *,
+        expected_session_identity: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        expected_workspace_id = (
+            expected_session_identity.get("workspace_id")
+            if isinstance(expected_session_identity, Mapping)
+            else None
+        )
+        expected_revision_id = (
+            expected_session_identity.get("revision_id")
+            if isinstance(expected_session_identity, Mapping)
+            else None
+        )
+        if not isinstance(expected_workspace_id, str) or not isinstance(
+            expected_revision_id,
+            str,
+        ):
+            raise MCPToolError("workspace hardware target is not bound")
+        if not isinstance(result, Mapping) or set(result) != (
+            _WORKSPACE_HARDWARE_CONTEXT_FIELDS | {"operation", "schema_version"}
+        ):
+            raise MCPToolError("workspace hardware context shape mismatched")
+        unsigned = {
+            name: result[name]
+            for name in _WORKSPACE_HARDWARE_CONTEXT_FIELDS
+            if name != "receipt_digest"
+        }
+        workspace_id = result.get("workspace_id")
+        revision_id = result.get("revision_id")
+        source_sha256 = result.get("source_sha256")
+        working_sha256 = result.get("working_sha256")
+        if (
+            result.get("operation") != "workspace.hardware_context"
+            or result.get("schema") != "xg5000.workspace-hardware-context/1.0"
+            or workspace_id != expected_workspace_id
+            or revision_id != expected_revision_id
+            or not all(
+                isinstance(value, str)
+                and len(value) == 64
+                and all(character in "0123456789abcdef" for character in value)
+                for value in (source_sha256, working_sha256)
+            )
+            or result.get("receipt_digest") != cls._canonical_digest(unsigned)
+        ):
+            raise MCPToolError("workspace hardware context binding is invalid")
+        hardware_context = result.get("hardware_context")
+        if not isinstance(hardware_context, Mapping):
+            raise MCPToolError("workspace hardware context is missing")
+        context_contract = cls._hardware_context_evidence_contract(hardware_context)
+        project_binding = hardware_context.get("project_binding")
+        if (
+            not isinstance(project_binding, Mapping)
+            or project_binding.get("session_id")
+            != f"workspace:{workspace_id}:{revision_id}"
+            or project_binding.get("pid") != 0
+            or project_binding.get("hwnd") != 0
+            or project_binding.get("project_hash") != working_sha256
+        ):
+            raise MCPToolError("workspace hardware project binding is invalid")
+        context_projection = scrub_agent_tool_result(
+            {
+                "cpu": context_contract["cpu"],
+                "timerAreas": context_contract["timerAreas"],
+                "ioModules": context_contract["ioModules"],
+                "ioMapping": context_contract["ioMapping"],
+            }
+        )
+        contract = {
+            "schema": "controlstudio-workspace-hardware-context-evidence/v1",
+            "workspaceId": workspace_id,
+            "revisionId": revision_id,
+            "sourceKind": result.get("source_kind"),
+            "sourceSha256": source_sha256,
+            "workingSha256": working_sha256,
+            "contextDigest": context_contract["contextDigest"],
+            **context_projection,
+            "externalWiringObserved": context_contract["externalWiringObserved"],
+            "blockers": context_contract["blockers"],
+            "offlineCandidateReady": context_contract["offlineCandidateReady"],
+        }
+        if contract["sourceKind"] not in {"local_file", "restored_from_controller"}:
+            raise MCPToolError("workspace hardware source kind is invalid")
         contract["receiptDigest"] = cls._canonical_digest(contract)
         return contract
 

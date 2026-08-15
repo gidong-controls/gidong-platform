@@ -305,6 +305,12 @@ _AGENT_TOOL_EVIDENCE: dict[str, tuple[str, str, str, str]] = {
         "Compared the immutable source artifact with the current working copy.",
         "confirmed",
     ),
+    "workspace.hardware_context": (
+        "artifact",
+        "Workspace hardware context",
+        "Observed CPU, timer-area, and I/O configuration from the bound working copy.",
+        "confirmed",
+    ),
     "project.structure_index": (
         "artifact",
         "XG5000 project structure index",
@@ -619,6 +625,9 @@ def _agent_tool_evidence_ref(
     receipt_schema = {
         "project.hardware_context": "controlstudio-hardware-context-evidence/v1",
         "workspace.compare": "controlstudio-workspace-compare-evidence/v1",
+        "workspace.hardware_context": (
+            "controlstudio-workspace-hardware-context-evidence/v1"
+        ),
         "program.change_target_analysis": "controlstudio-change-target-evidence/v1",
         "program.compile_mne_series_guard_candidate": (
             "controlstudio-mne-series-guard-candidate-evidence/v1"
@@ -1569,6 +1578,14 @@ def create_app(
     shutdown_event = asyncio.Event()
     active_engineering_session: dict[str, Any] | None = None
     active_workspace: dict[str, Any] | None = store.get_host_state("active_workspace")
+
+    def bind_agent_workspace_target(workspace: LocalWorkspaceV1 | dict[str, Any]) -> None:
+        if isinstance(workspace, LocalWorkspaceV1):
+            workspace_id, revision_id = workspace.workspace_id, workspace.revision_id
+        else:
+            workspace_id = str(workspace.get("workspace_id") or "")
+            revision_id = str(workspace.get("revision_id") or "")
+        execution_broker.bind_agent_workspace(workspace_id, revision_id)
     active_ls_controller: dict[str, Any] | None = store.get_host_state("active_ls_controller")
 
     def resolve_project_brief_attachments(
@@ -2292,10 +2309,11 @@ def create_app(
                 str,
             ):
                 broker_session["workspace_id"] = active_workspace["workspace_id"]
+                broker_session["revision_id"] = active_workspace["revision_id"]
             execution_broker.bind_agent_session(broker_session)
         else:
             active_engineering_session = None
-            execution_broker.bind_agent_workspace(str(active_workspace["workspace_id"]))
+            bind_agent_workspace_target(active_workspace)
         return True
 
     async def engineering_target_run_guard() -> AsyncIterator[None]:
@@ -3732,7 +3750,7 @@ def create_app(
                 return
             active_workspace = restored.model_dump(mode="json")
             store.set_host_state("active_workspace", active_workspace)
-            execution_broker.bind_agent_workspace(restored.workspace_id)
+            bind_agent_workspace_target(restored)
 
         mcp_start_task = asyncio.create_task(
             start_mcp(),
@@ -4973,9 +4991,7 @@ def create_app(
         was_connected = active_ls_controller is not None
         clear_ls_controller_target()
         if was_connected and isinstance(active_workspace, dict):
-            workspace_id = active_workspace.get("workspace_id")
-            if isinstance(workspace_id, str) and workspace_id:
-                execution_broker.bind_agent_workspace(workspace_id)
+            bind_agent_workspace_target(active_workspace)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.post(
@@ -8131,9 +8147,10 @@ def create_app(
             broker_session = dict(active_engineering_session)
             if bound_workspace_id is not None:
                 broker_session["workspace_id"] = bound_workspace_id
+                broker_session["revision_id"] = workspace["revision_id"]
             execution_broker.bind_agent_session(broker_session)
         elif bound_workspace_id is not None:
-            execution_broker.bind_agent_workspace(bound_workspace_id)
+            bind_agent_workspace_target(workspace)
         else:
             execution_broker.clear_agent_session()
         return active_engineering_session
@@ -8621,7 +8638,7 @@ def create_app(
         active_workspace = workspace.model_dump(mode="json")
         store.set_host_state("active_workspace", active_workspace)
         clear_ls_controller_target()
-        execution_broker.bind_agent_workspace(workspace.workspace_id)
+        bind_agent_workspace_target(workspace)
 
         launch: XG5000ProjectLaunchV1 | None = None
         session: dict[str, Any] | None = None
@@ -8732,7 +8749,7 @@ def create_app(
         active_workspace = workspace.model_dump(mode="json")
         store.set_host_state("active_workspace", active_workspace)
         clear_ls_controller_target()
-        execution_broker.bind_agent_workspace(workspace.workspace_id)
+        bind_agent_workspace_target(workspace)
         launch, session = await open_workspace_in_xg5000(
             workspace,
             timeout_seconds=body.timeout_seconds,
@@ -8798,7 +8815,7 @@ def create_app(
                 active_ls_controller is None
                 and not _engineering_session_read_ready(active_engineering_session)
             ):
-                execution_broker.bind_agent_workspace(workspace.workspace_id)
+                bind_agent_workspace_target(workspace)
         return workspace
 
     @app.get(
@@ -9146,7 +9163,7 @@ def create_app(
         active_workspace = workspace.model_dump(mode="json")
         store.set_host_state("active_workspace", active_workspace)
         clear_ls_controller_target()
-        execution_broker.bind_agent_workspace(workspace.workspace_id)
+        bind_agent_workspace_target(workspace)
         store.set_host_state("controller_restore_handoff", None)
         launch: XG5000ProjectLaunchV1 | None = None
         session: dict[str, Any] | None = None

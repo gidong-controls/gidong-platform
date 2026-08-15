@@ -192,6 +192,7 @@ const TOOL_ACTIVITY_NAMES: Record<string, string> = {
   focus_xg5000_program: "XG5000 프로그램 열기",
   read_ladder_program: "래더 프로그램 읽기",
   inspect_project_hardware_context: "프로젝트 하드웨어 확인",
+  inspect_workspace_hardware_context: "작업공간 하드웨어 확인",
   inspect_project_structure: "프로젝트 구조 분석",
   search_project_evidence: "프로젝트 근거 검색",
   analyze_change_target: "변경 대상 분석",
