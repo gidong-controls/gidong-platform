@@ -44,6 +44,16 @@ _DEVICE_TOKEN = re.compile(r"(?<![A-Z0-9.])([A-Z][A-Z0-9]*[0-9][A-Z0-9.]*)")
 _EXACT_DEVICE = re.compile(r"^[A-Z][A-Z0-9]*[0-9][A-Z0-9.]*$")
 _DIRECT_DATA_REGISTER = re.compile(r"^D(?P<index>[0-9]+)$")
 _DATA_LITERAL = re.compile(r"^(?:[+-]?[0-9]+|H[0-9A-F]+)$", re.IGNORECASE)
+_COMPARISON_RELATIONS = {
+    "=": "equal",
+    "<>": "not_equal",
+    ">": "greater_than",
+    "<": "less_than",
+    ">=": "greater_than_or_equal",
+    "<=": "less_than_or_equal",
+}
+_COMPARISON_DEVICE = re.compile(r"^[PMKFTCLD][0-9]+$")
+_COMPARISON_LITERAL = re.compile(r"^[+-]?[0-9]+$")
 _STATEFUL_ACTIONS = frozenset({"SET", "RST", "TON", "TOF", "CTR", "CTU", "CTD", "TRTG"})
 _DATA_TRANSFER_ACTIONS = frozenset({"MOV", "DMOV"})
 _DATA_TRANSFER_WIDTH_WORDS = {"MOV": 1, "DMOV": 2}
@@ -390,6 +400,79 @@ def _fact_without_fingerprint(value: Mapping[str, Any]) -> dict[str, Any]:
     return {str(key): item for key, item in value.items() if key != "fingerprint"}
 
 
+def _comparison_expression(expression: str) -> dict[str, Any] | None:
+    """Independently parse one bounded signed XGK/XGB comparison expression."""
+
+    fields = expression.split(",")
+    if len(fields) != 3:
+        return None
+    instruction, lhs_text, rhs_text = (field.strip() for field in fields)
+    double_word = instruction.startswith("D")
+    relation = _COMPARISON_RELATIONS.get(
+        instruction[1:] if double_word else instruction
+    )
+    if relation is None or not lhs_text or not rhs_text:
+        return None
+    width_words = 2 if double_word else 1
+    data_type = "signed_32_bit" if double_word else "signed_16_bit"
+    minimum, maximum = (
+        (-2_147_483_648, 2_147_483_647)
+        if width_words == 2
+        else (-32_768, 32_767)
+    )
+
+    def operand(text: str) -> dict[str, Any] | None:
+        if _COMPARISON_DEVICE.fullmatch(text) is not None:
+            return {"kind": "device", "value": text}
+        if _COMPARISON_LITERAL.fullmatch(text) is None:
+            return None
+        value = int(text, 10)
+        if not minimum <= value <= maximum:
+            return None
+        return {"kind": "literal", "value": value}
+
+    lhs = operand(lhs_text)
+    rhs = operand(rhs_text)
+    if lhs is None or rhs is None:
+        return None
+    devices: list[str] = []
+    for item in (lhs, rhs):
+        if item["kind"] == "device" and item["value"] not in devices:
+            devices.append(item["value"])
+    return {
+        "instruction": instruction,
+        "relation": relation,
+        "data_type": data_type,
+        "width_words": width_words,
+        "lhs": lhs,
+        "rhs": rhs,
+        "devices": devices,
+    }
+
+
+def _validated_comparison(
+    condition: Mapping[str, Any],
+    *,
+    semantic_status: str,
+) -> tuple[str, dict[str, Any]] | None:
+    """Validate one raw COMPARE condition against the Host-local grammar."""
+
+    expression = _text(
+        condition.get("expression"), "comparison expression", maximum=4_000
+    )
+    parsed = _comparison_expression(expression)
+    if parsed is None:
+        if "comparison" in condition or "devices" in condition:
+            raise MCPToolError("unsupported comparison exposes structured metadata")
+        if semantic_status != "partial":
+            raise MCPToolError("unsupported comparison hides partial semantics")
+        return None
+    metadata = _mapping(condition.get("comparison"), "comparison metadata")
+    if dict(metadata) != parsed or "devices" in condition:
+        raise MCPToolError("comparison metadata disagrees with its raw expression")
+    return expression, parsed
+
+
 def _condition_locations(
     condition_value: Any,
     *,
@@ -413,23 +496,12 @@ def _condition_locations(
             )
         ]
     if operator == "COMPARE":
-        expression = _text(
-            condition.get("expression"),
-            "comparison expression",
-            maximum=4_000,
+        validated = _validated_comparison(
+            condition, semantic_status=semantic_status
         )
-        parsed_devices = _DEVICE_TOKEN.findall(expression.upper())
-        if "devices" in condition:
-            explicit_devices = [
-                _device(item, "comparison device")
-                for item in _items(condition["devices"], "comparison devices")
-            ]
-            if explicit_devices != parsed_devices:
-                raise MCPToolError(
-                    "comparison devices disagree with the observed expression"
-                )
-        else:
-            explicit_devices = parsed_devices
+        if validated is None:
+            return []
+        _, parsed = validated
         return [
             _source_location(
                 condition.get("source"),
@@ -440,7 +512,7 @@ def _condition_locations(
                 network_index=network_index,
                 rung_id=rung_id,
             )
-            for device in explicit_devices
+            for device in parsed["devices"]
         ]
     if operator == "NOT":
         return _condition_locations(
@@ -929,6 +1001,8 @@ def _logic_graph_contract(result: Any) -> dict[str, Any]:
             unresolved_write_seen = unresolved_write_seen or node_unresolved_write
             has_unsupported_node = has_unsupported_node or kind == "UNKNOWN" or (
                 kind == "APPLICATION" and _action_target(kind, value) is None
+            ) or (
+                kind == "COMPARE" and _comparison_expression(value) is None
             ) or node_unresolved_write
         partial_rung_in_network = False
         for rung_value in _items(network.get("rungs"), "logic graph rungs"):
@@ -3496,8 +3570,87 @@ def state_model_context(result: Any) -> dict[str, Any] | None:
     envelope = _validated_result(result, raw_name)
     model = _mapping(envelope.get("state_model"), "state model")
     projected: list[dict[str, Any]] = []
+    comparisons: list[dict[str, Any]] = []
+
+    def collect_comparisons(
+        condition_value: Any,
+        *,
+        semantic_status: str,
+        enclosing: dict[str, Any],
+    ) -> None:
+        condition = _mapping(condition_value, "state model condition")
+        operator = _text(
+            condition.get("operator"),
+            "state model condition operator",
+            maximum=50,
+        )
+        if operator == "COMPARE":
+            validated = _validated_comparison(
+                condition, semantic_status=semantic_status
+            )
+            if validated is None:
+                return
+            expression, parsed = validated
+            if semantic_status == "structured":
+                source = _source_location(
+                    condition.get("source"),
+                    access="condition",
+                    semantic_status=semantic_status,
+                    rung_id=enclosing["rungId"],
+                )
+                comparisons.append(
+                    {
+                        "expression": expression,
+                        **parsed,
+                        "source": {
+                            "program": source["program"],
+                            "visualRow": source["visualRow"],
+                            "tokenOffset": source["tokenOffset"],
+                        },
+                        "action": enclosing["action"],
+                        "target": enclosing["target"],
+                        "rungId": enclosing["rungId"],
+                    }
+                )
+            return
+        if operator == "NOT":
+            collect_comparisons(
+                condition.get("term"),
+                semantic_status=semantic_status,
+                enclosing=enclosing,
+            )
+            return
+        if operator in {"AND", "OR"}:
+            for term in _items(condition.get("terms"), "state model condition terms"):
+                collect_comparisons(
+                    term,
+                    semantic_status=semantic_status,
+                    enclosing=enclosing,
+                )
+            return
+        if operator not in {"DEVICE", "TRUE", "UNKNOWN"}:
+            raise MCPToolError("state model condition operator is not supported")
+
     for action_value in _items(model.get("actions"), "state model actions"):
         action = _mapping(action_value, "state model action")
+        action_status = _semantic(
+            action.get("semantic_status"), "state model action"
+        )
+        action_name = _text(
+            action.get("action"), "state model action name", maximum=100
+        ).upper()
+        target = _exact_device_or_none(action.get("target"))
+        rung_id_value = action.get("rung_id")
+        rung_id = (
+            _text(rung_id_value, "state model rung id")
+            if rung_id_value is not None
+            else None
+        )
+        collect_comparisons(
+            action.get("condition"),
+            semantic_status=action_status,
+            enclosing={"action": action_name, "target": target, "rungId": rung_id},
+        )
         if action.get("record_kind") != "APPLICATION":
             continue
         raw_value = _text(
@@ -3526,13 +3679,26 @@ def state_model_context(result: Any) -> dict[str, Any] | None:
             raise MCPToolError("state model in-place mutation semantics are inconsistent")
         projected.append(semantics)
 
-    if not projected:
+    if not projected and not comparisons:
         return None
-    return {
-        "inPlaceMutations": projected[:_MODEL_CONTEXT_ITEM_LIMIT],
-        "totalCount": len(projected),
-        "truncated": len(projected) > _MODEL_CONTEXT_ITEM_LIMIT,
-    }
+    context: dict[str, Any] = {}
+    if projected:
+        context.update(
+            {
+                "inPlaceMutations": projected[:_MODEL_CONTEXT_ITEM_LIMIT],
+                "totalCount": len(projected),
+                "truncated": len(projected) > _MODEL_CONTEXT_ITEM_LIMIT,
+            }
+        )
+    if comparisons:
+        context.update(
+            {
+                "comparisons": comparisons[:_MODEL_CONTEXT_ITEM_LIMIT],
+                "comparisonCount": len(comparisons),
+                "comparisonsTruncated": len(comparisons) > _MODEL_CONTEXT_ITEM_LIMIT,
+            }
+        )
+    return context
 
 
 def _validate_location_fact(value: Any) -> dict[str, Any]:

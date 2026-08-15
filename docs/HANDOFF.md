@@ -6,13 +6,13 @@
 ## 저장소와 브랜치
 
 - `gidong-platform`: `dev` (이 문서를 포함한 commit)
-- `gidong-agent`: `dev` @ `8045e943a674687076643f2276516335c2330531`
-- `gidong-plc-mcp`: `dev` @ `ee3a429b59f664e788f0ffcc8eaa4305345bd32d`
+- `gidong-agent`: `dev` @ `a6732c55246a8c2ffa4ab954c8ef949a22687eb2`
+- `gidong-plc-mcp`: `dev` @ `6653a29ae7bc397fedb5981af6f77c4c66af3ed0`
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
 2026-08-16 04:00 KST에 세 저장소 push를 다시 시도했지만 GitHub 443 연결이 모두
-거부됐다. 이 문서 commit 뒤 Platform은 `origin/dev`보다 6 commit, Agent는 3 commit,
-MCP는 2 commit 앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
+거부됐다. 이 문서 commit 뒤 Platform은 `origin/dev`보다 7 commit, Agent는 4 commit,
+MCP는 3 commit 앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
 먼저 실행한다.
 
 ## 현재 제품 경계
@@ -64,6 +64,11 @@ MCP는 2 commit 앞서 있다. 네트워크 가능한 세션에서 세 저장소
   모델 입력에서 사라지던 경계를 닫았다. Host가 동일 raw state model을 독립 재검증해
   receipt digest에 결속된 bounded `modelContext`만 Agent에 전달하며, Agent는 이를
   observation이 아닌 inference에만 사용한다. HTTP/DB/evidence/event contract는 불변이다.
+- 실제 대동 project에서 관측된 LOAD 비교식을 signed 16/32-bit 정적 의미로 구조화했다.
+  `=`, `<>`, `>`, `<`, `>=`, `<=`와 정확한 `D` prefix만 지원하며 좌변·우변 순서를
+  보존한다. MCP 한 파서가 graph/state/reference를 공급하고 Host는 raw expression을 독립
+  재검증한다. 지원하지 않는 suffix·operand는 rung과 network를 `partial`로 유지한다.
+  상세 의미는 receipt digest에 결속된 bounded `modelContext`로만 Agent 추론에 전달된다.
 - 이 리팩터링에서 새 테스트는 추가하지 않았다. 임시 C# compile executable 네 개와
   잘못 생성된 빈 파일 하나를 제거했다.
 
@@ -72,6 +77,13 @@ MCP는 2 commit 앞서 있다. 네트워크 가능한 세션에서 세 저장소
 - Agent, MCP, Host, Launcher, packaging, Python contract compile/import 성공
 - Host/Agent/MCP 변경 Python에 Ruff `F,E9,I` 성공
 - 실제 Host→sidecar wire projection에서 16개 명령의 exact semantics와 변조 거부 확인
+- 실제 보존된 XG5000 ladder artifact에서 `D<>,0,M0320`, `>=,C0001,1`,
+  `<,C0001,1`의 모든 관측 occurrence가 ordered operand·signed width와 함께 구조화되는지
+  확인. `>,C0001,6`은 보존 artifact에 없어 exact synthetic 입력으로 동일 경로를 확인
+- 잘못된 P suffix, extra operand, dotted device, 폭 밖 literal이 `partial`로 남고 Host가
+  변조된 comparison metadata를 거부하는지 확인
+- Host→Agent wire에서 raw state model은 제외되고 receipt digest에 결속된 comparison
+  modelContext만 전달되는지 확인
 - 대표 LD 입력에서 리팩터링 전 HEAD와 현재 behavior report canonical JSON 동일 확인
 - 같은 입력에서 behavior report의 LD graph 생성 횟수 3회 → 1회 확인
 - TypeScript contracts build 성공
@@ -124,9 +136,8 @@ Development Host는 실행 중이 아니다. 이전 smoke 성공 기록을 현�
 
 - UAC 승인 뒤의 실제 UI/Agent/XG5000 end-to-end는 이 commit에서 아직 재실행되지 않았다.
 - 대표 실제 project fixture와 실제 XG5000 버전 변화에 대한 acceptance evidence가 더 필요하다.
-- 실제 대동 project에서 반복 관측된 `D<>,0,M0320`, `>=,C0001,1`, `<,C0001,1`,
-  `>,C0001,6` 비교 조건은 아직 raw/partial이다. 다음 의미 확장은 LS 공식 signed
-  16/32-bit operand-order 계약과 CPU별 word-device 범위를 함께 결속해야 하며, 이번
-  계약 불변 리팩터링에는 섞지 않았다.
+- 비교식의 정적 구문·operand order·signed width는 구조화됐지만 CPU별 device range,
+  실제 runtime 값, scan 실행과 조건 참은 여전히 별도 관측 증거가 필요하다.
+  `>,C0001,6`은 현재 보존된 실제 artifact에는 없어 exact synthetic 경로만 검증됐다.
 - 대량의 과거 mock/implementation-coupled test는 정리됐으므로, 남은 핵심 경계는 build,
   contract guard, 최소 실기 acceptance가 실제로 실패를 드러내는지 계속 확인해야 한다.

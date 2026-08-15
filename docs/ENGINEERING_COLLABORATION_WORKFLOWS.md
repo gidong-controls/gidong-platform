@@ -307,7 +307,12 @@ action을 coverage에 남기고 각 target에는 관측된 source span을 함께
 구조화한다. Direct-D `INC/DEC` signed/unsigned 16/32-bit 계열은 LS instruction
 contract에 따라 in-place read/write로 구조화하며 `P` variant는 rising-edge 실행으로
 기록한다. Double-word variant는 지정 D word와 다음 word를 모두 포함한다. Non-D·간접
-형식과 non-D destination `DMOV`는 추측하지 않는다. 이 보고서는
+형식과 non-D destination `DMOV`는 추측하지 않는다. Native LOAD 비교는 정확히 두
+operand를 가진 comma 형식만 구조화한다. `=`, `<>`, `>`, `<`, `>=`, `<=`는 signed
+16-bit, 동일 연산자의 `D` prefix는 signed 32-bit이며 좌변·우변 순서를 보존한다.
+직접 `P/M/K/F/T/C/L/D` word device와 폭 안의 signed decimal literal 밖의 형식은
+`partial`이다. 이 정적 구문은 CPU별 device range나 runtime 값·실행·조건 참을
+증명하지 않는다. 이 보고서는
 현재 PLC runtime, field wiring 또는 이름에서 추측한 프로그램 목적을 증명하지 않는다.
 
 `project.structure_index`는 같은 Host-bound 세션·PID/HWND·정규화된 프로젝트
