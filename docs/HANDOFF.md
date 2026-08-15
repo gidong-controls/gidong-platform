@@ -11,7 +11,7 @@
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
 2026-08-16 04:00 KST에 세 저장소 push를 다시 시도했지만 GitHub 443 연결이 모두
-거부됐다. 이 문서 commit 뒤 Platform은 `origin/dev`보다 7 commit, Agent는 4 commit,
+거부됐다. 이 문서 commit 뒤 Platform은 `origin/dev`보다 8 commit, Agent는 4 commit,
 MCP는 3 commit 앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
 먼저 실행한다.
 
@@ -69,6 +69,9 @@ MCP는 3 commit 앞서 있다. 네트워크 가능한 세션에서 세 저장소
   보존한다. MCP 한 파서가 graph/state/reference를 공급하고 Host는 raw expression을 독립
   재검증한다. 지원하지 않는 suffix·operand는 rung과 network를 `partial`로 유지한다.
   상세 의미는 receipt digest에 결속된 bounded `modelContext`로만 Agent 추론에 전달된다.
+- Windows launcher가 소유한 Host stdout/stderr를 UTF-8로 고정했다. CP949와 UTF-8이 한
+  startup log에 섞여 모델·Agent 실패 사유가 깨지던 실제 Development 진단 문제만
+  제거했으며 실행 상태나 공개 계약은 바꾸지 않았다.
 - 이 리팩터링에서 새 테스트는 추가하지 않았다. 임시 C# compile executable 네 개와
   잘못 생성된 빈 파일 하나를 제거했다.
 
@@ -84,6 +87,9 @@ MCP는 3 commit 앞서 있다. 네트워크 가능한 세션에서 세 저장소
   변조된 comparison metadata를 거부하는지 확인
 - Host→Agent wire에서 raw state model은 제외되고 receipt digest에 결속된 comparison
   modelContext만 전달되는지 확인
+- 2026-08-16 격리 Development 기동에서 Host/DB/static UI/MCP가 모두 `ready`, MCP 67개와
+  Agent-visible 23개 도구가 등록되는지 확인. 같은 재기동의 모델 연결 실패 사유가 UTF-8
+  log bytes로 기록되는 것도 확인
 - 대표 LD 입력에서 리팩터링 전 HEAD와 현재 behavior report canonical JSON 동일 확인
 - 같은 입력에서 behavior report의 LD graph 생성 횟수 3회 → 1회 확인
 - TypeScript contracts build 성공
@@ -96,11 +102,13 @@ MCP는 3 commit 앞서 있다. 네트워크 가능한 세션에서 세 저장소
 
 ## 아직 실기 검증이 필요한 것
 
-이 Windows 장비에는 XG5000이 설치돼 있고 vendor integrity가 필요하다. 숨겨진 자동 실행은
-Windows UAC 승인 화면을 통과할 수 없어 Host 시작 전에 중단됐다. 이는 코드에서 우회할
-문제가 아니다. 최종 확인 시 `127.0.0.1:8767/api/health`는 연결 거부였으므로 현재
-Development Host는 실행 중이 아니다. 이전 smoke 성공 기록을 현재 실행 상태로 오해하지
-말고 아래 절차로 다시 시작한다.
+이 Windows 장비에는 XG5000이 설치돼 있고 vendor integrity가 필요하다. 2026-08-16의
+격리 smoke는 쓰기 가능한 임시 Development data root에서 Host/DB/static UI/MCP까지 실제
+기동했다. Agent는 코드 실패가 아니라 Codex 격리 정책이 configured private model endpoint
+`100.65.0.1:8978` 소켓을 차단해 unavailable이었고 `/models`와 최소 completion도 같은
+소켓 거부를 재현했다. launcher UI root 요청은 도달했지만 격리 계정이 Windows app window
+ownership을 열람하지 못해 시각 UI 검증은 완료되지 않았다. 임시 Host는 검증 뒤 종료했다.
+실제 사용자 세션에서는 아래 절차로 다시 시작한다.
 
 다음 세션의 첫 작업은 아래 한 번의 수직 검증이다.
 

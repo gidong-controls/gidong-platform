@@ -122,6 +122,7 @@ class SubprocessHostStarter:
                 creationflags=creation_flags,
             )
 
+        child_environment["PYTHONIOENCODING"] = "utf-8"
         job_handle, job_name = _create_windows_job()
         child_environment[LAUNCH_JOB_ENVIRONMENT_VARIABLE] = job_name
         startup_log = _open_startup_log()
