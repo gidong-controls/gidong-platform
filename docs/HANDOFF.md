@@ -10,9 +10,10 @@
 - `gidong-plc-mcp`: `dev` @ `ee3a429b59f664e788f0ffcc8eaa4305345bd32d`
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
-2026-08-16 세션은 GitHub 443 연결이 차단돼 최종 push를 수행하지 못했다. Platform은
-`origin/dev`보다 5 commit, Agent는 3 commit, MCP는 2 commit 앞서 있다. 네트워크 가능한
-세션에서 세 저장소의 `git push origin dev`를 먼저 실행한다.
+2026-08-16 04:00 KST에 세 저장소 push를 다시 시도했지만 GitHub 443 연결이 모두
+거부됐다. 이 문서 commit 뒤 Platform은 `origin/dev`보다 6 commit, Agent는 3 commit,
+MCP는 2 commit 앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
+먼저 실행한다.
 
 ## 현재 제품 경계
 
@@ -78,12 +79,16 @@
 - HTTP contract guard 성공
 - 세 저장소 staged diff whitespace check 성공
 - 원격 모델 catalog와 짧은 completion 호출 성공
+- 최종 재검증에서 canonical JSON/digest 바이트 동등성과 behavior report의 graph 생성
+  1회/프로그램 불변조건을 별도 테스트 파일 없이 인라인 smoke로 확인
 
 ## 아직 실기 검증이 필요한 것
 
 이 Windows 장비에는 XG5000이 설치돼 있고 vendor integrity가 필요하다. 숨겨진 자동 실행은
 Windows UAC 승인 화면을 통과할 수 없어 Host 시작 전에 중단됐다. 이는 코드에서 우회할
-문제가 아니다.
+문제가 아니다. 최종 확인 시 `127.0.0.1:8767/api/health`는 연결 거부였으므로 현재
+Development Host는 실행 중이 아니다. 이전 smoke 성공 기록을 현재 실행 상태로 오해하지
+말고 아래 절차로 다시 시작한다.
 
 다음 세션의 첫 작업은 아래 한 번의 수직 검증이다.
 
