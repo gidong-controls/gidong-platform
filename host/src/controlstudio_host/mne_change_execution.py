@@ -1554,33 +1554,30 @@ class CompositeChangeExecutionService:
             capability_loader=capability_loader,
         )
 
-    @staticmethod
-    def _is_mne(transaction: ChangeTransaction) -> bool:
-        return transaction.plan.get("plan_kind") in MNE_STRUCTURAL_PLAN_KINDS
+    def _service(self, transaction: ChangeTransaction):
+        if transaction.plan.get("plan_kind") in MNE_STRUCTURAL_PLAN_KINDS:
+            return self._mne
+        return self._operand
 
     async def preflight(self, transaction: ChangeTransaction) -> None:
-        service = self._mne if self._is_mne(transaction) else self._operand
-        await service.preflight(transaction)
+        await self._service(transaction).preflight(transaction)
 
     async def apply(self, transaction: ChangeTransaction) -> ChangeApplyResult:
-        service = self._mne if self._is_mne(transaction) else self._operand
-        return await service.apply(transaction)
+        return await self._service(transaction).apply(transaction)
 
     async def verify(
         self,
         transaction: ChangeTransaction,
         apply_result: ChangeApplyResult,
     ) -> ChangeVerificationResult:
-        service = self._mne if self._is_mne(transaction) else self._operand
-        return await service.verify(transaction, apply_result)
+        return await self._service(transaction).verify(transaction, apply_result)
 
     async def reconcile(
         self,
         transaction: ChangeTransaction,
         recovery_target: ChangeRecoveryTarget,
     ) -> ChangeVerificationResult:
-        service = self._mne if self._is_mne(transaction) else self._operand
-        return await service.reconcile(transaction, recovery_target)
+        return await self._service(transaction).reconcile(transaction, recovery_target)
 
 
 class MNEChangeExecutionService:

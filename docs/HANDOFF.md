@@ -6,9 +6,13 @@
 ## 저장소와 브랜치
 
 - `gidong-platform`: `dev` (이 문서를 포함한 commit)
-- `gidong-agent`: `dev` @ `8989c9800306b24b255ff6a42f537d2ac34811c4`
+- `gidong-agent`: `dev` @ `5343130fe9d3c805ec365f54c8a524baf4069d5c`
 - `gidong-plc-mcp`: `dev` @ `d863634c9c649ff3ad549b8feb012513dfbb08d8`
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
+
+2026-08-16 세션은 GitHub 443 연결이 차단돼 최종 push를 수행하지 못했다. Platform은
+`origin/dev`보다 2 commit, Agent는 1 commit 앞서며 MCP는 동기화 상태다. 네트워크 가능한
+세션에서 세 저장소의 `git push origin dev`를 먼저 실행한다.
 
 ## 현재 제품 경계
 
@@ -37,6 +41,10 @@
 - MCP MNE plan/apply/verify/rollback/probe의 같은 active-project binding closure 다섯 개를
   기존 검증 함수에 대한 명시적 `partial`로 바꿨다. receipt와 journal 전이는 서로 의미가
   달라 억지로 공통화하지 않았다.
+- Host의 operand/MNE executor 선택 규칙을 `CompositeChangeExecutionService._service` 한
+  곳으로 모아 preflight/apply/verify/reconcile 네 경로의 중복 분기를 제거했다.
+- Agent sidecar의 호출 지점이 하나뿐인 final-output forwarding wrapper를 제거하고 기존
+  `asdict` 결과를 wire payload에 직접 사용한다. `run.final` contract는 바뀌지 않았다.
 - 이 리팩터링에서 새 테스트는 추가하지 않았다. 임시 C# compile executable 네 개와
   잘못 생성된 빈 파일 하나를 제거했다.
 
