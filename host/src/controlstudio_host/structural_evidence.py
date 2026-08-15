@@ -46,6 +46,22 @@ _DATA_LITERAL = re.compile(r"^(?:[+-]?[0-9]+|H[0-9A-F]+)$", re.IGNORECASE)
 _STATEFUL_ACTIONS = frozenset({"SET", "RST", "TON", "TOF", "CTR", "CTU", "CTD", "TRTG"})
 _DATA_TRANSFER_ACTIONS = frozenset({"MOV", "DMOV"})
 _DATA_TRANSFER_WIDTH_WORDS = {"MOV": 1, "DMOV": 2}
+_IN_PLACE_MUTATION_BASE_WIDTHS = {
+    "INC": 1,
+    "DINC": 2,
+    "DEC": 1,
+    "DDEC": 2,
+    "INCU": 1,
+    "DINCU": 2,
+    "DECU": 1,
+    "DDECU": 2,
+}
+_IN_PLACE_MUTATION_WIDTH_WORDS = {
+    f"{mnemonic}{suffix}": width_words
+    for mnemonic, width_words in _IN_PLACE_MUTATION_BASE_WIDTHS.items()
+    for suffix in ("", "P")
+}
+_IN_PLACE_MUTATION_ACTIONS = frozenset(_IN_PLACE_MUTATION_WIDTH_WORDS)
 _ACCESS_KINDS = frozenset(
     {"read", "write", "state_write", "condition", "action", "argument", "unknown"}
 )
@@ -213,15 +229,30 @@ def _application_data_transfer_targets(operand: str) -> list[str] | None:
     return _direct_data_register_span(parts[2], width_words)
 
 
+def _application_data_write_targets(operand: str) -> list[str] | None:
+    transfer_targets = _application_data_transfer_targets(operand)
+    if transfer_targets is not None:
+        return transfer_targets
+    parts = [part.strip().upper() for part in re.split(r"[,\s]+", operand) if part.strip()]
+    width_words = (
+        _IN_PLACE_MUTATION_WIDTH_WORDS.get(parts[0]) if len(parts) == 2 else None
+    )
+    return (
+        _direct_data_register_span(parts[1], width_words)
+        if width_words is not None
+        else None
+    )
+
+
 def _action_target(action: str, operand: Any) -> str | None:
     normalized_action = action.upper()
     if normalized_action in {"OUTPUT", "SET", "RESET", "OUT", "RST"}:
         return _exact_device_or_none(operand)
     if normalized_action != "APPLICATION" or not isinstance(operand, str):
         return None
-    data_transfer_targets = _application_data_transfer_targets(operand)
-    if data_transfer_targets is not None:
-        return data_transfer_targets[0]
+    data_write_targets = _application_data_write_targets(operand)
+    if data_write_targets is not None:
+        return data_write_targets[0]
     parts = [part.strip().upper() for part in re.split(r"[,\s]+", operand) if part.strip()]
     if len(parts) < 2:
         return None
@@ -316,7 +347,12 @@ def _source_location(
 
 def _action_access(action: str, *, modeled_application: bool = False) -> str:
     normalized = action.upper()
-    if normalized in {"OUT", "OUTPUT"} or normalized in _DATA_TRANSFER_ACTIONS:
+    if normalized in {
+        "OUT",
+        "OUTPUT",
+        *_DATA_TRANSFER_ACTIONS,
+        *_IN_PLACE_MUTATION_ACTIONS,
+    }:
         return "write"
     if (
         normalized in _STATEFUL_ACTIONS
@@ -905,7 +941,7 @@ def _logic_graph_contract(result: Any) -> dict[str, Any]:
                     access=(
                         "write"
                         if action == "APPLICATION"
-                        and _application_data_transfer_targets(operand) is not None
+                        and _application_data_write_targets(operand) is not None
                         else _action_access(
                             action,
                             modeled_application=(
@@ -1016,6 +1052,15 @@ def _state_model_contract(result: Any) -> dict[str, Any]:
             if target is not None and returned_target != target:
                 raise MCPToolError(
                     "state model exact write target disagrees with its raw operand"
+                )
+        elif record_kind == "APPLICATION":
+            raw_value = action.get("raw_value")
+            if not isinstance(raw_value, str):
+                raise MCPToolError("state model application has no raw operand")
+            target = _action_target(record_kind, raw_value)
+            if _exact_device_or_none(target_value) != target:
+                raise MCPToolError(
+                    "state model application target disagrees with its raw operand"
                 )
         else:
             target = _exact_device_or_none(target_value)
@@ -1252,8 +1297,7 @@ def _references_contract(result: Any) -> dict[str, Any]:
                         "write"
                         if action.upper() == "APPLICATION"
                         and isinstance(output.get("operand"), str)
-                        and _application_data_transfer_targets(output["operand"])
-                        is not None
+                        and _application_data_write_targets(output["operand"]) is not None
                         else _action_access(
                             action,
                             modeled_application=(

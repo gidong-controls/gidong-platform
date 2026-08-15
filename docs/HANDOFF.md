@@ -7,11 +7,11 @@
 
 - `gidong-platform`: `dev` (이 문서를 포함한 commit)
 - `gidong-agent`: `dev` @ `5343130fe9d3c805ec365f54c8a524baf4069d5c`
-- `gidong-plc-mcp`: `dev` @ `d863634c9c649ff3ad549b8feb012513dfbb08d8`
+- `gidong-plc-mcp`: `dev` @ `0aae83b2ec8d55616255988452daa4985136afbc`
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
 2026-08-16 세션은 GitHub 443 연결이 차단돼 최종 push를 수행하지 못했다. Platform은
-`origin/dev`보다 2 commit, Agent는 1 commit 앞서며 MCP는 동기화 상태다. 네트워크 가능한
+`origin/dev`보다 3 commit, Agent와 MCP는 각각 1 commit 앞서 있다. 네트워크 가능한
 세션에서 세 저장소의 `git push origin dev`를 먼저 실행한다.
 
 ## 현재 제품 경계
@@ -45,6 +45,11 @@
   곳으로 모아 preflight/apply/verify/reconcile 네 경로의 중복 분기를 제거했다.
 - Agent sidecar의 호출 지점이 하나뿐인 final-output forwarding wrapper를 제거하고 기존
   `asdict` 결과를 wire payload에 직접 사용한다. `run.final` contract는 바뀌지 않았다.
+- LS 공식 XGK/XGB instruction contract에 맞춰 direct-D `INC/DEC` signed/unsigned
+  16/32-bit 계열 16개를 하나의 in-place mutation spec으로 모델링했다. `P` variant는
+  rising-edge 실행이고 double-word variant는 두 연속 D word를 read/write한다. Condition
+  causal impact, state/behavior inventory와 Host evidence 검증이 같은 의미 경계를 공유하며
+  non-D, indirect, 추가 operand 형식은 계속 `partial`이다.
 - 이 리팩터링에서 새 테스트는 추가하지 않았다. 임시 C# compile executable 네 개와
   잘못 생성된 빈 파일 하나를 제거했다.
 
