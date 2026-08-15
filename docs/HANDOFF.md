@@ -10,8 +10,8 @@
 - `gidong-plc-mcp`: `dev` @ `6aa174f` (`Expose static workspace structure index`)
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
-2026-08-16 08:37 KST에 세 저장소의 최신 `dev` push를 다시 시도했지만 모두 GitHub 443
-연결 거부로 실패했다. 이 문서 commit 기준 Platform은 `origin/dev`보다 19 commit,
+2026-08-16 08:58 KST에 Platform의 최신 `dev` push를 다시 시도했지만 GitHub 443 연결
+거부로 실패했다. 이 문서 commit 기준 Platform은 `origin/dev`보다 20 commit,
 Agent는 8 commit, MCP는 8 commit
 앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
 먼저 실행한다.
@@ -124,6 +124,10 @@ Agent는 8 commit, MCP는 8 commit
   bounded facts를 기존 structure receipt와 Agent citation validator가 소비한다. top evidence는
   static tool 이름을 유지해 live 변경 evidence와 구분하고 UI Activity는 `작업공간 구조 분석`으로
   실행을 표시한다. compare evidence도 conversation에 결속된 revision과 다르면 거부한다.
+- `project.search`가 검증한 프로그램명·LD 위치·구조 항목 후보는 더 이상 raw-result 제거와 함께
+  사라지지 않는다. 기존 search receipt의 digest와 match ID에 결속된 inference-only 후보를 전체
+  32개로 제한해 Agent가 exact program/device 후속 도구를 호출할 때만 사용한다. raw XML·path·
+  hash·PID/HWND와 공개 evidence/event/DB schema는 늘리지 않았다.
 
 ## 검증된 것
 
@@ -170,6 +174,9 @@ Agent는 8 commit, MCP는 8 commit
   `대동인덱스-0917-2`, code-unit names `NewProgram/출력/알람/초기동작`, structure fact 817개를
   발급했다. Host model-safe projection은 bounded 188 facts를 Agent runtime citation validator까지
   전달했고 MCP와 Host 모두 stale revision을 거부했다.
+- 실제 XGWX search 결과에서 program-name/structure/LD 후보를 같은 Agent frame에 유지하고,
+  35개 결과를 세 종류가 굶지 않는 순서의 32개로 제한했다. receipt digest·coverage match IDs 결속,
+  변조 거부와 raw-result 비노출을 inline smoke로 확인했다.
 - HTTP contract guard 성공
 - 세 저장소 staged diff whitespace check 성공
 - 원격 모델 catalog와 짧은 completion 호출 성공

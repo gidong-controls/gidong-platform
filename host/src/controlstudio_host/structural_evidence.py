@@ -3274,7 +3274,11 @@ def _structure_index_contract(
     )
 
 
-def _project_search_contract(result: Any) -> dict[str, Any]:
+def _project_search_contract(
+    result: Any,
+    *,
+    model_candidates: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     envelope = _validated_result(result, "project.search")
     search = _mapping(envelope.get("search"), "project search receipt")
     if search.get("schema") != "xg5000.project-search/1.0":
@@ -3393,6 +3397,15 @@ def _project_search_contract(result: Any) -> dict[str, Any]:
                 or program_binding not in bound_programs
             ):
                 raise MCPToolError("project search program-name match is inconsistent")
+            if model_candidates is not None:
+                model_candidates.append(
+                    {
+                        "kind": "program_name",
+                        "matchId": match_id,
+                        "programId": program_binding[0],
+                        "programName": program_binding[1],
+                    }
+                )
             continue
         if kind == "ladder_record":
             if set(match) != {
@@ -3459,18 +3472,36 @@ def _project_search_contract(result: Any) -> dict[str, Any]:
                 "project search value token offset",
                 minimum=0,
             )
-            locations.append(
-                _source_location(
-                    {
-                        "program": program_name,
-                        "visual_row": visual_row,
-                        "token_offset": value_token_offset,
-                    },
-                    access=access,
-                    semantic_status="observed",
-                    device=_exact_device_or_none(match.get("matched_text")),
-                )
+            location = _source_location(
+                {
+                    "program": program_name,
+                    "visual_row": visual_row,
+                    "token_offset": value_token_offset,
+                },
+                access=access,
+                semantic_status="observed",
+                device=_exact_device_or_none(match.get("matched_text")),
             )
+            locations.append(location)
+            if model_candidates is not None:
+                model_candidates.append(
+                    {
+                        "kind": "ladder_record",
+                        "matchId": match_id,
+                        "programId": program_id,
+                        "programName": program_name,
+                        "recordKind": str(match["record_kind"]),
+                        "visualRow": location["visualRow"],
+                        "tokenOffset": location["tokenOffset"],
+                        "access": location["access"],
+                        **(
+                            {"column": int(match["column"])}
+                            if match["column"] is not None
+                            else {}
+                        ),
+                        **({"device": location["device"]} if "device" in location else {}),
+                    }
+                )
             continue
         if kind == "structure_item":
             if set(match) != {
@@ -3511,6 +3542,16 @@ def _project_search_contract(result: Any) -> dict[str, Any]:
             fact = _validate_structure_item(section, item)
             if fact is None:
                 raise MCPToolError("project search structure item has no public fact")
+            if model_candidates is not None:
+                model_candidates.append(
+                    {
+                        "kind": "structure_item",
+                        "matchId": match_id,
+                        "section": section,
+                        "matchedField": matched_field,
+                        "structureLocator": _fact_without_fingerprint(fact),
+                    }
+                )
             continue
         raise MCPToolError("project search match kind is unsupported")
     if len(match_ids) != len(set(match_ids)):
@@ -3565,6 +3606,32 @@ def _project_search_contract(result: Any) -> dict[str, Any]:
         [],
         scope=scope,
     )
+
+
+def project_search_context(result: Any) -> dict[str, Any] | None:
+    """Return bounded, receipt-bound search candidates for inference only."""
+
+    candidates: list[dict[str, Any]] = []
+    receipt = _project_search_contract(result, model_candidates=candidates)
+    if not candidates:
+        return None
+    candidates_by_kind = {
+        kind: [item for item in candidates if item["kind"] == kind]
+        for kind in ("program_name", "structure_item", "ladder_record")
+    }
+    bounded_candidates = [
+        candidates_by_kind[kind][index]
+        for index in range(max(map(len, candidates_by_kind.values())))
+        for kind in candidates_by_kind
+        if index < len(candidates_by_kind[kind])
+    ][:_MODEL_CONTEXT_ITEM_LIMIT]
+    return {
+        "searchDigest": receipt["scope"]["query"]["searchDigest"],
+        "coverageUnitKeys": receipt["scope"]["coverageUnitKeys"],
+        "candidates": bounded_candidates,
+        "candidateCount": len(candidates),
+        "truncated": len(candidates) > _MODEL_CONTEXT_ITEM_LIMIT,
+    }
 
 
 def build_structural_evidence_contract(
@@ -4446,6 +4513,7 @@ __all__ = [
     "build_structural_evidence_contract",
     "canonical_digest",
     "location_membership_value",
+    "project_search_context",
     "relation_membership_value",
     "structure_membership_value",
     "state_model_context",

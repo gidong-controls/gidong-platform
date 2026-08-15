@@ -47,6 +47,7 @@ from .structural_evidence import (
     STRUCTURAL_ANALYSIS_EVIDENCE_SCHEMA,
     STRUCTURAL_ANALYSIS_TOOL_COVERAGE,
     canonical_digest,
+    project_search_context,
     state_model_context,
     structural_observation_statement,
     structural_receipt_tool_name,
@@ -1171,11 +1172,19 @@ def _structural_tool_result_payload(
         "guidance": _STRUCTURAL_TOOL_RESULT_GUIDANCE,
         "_controlstudio_evidence": safe_evidence_ref,
     }
-    model_context = (
-        state_model_context(raw_result)
-        if expected_tool_name == "program.state_model"
-        else None
-    )
+    if expected_tool_name == "program.state_model":
+        model_context = state_model_context(raw_result)
+    elif expected_tool_name == "project.search":
+        model_context = project_search_context(raw_result)
+        if model_context is not None and (
+            model_context["searchDigest"]
+            != validated_receipt["scope"]["query"].get("searchDigest")
+            or model_context["coverageUnitKeys"]
+            != validated_receipt["scope"]["coverageUnitKeys"]
+        ):
+            raise AgentProtocolError("Project search context is not receipt-bound")
+    else:
+        model_context = None
     if model_context is not None:
         result["modelContext"] = {
             "sourceReceiptDigest": receipt["receiptDigest"],
