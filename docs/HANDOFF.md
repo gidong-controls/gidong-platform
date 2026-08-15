@@ -10,8 +10,8 @@
 - `gidong-plc-mcp`: `dev` @ `7e9cbf7d586c1e0f308833a0787b81656644b7c6`
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
-2026-08-16 05:04 KST에 세 저장소 push를 시도했지만 GitHub 443 연결 거부로 실패했다. 이 문서
-commit 뒤 Platform은 `origin/dev`보다 9 commit, Agent는 5 commit, MCP는 4 commit
+2026-08-16 05:27 KST에 세 저장소 push를 다시 시도했지만 GitHub 443 연결 거부로 실패했다. 이 문서
+commit 뒤 Platform은 `origin/dev`보다 10 commit, Agent는 5 commit, MCP는 4 commit
 앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
 먼저 실행한다.
 
@@ -80,6 +80,9 @@ commit 뒤 Platform은 `origin/dev`보다 9 commit, Agent는 5 commit, MCP는 4 
   제거했으며 실행 상태나 공개 계약은 바꾸지 않았다.
 - 이 리팩터링에서 새 테스트는 추가하지 않았다. 임시 C# compile executable 네 개와
   잘못 생성된 빈 파일 하나를 제거했다.
+- 종료 자체 리뷰에서 별도 DB migration backup/recovery 구현은 새 동작·상태·파일을
+  추가하므로 이번 기능 보존 리팩터링 범위에서 제외하고 미커밋 변경을 전부 제거했다.
+  동일한 이유로 향후 제품 vertical과 내부 단순화 작업을 한 commit에 섞지 않는다.
 
 ## 검증된 것
 
@@ -110,6 +113,9 @@ commit 뒤 Platform은 `origin/dev`보다 9 commit, Agent는 5 commit, MCP는 4 
 - 원격 모델 catalog와 짧은 completion 호출 성공
 - 최종 재검증에서 canonical JSON/digest 바이트 동등성과 behavior report의 graph 생성
   1회/프로그램 불변조건을 별도 테스트 파일 없이 인라인 smoke로 확인
+- 2026-08-16 종료 검증에서 Agent/Host/MCP 대상 Python compile과 Ruff `F,E9,I`,
+  TypeScript contracts build, Web typecheck/Vite production build, 세 저장소 diff-check를
+  각각 한 번 통과. `origin/dev..HEAD`에 새로 추가·수정된 test 파일은 0개
 
 ## 아직 실기 검증이 필요한 것
 
@@ -154,9 +160,9 @@ ownership을 열람하지 못해 시각 UI 검증은 완료되지 않았다. 임
 ## 주요 남은 위험
 
 - Host DB와 knowledge DB는 startup migration 전에 같은 operation의 SQLite-consistent pair
-  snapshot/restore authority가 아직 없다. 한 DB migration만 성공한 혼합 세대를 정상 기동하지
-  않도록, 다음 로컬 제품 vertical은 기존 schema/API를 바꾸지 않는 pre-migration backup,
-  integrity manifest, pair restore로 한정한다.
+  snapshot/restore authority가 아직 없다. 이는 실제 제품 위험이지만 기능 보존 리팩터링이
+  아니므로 이번 종료 범위에는 넣지 않았다. 새 세션도 이를 방어 wrapper처럼 다시 끼워 넣지
+  말고, 별도 제품 vertical로 명시 승인된 경우에만 recovery UX까지 포함해 다룬다.
 - UAC 승인 뒤의 실제 UI/Agent/XG5000 end-to-end는 이 commit에서 아직 재실행되지 않았다.
 - 대표 실제 project fixture와 실제 XG5000 버전 변화에 대한 acceptance evidence가 더 필요하다.
 - 비교식의 정적 구문·operand order·signed width는 구조화됐지만 CPU별 device range,
