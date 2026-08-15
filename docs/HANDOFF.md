@@ -10,9 +10,9 @@
 - `gidong-plc-mcp`: `dev` @ `5637d8b` (`Parse identical workspace structure`)
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
-2026-08-16 06:54 KST에 마지막 로컬 검증을 마치고 세 저장소의 `dev` push를 다시
-시도했지만 모두 GitHub 443 연결 거부로 실패했다. 이 문서
-commit 기준 Platform은 `origin/dev`보다 15 commit, Agent는 6 commit, MCP는 6 commit
+2026-08-16 07:23 KST에 최신 Platform `dev` push를 다시 시도했지만 GitHub 443 연결
+거부로 실패했다. Agent와 MCP의 직전 push도 같은 이유로 실패했다. 이 문서
+commit 기준 Platform은 `origin/dev`보다 16 commit, Agent는 6 commit, MCP는 6 commit
 앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
 먼저 실행한다.
 
@@ -113,6 +113,11 @@ commit 기준 Platform은 `origin/dev`보다 15 commit, Agent는 6 commit, MCP�
   Debug 화면은 authoritative workspace/revision ID와 `오프라인 구조 분석`을 표시한다.
 - controller/XG/workspace 전환은 한 번에 하나의 Agent target binding만 남긴다. controller 선택은
   workspace binding을 지우고, 명시적인 workspace/XG 선택은 controller binding을 지운다.
+- Host와 Knowledge SQLite 중 한쪽만 먼저 migration되어 durable Agent 작업과 지식 source가
+  서로 다른 세대로 남던 시작 경계를 닫았다. 실제 schema 상승이 필요할 때만 두 DB를 같은
+  operation의 `sqlite3.backup` snapshot으로 보존하고, 두 초기화와 builtin seed가 모두 끝나야
+  marker를 지운다. 두 번째 DB 실패는 즉시 두 preimage를 복원하며 hard crash로 marker가 남으면
+  다음 시작이 먼저 같은 pair를 복원한다. 현재 schema에서는 backup I/O가 없다.
 
 ## 검증된 것
 
@@ -145,6 +150,11 @@ commit 기준 Platform은 `origin/dev`보다 15 commit, Agent는 6 commit, MCP�
   확인
 - 새 Development Host와 launcher handoff로 인앱 UI를 다시 인증해 header/target proof의
   `오프라인 구조 분석`, exact workspace/revision ID, local chooser의 `구조만 분석` 버튼을 확인
+- 임시 SQLite 18/1 pair를 19/2로 정상 upgrade하고 sentinel 보존을 확인. Knowledge 초기화 실패를
+  주입했을 때 18/1과 양쪽 sentinel이 복원됐으며, Host만 19로 올라간 hard-crash subprocess 뒤
+  다음 시작이 marker를 소비해 18/1 preimage부터 다시 19/2로 완료하는 것도 확인
+- 실제 Development data root의 현재 19/2 DB로 최종 Host를 재기동해 Host/DB/static UI/MCP
+  `ready`, migration marker·backup directory 미생성을 확인
 - HTTP contract guard 성공
 - 세 저장소 staged diff whitespace check 성공
 - 원격 모델 catalog와 짧은 completion 호출 성공
@@ -215,10 +225,9 @@ Codex 실행 identity는 `CodexSandboxOffline`이며 이 identity에서 bare XG5
 
 ## 주요 남은 위험
 
-- Host DB와 knowledge DB는 startup migration 전에 같은 operation의 SQLite-consistent pair
-  snapshot/restore authority가 아직 없다. 이는 실제 제품 위험이지만 기능 보존 리팩터링이
-  아니므로 이번 종료 범위에는 넣지 않았다. 새 세션도 이를 방어 wrapper처럼 다시 끼워 넣지
-  말고, 별도 제품 vertical로 명시 승인된 경우에만 recovery UX까지 포함해 다룬다.
+- 자동 startup schema migration의 pair snapshot/restore는 구현됐다. 사용자가 임의 시점의
+  전체 데이터를 백업·선택 복원하는 UI/운영 정책, backup retention과 release downgrade 지원은
+  여전히 별도 production 배포 범위다.
 - UAC 승인 뒤의 실제 UI/Agent/XG5000 end-to-end는 이 commit에서 아직 재실행되지 않았다.
 - 대표 실제 project fixture와 실제 XG5000 버전 변화에 대한 acceptance evidence가 더 필요하다.
 - 비교식의 정적 구문·operand order·signed width는 구조화됐지만 CPU별 device range,

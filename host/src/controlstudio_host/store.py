@@ -699,6 +699,11 @@ MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     ),
 )
 
+_CHANGE_TRANSACTION_OBSERVING_SCHEMA_VERSION = 19
+HOST_SCHEMA_VERSION = max(
+    MIGRATIONS[-1][0], _CHANGE_TRANSACTION_OBSERVING_SCHEMA_VERSION
+)
+
 
 def _rebuild_change_transactions_for_observing(
     connection: sqlite3.Connection,
@@ -794,9 +799,9 @@ def _rebuild_change_transactions_for_observing(
         connection.execute(
             """
             INSERT INTO schema_migrations(version, name, applied_at)
-            VALUES (19, 'change_transaction_observing_state', ?)
+            VALUES (?, 'change_transaction_observing_state', ?)
             """,
-            (_utc_now(),),
+            (_CHANGE_TRANSACTION_OBSERVING_SCHEMA_VERSION, _utc_now()),
         )
         connection.commit()
     except BaseException:
@@ -855,7 +860,7 @@ class HostStore:
                         """,
                         (version, name, _utc_now()),
                     )
-            if 19 not in applied:
+            if _CHANGE_TRANSACTION_OBSERVING_SCHEMA_VERSION not in applied:
                 _rebuild_change_transactions_for_observing(connection)
 
     def ping(self) -> bool:

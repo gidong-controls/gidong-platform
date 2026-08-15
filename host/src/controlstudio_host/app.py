@@ -12,7 +12,7 @@ import secrets
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -151,6 +151,7 @@ from .change_execution import (
 )
 from .config import HostConfig
 from .control_patterns import iter_builtin_knowledge_documents
+from .database_upgrade import protect_database_upgrades
 from .execution_broker import (
     ExecutionBroker,
     MCPExecutionBroker,
@@ -1481,10 +1482,18 @@ def create_app(
     change_executor: ChangeExecutionService | None = None,
 ) -> FastAPI:
     config = config or HostConfig.from_env()
-    store = store or HostStore(config.database_path)
     assert config.knowledge_database_path is not None
-    knowledge_store = knowledge_store or KnowledgeStore(config.knowledge_database_path)
-    knowledge_store.seed_control_patterns(_builtin_control_pattern_seeds())
+    database_upgrade = (
+        protect_database_upgrades(
+            config.database_path, config.knowledge_database_path
+        )
+        if store is None and knowledge_store is None
+        else nullcontext()
+    )
+    with database_upgrade:
+        store = store or HostStore(config.database_path)
+        knowledge_store = knowledge_store or KnowledgeStore(config.knowledge_database_path)
+        knowledge_store.seed_control_patterns(_builtin_control_pattern_seeds())
     mcp = mcp or MCPGateway()
     execution_broker = MCPExecutionBroker(mcp)
     agent_supervisor = agent_supervisor or AgentSupervisor()

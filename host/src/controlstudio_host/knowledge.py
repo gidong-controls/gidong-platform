@@ -90,7 +90,7 @@ class ControlPatternSeed:
     metadata: Mapping[str, Any] | None = None
 
 
-_SCHEMA_VERSION = 2
+KNOWLEDGE_SCHEMA_VERSION = 2
 _MAX_SOURCE_CHARS = 25_000_000
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _REDACTED = "[REDACTED]"
@@ -423,7 +423,7 @@ class KnowledgeStore:
                         INSERT OR IGNORE INTO knowledge_schema(version, applied_at)
                         VALUES (?, ?)
                         """,
-                        (_SCHEMA_VERSION, _utc_text(_utc_now())),
+                        (KNOWLEDGE_SCHEMA_VERSION, _utc_text(_utc_now())),
                     )
             finally:
                 # Transaction context already commits/rolls back; this keeps
@@ -433,10 +433,10 @@ class KnowledgeStore:
                 "SELECT MAX(version) AS version FROM knowledge_schema"
             ).fetchone()
             version = int(version_row["version"] or 0)
-            if version > _SCHEMA_VERSION:
+            if version > KNOWLEDGE_SCHEMA_VERSION:
                 raise KnowledgeUnavailable(
                     f"knowledge database schema {version} is newer than supported "
-                    f"schema {_SCHEMA_VERSION}"
+                    f"schema {KNOWLEDGE_SCHEMA_VERSION}"
                 )
 
     def ping(self) -> bool:
