@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import logging
 import os
 import re
@@ -48,6 +46,7 @@ from .models import Message, MessageRole
 from .structural_evidence import (
     STRUCTURAL_ANALYSIS_EVIDENCE_SCHEMA,
     STRUCTURAL_ANALYSIS_TOOL_COVERAGE,
+    canonical_digest,
     state_model_context,
     structural_observation_statement,
     validate_structural_evidence_contract,
@@ -1140,14 +1139,7 @@ def _structural_tool_result_payload(
             "structureFactsDigest": validated_receipt["structureFactsDigest"],
             "structureFacts": validated_receipt["structureFacts"],
         }
-        projected_receipt["projectionDigest"] = hashlib.sha256(
-            json.dumps(
-                projected_receipt,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            ).encode("utf-8")
-        ).hexdigest()
+        projected_receipt["projectionDigest"] = canonical_digest(projected_receipt)
         safe_evidence_ref = {
             **{key: value for key, value in evidence_ref.items() if key != "receipt"},
             "receipt": projected_receipt,

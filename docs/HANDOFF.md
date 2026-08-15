@@ -6,12 +6,12 @@
 ## 저장소와 브랜치
 
 - `gidong-platform`: `dev` (이 문서를 포함한 commit)
-- `gidong-agent`: `dev` @ `e4b6b367cd61bffe9b04f89a152cad1560b42a4e`
-- `gidong-plc-mcp`: `dev` @ `0aae83b2ec8d55616255988452daa4985136afbc`
+- `gidong-agent`: `dev` @ `8045e943a674687076643f2276516335c2330531`
+- `gidong-plc-mcp`: `dev` @ `ee3a429b59f664e788f0ffcc8eaa4305345bd32d`
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
 2026-08-16 세션은 GitHub 443 연결이 차단돼 최종 push를 수행하지 못했다. Platform은
-`origin/dev`보다 4 commit, Agent는 2 commit, MCP는 1 commit 앞서 있다. 네트워크 가능한
+`origin/dev`보다 5 commit, Agent는 3 commit, MCP는 2 commit 앞서 있다. 네트워크 가능한
 세션에서 세 저장소의 `git push origin dev`를 먼저 실행한다.
 
 ## 현재 제품 경계
@@ -30,6 +30,15 @@
 
 ## 마지막 리팩터링
 
+- Agent runtime의 canonical JSON 직렬화 17곳을 `_canonical_json` 한 곳으로 합쳤다. digest,
+  checkpoint, model prompt의 JSON 바이트는 그대로이며 중복 옵션과 프로덕션 코드 72줄을
+  제거했다.
+- MCP behavior report가 같은 프로그램의 LD graph를 state model과 reference index에서 다시
+  만들던 경로를 명시적 내부 graph 전달로 바꿨다. 프로그램당 graph 생성은 3회에서 1회로
+  줄었고 공개 함수 시그니처와 report JSON은 그대로다. write action의 condition device
+  순회와 causal application parsing도 각각 한 번만 수행한다.
+- Host Agent projection은 이미 structural evidence가 소유한 `canonical_digest`를 재사용해
+  별도 hashlib/json dependency와 중복 직렬화를 삭제했다.
 - Host의 네 종류 structural MNE patch에 흩어졌던 schema, compiler tool, evidence schema,
   plan model, MCP operation, XG-SIM 지원 규칙을 `MNE_PATCH_PLAN_CONTRACTS` 한 곳으로
   통합했다. 새 patch kind의 Host 변경 지점은 여러 분기에서 registry 한 곳으로 줄었다.
@@ -62,6 +71,8 @@
 - Agent, MCP, Host, Launcher, packaging, Python contract compile/import 성공
 - Host/Agent/MCP 변경 Python에 Ruff `F,E9,I` 성공
 - 실제 Host→sidecar wire projection에서 16개 명령의 exact semantics와 변조 거부 확인
+- 대표 LD 입력에서 리팩터링 전 HEAD와 현재 behavior report canonical JSON 동일 확인
+- 같은 입력에서 behavior report의 LD graph 생성 횟수 3회 → 1회 확인
 - TypeScript contracts build 성공
 - Web TypeScript + Vite production build 성공
 - HTTP contract guard 성공
@@ -108,5 +119,9 @@ Windows UAC 승인 화면을 통과할 수 없어 Host 시작 전에 중단됐�
 
 - UAC 승인 뒤의 실제 UI/Agent/XG5000 end-to-end는 이 commit에서 아직 재실행되지 않았다.
 - 대표 실제 project fixture와 실제 XG5000 버전 변화에 대한 acceptance evidence가 더 필요하다.
+- 실제 대동 project에서 반복 관측된 `D<>,0,M0320`, `>=,C0001,1`, `<,C0001,1`,
+  `>,C0001,6` 비교 조건은 아직 raw/partial이다. 다음 의미 확장은 LS 공식 signed
+  16/32-bit operand-order 계약과 CPU별 word-device 범위를 함께 결속해야 하며, 이번
+  계약 불변 리팩터링에는 섞지 않았다.
 - 대량의 과거 mock/implementation-coupled test는 정리됐으므로, 남은 핵심 경계는 build,
   contract guard, 최소 실기 acceptance가 실제로 실패를 드러내는지 계속 확인해야 한다.
