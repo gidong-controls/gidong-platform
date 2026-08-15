@@ -3682,52 +3682,49 @@ def create_app(
                 "Development model verification started model=%s",
                 settings.model,
             )
-            runtime = runtime_factory(settings, execution_broker)
+            cache_key = _model_capability_cache_key(settings)
             try:
+                runtime = runtime_factory(settings, execution_broker)
                 result = await runtime.test_capabilities()
+                if _required_model_capabilities_ready(result):
+                    model_repository.save(
+                        base_url=settings.base_url,
+                        model=settings.model,
+                        timeout_seconds=settings.timeout_seconds,
+                        api_key=settings.secrets.api_key,
+                        custom_headers=settings.secrets.custom_headers,
+                        capability_verified_at=result.tested_at,
+                        inherit_missing_secrets=False,
+                        allow_insecure_http=True,
+                    )
+                    logger.info(
+                        "Development model verification succeeded model=%s",
+                        settings.model,
+                    )
+                else:
+                    logger.warning(
+                        "Development model verification incomplete model=%s "
+                        "completion=%s streaming=%s tools=%s "
+                        "tool_continuation=%s structured=%s reason=%s",
+                        settings.model,
+                        result.completion,
+                        result.streaming,
+                        result.tool_calling,
+                        result.tool_result_continuation,
+                        result.structured_output,
+                        result.message,
+                    )
             except Exception as exc:
+                result = ModelCapabilityResult.failed(
+                    "Development 모델 기능 검사가 실패했습니다. "
+                    "개발 로그와 모델 연결 설정을 확인하세요."
+                )
                 logger.warning(
                     "Development model verification failed model=%s error_kind=%s",
                     settings.model,
                     type(exc).__name__,
                 )
-                return
-            recent_model_verification = (
-                _model_capability_cache_key(settings),
-                result,
-            )
-            if not _required_model_capabilities_ready(result):
-                logger.warning(
-                    "Development model verification incomplete model=%s "
-                    "completion=%s streaming=%s tools=%s "
-                    "tool_continuation=%s structured=%s reason=%s",
-                    settings.model,
-                    result.completion,
-                    result.streaming,
-                    result.tool_calling,
-                    result.tool_result_continuation,
-                    result.structured_output,
-                    result.message,
-                )
-                store.append_event(
-                    event_type="host.status",
-                    payload=current_status_v1().model_dump(mode="json", by_alias=True),
-                )
-                return
-            model_repository.save(
-                base_url=settings.base_url,
-                model=settings.model,
-                timeout_seconds=settings.timeout_seconds,
-                api_key=settings.secrets.api_key,
-                custom_headers=settings.secrets.custom_headers,
-                capability_verified_at=result.tested_at,
-                inherit_missing_secrets=False,
-                allow_insecure_http=True,
-            )
-            logger.info(
-                "Development model verification succeeded model=%s",
-                settings.model,
-            )
+            recent_model_verification = (cache_key, result)
             store.append_event(
                 event_type="host.status",
                 payload=current_status_v1().model_dump(mode="json", by_alias=True),
@@ -3948,18 +3945,23 @@ def create_app(
             agent_state = "unavailable"
             agent_detail = "OpenAI 호환 모델 연결을 설정해 주세요."
         elif model_connection.capability_verified_at is None:
-            agent_state = "unavailable"
-            if (
-                recent_model_verification is not None
+            matching_result = (
+                recent_model_verification[1]
+                if recent_model_verification is not None
                 and recent_model_verification[0]
                 == _model_capability_cache_key(model_connection)
-                and not _required_model_capabilities_ready(
-                    recent_model_verification[1]
-                )
+                else None
+            )
+            agent_state = "unavailable"
+            agent_detail = "저장된 모델 연결의 에이전트 기능 검사가 필요합니다."
+            if matching_result is None and config.release_channel == "development":
+                agent_state = "starting"
+                agent_detail = "Development 모델의 에이전트 기능을 확인하고 있습니다."
+            elif (
+                matching_result is not None
+                and not _required_model_capabilities_ready(matching_result)
             ):
-                agent_detail = recent_model_verification[1].message
-            else:
-                agent_detail = "저장된 모델 연결의 에이전트 기능 검사가 필요합니다."
+                agent_detail = matching_result.message
         else:
             agent_state = "ready"
             agent_detail = (

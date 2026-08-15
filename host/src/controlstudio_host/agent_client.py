@@ -9,7 +9,7 @@ import re
 import shlex
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -857,16 +857,7 @@ class SubprocessAgentClient:
                 response.get("code"),
                 "Agent sidecar가 모델 기능을 확인하지 못했습니다.",
             )
-            return ModelCapabilityResult(
-                success=False,
-                tested_at=datetime.now(timezone.utc),
-                completion=False,
-                streaming=False,
-                tool_calling=False,
-                tool_result_continuation=False,
-                structured_output=False,
-                message=message,
-            )
+            return ModelCapabilityResult.failed(message)
         try:
             tested_at = datetime.fromisoformat(str(result["tested_at"]))
             return ModelCapabilityResult(

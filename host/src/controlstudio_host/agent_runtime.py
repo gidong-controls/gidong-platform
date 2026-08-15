@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 TokenCallback = Callable[[str], Awaitable[None]]
@@ -94,3 +94,16 @@ class ModelCapabilityResult:
     tool_result_continuation: bool
     structured_output: bool
     message: str
+
+    @classmethod
+    def failed(cls, message: str) -> ModelCapabilityResult:
+        return cls(
+            success=False,
+            tested_at=datetime.now(timezone.utc),
+            completion=False,
+            streaming=False,
+            tool_calling=False,
+            tool_result_continuation=False,
+            structured_output=False,
+            message=message,
+        )

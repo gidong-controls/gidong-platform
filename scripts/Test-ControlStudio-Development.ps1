@@ -115,6 +115,12 @@ try {
         ) {
             break
         }
+        if (
+            $RequireAgent -and
+            $status.agent.state -in @('unavailable', 'quarantined')
+        ) {
+            throw ('Development Agent readiness failed: {0}' -f $status.agent.detail)
+        }
         Start-Sleep -Milliseconds 500
     }
     if (
