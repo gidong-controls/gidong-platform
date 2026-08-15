@@ -10,8 +10,8 @@
 - `gidong-plc-mcp`: `dev` @ `7e9cbf7d586c1e0f308833a0787b81656644b7c6`
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
-2026-08-16 05:44 KST에 Platform push를 다시 시도했지만 GitHub 443 연결 거부로 실패했다. 이 문서
-commit 기준 Platform은 `origin/dev`보다 11 commit, Agent는 5 commit, MCP는 4 commit
+2026-08-16 06:00 KST에 Platform push를 다시 시도했지만 GitHub 443 연결 거부로 실패했다. 이 문서
+commit 기준 Platform은 `origin/dev`보다 13 commit, Agent는 5 commit, MCP는 4 commit
 앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
 먼저 실행한다.
 
@@ -83,6 +83,11 @@ commit 기준 Platform은 `origin/dev`보다 11 commit, Agent는 5 commit, MCP�
   정확히 일치할 때만 기존 `status.agent.detail`과 `host.status` 이벤트로 투영하므로 새 상태,
   DB/API/event schema 또는 Web 분기를 만들지 않았다. 실패 결과는 설정 저장의 성공 cache로
   재사용하지 않아 재검사를 막지 않는다.
+- Development 모델 검증의 성공·불완전·예외 결과 기록과 `host.status` 발행을 각각 한 경로로
+  합쳤다. 실패 capability 객체 생성도 `ModelCapabilityResult.failed` 한 곳으로 모아 Host와
+  sidecar의 중복 필드 구성을 제거했다. 기존 `ServiceState.starting`은 실제 검사가 진행 중일
+  때만 쓰고 terminal `unavailable`은 즉시 반환한다. `-RequireAgent` smoke도 문자열이 아니라
+  이 상태 enum을 소비하므로 확정 실패를 deadline까지 기다리지 않는다.
 - 이 리팩터링에서 새 테스트는 추가하지 않았다. 임시 C# compile executable 네 개와
   잘못 생성된 빈 파일 하나를 제거했다.
 - 종료 자체 리뷰에서 별도 DB migration backup/recovery 구현은 새 동작·상태·파일을
@@ -125,6 +130,11 @@ commit 기준 Platform은 `origin/dev`보다 11 commit, Agent는 5 commit, MCP�
   `ready`, MCP 67개·Agent-visible 23개 도구를 확인. private model socket이 정책상 차단된
   상태에서 API와 인앱 브라우저 AGENT DEBUG가 모두 generic 문구 대신 정확한 정제 사유
   `모델 엔드포인트에 연결할 수 없습니다.`를 표시하는지 확인
+- 최종 Platform 코드로 Development Host를 다시 시작해 Host/DB/static UI `ready`를 확인하고,
+  `Test-ControlStudio-Development.ps1 -RequireAgent`가 같은 terminal 모델 실패를 기존 약
+  120초 대기 대신 0.44초에 정확한 정제 사유와 함께 반환하는지 확인. 새 launcher handoff로
+  인앱 UI를 다시 인증해 `DEVELOPMENT source-dev`, `Host 준비됨`, AGENT DEBUG 자동 활성화와
+  동일 Agent runtime 사유를 확인
 
 ## 아직 실기 검증이 필요한 것
 
