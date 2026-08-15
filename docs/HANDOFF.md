@@ -10,9 +10,9 @@
 - `gidong-plc-mcp`: `dev` @ `5637d8b` (`Parse identical workspace structure`)
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
-2026-08-16 07:23 KST에 최신 Platform `dev` push를 다시 시도했지만 GitHub 443 연결
-거부로 실패했다. Agent와 MCP의 직전 push도 같은 이유로 실패했다. 이 문서
-commit 기준 Platform은 `origin/dev`보다 16 commit, Agent는 6 commit, MCP는 6 commit
+2026-08-16 07:30 KST에 세 저장소의 최신 `dev` push를 다시 시도했지만 모두 GitHub 443
+연결 거부로 실패했다. 이 문서 commit 기준 Platform은 `origin/dev`보다 17 commit,
+Agent는 6 commit, MCP는 6 commit
 앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
 먼저 실행한다.
 
@@ -95,10 +95,6 @@ commit 기준 Platform은 `origin/dev`보다 16 commit, Agent는 6 commit, MCP�
   PID/HWND/path/hash 검증은 그대로다.
 - 이 리팩터링에서 새 테스트는 추가하지 않았다. 임시 C# compile executable 네 개와
   잘못 생성된 빈 파일 하나를 제거했다.
-- 종료 자체 리뷰에서 별도 DB migration backup/recovery 구현은 새 동작·상태·파일을
-  추가하므로 이번 기능 보존 리팩터링 범위에서 제외하고 미커밋 변경을 전부 제거했다.
-  동일한 이유로 향후 제품 vertical과 내부 단순화 작업을 한 commit에 섞지 않는다.
-
 ## 마지막 수직 연결
 
 - 보존된 local working copy는 이제 XG5000 process가 없어도 기존 `workspace.compare` 한 개만
