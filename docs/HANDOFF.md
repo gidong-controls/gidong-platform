@@ -10,8 +10,8 @@
 - `gidong-plc-mcp`: `dev` @ `0188cad` (`Expose static workspace literal search`)
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
-2026-08-16 09:43 KST에 세 저장소의 최신 `dev` push를 다시 시도했지만 GitHub 443 연결
-거부로 모두 실패했다. 이 문서 commit 기준 Platform은 `origin/dev`보다 24 commit,
+2026-08-16 10:20 KST에 세 저장소의 최신 `dev` push를 다시 시도했지만 GitHub 443 연결
+거부로 모두 실패했다. 이 문서 commit 기준 Platform은 `origin/dev`보다 26 commit,
 Agent는 9 commit, MCP는 9 commit
 앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
 먼저 실행한다.
