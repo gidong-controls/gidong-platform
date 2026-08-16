@@ -260,6 +260,27 @@ Codex 실행 identity는 `CodexSandboxOffline`이며 이 identity에서 bare XG5
 - Development 편의를 위해 Production/Beta 권한, 데이터 루트, 서명·BOM 검증을 약화하지
   않는다.
 
+## 2026-08-16 최종 리팩터링 종료점
+
+- 이번 종료 패스는 새 기능·API·DB schema·event payload를 추가하지 않았다. 이미 커밋된
+  Host MCP 결과 decoder 통합으로 동일 wire 해석 지점을 7곳에서 1곳으로 줄였고
+  `31 insertions / 92 deletions`, 순 61줄의 프로덕션 코드를 제거했다. Agent canonical JSON
+  직렬화와 MCP behavior-report graph 재사용도 같은 의미 규칙을 각각 한 곳에 둔다.
+- `origin/dev...dev` 범위에 새로 추가하거나 수정한 test 파일은 세 저장소 모두 0개다.
+  Python compile, 변경 Python의 Ruff `F,E9,I`, TypeScript contracts build, Web typecheck/Vite
+  production build, 세 저장소 diff-check가 통과했다. 실제 보존 XGWX에서 `M00217`, `T0150`
+  static literal 조회가 각각 정확히 1건이며 project SHA와 index digest가 유지되는 것도 다시
+  확인했다.
+- XGWX `ProgramData`를 실제 같은 project의 네 live `program.read_ld` payload와 대조했다.
+  direct/application record는 전체 live 1,446개 중 1,278개(88.38%)를 opcode·coordinate·value·
+  순서까지 exact 복원하지만 wire 166개와 특수 row-header 2개의 vendor 문법은 확정되지 않았다.
+  따라서 현재 static evidence는 structure/search의 `partial` 경계를 유지한다. offset 추측으로
+  `workspace.logic_graph`나 offline LD를 만들지 않는다. 해당 기능은 여러 XG5000 버전의 paired
+  XGWX↔clipboard corpus로 wire/branch/empty-row 문법까지 증명된 뒤에만 추가한다.
+- 다음 코드 작업보다 먼저 사용자 Windows/UAC 세션에서 최신 Development launcher를 정상
+  재기동하고 `nemotron-3-ultra` Agent tool activity와 live XG5000 read/analyze를 한 번 수직
+  검증한다. 현재 Codex sandbox의 private-model socket 및 XG5000 종료는 코드로 우회하지 않는다.
+
 ## 주요 남은 위험
 
 - 자동 startup schema migration의 pair snapshot/restore는 구현됐다. 사용자가 임의 시점의
