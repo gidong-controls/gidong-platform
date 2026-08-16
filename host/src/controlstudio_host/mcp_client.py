@@ -71,6 +71,7 @@ AGENT_TOOL_NAMES: dict[str, str] = {
     "compare_workspace_source": "workspace.compare",
     "inspect_workspace_hardware_context": "workspace.hardware_context",
     "inspect_workspace_structure": "workspace.structure_index",
+    "search_workspace_evidence": "workspace.search",
 }
 AGENT_CONTROLLER_MCP_TOOLS = frozenset(
     {
@@ -151,6 +152,7 @@ AGENT_TOOL_REQUIRED_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
     "workspace.compare": ("workspace_id",),
     "workspace.hardware_context": ("workspace_id", "revision_id"),
     "workspace.structure_index": ("workspace_id", "revision_id"),
+    "workspace.search": ("workspace_id", "revision_id"),
     "xg5000.session_status": ("session_id",),
     "project.list_programs": SESSION_IDENTITY_FIELDS,
     "program.focus": SESSION_IDENTITY_FIELDS,

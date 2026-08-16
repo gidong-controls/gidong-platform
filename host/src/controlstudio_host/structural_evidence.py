@@ -23,6 +23,7 @@ STRUCTURAL_ANALYSIS_TOOL_COVERAGE: dict[str, str] = {
     "project.structure_index": "project_structure",
     "workspace.structure_index": "project_structure",
     "project.search": "programs",
+    "workspace.search": "programs",
     "program.logic_graph": "logic_graph",
     "program.state_model": "state_model",
     "device.references": "cross_references",
@@ -34,11 +35,10 @@ STRUCTURAL_ANALYSIS_TOOL_COVERAGE: dict[str, str] = {
 def structural_receipt_tool_name(tool_name: str) -> str:
     """Return the durable structural receipt tool for an Agent-visible tool."""
 
-    return (
-        "project.structure_index"
-        if tool_name == "workspace.structure_index"
-        else tool_name
-    )
+    return {
+        "workspace.structure_index": "project.structure_index",
+        "workspace.search": "project.search",
+    }.get(tool_name, tool_name)
 
 
 AMBIGUOUS_STRUCTURAL_SCOPE_LIMITATION = (
@@ -3611,6 +3611,8 @@ def _project_search_contract(
 def project_search_context(result: Any) -> dict[str, Any] | None:
     """Return bounded, receipt-bound search candidates for inference only."""
 
+    if isinstance(result, Mapping) and result.get("operation") == "workspace.search":
+        result = result.get("project_search")
     candidates: list[dict[str, Any]] = []
     receipt = _project_search_contract(result, model_candidates=candidates)
     if not candidates:

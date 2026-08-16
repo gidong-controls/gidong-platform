@@ -318,6 +318,12 @@ _AGENT_TOOL_EVIDENCE: dict[str, tuple[str, str, str, str]] = {
         "Observed a bounded SHA-bound structure inventory from the selected working copy; it is not live runtime, wiring, or PLC evidence.",
         "supported",
     ),
+    "workspace.search": (
+        "program_location",
+        "Workspace literal search",
+        "Located bounded literal matches in the selected working copy; it is not live ladder, runtime, PLC, or change evidence.",
+        "supported",
+    ),
     "project.structure_index": (
         "artifact",
         "XG5000 project structure index",
@@ -421,6 +427,9 @@ _AGENT_TOOL_EVIDENCE: dict[str, tuple[str, str, str, str]] = {
         "confirmed",
     ),
 }
+_STATIC_WORKSPACE_EVIDENCE_TOOLS = frozenset(
+    {"workspace.structure_index", "workspace.search"}
+)
 
 _CHANGE_COVERAGE_ALLOWED_TOOLS: dict[str, frozenset[str]] = {
     "target_identity": frozenset(
@@ -2788,7 +2797,7 @@ def create_app(
                 for evidence_ref in item.evidence_refs
                 if evidence_ref in evidence_by_id
             }
-            if "workspace.structure_index" in observed_tools:
+            if observed_tools.intersection(_STATIC_WORKSPACE_EVIDENCE_TOOLS):
                 raise ChangeExecutionPreconditionError(
                     "static workspace file evidence cannot satisfy change-plan coverage"
                 )
@@ -2862,7 +2871,7 @@ def create_app(
                 str(evidence_by_id[evidence_ref].get("toolName") or "")
                 for evidence_ref in item.evidence_refs
             }
-            if "workspace.structure_index" in observed_tools:
+            if observed_tools.intersection(_STATIC_WORKSPACE_EVIDENCE_TOOLS):
                 raise ChangeExecutionPreconditionError(
                     "static workspace file evidence cannot satisfy MNE coverage"
                 )

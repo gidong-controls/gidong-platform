@@ -79,6 +79,12 @@ _WORKSPACE_STRUCTURE_INDEX_FIELDS = {
     "structure_index",
     "receipt_digest",
 }
+_WORKSPACE_SEARCH_FIELDS = {
+    "schema",
+    "workspace_binding",
+    "project_search",
+    "receipt_digest",
+}
 
 
 def _canonical_digest(value: Any) -> str:
@@ -294,6 +300,11 @@ class MCPExecutionBroker:
             )
         if raw_name == "workspace.structure_index":
             return cls._workspace_structure_index_evidence_contract(
+                result,
+                expected_session_identity=expected_session_identity,
+            )
+        if raw_name == "workspace.search":
+            return cls._workspace_search_evidence_contract(
                 result,
                 expected_session_identity=expected_session_identity,
             )
@@ -548,6 +559,56 @@ class MCPExecutionBroker:
             },
             allow_workspace_static_identity=True,
         )
+
+    @classmethod
+    def _workspace_search_evidence_contract(
+        cls,
+        result: Any,
+        *,
+        expected_session_identity: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        expected_workspace_id, expected_revision_id = _expected_workspace_identity(
+            expected_session_identity
+        )
+        if not isinstance(result, Mapping) or set(result) != (
+            _WORKSPACE_SEARCH_FIELDS | {"operation", "schema_version"}
+        ):
+            raise MCPToolError("workspace search shape mismatched")
+        unsigned = {
+            name: result[name]
+            for name in _WORKSPACE_SEARCH_FIELDS
+            if name != "receipt_digest"
+        }
+        binding = result.get("workspace_binding")
+        if not isinstance(binding, Mapping) or set(binding) != {
+            "workspace_id",
+            "revision_id",
+            "source_sha256",
+            "working_path",
+            "working_sha256",
+        }:
+            raise MCPToolError("workspace search binding is invalid")
+        workspace_id = binding.get("workspace_id")
+        revision_id = binding.get("revision_id")
+        source_sha256 = binding.get("source_sha256")
+        working_path = binding.get("working_path")
+        working_sha256 = binding.get("working_sha256")
+        project_search = result.get("project_search")
+        if (
+            result.get("operation") != "workspace.search"
+            or result.get("schema") != "xg5000.workspace-search/1.0"
+            or workspace_id != expected_workspace_id
+            or revision_id != expected_revision_id
+            or not isinstance(working_path, str)
+            or not working_path.casefold().endswith(".xgwx")
+            or not all(_is_sha256(value) for value in (source_sha256, working_sha256))
+            or result.get("receipt_digest") != _canonical_digest(unsigned)
+            or not isinstance(project_search, Mapping)
+            or project_search.get("project_hash_before") != working_sha256
+            or project_search.get("project_hash_after") != working_sha256
+        ):
+            raise MCPToolError("workspace search binding is invalid")
+        return build_structural_evidence_contract("project.search", project_search)
 
     @classmethod
     def _change_target_evidence_contract(
