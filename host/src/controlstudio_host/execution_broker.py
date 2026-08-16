@@ -272,10 +272,6 @@ class MCPExecutionBroker:
         await self._emit_event(sink, "tool.completed", completed_payload)
         return result
 
-    @staticmethod
-    def _canonical_digest(value: Any) -> str:
-        return _canonical_digest(value)
-
     @classmethod
     def _evidence_contract(
         cls,
@@ -351,7 +347,7 @@ class MCPExecutionBroker:
             "limitationCodes": [item.code for item in comparison.limitations],
             "compareDigest": comparison.compare_digest,
         }
-        contract["receiptDigest"] = cls._canonical_digest(contract)
+        contract["receiptDigest"] = _canonical_digest(contract)
         return contract
 
     @classmethod
@@ -366,7 +362,7 @@ class MCPExecutionBroker:
         if (
             context.get("schema") != "xg5000.project.hardware-context/1.0"
             or not isinstance(supplied_digest, str)
-            or supplied_digest != cls._canonical_digest(context)
+            or supplied_digest != _canonical_digest(context)
         ):
             raise MCPToolError("hardware context digest is invalid")
         project_binding = result.get("project_binding")
@@ -405,7 +401,7 @@ class MCPExecutionBroker:
         contract: dict[str, Any] = {
             "schema": "controlstudio-hardware-context-evidence/v1",
             "contextDigest": supplied_digest,
-            "projectBindingDigest": cls._canonical_digest(project_binding),
+            "projectBindingDigest": _canonical_digest(project_binding),
             "projectHash": project_binding.get("project_hash"),
             "cpu": dict(cpu),
             "timerAreas": [dict(item) for item in timer_areas],
@@ -420,7 +416,7 @@ class MCPExecutionBroker:
             or not contract["projectHash"]
         ):
             raise MCPToolError("hardware context is missing its project hash")
-        contract["receiptDigest"] = cls._canonical_digest(contract)
+        contract["receiptDigest"] = _canonical_digest(contract)
         return contract
 
     @classmethod
@@ -452,7 +448,7 @@ class MCPExecutionBroker:
             or workspace_id != expected_workspace_id
             or revision_id != expected_revision_id
             or not all(_is_sha256(value) for value in (source_sha256, working_sha256))
-            or result.get("receipt_digest") != cls._canonical_digest(unsigned)
+            or result.get("receipt_digest") != _canonical_digest(unsigned)
         ):
             raise MCPToolError("workspace hardware context binding is invalid")
         hardware_context = result.get("hardware_context")
@@ -492,7 +488,7 @@ class MCPExecutionBroker:
         }
         if contract["sourceKind"] not in {"local_file", "restored_from_controller"}:
             raise MCPToolError("workspace hardware source kind is invalid")
-        contract["receiptDigest"] = cls._canonical_digest(contract)
+        contract["receiptDigest"] = _canonical_digest(contract)
         return contract
 
     @classmethod
@@ -536,7 +532,7 @@ class MCPExecutionBroker:
             or not isinstance(working_path, str)
             or not working_path.casefold().endswith(".xgwx")
             or not all(_is_sha256(value) for value in (source_sha256, working_sha256))
-            or result.get("receipt_digest") != cls._canonical_digest(unsigned)
+            or result.get("receipt_digest") != _canonical_digest(unsigned)
         ):
             raise MCPToolError("workspace structure binding is invalid")
         structure_index = result.get("structure_index")
@@ -567,7 +563,7 @@ class MCPExecutionBroker:
         supplied_digest = canonical_analysis.pop("analysis_digest", None)
         if (
             not isinstance(supplied_digest, str)
-            or supplied_digest != cls._canonical_digest(canonical_analysis)
+            or supplied_digest != _canonical_digest(canonical_analysis)
         ):
             raise MCPToolError("change target analysis receipt digest is invalid")
         target = analysis.get("target")
@@ -605,7 +601,7 @@ class MCPExecutionBroker:
         contract: dict[str, Any] = {
             "schema": "controlstudio-change-target-evidence/v1",
             "analysisDigest": supplied_digest,
-            "projectBindingDigest": cls._canonical_digest(project_binding),
+            "projectBindingDigest": _canonical_digest(project_binding),
             "programId": target.get("program_id"),
             "programName": target.get("program_name"),
             "valueTokenOffset": target.get("value_token_offset"),
@@ -674,7 +670,7 @@ class MCPExecutionBroker:
             or "hardware_context_unobserved" not in blockers
         ):
             raise MCPToolError("change target evidence omitted required hardware context")
-        contract["receiptDigest"] = cls._canonical_digest(contract)
+        contract["receiptDigest"] = _canonical_digest(contract)
         return contract
 
     @classmethod
@@ -715,7 +711,7 @@ class MCPExecutionBroker:
             "schema": schema,
             "candidate": candidate,
         }
-        contract["receiptDigest"] = cls._canonical_digest(contract)
+        contract["receiptDigest"] = _canonical_digest(contract)
         return contract
 
     def _public_schema(self, raw_name: str, schema: dict[str, Any]) -> dict[str, Any] | None:

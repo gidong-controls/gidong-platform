@@ -521,17 +521,7 @@ class MCPGateway:
             self._controller_observation_expires_at = None
             self._mark_connection_lost(exc)
             raise MCPToolError(f"{name} failed because MCP disconnected") from exc
-        if result.is_error:
-            raise MCPToolError(f"{name} failed: {self._result_text(result)}")
-        if result.structured_content is not None:
-            return self._unwrap_success_envelope(result.structured_content)
-        if result.data is not None:
-            return self._unwrap_success_envelope(result.data)
-        text = self._result_text(result)
-        try:
-            return self._unwrap_success_envelope(json.loads(text))
-        except (json.JSONDecodeError, TypeError):
-            return text
+        return self._decode_tool_result(name, result)
 
     async def call_workspace_tool(
         self,
@@ -553,17 +543,7 @@ class MCPGateway:
         except Exception as exc:
             self._mark_connection_lost(exc)
             raise MCPToolError(f"{name} failed because MCP disconnected") from exc
-        if result.is_error:
-            raise MCPToolError(f"{name} failed: {self._result_text(result)}")
-        if result.structured_content is not None:
-            return self._unwrap_success_envelope(result.structured_content)
-        if result.data is not None:
-            return self._unwrap_success_envelope(result.data)
-        text = self._result_text(result)
-        try:
-            return self._unwrap_success_envelope(json.loads(text))
-        except (json.JSONDecodeError, TypeError):
-            return text
+        return self._decode_tool_result(name, result)
 
     async def call_change_tool(
         self,
@@ -585,17 +565,7 @@ class MCPGateway:
         except Exception as exc:
             self._mark_connection_lost(exc)
             raise MCPToolError(f"{name} failed because MCP disconnected") from exc
-        if result.is_error:
-            raise MCPToolError(f"{name} failed: {self._result_text(result)}")
-        if result.structured_content is not None:
-            return self._unwrap_success_envelope(result.structured_content)
-        if result.data is not None:
-            return self._unwrap_success_envelope(result.data)
-        text = self._result_text(result)
-        try:
-            return self._unwrap_success_envelope(json.loads(text))
-        except (json.JSONDecodeError, TypeError):
-            return text
+        return self._decode_tool_result(name, result)
 
     async def call_recovery_tool(
         self,
@@ -617,17 +587,7 @@ class MCPGateway:
         except Exception as exc:
             self._mark_connection_lost(exc)
             raise MCPToolError(f"{name} failed because MCP disconnected") from exc
-        if result.is_error:
-            raise MCPToolError(f"{name} failed: {self._result_text(result)}")
-        if result.structured_content is not None:
-            return self._unwrap_success_envelope(result.structured_content)
-        if result.data is not None:
-            return self._unwrap_success_envelope(result.data)
-        text = self._result_text(result)
-        try:
-            return self._unwrap_success_envelope(json.loads(text))
-        except (json.JSONDecodeError, TypeError):
-            return text
+        return self._decode_tool_result(name, result)
 
     async def call_controller_tool(
         self,
@@ -656,17 +616,7 @@ class MCPGateway:
         except Exception as exc:
             self._mark_connection_lost(exc)
             raise MCPToolError(f"{name} failed because MCP disconnected") from exc
-        if result.is_error:
-            raise MCPToolError(f"{name} failed: {self._result_text(result)}")
-        if result.structured_content is not None:
-            return self._unwrap_success_envelope(result.structured_content)
-        if result.data is not None:
-            return self._unwrap_success_envelope(result.data)
-        text = self._result_text(result)
-        try:
-            return self._unwrap_success_envelope(json.loads(text))
-        except (json.JSONDecodeError, TypeError):
-            return text
+        return self._decode_tool_result(name, result)
 
     async def call_restore_tool(
         self,
@@ -688,17 +638,7 @@ class MCPGateway:
         except Exception as exc:
             self._mark_connection_lost(exc)
             raise MCPToolError(f"{name} failed because MCP disconnected") from exc
-        if result.is_error:
-            raise MCPToolError(f"{name} failed: {self._result_text(result)}")
-        if result.structured_content is not None:
-            return self._unwrap_success_envelope(result.structured_content)
-        if result.data is not None:
-            return self._unwrap_success_envelope(result.data)
-        text = self._result_text(result)
-        try:
-            return self._unwrap_success_envelope(json.loads(text))
-        except (json.JSONDecodeError, TypeError):
-            return text
+        return self._decode_tool_result(name, result)
 
     def sign_mutation_authorization(
         self,
@@ -782,17 +722,7 @@ class MCPGateway:
             arguments,
             call_tool=client.call_tool,
         )
-        if result.is_error:
-            raise MCPToolError(f"{name} failed: {self._result_text(result)}")
-        if result.structured_content is not None:
-            return self._unwrap_success_envelope(result.structured_content)
-        if result.data is not None:
-            return self._unwrap_success_envelope(result.data)
-        text = self._result_text(result)
-        try:
-            return self._unwrap_success_envelope(json.loads(text))
-        except (json.JSONDecodeError, TypeError):
-            return text
+        return self._decode_tool_result(name, result)
 
     def _safe_arguments(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         safe_arguments = dict(arguments)
@@ -1123,6 +1053,19 @@ class MCPGateway:
         ):
             return value["data"]
         return value
+
+    def _decode_tool_result(self, name: str, result: Any) -> Any:
+        if result.is_error:
+            raise MCPToolError(f"{name} failed: {self._result_text(result)}")
+        if result.structured_content is not None:
+            return self._unwrap_success_envelope(result.structured_content)
+        if result.data is not None:
+            return self._unwrap_success_envelope(result.data)
+        text = self._result_text(result)
+        try:
+            return self._unwrap_success_envelope(json.loads(text))
+        except (json.JSONDecodeError, TypeError):
+            return text
 
     @staticmethod
     def _result_text(result: Any) -> str:
