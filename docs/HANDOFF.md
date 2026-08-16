@@ -6,13 +6,13 @@
 ## 저장소와 브랜치
 
 - `gidong-platform`: `dev` (이 문서를 포함한 commit)
-- `gidong-agent`: `dev` @ `f3eac1e` (`Teach agent static workspace structure limits`)
-- `gidong-plc-mcp`: `dev` @ `6aa174f` (`Expose static workspace structure index`)
+- `gidong-agent`: `dev` @ `70df51c` (`Teach agent static workspace search limits`)
+- `gidong-plc-mcp`: `dev` @ `0188cad` (`Expose static workspace literal search`)
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
-2026-08-16 09:18 KST에 세 저장소의 최신 `dev` push를 다시 시도했지만 GitHub 443 연결
-거부로 모두 실패했다. 이 문서 commit 기준 Platform은 `origin/dev`보다 22 commit,
-Agent는 8 commit, MCP는 8 commit
+2026-08-16 09:43 KST에 세 저장소의 최신 `dev` push를 다시 시도했지만 GitHub 443 연결
+거부로 모두 실패했다. 이 문서 commit 기준 Platform은 `origin/dev`보다 24 commit,
+Agent는 9 commit, MCP는 9 commit
 앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
 먼저 실행한다.
 
@@ -132,6 +132,11 @@ Agent는 8 commit, MCP는 8 commit
   사라지지 않는다. 기존 search receipt의 digest와 match ID에 결속된 inference-only 후보를 전체
   32개로 제한해 Agent가 exact program/device 후속 도구를 호출할 때만 사용한다. raw XML·path·
   hash·PID/HWND와 공개 evidence/event/DB schema는 늘리지 않았다.
+- XG5000을 열지 않은 static workspace에서도 `workspace.search`로 프로그램·심볼·device의
+  bounded literal lookup을 수행한다. 기존 structure index와 `build_project_search`, 기존
+  `project.search` receipt/context validator를 그대로 재사용하며, workspace/revision/source·working
+  SHA를 읽기 전후에 결속한다. Agent에는 raw XGWX 결과가 아니라 receipt-bound locator만 전달되고
+  이 evidence는 LD/rung/runtime/PLC/change/MNE 근거로 승격되지 않는다.
 
 ## 검증된 것
 
@@ -181,6 +186,10 @@ Agent는 8 commit, MCP는 8 commit
 - 실제 XGWX search 결과에서 program-name/structure/LD 후보를 같은 Agent frame에 유지하고,
   35개 결과를 세 종류가 굶지 않는 순서의 32개로 제한했다. receipt digest·coverage match IDs 결속,
   변조 거부와 raw-result 비노출을 inline smoke로 확인했다.
+- 같은 보존 XGWX의 static `workspace.search`에서 `M00217`, `T0150`을 각각 exact structure item
+  1건으로 찾고 Host→Agent raw-result omission, source receipt digest 결속, stale revision 거부를
+  확인했다. Static Agent catalog는 compare/hardware/structure/search 정확히 4개이며 live LD 도구는
+  계속 숨겨진다.
 - HTTP contract guard 성공
 - 세 저장소 staged diff whitespace check 성공
 - 원격 모델 catalog와 짧은 completion 호출 성공
