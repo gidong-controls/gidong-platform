@@ -10,8 +10,8 @@
 - `gidong-plc-mcp`: `dev` @ `6aa174f` (`Expose static workspace structure index`)
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
-2026-08-16 08:58 KST에 Platform의 최신 `dev` push를 다시 시도했지만 GitHub 443 연결
-거부로 실패했다. 이 문서 commit 기준 Platform은 `origin/dev`보다 20 commit,
+2026-08-16 09:18 KST에 세 저장소의 최신 `dev` push를 다시 시도했지만 GitHub 443 연결
+거부로 모두 실패했다. 이 문서 commit 기준 Platform은 `origin/dev`보다 22 commit,
 Agent는 8 commit, MCP는 8 commit
 앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
 먼저 실행한다.
@@ -93,6 +93,10 @@ Agent는 8 commit, MCP는 8 commit
   lifetime과 exact title을 같은 순회에서 확인하며 vendor process가 먼저 종료되면 title
   deadline을 더 기다리지 않는다. 제거된 helper를 포함해 14줄 추가/36줄 삭제이고, 정상
   PID/HWND/path/hash 검증은 그대로다.
+- Host `MCPGateway`의 동일한 MCP 성공 결과 decoding을 7개 호출 경로에서
+  `_decode_tool_result` 한 곳으로 합쳤다. structured content, data, text JSON fallback과 오류
+  우선순위는 그대로이며 wire-format 변경 지점은 7곳에서 1곳으로 줄었다. Evidence digest의
+  단일 forwarding wrapper도 제거해 이번 변경은 31줄 추가/92줄 삭제, 순 61줄 감소다.
 - 이 리팩터링에서 새 테스트는 추가하지 않았다. 임시 C# compile executable 네 개와
   잘못 생성된 빈 파일 하나를 제거했다.
 ## 마지막 수직 연결
@@ -182,6 +186,8 @@ Agent는 8 commit, MCP는 8 commit
 - 원격 모델 catalog와 짧은 completion 호출 성공
 - 최종 재검증에서 canonical JSON/digest 바이트 동등성과 behavior report의 graph 생성
   1회/프로그램 불변조건을 별도 테스트 파일 없이 인라인 smoke로 확인
+- MCP 결과 decoding의 structured-content/data/text/error 대표 5경로가 기존 우선순위와
+  오류 문구를 유지하는지 별도 테스트 파일 없이 inline smoke로 확인
 - 2026-08-16 종료 검증에서 Agent/Host/MCP 대상 Python compile과 Ruff `F,E9,I`,
   TypeScript contracts build, Web typecheck/Vite production build, 세 저장소 diff-check를
   각각 한 번 통과. `origin/dev..HEAD`에 새로 추가·수정된 test 파일은 0개
