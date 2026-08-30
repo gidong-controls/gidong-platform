@@ -13824,6 +13824,22 @@
             "type": "boolean",
             "title": "Relaunchifunavailable",
             "default": false
+          },
+          "restoreVerifiedBackup": {
+            "type": "boolean",
+            "title": "Restoreverifiedbackup",
+            "default": false
+          },
+          "expectedCurrentProjectHash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expectedcurrentprojecthash"
           }
         },
         "additionalProperties": false,
