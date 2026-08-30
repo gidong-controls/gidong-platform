@@ -1994,6 +1994,59 @@ def _normalized_workspace_path(value: str) -> str:
     return os.path.normcase(str(Path(value).resolve()))
 
 
+def _validated_verified_quarantined_backup_restore(
+    value: object,
+    *,
+    transaction: ChangeTransaction,
+    expected_current_project_hash: str,
+    expected_native_transaction_id: str,
+    expected_native_plan_digest: str,
+) -> dict[str, Any]:
+    """Accept only the narrow MCP receipt for an exact journal-backup restore.
+
+    The Host deliberately receives no private backup or preservation paths.  It
+    may refresh its active workspace identity only after MCP has proven that it
+    preserved the unexpected current artifact and restored the journal's exact
+    pre-change artifact.
+    """
+
+    if not isinstance(value, dict):
+        raise ChangeExecutionPreconditionError(
+            "verified backup restoration returned an invalid MCP receipt"
+        )
+    expected_baseline = transaction.target.artifact_hash.casefold()
+    required_exact = {
+        "transaction_id": expected_native_transaction_id,
+        "host_transaction_id": transaction.id,
+        "plan_digest": expected_native_plan_digest.casefold(),
+        "workspace_id": transaction.target.workspace_id,
+        "observed_current_project_hash": expected_current_project_hash.casefold(),
+        "preserved_current_project_hash": expected_current_project_hash.casefold(),
+        "verified_backup_project_hash": expected_baseline,
+        "restored_project_hash": expected_baseline,
+    }
+    if value.get("restored") is not True:
+        raise ChangeExecutionPreconditionError(
+            "verified backup restoration did not confirm an exact restore"
+        )
+    if any(value.get(field) != expected for field, expected in required_exact.items()):
+        raise ChangeExecutionPreconditionError(
+            "verified backup restoration receipt differs from the quarantined transaction"
+        )
+    preservation_ref = value.get("preservation_ref")
+    preservation_digest = value.get("preservation_digest")
+    if (
+        not isinstance(preservation_ref, str)
+        or not preservation_ref
+        or not isinstance(preservation_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", preservation_digest.casefold()) is None
+    ):
+        raise ChangeExecutionPreconditionError(
+            "verified backup restoration receipt has incomplete preservation evidence"
+        )
+    return value
+
+
 async def _relaunch_unavailable_change_recovery_target(
     mcp: MCPGateway,
     transaction: ChangeTransaction,
@@ -10405,6 +10458,7 @@ def create_app(
         request: Request,
         _run_guard: None = Depends(engineering_target_run_guard),
     ) -> ChangeReconciliationResponseV1:
+        nonlocal active_engineering_session, active_workspace
         transaction = store.get_change_transaction(transaction_id)
         if transaction is None:
             raise HTTPException(status_code=404, detail="change transaction not found")
@@ -10433,6 +10487,7 @@ def create_app(
             )
         except TargetOperationLeaseConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        restoration_receipt: dict[str, Any] | None = None
         try:
             current_target = current_change_target()
             stable_workspace_fields = (
@@ -10448,6 +10503,100 @@ def create_app(
                 for field_name in stable_workspace_fields
             ):
                 raise ChangeExecutionPreconditionError("active recovery workspace identity changed")
+            if body.restore_verified_backup:
+                if (
+                    body.expected_current_project_hash is None
+                    or current_target.artifact_hash.casefold()
+                    != body.expected_current_project_hash.casefold()
+                ):
+                    raise ChangeExecutionPreconditionError(
+                        "active recovery workspace hash differs from the reviewed current artifact"
+                    )
+                lookup = await mcp.call_recovery_tool(
+                    "change.transaction_lookup",
+                    {"host_transaction_id": transaction.id},
+                )
+                checkpoint = (
+                    lookup.get("transaction_checkpoint")
+                    if isinstance(lookup, dict)
+                    else None
+                )
+                native_transaction_id = (
+                    checkpoint.get("transaction_id")
+                    if isinstance(checkpoint, dict)
+                    else None
+                )
+                if (
+                    not isinstance(native_transaction_id, str)
+                    or not native_transaction_id
+                    or not isinstance(checkpoint.get("plan_digest"), str)
+                    or re.fullmatch(
+                        r"[0-9a-f]{64}", str(checkpoint["plan_digest"]).casefold()
+                    ) is None
+                    or checkpoint.get("workspace_id") != transaction.target.workspace_id
+                ):
+                    raise ChangeExecutionPreconditionError(
+                        "native recovery checkpoint differs from the quarantined transaction"
+                    )
+                native_plan_digest = str(checkpoint["plan_digest"]).casefold()
+                restored = await mcp.call_recovery_tool(
+                    "change.restore_verified_quarantined_backup",
+                    {
+                        "host_transaction_id": transaction.id,
+                        "transaction_id": native_transaction_id,
+                        "expected_plan_digest": native_plan_digest,
+                        "workspace_id": transaction.target.workspace_id,
+                        "expected_current_project_hash": body.expected_current_project_hash,
+                    },
+                )
+                restoration_receipt = _validated_verified_quarantined_backup_restore(
+                    restored,
+                    transaction=transaction,
+                    expected_current_project_hash=body.expected_current_project_hash,
+                    expected_native_transaction_id=native_transaction_id,
+                    expected_native_plan_digest=native_plan_digest,
+                )
+                # This is a new durable recovery event, not a rewrite of the
+                # original quarantined transaction receipt.  It must survive a
+                # later relaunch failure or request cancellation.
+                store.append_event(
+                    event_type="change.working_copy_restored",
+                    payload={
+                        "transactionId": transaction.id,
+                        "hostPlanDigest": transaction.plan_digest,
+                        "nativeTransactionId": native_transaction_id,
+                        "nativePlanDigest": native_plan_digest,
+                        "workspaceId": transaction.target.workspace_id,
+                        "restore": restoration_receipt,
+                    },
+                    conversation_id=transaction.conversation_id,
+                )
+                if not isinstance(active_workspace, dict):
+                    raise ChangeExecutionPreconditionError(
+                        "active recovery workspace disappeared after verified backup restoration"
+                    )
+                refreshed_workspace = dict(active_workspace)
+                refreshed_working_copy = active_workspace.get("working_copy")
+                if not isinstance(refreshed_working_copy, dict):
+                    raise ChangeExecutionPreconditionError(
+                        "active recovery workspace has no working-copy identity after restoration"
+                    )
+                refreshed_working_copy = dict(refreshed_working_copy)
+                refreshed_working_copy["current_sha256"] = transaction.target.artifact_hash.casefold()
+                refreshed_working_copy["state"] = (
+                    "clean"
+                    if transaction.target.artifact_hash.casefold()
+                    == str(refreshed_working_copy.get("baseline_sha256") or "").casefold()
+                    else "modified"
+                )
+                refreshed_workspace["working_copy"] = refreshed_working_copy
+                # MCP has proved no XG5000 was open during the atomic file restore;
+                # any retained live session therefore cannot describe this artifact.
+                active_engineering_session = None
+                execution_broker.clear_agent_session()
+                active_workspace = refreshed_workspace
+                store.set_host_state("active_workspace", active_workspace)
+                bind_agent_workspace_target(active_workspace)
             recovery_target = ChangeRecoveryTarget(pid=body.pid, hwnd=body.hwnd)
             if body.relaunch_if_unavailable:
                 try:
@@ -10463,7 +10612,7 @@ def create_app(
                     requested_pid=body.pid,
                     requested_hwnd=body.hwnd,
                 )
-        except ChangeExecutionPreconditionError as exc:
+        except (ChangeExecutionPreconditionError, MCPToolError) as exc:
             store.park_target_operation_lease(
                 operation_id=transaction_id,
                 holder_token=holder_token,
@@ -10491,6 +10640,8 @@ def create_app(
                     "change transaction %s reconciliation failed",
                     transaction_id,
                 )
+            if outcome is not None and restoration_receipt is not None:
+                outcome.evidence["working_copy_restore"] = restoration_receipt
             resolved = store.resolve_quarantined_change(
                 transaction_id=transaction_id,
                 state=(
@@ -10499,7 +10650,14 @@ def create_app(
                 evidence=(
                     outcome.evidence
                     if outcome is not None
-                    else {"error": "reconciliation service failed unexpectedly"}
+                    else {
+                        "error": "reconciliation service failed unexpectedly",
+                        **(
+                            {"working_copy_restore": restoration_receipt}
+                            if restoration_receipt is not None
+                            else {}
+                        ),
+                    }
                 ),
                 actor_id=_request_actor_id(request),
                 error_code=(

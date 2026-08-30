@@ -66,6 +66,15 @@ expiry, single-use nonce가 결합된 Platform approval 없이는 진행하지 �
 기록한다. PID/project hash/arguments/approval nonce가 달라지거나 결과가 불명확하면
 거부·quarantine하며 자동 재시도하지 않는다.
 
+격리된 offline change의 working-copy SHA가 journaled artifact와 달라진 경우,
+Platform은 hash를 재결속하거나 파일을 직접 쓰지 않는다. 사용자가 현재 SHA를 검토하고
+명시적으로 `restoreVerifiedBackup`을 요청한 경우에만, 같은 recovery lease 아래 MCP가
+현재 바이트를 private preservation artifact로 보존하고 journal-pinned backup을 exact
+path에 복원할 수 있다. MCP receipt는 native/Host transaction ID, plan/workspace, current·
+preserved·backup·restored hash와 preservation reference/digest를 결속한다. 그 뒤에도
+기존 native relaunch/readback/rollback 경로가 독립적으로 성공해야 quarantine이 해제된다;
+이 동작은 PLC download·online write·기존 change approval 재사용을 포함하지 않는다.
+
 ## 버전화된 경계
 
 - HTTP/Event/Workspace/Audit/Agent/MCP Product v1 schema의 source of truth는

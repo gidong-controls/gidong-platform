@@ -1709,6 +1709,7 @@ function App() {
           "change.execution_started": "승인된 XG5000 변경 실행을 시작했습니다.",
           "change.verification_started": "변경 결과의 XG5000 검증을 시작했습니다.",
           "change.execution_finished": "변경 실행 결과를 확정했습니다.",
+          "change.working_copy_restored": "현재 작업 복사본을 보존하고 검증된 백업을 복원했습니다.",
           "change.simulation_finalized": "XG-SIM Keep/Revert 결정을 확정했습니다.",
           "change.receipt_acknowledged": "변경 결과 확인을 기록했습니다.",
           "controller.connected": "LS PLC에 읽기 전용으로 연결했습니다.",
@@ -2708,7 +2709,11 @@ function App() {
   const reconcileChange = async (
     pid: number,
     hwnd: number,
-    relaunchIfUnavailable = false,
+    options: {
+      relaunchIfUnavailable?: boolean;
+      restoreVerifiedBackup?: boolean;
+      expectedCurrentProjectHash?: string;
+    } = {},
   ) => {
     if (
       !activeChange ||
@@ -2726,7 +2731,11 @@ function App() {
           expectedPlanDigest: activeChange.planDigest,
           pid,
           hwnd,
-          ...(relaunchIfUnavailable ? { relaunchIfUnavailable: true } : {}),
+          ...(options.relaunchIfUnavailable ? { relaunchIfUnavailable: true } : {}),
+          ...(options.restoreVerifiedBackup ? { restoreVerifiedBackup: true } : {}),
+          ...(options.expectedCurrentProjectHash
+            ? { expectedCurrentProjectHash: options.expectedCurrentProjectHash }
+            : {}),
         },
       );
       if (!response.reconciled) {
@@ -4512,6 +4521,7 @@ function App() {
               <ChangeRecoveryPanel
                 transaction={primaryChange}
                 busy={changeBusy || canCancelActiveRun}
+                currentWorkspaceHash={status.workspace?.artifactHash}
                 onReconcile={reconcileChange}
               />
             )}

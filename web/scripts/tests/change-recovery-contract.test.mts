@@ -109,6 +109,24 @@ test("fails closed when the journal has no exact PID/HWND for relaunch", () => {
   );
 });
 
+test("backup restoration review is bound to the displayed transaction, hashes, and relaunch identity", () => {
+  const source = readFileSync(
+    new URL("../../src/components/ChangeRecoveryPanel.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /const restoreReviewKey =/);
+  assert.match(source, /transaction\.transactionId,/);
+  assert.match(source, /transaction\.planDigest,/);
+  assert.match(source, /currentWorkspaceHash!\.toLowerCase\(\),/);
+  assert.match(source, /transaction\.targetIdentity\.artifactHash\.toLowerCase\(\),/);
+  assert.match(source, /relaunchTarget\.pid,/);
+  assert.match(source, /relaunchTarget\.hwnd,/);
+  assert.match(source, /const restoreConfirmed = confirmedRestoreReviewKey === restoreReviewKey;/);
+  assert.match(source, /setConfirmedRestoreReviewKey\(null\);/);
+  assert.match(source, /!hasCurrentHashMismatch && relaunchAvailable && relaunchTarget/);
+});
+
 test("saved workspace offers an explicit workspace-bound existing-XG attach", () => {
   const source = readFileSync(new URL("../../src/App.tsx", import.meta.url), "utf8");
   const cardStart = source.indexOf('className="workspace-resume-actions"');

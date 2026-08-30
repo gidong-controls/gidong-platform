@@ -3400,6 +3400,33 @@ class ReconcileChangeTransactionRequestV1(ExecuteChangeTransactionRequestV1):
     pid: int = Field(gt=0)
     hwnd: int = Field(gt=0)
     relaunch_if_unavailable: bool = False
+    # This is deliberately not a general artifact rebind.  It authorizes the
+    # MCP-owned, journal-pinned backup restoration which precedes the existing
+    # recovery-only relaunch path.
+    restore_verified_backup: bool = False
+    expected_current_project_hash: str | None = Field(default=None)
+
+    @field_validator("expected_current_project_hash")
+    @classmethod
+    def validate_expected_current_project_hash(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.casefold()
+        if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+            raise ValueError("expected_current_project_hash must be a SHA-256 value")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_verified_backup_restore_request(self) -> ReconcileChangeTransactionRequestV1:
+        if self.restore_verified_backup and not self.expected_current_project_hash:
+            raise ValueError(
+                "expected_current_project_hash is required when restore_verified_backup is true"
+            )
+        if self.restore_verified_backup and not self.relaunch_if_unavailable:
+            raise ValueError(
+                "restore_verified_backup requires recovery-only XG5000 relaunch"
+            )
+        return self
 
 
 class ChangeTargetIdentityV1(ApiModel):

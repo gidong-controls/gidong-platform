@@ -16,11 +16,18 @@ import { Icon } from "./Icon";
 interface ChangeRecoveryPanelProps {
   transaction: ChangeTransaction;
   busy: boolean;
+  currentWorkspaceHash?: string;
   onReconcile: (
     pid: number,
     hwnd: number,
-    relaunchIfUnavailable?: boolean,
+    options?: RecoveryReconcileOptions,
   ) => Promise<void>;
+}
+
+interface RecoveryReconcileOptions {
+  relaunchIfUnavailable?: boolean;
+  restoreVerifiedBackup?: boolean;
+  expectedCurrentProjectHash?: string;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -86,9 +93,14 @@ function instanceLabel(instance: XG5000Instance): string {
   return `${title} · PID ${instance.pid} · HWND ${instance.hwnd}`;
 }
 
+function shortHash(value: string): string {
+  return `${value.slice(0, 16)}…`;
+}
+
 export function ChangeRecoveryPanel({
   transaction,
   busy,
+  currentWorkspaceHash,
   onReconcile,
 }: ChangeRecoveryPanelProps) {
   const recoverySupported = hasSupportedRecoveryContract(transaction);
@@ -166,6 +178,40 @@ export function ChangeRecoveryPanel({
     inventoryConfirmedEmpty,
     targetIdentity: transaction.targetIdentity,
   });
+  const hasCurrentHashMismatch =
+    transaction.state === "quarantined" &&
+    typeof currentWorkspaceHash === "string" &&
+    /^[0-9a-f]{64}$/i.test(currentWorkspaceHash) &&
+    currentWorkspaceHash.toLowerCase() !==
+      transaction.targetIdentity.artifactHash.toLowerCase();
+  const restoreReviewKey =
+    hasCurrentHashMismatch && relaunchTarget
+      ? [
+          transaction.transactionId,
+          transaction.planDigest,
+          currentWorkspaceHash!.toLowerCase(),
+          transaction.targetIdentity.artifactHash.toLowerCase(),
+          relaunchTarget.pid,
+          relaunchTarget.hwnd,
+        ].join(":")
+      : null;
+  const [confirmedRestoreReviewKey, setConfirmedRestoreReviewKey] = useState<
+    string | null
+  >(null);
+  const restoreConfirmed = confirmedRestoreReviewKey === restoreReviewKey;
+
+  useEffect(() => {
+    setConfirmedRestoreReviewKey(null);
+  }, [restoreReviewKey]);
+  const restoreReceipt = nestedRecord(reconciliation, "working_copy_restore");
+  const preservationRef =
+    typeof restoreReceipt?.preservation_ref === "string"
+      ? restoreReceipt.preservation_ref
+      : null;
+  const preservationDigest =
+    typeof restoreReceipt?.preservation_digest === "string"
+      ? restoreReceipt.preservation_digest
+      : null;
 
   return (
     <section
@@ -231,17 +277,71 @@ export function ChangeRecoveryPanel({
           >
             {busy ? "복구 증거 확인 중…" : "선택한 창으로 격리 복구 검사"}
           </button>
-          {relaunchAvailable && relaunchTarget && (
+          {!hasCurrentHashMismatch && relaunchAvailable && relaunchTarget && (
             <button
               className="button secondary-button"
               type="button"
               disabled={busy || instancesLoading}
               onClick={() =>
-                void onReconcile(relaunchTarget.pid, relaunchTarget.hwnd, true)
+                void onReconcile(relaunchTarget.pid, relaunchTarget.hwnd, {
+                  relaunchIfUnavailable: true,
+                })
               }
             >
               XG5000에서 작업 복사본 다시 열어 복구
             </button>
+          )}
+          {hasCurrentHashMismatch && relaunchAvailable && relaunchTarget && (
+            <div className="change-recovery-restore" role="alert">
+              <p>
+                현재 작업 복사본 해시가 이 거래가 검증한 원본과 다릅니다. 이는
+                이전 네이티브 오류와 별개의 현재 복구 차단 사유입니다.
+              </p>
+              <dl className="change-recovery-evidence">
+                <div>
+                  <dt>현재 파일</dt>
+                  <dd><code>{shortHash(currentWorkspaceHash!)}</code></dd>
+                </div>
+                <div>
+                  <dt>검증된 거래 백업</dt>
+                  <dd><code>{shortHash(transaction.targetIdentity.artifactHash)}</code></dd>
+                </div>
+              </dl>
+              <label className="change-recovery-confirm">
+                <input
+                  type="checkbox"
+                  checked={restoreConfirmed}
+                  disabled={busy || instancesLoading}
+                  onChange={(event) =>
+                    setConfirmedRestoreReviewKey(
+                      event.target.checked ? restoreReviewKey : null,
+                    )
+                  }
+                />
+                <span>
+                  현재 파일 전체를 MCP 보존 증거로 먼저 저장한 뒤, 검증된 거래
+                  백업으로만 복원하고 실제 XG5000 재열기 검증을 요청합니다.
+                </span>
+              </label>
+              <button
+                className="button danger-button"
+                type="button"
+                disabled={busy || instancesLoading || !restoreConfirmed}
+                onClick={() =>
+                  void onReconcile(relaunchTarget.pid, relaunchTarget.hwnd, {
+                    relaunchIfUnavailable: true,
+                    restoreVerifiedBackup: true,
+                    expectedCurrentProjectHash: currentWorkspaceHash!,
+                  })
+                }
+              >
+                검토한 백업 복원 후 XG5000 복구 검증
+              </button>
+              <p className="change-recovery-hold">
+                이 요청은 PLC 다운로드·온라인 쓰기·제안 변경 재적용을 포함하지
+                않습니다. 보존 위치는 성공 영수증이 기록된 뒤에만 표시됩니다.
+              </p>
+            </div>
           )}
         </form>
       )}
@@ -299,6 +399,14 @@ export function ChangeRecoveryPanel({
               <dt>프로젝트 해시</dt>
               <dd>
                 <code>{projectHash.slice(0, 16)}…</code>
+              </dd>
+            </div>
+          )}
+          {preservationRef && preservationDigest && (
+            <div>
+              <dt>현재 파일 보존 영수증</dt>
+              <dd>
+                <code>{preservationRef}</code> · <code>{shortHash(preservationDigest)}</code>
               </dd>
             </div>
           )}

@@ -133,6 +133,7 @@ HOST_RECOVERY_MCP_TOOLS = frozenset(
     {
         "change.release_terminal_lease",
         "change.transaction_lookup",
+        "change.restore_verified_quarantined_backup",
         "xg5000.attach",
         "xg5000.session_status",
     }

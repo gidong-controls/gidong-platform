@@ -2095,6 +2095,10 @@ export interface ReconcileChangeTransactionRequest {
   pid: number;
   hwnd: number;
   relaunchIfUnavailable?: boolean;
+  /** MCP restores only the exact journal-pinned backup after preserving the current file. */
+  restoreVerifiedBackup?: boolean;
+  /** Exact active working-copy SHA shown in the reviewed recovery panel. */
+  expectedCurrentProjectHash?: string;
 }
 
 export interface ChangeTransactionCreatedResponse {
@@ -2156,6 +2160,7 @@ export type HostEventType =
   | "change.verification_started"
   | "change.native_checkpoint"
   | "change.execution_finished"
+  | "change.working_copy_restored"
   | "change.reconciled"
   | "change.quarantine_reconciled"
   | "controller.connected"
