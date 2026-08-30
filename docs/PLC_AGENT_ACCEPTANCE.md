@@ -27,11 +27,13 @@ XG5000 or SSH acceptance result.
 
 The manifest includes the command-aware launch lease, absolute deadline,
 direct-LD Host orchestration, post-close quarantine, and journal-pinned backup
-restoration regressions. Run the consolidated deterministic-only command after
-all dependent component changes are present; this document does not claim that
-the current checkout's complete deterministic suite has passed. CA-01, CA-02,
-CA-04--CA-07 and CA-12 remain `NOT_RUN` without their external live receipts,
-and therefore fail-closed.
+restoration regressions. The consolidated run at `2026-08-30T23:11:09Z`, with
+Agent `5a707b0`, completed all five deterministic command groups (255 test
+executions; session `50168`, exit `0`). Its receipt is
+`C:\Users\Administrator\Downloads\workspace\controlstudio-platform-main\artifacts\plc-agent-acceptance\run-6rg7qore\receipt.json`, bound to manifest SHA-256
+`aba0b0d80046c7b9c66a6f3d0fb00cc82090564ccd565526633466e4f2640f7a`.
+CA-01, CA-02, CA-04--CA-07 and CA-12 remain `NOT_RUN` without their external
+live receipts, so that receipt's `overall_status` is still `FAIL_CLOSED`.
 
 Use `--dry-run` to validate the manifest and inspect the exact commands without
 running them. The runner never starts XG5000, requests UAC, opens a browser, or

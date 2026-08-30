@@ -67,6 +67,15 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 - Acceptance harness의 descendant-pipe fixture는 child PID를 temporary sibling에서 `os.replace`
   로 원자 게시하고 child exit 뒤 current-directory handle release를 bounded wait 하도록 고쳐,
   Windows의 빈 PID 파일/temporary cleanup retry-only race를 제거했다.
+- Agent `5a707b0`을 포함한 consolidated deterministic-only acceptance는 session `50168`에서
+  exit `0`으로 끝났다. receipt는
+  `artifacts/plc-agent-acceptance/run-6rg7qore/receipt.json` (generated
+  `2026-08-30T23:11:09Z`, manifest SHA-256
+  `aba0b0d80046c7b9c66a6f3d0fb00cc82090564ccd565526633466e4f2640f7a`)이며,
+  Agent/Host/MCP/CLI/Web 다섯 deterministic group과 255 test executions가 PASS다.
+  CA-01, CA-02, CA-04--CA-07, CA-12는 모두 `NOT_RUN`이므로 overall은 계속
+  `FAIL_CLOSED`; Browser URL policy의 PWA acceptance 미검증과 file-restore approval 대기도
+  그대로다.
 
 ## 마지막 리팩터링
 
