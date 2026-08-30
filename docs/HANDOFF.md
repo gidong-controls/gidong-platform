@@ -13,16 +13,16 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 
 ## 저장소와 브랜치
 
-- `gidong-platform`: `dev` (이 문서를 포함한 commit)
-- `gidong-agent`: `dev` @ `70df51c` (`Teach agent static workspace search limits`)
-- `gidong-plc-mcp`: `dev` @ `0188cad` (`Expose static workspace literal search`)
+- `gidong-platform`: `dev` @ `153f3e14757ba083185382fcfcf9b80e6fd87647` (local checkpoint)
+- `gidong-agent`: `dev` @ `c4bce7f15d67cc936afa3088f88547870d43ad8a` (local checkpoint)
+- `gidong-plc-mcp`: `dev` @ `80b8f70da4dda6f74f679a117c56ace3d54b3807` and
+  `24e1085` (local checkpoints)
+- 독립 XG5000 CLI는 사용자 지정 원격에 `6a78ac8a6e6bb7c41236aa32abef4f93b16bc10d`를
+  게시했다. Platform, Agent, MCP는 이 checkpoint 시점에 push하지 않았다.
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
-2026-08-16 10:20 KST에 세 저장소의 최신 `dev` push를 다시 시도했지만 GitHub 443 연결
-거부로 모두 실패했다. 이 문서 commit 기준 Platform은 `origin/dev`보다 26 commit,
-Agent는 9 commit, MCP는 9 commit
-앞서 있다. 네트워크 가능한 세션에서 세 저장소의 `git push origin dev`를
-먼저 실행한다.
+2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
+push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
 ## 현재 제품 경계
 
@@ -40,22 +40,24 @@ Agent는 9 commit, MCP는 9 commit
 
 ## 2026-08-31 PWA/native 현재 수직 상태
 
-- 실제 PWA에서 기존 project catalog와 exact location focus는 앞선 검증에서 통과했다. 448px
-  화면에서도 compact `작업 기록` 아이콘으로 기존 `MainProgram P0020→P0021` 기록을 선택해
-  exact conversation과 rev4 mission을 복원하는 경로가 실기 통과했다.
-- 최신 saved-workspace 재개는 native positional-file argument와 natural wait로 XG5000 PID
-  1424/HWND 1902836/create-time 1788113602.2889423의 exact working-copy hash를 재확인했다.
-  PWA 상태는 `controlled_launch_read_only`, `read=yes`, `strong=yes`, `offline_mutate ready`이며
-  기존 exact conversation과 rev4 mission도 자동 복원했다. catalog/focus와 fresh candidate는
-  다음 실기 단계로 남아 있으며 candidate·approval·apply 또는 PLC 기능 성공으로 표시하지 않는다.
-- 이 성공 전에 static resource `WM_COMMAND 1331`은 dispatch acceptance만 보이고 Open dialog를
-  만들지 않아 `XG5000_OPEN_DIALOG_NOT_FOUND`로 실패했다. 따라서 그 route는 기능 입증으로
-  취급하지 않으며 native worker가 production 경로에서 제거했다.
-- Host의 Windows MCP stdio Job은 explicit breakaway를 허용하도록 구성됐다. harmless Python
-  child 실제 회귀 5건은 ordinary MCP descendant의 cleanup과 explicit breakaway child의 생존을
-  확인했다. Host reload 뒤 실제 XG5000 PID 생존은 아직 실기 검증하지 않았다.
-- 위 상태는 full PLC Agent readiness나 실제 PLC 제어 성공을 뜻하지 않는다. live XG/PLC
-  acceptance는 여전히 exact target, journal, readback과 별도 실기 evidence가 있어야 한다.
+- 실제 PWA의 fresh search, hardware context, target binding, snapshot과 mission revision 5–8은
+  통과했다. offline `P0020→P0021` candidate는 실제 PWA에서 승인되어 한 번 실행을 시작했다.
+- execution은 `PLANNED` 뒤 native LD focus coordinate 오류
+  `XG5000_LD_SOURCE_NOT_VISIBLE`로 피연산자 입력 전에 실패했다. apply, diff, Program Check,
+  save, independent reopen/readback 또는 PLC 기능 성공은 아직 주장하지 않는다.
+- 관련 Host transaction은 `f6ecf557-316b-4739-adde-247813330a18`, MCP transaction은
+  `077d9ef5-c941-4607-9c1d-f0fc9af74a7d`이며, recovery check의 original-exact match는
+  확인됐지만 recovery attach/rollback/save 성공은 확인되지 않았다.
+- 05:59 KST OS 재부팅 후 이전 Host/XG5000은 종료됐고, 06:16에 normal Development launcher로
+  Host PID 5464/port 8767을 확인했다. XG5000은 현재 없다. working copy `f277…`는 이전
+  `b929…`와 static `NetworkModuleName` 하나만 다르고 ProgramData blob은 동일하지만, live
+  equivalence나 hash 재결속의 권위는 없다.
+- Browser control은 existing ControlStudio tab을 claim했고, scoped `LOCALAPPDATA`의 one-use
+  launcher handoff로 Host PID 5464를 바꾸지 않고 PWA 인증과 conversation `8b3` 복원을
+  완료했다. XG5000 재확인 inventory는 비어 있었고 recovery relaunch는 한 번만 시도됐다.
+  그것은 transaction의 verified working copy가 현재 `f277`이고 retained artifact hash가
+  `b929`라서 prelaunch에서 거부됐다. geometry/recovery resolution은 여전히 미완료이며,
+  새 XG launch나 file write는 수행하지 않았다.
 
 ## 마지막 리팩터링
 

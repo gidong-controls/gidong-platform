@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import time
@@ -14,6 +15,57 @@ assert SPEC and SPEC.loader
 HARNESS = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = HARNESS
 SPEC.loader.exec_module(HARNESS)
+
+
+def _wait_for_process_exit(pid: int, deadline: float) -> bool:
+    """Wait for a process without sending it a signal.
+
+    Windows does not implement ``kill(pid, 0)`` as a harmless liveness probe,
+    so use its process wait API there.  POSIX retains the conventional probe
+    only for this test's short-lived, self-created child process.
+    """
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        synchronize = 0x00100000
+        wait_object_0 = 0
+        wait_timeout = 0x00000102
+        wait_failed = 0xFFFFFFFF
+        error_invalid_parameter = 87
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        process_handle = kernel32.OpenProcess(synchronize, False, pid)
+        if not process_handle:
+            if ctypes.get_last_error() == error_invalid_parameter:
+                return True
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            while time.monotonic() < deadline:
+                milliseconds = max(1, min(50, int((deadline - time.monotonic()) * 1000)))
+                result = kernel32.WaitForSingleObject(process_handle, milliseconds)
+                if result == wait_object_0:
+                    return True
+                if result == wait_failed:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if result != wait_timeout:
+                    raise RuntimeError(f"unexpected WaitForSingleObject result: {result}")
+            return False
+        finally:
+            kernel32.CloseHandle(process_handle)
+
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.01)
+    return False
 
 
 class PlcAgentAcceptanceTests(unittest.TestCase):
@@ -207,16 +259,26 @@ class PlcAgentAcceptanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             artifact_dir = root / "artifacts"
+            child_pid_path = root / "background-child.pid"
+            command_cwd = root / "command-cwd"
+            command_cwd.mkdir()
+            child_cwd = str(Path(__file__).resolve().parent)
             command = {
                 "id": "inherited-handle",
                 "ca_ids": ["CA-03"],
-                "cwd": ".",
+                "cwd": "command-cwd",
                 "command": [
                     sys.executable,
                     "-c",
                     (
-                        "import subprocess, sys; "
-                        "subprocess.Popen([sys.executable, '-c', \"import time; time.sleep(3); print('late child output')\"]); "
+                        "import pathlib, subprocess, sys; "
+                        f"child_pid_path = {str(child_pid_path)!r}; "
+                        "subprocess.Popen([sys.executable, '-c', "
+                        "\"import os, pathlib, sys, time; "
+                        "os.chdir(sys.argv[2]); "
+                        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
+                        "time.sleep(0.3); print('late child output')\", "
+                        f"child_pid_path, {child_cwd!r}]); "
                         "print('parent complete')"
                     ),
                 ],
@@ -226,9 +288,12 @@ class PlcAgentAcceptanceTests(unittest.TestCase):
             receipt = HARNESS._run_command(command, root, artifact_dir, dry_run=False)
             elapsed = time.monotonic() - started
             stdout = Path(receipt["stdout"]["path"]).read_text(encoding="utf-8")
-            # The child deliberately inherited the two log files.  Let it
-            # release those Windows handles before TemporaryDirectory cleanup.
-            time.sleep(3.2)
+            deadline = time.monotonic() + 5
+            while not child_pid_path.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(child_pid_path.exists())
+            child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+            self.assertTrue(_wait_for_process_exit(child_pid, deadline), "background child did not exit")
             stdout_after_child_exit = Path(receipt["stdout"]["path"]).read_text(encoding="utf-8")
         self.assertEqual(receipt["status"], "PASS")
         self.assertEqual(receipt["returncode"], 0)
