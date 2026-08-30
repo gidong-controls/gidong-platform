@@ -339,7 +339,7 @@ export function ChangeRecoveryPanel({
               </button>
               <p className="change-recovery-hold">
                 이 요청은 PLC 다운로드·온라인 쓰기·제안 변경 재적용을 포함하지
-                않습니다. 보존 위치는 성공 영수증이 기록된 뒤에만 표시됩니다.
+                않습니다. 보존 증거 식별자는 성공 영수증이 기록된 뒤에만 표시됩니다.
               </p>
             </div>
           )}

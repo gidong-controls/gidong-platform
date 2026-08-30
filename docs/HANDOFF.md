@@ -58,6 +58,12 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   그것은 transaction의 verified working copy가 현재 `f277`이고 retained artifact hash가
   `b929`라서 prelaunch에서 거부됐다. geometry/recovery resolution은 여전히 미완료이며,
   새 XG launch나 file write는 수행하지 않았다.
+- Platform `b7d44aec0b6494701bebf74d932e2bc93683b306`은 reviewed-current hash와 transaction/
+  Host plan/native checkpoint plan을 각각 결속한 opt-in backup restore request, Host-only MCP
+  receipt validation, durable `change.working_copy_restored` event, 그리고 recovery UI의 exact
+  review tuple을 추가했다. MCP counterpart `e3e69`는 private preservation과 journal-pinned
+  exact backup restore를 소유하며 MCP regression 487건이 통과했다. PWA URL policy로
+  실제 UI/restart acceptance는 수행하지 않았고 사용자의 file-restore approval도 아직 없다.
 
 ## 마지막 리팩터링
 
