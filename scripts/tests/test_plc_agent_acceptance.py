@@ -276,7 +276,10 @@ class PlcAgentAcceptanceTests(unittest.TestCase):
                         "subprocess.Popen([sys.executable, '-c', "
                         "\"import os, pathlib, sys, time; "
                         "os.chdir(sys.argv[2]); "
-                        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
+                        "path = pathlib.Path(sys.argv[1]); "
+                        "temporary = path.with_suffix('.tmp'); "
+                        "temporary.write_text(str(os.getpid()), encoding='ascii'); "
+                        "os.replace(temporary, path); "
                         "time.sleep(0.3); print('late child output')\", "
                         f"child_pid_path, {child_cwd!r}]); "
                         "print('parent complete')"
@@ -295,6 +298,18 @@ class PlcAgentAcceptanceTests(unittest.TestCase):
             child_pid = int(child_pid_path.read_text(encoding="utf-8"))
             self.assertTrue(_wait_for_process_exit(child_pid, deadline), "background child did not exit")
             stdout_after_child_exit = Path(receipt["stdout"]["path"]).read_text(encoding="utf-8")
+            # Windows can signal the child process before its final current-
+            # directory handle has become observable as released. Keep the
+            # original exit assertion above, then wait boundedly for that
+            # release before TemporaryDirectory performs its recursive cleanup.
+            while True:
+                try:
+                    command_cwd.rmdir()
+                    break
+                except PermissionError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.01)
         self.assertEqual(receipt["status"], "PASS")
         self.assertEqual(receipt["returncode"], 0)
         self.assertLess(elapsed, 2)

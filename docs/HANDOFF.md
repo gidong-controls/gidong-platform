@@ -64,6 +64,9 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   review tuple을 추가했다. MCP counterpart `e3e69`는 private preservation과 journal-pinned
   exact backup restore를 소유하며 MCP regression 487건이 통과했다. PWA URL policy로
   실제 UI/restart acceptance는 수행하지 않았고 사용자의 file-restore approval도 아직 없다.
+- Acceptance harness의 descendant-pipe fixture는 child PID를 temporary sibling에서 `os.replace`
+  로 원자 게시하고 child exit 뒤 current-directory handle release를 bounded wait 하도록 고쳐,
+  Windows의 빈 PID 파일/temporary cleanup retry-only race를 제거했다.
 
 ## 마지막 리팩터링
 
