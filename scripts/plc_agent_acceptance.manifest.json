@@ -14,14 +14,14 @@
       "id": "host-change-execution-and-field-io",
       "ca_ids": ["CA-03", "CA-04", "CA-05", "CA-06", "CA-08", "CA-09", "CA-10"],
       "cwd": "gidong-platform/host",
-      "command": [".venv/Scripts/python.exe", "-m", "unittest", "tests.test_agent_resume_transport", "tests.test_engineering_change_mission_vertical", "tests.test_change_execution_vertical", "tests.test_field_io_evidence_projection"],
+      "command": [".venv/Scripts/python.exe", "-m", "unittest", "tests.test_agent_resume_transport", "tests.test_engineering_change_mission_vertical", "tests.test_change_execution_vertical", "tests.test_field_io_evidence_projection", "tests.test_change_recovery_relaunch", "tests.test_recovered_change_session_rebind", "tests.test_host_restart"],
       "timeout_seconds": 360
     },
     {
       "id": "mcp-boundary-and-field-io",
       "ca_ids": ["CA-05", "CA-06", "CA-08", "CA-09", "CA-10"],
       "cwd": "gidong-plc-mcp",
-      "command": [".venv/Scripts/python.exe", "-m", "unittest", "tests.test_cli_adapter", "tests.test_server_cli_boundary", "tests.test_field_io_binding"],
+      "command": [".venv/Scripts/python.exe", "-m", "unittest", "tests.test_cli_adapter", "tests.test_server_cli_boundary", "tests.test_field_io_binding", "tests.test_quarantined_backup_restore"],
       "timeout_seconds": 240
     },
     {

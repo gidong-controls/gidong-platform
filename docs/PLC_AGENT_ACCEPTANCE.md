@@ -5,8 +5,10 @@ the deterministic part of CA-01 through CA-12. It deliberately runs only
 repeatable local checks:
 
 - Agent mission resume, legacy-repair, JSON fallback, and approval-wait tests;
-- Host change-execution, durable resume, and field-I/O projection tests;
-- MCP subprocess-boundary, field-I/O binding, and independent CLI contract tests;
+- Host change-execution, durable resume, field-I/O projection, quarantined
+  working-copy recovery/rebind, and Host source-restart contract tests;
+- MCP subprocess-boundary, field-I/O binding, journal-pinned quarantined-backup
+  restoration, and independent CLI contract tests;
 - the production web build.
 
 Run it from `gidong-platform`:
@@ -23,10 +25,13 @@ has `overall_status: FAIL_CLOSED` while any live gate is missing. This is
 intentional: passing unit, integration, or web-build checks can never claim an
 XG5000 or SSH acceptance result.
 
-The current Agent, Host, MCP, independent-CLI and Web deterministic gates pass,
-including the command-aware launch lease, absolute deadline, direct-LD Host
-orchestration, and post-close quarantine cases.  CA-01, CA-02, CA-04--CA-07 and
-CA-12 still require their external live receipts and remain fail-closed.
+The manifest includes the command-aware launch lease, absolute deadline,
+direct-LD Host orchestration, post-close quarantine, and journal-pinned backup
+restoration regressions. Run the consolidated deterministic-only command after
+all dependent component changes are present; this document does not claim that
+the current checkout's complete deterministic suite has passed. CA-01, CA-02,
+CA-04--CA-07 and CA-12 remain `NOT_RUN` without their external live receipts,
+and therefore fail-closed.
 
 Use `--dry-run` to validate the manifest and inspect the exact commands without
 running them. The runner never starts XG5000, requests UAC, opens a browser, or
