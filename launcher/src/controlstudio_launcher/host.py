@@ -18,6 +18,8 @@ from .constants import (
 )
 
 LAUNCH_JOB_ENVIRONMENT_VARIABLE = "CONTROLSTUDIO_LAUNCH_JOB_NAME"
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+_JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x00000800
 
 
 class HostProcess(Protocol):
@@ -124,6 +126,11 @@ class SubprocessHostStarter:
 
         child_environment["PYTHONIOENCODING"] = "utf-8"
         job_handle, job_name = _create_windows_job()
+        try:
+            _allow_verified_ide_breakaway(job_handle)
+        except BaseException:
+            _close_windows_handle(job_handle)
+            raise
         child_environment[LAUNCH_JOB_ENVIRONMENT_VARIABLE] = job_name
         startup_log = _open_startup_log()
         integrity = _current_integrity_for_log()
@@ -207,6 +214,72 @@ def _create_windows_job() -> tuple[int, str]:
         _close_windows_handle(int(handle))
         raise FileExistsError("generated ControlStudio launch Job name already exists")
     return int(handle), job_name
+
+
+def _allow_verified_ide_breakaway(job_handle: int) -> None:
+    """Permit the trusted XG5000 launcher to leave the Host cleanup Job.
+
+    The Host/MCP tree remains in this Job for startup-failure cleanup.  Once
+    the MCP has proved an XG5000 working-copy binding, that visible IDE is a
+    separately managed engineering session: reloads must preserve its exact
+    PID/HWND/create-time identity and never close or recreate it implicitly.
+    ``project_launcher`` is the sole product path that asks for breakaway.
+    """
+
+    class _LargeInteger(ctypes.Structure):
+        _fields_ = (("quad_part", ctypes.c_longlong),)
+
+    class _IoCounters(ctypes.Structure):
+        _fields_ = (
+            ("read_operation_count", ctypes.c_ulonglong),
+            ("write_operation_count", ctypes.c_ulonglong),
+            ("other_operation_count", ctypes.c_ulonglong),
+            ("read_transfer_count", ctypes.c_ulonglong),
+            ("write_transfer_count", ctypes.c_ulonglong),
+            ("other_transfer_count", ctypes.c_ulonglong),
+        )
+
+    class _BasicLimitInformation(ctypes.Structure):
+        _fields_ = (
+            ("per_process_user_time_limit", _LargeInteger),
+            ("per_job_user_time_limit", _LargeInteger),
+            ("limit_flags", ctypes.c_uint32),
+            ("minimum_working_set_size", ctypes.c_size_t),
+            ("maximum_working_set_size", ctypes.c_size_t),
+            ("active_process_limit", ctypes.c_uint32),
+            ("affinity", ctypes.c_size_t),
+            ("priority_class", ctypes.c_uint32),
+            ("scheduling_class", ctypes.c_uint32),
+        )
+
+    class _ExtendedLimitInformation(ctypes.Structure):
+        _fields_ = (
+            ("basic_limit_information", _BasicLimitInformation),
+            ("io_info", _IoCounters),
+            ("process_memory_limit", ctypes.c_size_t),
+            ("job_memory_limit", ctypes.c_size_t),
+            ("peak_process_memory_used", ctypes.c_size_t),
+            ("peak_job_memory_used", ctypes.c_size_t),
+        )
+
+    information = _ExtendedLimitInformation()
+    information.basic_limit_information.limit_flags = _JOB_OBJECT_LIMIT_BREAKAWAY_OK
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    set_information = kernel32.SetInformationJobObject
+    set_information.argtypes = (
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+    )
+    set_information.restype = ctypes.c_int
+    if not set_information(
+        ctypes.c_void_p(job_handle),
+        _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+        ctypes.byref(information),
+        ctypes.sizeof(information),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
 
 
 def _open_startup_log():

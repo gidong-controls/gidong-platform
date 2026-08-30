@@ -244,11 +244,42 @@ health와 현재 PLC runtime이 없다. 다만 CPU가 exact `XBC-...H`이고 XML
 유일할 때에만 [LS XGB Basic Tutorial §3.1.2](https://www.ls-electric.com/upload/customer/download/b203572b-fb74-4d5a-90b1-20c2f93d5c8d/XBM_XBC_Basic_Tutorial.pdf)의
 고정 4-word P-device 슬롯 배정을 versioned profile로 결합한다. 실제 샘플의 slot 1
 `XBE-DC08A`에는 `P00040-P0007F`가 `observed`가 아닌 `documented` slot reservation으로
-결속된다. 다른 CPU family나 범위 밖 slot에는 이 규칙을 적용하지 않는다. exact
-target이나 causal path가 물리 `P` 입력·출력에 닿으면 이 slot 귀속만으로 terminal
-point와 외부 배선을 증명할 수 없으므로 변경 후보는 계속 fail-closed한다. 내부 device는
-CPU, timer instruction은 CPU와 실제 timer area처럼 해당 분석의
+결속된다. 다른 CPU family나 범위 밖 slot에는 이 규칙을 적용하지 않는다.
+
+`XBC-DN/DP64H`의 base 0/slot 0 CPU가 XML에서 정확히 관측된 경우에는 같은 vendor
+profile로 built-in `P0000–P001F` digital input과 `P0020–P003F` digital output을
+각각 channel 0–31에 결속한다. `program.change_target_analysis`는 물리 P operand의
+LD 역할(contact=input, coil=output)과 direction, module rack/base, slot, module id,
+terminal range, channel을 하나의
+`xg5000.project.field-io-binding/1.0` digest receipt로 확인한다. 범위가 없거나,
+중복되거나, channel을 계산할 수 없거나, LD 역할과 방향이 맞지 않으면 후보는
+fail-closed한다. 따라서 Agent는 임의 `P` 주소를 제안할 수 없다.
+
+이 binding은 **저장 가능한 offline LD 설계**만 허용한다. 외부 배선, field-device
+identity, module health, independent safety hardware, controller identity와 runtime
+state는 여전히 미관측이며 runtime 사용 전 별도 검증이 필요하다. force/write/download
+및 PLC 운전 권한은 이 기능으로 생기지 않으며 계속 unsupported다. 내부 device는 CPU,
+timer instruction은 CPU와 실제 timer area처럼 해당 분석의
 `required_context`만 모두 `observed`일 때 후보가 될 수 있다.
+
+동일한 경계는 structural MNE compiler(`instruction`, `batch`, `rung`, `series guard`)
+에도 적용된다. compiler는 private target 전체의 `P` operand를 `LOAD/AND/OR` 계열의
+input 또는 `OUT/SET/RST`의 output으로 분류하고, 제공된 현재
+`hardware_context_digest`의 exact terminal binding과 모두 대조한 뒤에만 candidate를
+발행한다. `M` 같은 internal device만 쓰는 target은 hardware binding 없이도 기존
+offline compiler scope에서 허용된다. P address가 있으면 digest 누락, 범위 밖, module
+중복, channel 미결정, 또는 direction 불일치 중 하나라도 candidate 발행 전에 거부한다.
+
+P가 있는 structural candidate에는 `hardware_context_digest`와 ordered
+`field_io_bindings`가 **한 쌍으로** 포함되고 candidate digest에 들어간다. Host는 이
+typed receipt가 compiler evidence와 정확히 같은지 확인한 뒤 승인 plan에 보존한다.
+`program.plan_mne_*`는 fresh private baseline으로 candidate를 다시 컴파일하고 같은
+cached hardware context에서 terminal binding을 다시 계산한다. context digest가 없어졌거나
+달라졌거나 한 terminal digest라도 달라지면 plan을 만들지 않는다. 이 binding은 durable
+MCP transaction과 `program.apply_mne_replacement` request/application receipt까지 보존되며,
+apply 시에도 동일 context가 session cache에 있어야 한다. 이는 offline project mutation의
+identity guard일 뿐 controller/field/runtime proof가 아니므로 online force, memory write,
+download는 계속 unsupported다.
 
 변경 제안 전 `program.change_target_analysis`는 cache를 사용하지 않고 현재
 프로젝트의 모든 LD 프로그램을 안정적으로 두 번씩 읽는다. 선택한 exact

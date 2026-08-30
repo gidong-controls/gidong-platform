@@ -8,6 +8,8 @@ import type {
   EngineeringProgramsResponse,
   AttachXG5000Request,
   AttachXG5000Response,
+  ReviewedNoSaveCloseRequest,
+  ReviewedNoSaveCloseResponse,
   BrowserSessionResponse,
   CancelRunResponse,
   ChangeReconciliationResponse,
@@ -28,6 +30,7 @@ import type {
   CreateKnowledgeMemoryRequest,
   HostBootstrapResponse,
   HostShutdownResponse,
+  HostRestartResponse,
   HostStatusResponse,
   ImportKnowledgeRequest,
   KnowledgeImportResult,
@@ -57,6 +60,8 @@ import type {
   ReconcileNativeProjectRequest,
   ResumeLocalWorkspaceRequest,
   ResumeEngineeringMissionRequest,
+  ReverifyBlockedEngineeringMissionStepRequest,
+  EngineeringMission,
   SaveModelSettingsRequest,
   SendMessageRequest,
   SendMessageResponse,
@@ -479,6 +484,20 @@ export class HostApiClient {
     );
   }
 
+  reverifyBlockedEngineeringMissionStep(
+    conversationId: string,
+    request: ReverifyBlockedEngineeringMissionStepRequest,
+  ): Promise<EngineeringMission> {
+    return this.request<EngineeringMission>(
+      `/api/v1/conversations/${encodeURIComponent(conversationId)}/engineering-mission/reverify-blocked-step`,
+      {
+        method: "POST",
+        body: request,
+        operationId: request.operationId,
+      },
+    );
+  }
+
   decideNativeSimulationTrial(
     nativeProjectId: string,
     request: NativeSimulationTrialDecisionRequest,
@@ -614,6 +633,15 @@ export class HostApiClient {
     });
   }
 
+  reviewedNoSaveClose(
+    request: ReviewedNoSaveCloseRequest,
+  ): Promise<ReviewedNoSaveCloseResponse> {
+    return this.request<ReviewedNoSaveCloseResponse>(
+      "/api/v1/xg5000/reviewed-no-save-close",
+      { method: "POST", body: request },
+    );
+  }
+
   traceLSController(
     request: TraceLSControllerRequest,
   ): Promise<LSControllerTrace> {
@@ -668,6 +696,18 @@ export class HostApiClient {
       `/api/v1/change-transactions/${encodeURIComponent(transactionId)}`,
       { signal },
     ).then(parseChangeTransaction);
+  }
+
+  restartHost(): Promise<HostRestartResponse> {
+    return this.request<HostRestartResponse>("/api/v1/host/restart", {
+      method: "POST",
+    });
+  }
+
+  getRestartStatus(restartReceipt: string): Promise<HostRestartResponse> {
+    return this.request<HostRestartResponse>(
+      `/api/v1/host/restart/${encodeURIComponent(restartReceipt)}`,
+    );
   }
 
   focusChangeTarget(transactionId: string): Promise<ChangeTargetFocusResponse> {

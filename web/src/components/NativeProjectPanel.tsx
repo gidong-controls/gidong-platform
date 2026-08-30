@@ -1434,6 +1434,8 @@ export function NativeProjectPanel({
     Boolean(initialNativeProjectId),
   );
   const [recoveryHwnd, setRecoveryHwnd] = useState("");
+  const [recoveryObservedProjectPath, setRecoveryObservedProjectPath] =
+    useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [operation, setOperation] = useState<NativeProjectOperation | null>(
@@ -1481,6 +1483,18 @@ export function NativeProjectPanel({
     Boolean(selectedRecoveryInstance) &&
     selectedRecoveryInstance?.pid === operation?.request.xg5000Pid &&
     selectedRecoveryInstance?.hwnd === operation?.request.xg5000Hwnd;
+  const storedRecoveryTargetPresent = instances.some(
+    (instance) =>
+      instance.pid === operation?.request.xg5000Pid &&
+      instance.hwnd === operation?.request.xg5000Hwnd,
+  );
+  const recoveryTargetIsUniqueIdleReplacement =
+    Boolean(selectedRecoveryInstance) &&
+    !storedRecoveryTargetPresent &&
+    instances.length === 1 &&
+    selectedRecoveryInstance?.title?.trim() === "XG5000";
+  const recoveryTargetCanBeProbed =
+    recoveryTargetMatchesStored || recoveryTargetIsUniqueIdleReplacement;
 
   const loadInstances = async () => {
     setInstancesLoading(true);
@@ -1871,7 +1885,7 @@ export function NativeProjectPanel({
       !operation ||
       operation.state !== "quarantined" ||
       !selectedRecoveryInstance ||
-      !recoveryTargetMatchesStored ||
+      !recoveryTargetCanBeProbed ||
       busy
     ) {
       return;
@@ -1886,6 +1900,9 @@ export function NativeProjectPanel({
           pid: selectedRecoveryInstance.pid,
           hwnd: selectedRecoveryInstance.hwnd,
           expectedProjectPath,
+          ...(recoveryObservedProjectPath.trim()
+            ? { observedProjectPath: recoveryObservedProjectPath.trim() }
+            : {}),
           ...(operation.result?.projectSha256
             ? { expectedProjectSha256: operation.result.projectSha256 }
             : {}),
@@ -2632,13 +2649,39 @@ export function NativeProjectPanel({
                 </select>
               </label>
 
+              <label>
+                <span>선택 창에 현재 열린 다른 프로젝트 파일</span>
+                <input
+                  type="text"
+                  spellCheck={false}
+                  value={recoveryObservedProjectPath}
+                  disabled={busy}
+                  placeholder="ROT 조회가 없을 때 PID의 실제 파일 사용을 확인할 .xgwx 경로"
+                  onChange={(event) =>
+                    setRecoveryObservedProjectPath(event.target.value)
+                  }
+                />
+              </label>
+              <p className="native-project-recovery-warning">
+                일반 실행된 XG5000이 Automation 정보를 제공하지 않으면, 현재 창에
+                실제로 열린 다른 프로젝트 경로를 입력해 PID의 Windows 파일 사용·제목·
+                해시를 함께 확인합니다.
+              </p>
+
               {!instancesLoading && instances.length === 0 && (
                 <p className="native-project-recovery-warning">
                   실행 중인 XG5000 창이 없습니다. 원래 작업 창을 연 뒤 목록을 다시
                   확인해 주세요.
                 </p>
               )}
-              {selectedRecoveryInstance && !recoveryTargetMatchesStored && (
+              {selectedRecoveryInstance &&
+                recoveryTargetIsUniqueIdleReplacement && (
+                  <p className="native-project-recovery-warning">
+                    저장된 XG5000은 종료됐고 유일한 빈 대체 창이 선택됐습니다. Host가
+                    원래 PID/HWND 종료와 보존된 산출물을 읽기 전용으로 확인합니다.
+                  </p>
+                )}
+              {selectedRecoveryInstance && !recoveryTargetCanBeProbed && (
                 <p className="native-project-recovery-warning">
                   선택한 PID/HWND가 저장된 생성 대상과 다릅니다. 재검사를 실행하지
                   않습니다.
@@ -2660,7 +2703,7 @@ export function NativeProjectPanel({
                   disabled={
                     busy ||
                     instancesLoading ||
-                    !recoveryTargetMatchesStored ||
+                    !recoveryTargetCanBeProbed ||
                     !expectedRecoveryProjectPath(operation)
                   }
                   onClick={() => void reconcileOperation()}

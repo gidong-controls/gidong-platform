@@ -28,6 +28,7 @@ NATIVE_SIMULATION_RECEIPT_SCHEMA = "controlstudio-native-simulation-receipt/v5"
 PREVIOUS_NATIVE_SIMULATION_RECEIPT_SCHEMA = "controlstudio-native-simulation-receipt/v4"
 LEGACY_NATIVE_SIMULATION_RECEIPT_SCHEMA = "controlstudio-native-simulation-receipt/v3"
 NATIVE_SIMULATION_TRIAL_SCHEMA = "controlstudio-native-simulation-trial/v1"
+NEW_BUILD_WORKSPACE_PROVENANCE_SCHEMA = "controlstudio-new-build-workspace-provenance/v1"
 NATIVE_BUILD_BUNDLE_PHASE = "engineered_control_program"
 NATIVE_COMPILED_PROGRAM_SCHEMA = "controlstudio-xg5000-mnemonic-program/v4"
 _INVALID_FILE_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -62,6 +63,51 @@ def _native_create_failed_before_confirmation(error: object) -> bool:
             "XG5000_ELEVATION_MISMATCH:",
             "XG5000_PROJECT_STATE_UNVERIFIED:",
         )
+    )
+
+
+def _native_create_failed_before_program_write(error: object) -> bool:
+    """Return whether the reviewed program is proven not to have been written.
+
+    ``project.create_native`` creates and initially saves the empty XG5000
+    project before entering the clipboard transaction used by
+    ``insert_il_blank``.  A clipboard snapshot failure occurs while entering
+    that transaction, before the first clipboard mutation or paste command.
+    The empty artifact must stay preserved, but it is safe to classify the
+    operation as failed and let a new operation use a fresh destination.
+    """
+
+    return "XG5000_CLIPBOARD_SNAPSHOT_FAILED:" in str(error)
+
+
+def _retired_native_target_replaced_by_idle_instance(
+    raw_instances: object,
+    *,
+    stored_pid: int,
+    stored_hwnd: int,
+    selected_pid: int,
+    selected_hwnd: int,
+) -> bool:
+    """Prove the original target is gone and its selected replacement is idle."""
+    if not isinstance(raw_instances, dict) or not isinstance(
+        raw_instances.get("instances"), list
+    ):
+        return False
+    instances = [item for item in raw_instances["instances"] if isinstance(item, dict)]
+    if any(
+        item.get("pid") == stored_pid and item.get("hwnd") == stored_hwnd
+        for item in instances
+    ):
+        return False
+    selected = [
+        item
+        for item in instances
+        if item.get("pid") == selected_pid and item.get("hwnd") == selected_hwnd
+    ]
+    return bool(
+        len(selected) == 1
+        and selected[0].get("visible") is True
+        and str(selected[0].get("title") or "").strip().casefold() == "xg5000"
     )
 
 
@@ -219,6 +265,7 @@ class NativeProjectRecoveryEvidence:
     hwnd: int
     expected_project_path: Path
     expected_project_sha256: str | None
+    observed_project_path: Path | None = None
 
 
 class NativeProjectGateway(Protocol):
@@ -550,6 +597,188 @@ def _is_canonical_uuid(value: object) -> bool:
         return str(uuid.UUID(value)) == value
     except ValueError:
         return False
+
+
+def _new_build_workspace_provenance(
+    *,
+    native_project_id: str,
+    build_bundle: dict[str, Any],
+    build_receipt: dict[str, Any],
+    project_sha256: str,
+) -> dict[str, Any]:
+    unsigned = {
+        "schema": NEW_BUILD_WORKSPACE_PROVENANCE_SCHEMA,
+        "native_project_id": _canonical_uuid(native_project_id, "native_project_id"),
+        "reviewed_plan_digest": build_bundle["reviewedPlan"]["planDigest"],
+        "build_bundle_id": build_bundle["bundleId"],
+        "build_receipt_digest": _json_digest(build_receipt),
+        "saved_project_sha256": project_sha256,
+    }
+    return {**unsigned, "receipt_digest": _json_digest(unsigned)}
+
+
+def validated_new_build_workspace_provenance(
+    operation: NativeProjectOperation,
+    workspace: object,
+    *,
+    require_capture_verification: bool = False,
+) -> dict[str, Any] | None:
+    """Return the exact native-build lineage carried by ``workspace``.
+
+    A workspace attachment is not native-build authority by itself.  This
+    verifier binds the candidate operation, reviewed plan, canonical build
+    bundle and receipt, and captured source hash before a handoff may use it.
+    ``None`` is deliberately returned for ordinary ``local_file`` workspaces.
+    """
+
+    if (
+        not isinstance(workspace, dict)
+        or workspace.get("source_kind") != "new_build"
+        or ("ok" in workspace and workspace.get("ok") is not True)
+        or ("verified" in workspace and workspace.get("verified") is not True)
+        or (
+            require_capture_verification
+            and (workspace.get("ok") is not True or workspace.get("verified") is not True)
+        )
+    ):
+        return None
+    request = operation.request
+    result = operation.result
+    reviewed_plan = request.get("reviewedPlan")
+    build_bundle = request.get("buildBundle")
+    bundle_reviewed_plan = (
+        build_bundle.get("reviewedPlan") if isinstance(build_bundle, dict) else None
+    )
+    build_receipt = result.get("buildBundleReceipt")
+    source = workspace.get("source")
+    working_copy = workspace.get("working_copy")
+    raw_provenance = workspace.get("provenance")
+    project_hash = result.get("projectSha256")
+    original_path_text = source.get("original_path") if isinstance(source, dict) else None
+    captured_path_text = source.get("captured_path") if isinstance(source, dict) else None
+    working_path_text = working_copy.get("path") if isinstance(working_copy, dict) else None
+    result_path_text = result.get("projectPath")
+    if not all(
+        isinstance(value, dict)
+        for value in (
+            reviewed_plan,
+            build_bundle,
+            bundle_reviewed_plan,
+            build_receipt,
+            source,
+            working_copy,
+            raw_provenance,
+        )
+    ):
+        return None
+    assert isinstance(reviewed_plan, dict)
+    assert isinstance(build_bundle, dict)
+    assert isinstance(bundle_reviewed_plan, dict)
+    assert isinstance(build_receipt, dict)
+    assert isinstance(source, dict)
+    assert isinstance(working_copy, dict)
+    assert isinstance(raw_provenance, dict)
+
+    bundle_id = build_bundle.get("bundleId")
+    reviewed_plan_digest = reviewed_plan.get("planDigest")
+    if (
+        not _is_canonical_uuid(operation.id)
+        or operation.operation_id != operation.id
+        or request.get("operationId") != operation.id
+        or reviewed_plan != bundle_reviewed_plan
+        or not isinstance(reviewed_plan_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", reviewed_plan_digest) is None
+        or not isinstance(bundle_id, str)
+        or re.fullmatch(r"[0-9a-f]{64}", bundle_id) is None
+        or bundle_id
+        != _json_digest({key: value for key, value in build_bundle.items() if key != "bundleId"})
+        or result.get("buildBundleId") != bundle_id
+        or result.get("reviewedPlanDigest") != reviewed_plan_digest
+        or not isinstance(project_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", project_hash) is None
+        or source.get("sha256") != project_hash
+        or source.get("original_state") != "unchanged"
+        or source.get("original_current_sha256") != project_hash
+        or working_copy.get("baseline_sha256") != project_hash
+        or not isinstance(working_copy.get("current_sha256"), str)
+        or re.fullmatch(
+            r"[0-9a-f]{64}",
+            str(working_copy.get("current_sha256")),
+        )
+        is None
+        or working_copy.get("state")
+        != ("clean" if working_copy.get("current_sha256") == project_hash else "modified")
+        or not _is_canonical_uuid(workspace.get("workspace_id"))
+        or not _is_canonical_uuid(workspace.get("revision_id"))
+        or workspace.get("vendor") != "ls"
+        or workspace.get("engineering_system") != "XG5000"
+        or not all(
+            isinstance(path_text, str) and bool(path_text.strip())
+            for path_text in (
+                original_path_text,
+                captured_path_text,
+                working_path_text,
+                result_path_text,
+            )
+        )
+    ):
+        return None
+
+    try:
+        assert isinstance(original_path_text, str)
+        assert isinstance(captured_path_text, str)
+        assert isinstance(working_path_text, str)
+        assert isinstance(result_path_text, str)
+        workspace_paths = (
+            Path(original_path_text),
+            Path(captured_path_text),
+            Path(working_path_text),
+        )
+        if any(
+            not path.is_absolute() or path.suffix.casefold() != ".xgwx" for path in workspace_paths
+        ):
+            return None
+        destination = Path(operation.destination_directory).resolve()
+        request_destination = Path(str(request.get("destinationDirectory") or "")).resolve()
+        project_name = request.get("projectName")
+        if (
+            not isinstance(project_name, str)
+            or not project_name
+            or _canonical_path(Path(original_path_text)) != _canonical_path(Path(result_path_text))
+            or _canonical_path(request_destination) != _canonical_path(destination)
+            or not _stored_creation_receipt_matches_reviewed_build(
+                result,
+                request=request,
+                operation_plan_digest=operation.plan_digest,
+                expected_path=destination / f"{project_name}.xgwx",
+                destination=destination,
+            )
+        ):
+            return None
+        expected = _new_build_workspace_provenance(
+            native_project_id=operation.id,
+            build_bundle=build_bundle,
+            build_receipt=build_receipt,
+            project_sha256=project_hash,
+        )
+    except (KeyError, OSError, TypeError, ValueError, NativeProjectPreconditionError):
+        return None
+
+    # ``LocalWorkspaceV1.model_dump()`` uses the Python field name for the one
+    # explicitly aliased schema key.  Accept exactly that representation, while
+    # rejecting additions or omissions in either form.
+    expected_keys = set(expected)
+    model_dump_keys = (expected_keys - {"schema"}) | {"receipt_schema"}
+    if set(raw_provenance) == expected_keys:
+        provenance = raw_provenance
+    elif set(raw_provenance) == model_dump_keys:
+        provenance = {
+            "schema": raw_provenance["receipt_schema"],
+            **{key: value for key, value in raw_provenance.items() if key != "receipt_schema"},
+        }
+    else:
+        return None
+    return expected if provenance == expected else None
 
 
 def _reviewed_plan_payload(spec: NativeProjectSpec) -> dict[str, Any]:
@@ -2824,6 +3053,12 @@ class NativeProjectRepository:
                 or workspace_registration.get("state") != "captured_and_bound"
                 or not isinstance(workspace, dict)
                 or not isinstance(working_copy, dict)
+                or validated_new_build_workspace_provenance(
+                    operation,
+                    workspace,
+                    require_capture_verification=True,
+                )
+                is None
             ):
                 continue
             receipt = simulation.get("receipt")
@@ -3162,9 +3397,16 @@ class NativeProjectService:
         post_create_stage = "workspace_capture"
         try:
             self._repository.checkpoint_execution(canonical.operation_id, result)
+            workspace_provenance = _new_build_workspace_provenance(
+                native_project_id=canonical.operation_id,
+                build_bundle=build_bundle,
+                build_receipt=result["buildBundleReceipt"],
+                project_sha256=result["projectSha256"],
+            )
             registration = await self._capture_workspace(
                 result["projectPath"],
                 result["projectSha256"],
+                provenance=workspace_provenance,
             )
             result["workspaceRegistration"] = registration
             self._repository.checkpoint_execution(canonical.operation_id, result)
@@ -3411,11 +3653,55 @@ class NativeProjectService:
             merged["recovery"] = merged_recovery
             return merged
 
-        if (
-            evidence.pid != expected_pid
-            or evidence.hwnd != expected_hwnd
-            or _canonical_path(supplied_path) != _canonical_path(expected_path)
-        ):
+        target_changed = evidence.pid != expected_pid or evidence.hwnd != expected_hwnd
+        path_changed = _canonical_path(supplied_path) != _canonical_path(expected_path)
+        if target_changed and not path_changed and not has_checkpoint:
+            try:
+                raw_instances = await self._gateway.call_read_tool(
+                    "xg5000.instances",
+                    {},
+                )
+                retired_target = _retired_native_target_replaced_by_idle_instance(
+                    raw_instances,
+                    stored_pid=expected_pid,
+                    stored_hwnd=expected_hwnd,
+                    selected_pid=evidence.pid,
+                    selected_hwnd=evidence.hwnd,
+                )
+                preserved_artifact = (
+                    expected_path.is_file() and not expected_path.is_symlink()
+                )
+            except (MCPToolError, OSError, TypeError, ValueError) as exc:
+                recovery_evidence["retiredTargetProbeError"] = str(exc)
+                retired_target = False
+                preserved_artifact = False
+            if retired_target and preserved_artifact:
+                recovery_evidence.update(
+                    {
+                        "retiredTargetConfirmed": True,
+                        "replacementIdleTarget": {
+                            "pid": evidence.pid,
+                            "hwnd": evidence.hwnd,
+                        },
+                        "preservedIncompleteArtifact": {
+                            "path": str(expected_path),
+                            "sha256": _sha256_file(expected_path),
+                        },
+                    }
+                )
+                return self._repository.resolve_quarantine(
+                    operation_id,
+                    state="FAILED",
+                    result=merged_recovery_result(),
+                    error_code="NATIVE_PROJECT_INCOMPLETE_ARTIFACT_PRESERVED",
+                    error_detail=(
+                        "The original XG5000 target ended without a durable build "
+                        "checkpoint. Its unverified artifact was preserved unchanged, "
+                        "and the selected replacement XG5000 window is exactly idle; "
+                        "a fresh operation may use a new destination."
+                    ),
+                )
+        if target_changed or path_changed:
             return self._repository.resolve_quarantine(
                 operation_id,
                 state="QUARANTINED",
@@ -3548,6 +3834,34 @@ class NativeProjectService:
                     raise NativeProjectEvidenceError(
                         "attach did not prove the exact project artifact"
                     )
+                if not has_checkpoint and _native_create_failed_before_program_write(
+                    origin_error_detail
+                ):
+                    recovery_evidence["session"] = session
+                    recovery_evidence["confirmedIncompleteStage"] = (
+                        "before_program_write"
+                    )
+                    recovery_evidence["programWritePerformed"] = False
+                    return self._repository.resolve_quarantine(
+                        operation_id,
+                        state="FAILED",
+                        result=merged_recovery_result(
+                            observations={
+                                "projectPath": str(expected_path),
+                                "projectSha256": actual_hash,
+                                "identityVerified": True,
+                                "programWritePerformed": False,
+                                "controllerConnected": False,
+                                "plcWritePerformed": False,
+                            }
+                        ),
+                        error_code="NATIVE_PROJECT_CONFIRMED_INCOMPLETE",
+                        error_detail=(
+                            "The exact empty project artifact is preserved, but "
+                            "clipboard setup failed before any reviewed mnemonic "
+                            "write. A new operation may use a fresh destination."
+                        ),
+                    )
                 self._gateway.bind_agent_session(session)
                 try:
                     catalog = await self._gateway.call_read_tool(
@@ -3636,13 +3950,35 @@ class NativeProjectService:
         # the allocated destination is still empty.
         try:
             destination_empty = destination.is_dir() and not any(destination.iterdir())
+            attach_arguments: dict[str, Any] = {
+                "pid": expected_pid,
+                "hwnd": expected_hwnd,
+                "access_profile": "analysis",
+            }
+            if evidence.observed_project_path is not None:
+                observed_hint = Path(evidence.observed_project_path).resolve()
+                if (
+                    observed_hint.is_symlink()
+                    or not observed_hint.is_file()
+                    or _canonical_path(observed_hint) == _canonical_path(expected_path)
+                ):
+                    raise ValueError(
+                        "observed project path must be a different regular project file"
+                    )
+                observed_hint_hash = _sha256_file(observed_hint)
+                attach_arguments.update(
+                    {
+                        "project_path": str(observed_hint),
+                        "project_hash": observed_hint_hash,
+                    }
+                )
+                recovery_evidence["suppliedObservedProject"] = {
+                    "path": str(observed_hint),
+                    "sha256": observed_hint_hash,
+                }
             attached = await self._gateway.call_read_tool(
                 "xg5000.attach",
-                {
-                    "pid": expected_pid,
-                    "hwnd": expected_hwnd,
-                    "access_profile": "analysis",
-                },
+                attach_arguments,
             )
             session = (
                 attached.get("session")
@@ -4105,6 +4441,8 @@ class NativeProjectService:
         self,
         project_path: str,
         project_hash: str,
+        *,
+        provenance: dict[str, Any],
     ) -> dict[str, Any]:
         try:
             raw = await self._gateway.call_workspace_tool(
@@ -4112,12 +4450,15 @@ class NativeProjectService:
                 {
                     "source_path": project_path,
                     "expected_source_hash": project_hash,
+                    "source_kind": "new_build",
+                    "provenance": provenance,
                 },
             )
             workspace = self._validate_workspace_capture(
                 raw,
                 project_path=Path(project_path),
                 project_hash=project_hash,
+                provenance=provenance,
             )
         except Exception as exc:  # noqa: BLE001 - capture is best-effort after proof
             return {
@@ -6096,6 +6437,7 @@ class NativeProjectService:
         *,
         project_path: Path,
         project_hash: str,
+        provenance: dict[str, Any],
     ) -> dict[str, Any]:
         if (
             not isinstance(raw, dict)
@@ -6110,7 +6452,14 @@ class NativeProjectService:
         if not isinstance(source, dict) or not isinstance(working, dict):
             raise NativeProjectEvidenceError("workspace artifact identity is incomplete")
         if (
-            _canonical_path(Path(str(source.get("original_path") or "")))
+            raw.get("source_kind") != "new_build"
+            or raw.get("provenance") != provenance
+            or provenance.get("saved_project_sha256") != project_hash
+            or provenance.get("receipt_digest")
+            != _json_digest(
+                {key: value for key, value in provenance.items() if key != "receipt_digest"}
+            )
+            or _canonical_path(Path(str(source.get("original_path") or "")))
             != _canonical_path(project_path)
             or source.get("sha256") != project_hash
             or working.get("baseline_sha256") != project_hash
@@ -6140,4 +6489,5 @@ __all__ = [
     "NativeProjectRepository",
     "NativeProjectService",
     "NativeProjectSpec",
+    "validated_new_build_workspace_provenance",
 ]

@@ -53,6 +53,8 @@ React 클라이언트는 camelCase 응답을 제공하는 `/api/v1` 제품 계�
 - `POST /api/v1/change-transactions/{transactionId}/execute`
 - `POST /api/v1/change-transactions/{transactionId}/reconcile`
 - `POST /api/v1/host/shutdown`
+- `POST /api/v1/host/restart`
+- `GET /api/v1/host/restart/{restartReceipt}`
 
 상태의 `mcp.toolCount`는 현재 서버가 등록한 공개 원자 도구 수이고
 `mcp.agentToolCount`는 모델용 **최대 allowlist** 수다. 후자는 현재 run에 실제
@@ -160,6 +162,15 @@ UI는 capability가 없다는 사실을 숨기거나 성공 상태를 추정하�
 종료됐다고 추정하지 않고 서버가 제공한 거부 이유와 작업을 취소하거나 완료를
 기다리라는 안내를 표시한다. 성공 응답을 받은 경우에만 세션 토큰을 지우고 종료
 완료 화면으로 전환한다.
+
+## 개발 Host 재시작
+
+`코드 다시 불러오기 (UAC 없음)`은 authenticated browser session과 CSRF proof로만
+`POST /api/v1/host/restart`를 요청한다. Host가 active run, mutation, native creation 또는
+ACTIVE target lease를 감지하면 `409`으로 거부한다. 성공 시 UI는 non-secret
+`restartReceipt`를 poll하고 replacement Host가 `ready`가 되면 같은 session을 유지한 채
+새로고침한다. Host-owned helper는 현재 Host가 8767을 반납할 때까지 기다린 뒤 fixed
+executable/module만 실행한다. XG5000은 이 경로에서 종료하거나 재시작하지 않는다.
 
 ## 모델 자격 증명
 

@@ -22,12 +22,19 @@ from fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 from typing_extensions import Self
 
+from .windows_mcp_transport import ControlStudioWindowsStdioTransport
+
 EXPECTED_SERVER_NAME = "xg5000-mcp-server"
 MCP_PRODUCT_CONTRACT_VERSION = "1.0"
 MCP_PRODUCT_MANIFEST_SCHEMA = "controlstudio-mcp-product-manifest/v1"
 MCP_PRODUCT_NAME = "ls-xg5000"
 MCP_PRODUCT_MANIFEST_TOOL = "controlstudio.contract_manifest"
 CONTROLLER_OBSERVATION_TTL_SECONDS = 15.0
+# Public workspace launch waits at most 120 seconds inside the CLI.  MCP owns
+# 15 additional seconds for exact-child cleanup and its failure envelope; the
+# Host transport then reserves 5 seconds to receive/decode that envelope.
+MCP_WORKSPACE_LAUNCH_OPERATION_TIMEOUT_SECONDS = 135.0
+HOST_WORKSPACE_LAUNCH_TRANSPORT_TIMEOUT_SECONDS = 140.0
 logger = logging.getLogger(__name__)
 _ALLOWED_CONTROLLER_NETWORKS = tuple(
     ipaddress.ip_network(value)
@@ -94,6 +101,8 @@ HOST_WORKSPACE_MCP_TOOLS = frozenset(
         "workspace.status",
         "workspace.compare",
         "xg5000.open_project",
+        "xg5000.resume_terminal_change_session",
+        "xg5000.reviewed_no_save_close",
     }
 )
 HOST_CHANGE_MCP_TOOLS = frozenset(
@@ -112,6 +121,7 @@ HOST_CHANGE_MCP_TOOLS = frozenset(
         "program.rollback_mne_replacement",
         "project.diff",
         "project.validate_change",
+        "project.verify_ld_operand_reopen",
         "project.commit_save",
         "project.rollback_change",
         "change.transaction_status",
@@ -124,6 +134,7 @@ HOST_RECOVERY_MCP_TOOLS = frozenset(
         "change.release_terminal_lease",
         "change.transaction_lookup",
         "xg5000.attach",
+        "xg5000.session_status",
     }
 )
 HOST_CONTROLLER_MCP_TOOLS = AGENT_CONTROLLER_MCP_TOOLS
@@ -148,6 +159,15 @@ REQUIRED_PRODUCT_MCP_TOOLS = (
     | frozenset({MCP_PRODUCT_MANIFEST_TOOL})
 )
 SESSION_IDENTITY_FIELDS = ("session_id", "pid", "hwnd", "project_path", "project_hash")
+WORKSPACE_STATIC_IDENTITY_FIELDS = (
+    "workspace_id",
+    "revision_id",
+    "source_kind",
+    "provenance_receipt_digest",
+    "source_sha256",
+    "working_path",
+    "working_sha256",
+)
 AGENT_TOOL_REQUIRED_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
     "workspace.compare": ("workspace_id",),
     "workspace.hardware_context": ("workspace_id", "revision_id"),
@@ -219,8 +239,49 @@ class MCPToolError(RuntimeError):
     """A direct, read-only MCP call failed."""
 
 
+class MCPToolRejectedError(MCPToolError):
+    """The connected MCP rejected a validly delivered tool request."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        mcp_error_payload: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.mcp_error_payload = mcp_error_payload
+
+
+def _exact_tool_error_payload(value: str) -> dict[str, Any] | None:
+    """Accept only the complete stdio ToolError envelope, never a substring."""
+
+    try:
+        payload = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"schema_version", "status", "error"}
+        or payload.get("schema_version") != "1.0"
+        or payload.get("status") != "error"
+        or not isinstance(payload.get("error"), dict)
+        or set(payload["error"]) != {"type", "message"}
+        or not isinstance(payload["error"].get("type"), str)
+        or not isinstance(payload["error"].get("message"), str)
+    ):
+        return None
+    return {
+        "schema_version": "1.0",
+        "status": "error",
+        "error": {
+            "type": payload["error"]["type"],
+            "message": payload["error"]["message"],
+        },
+    }
+
+
 class MCPTransportError(MCPToolError):
-    """The MCP transport failed after the gateway marked it unavailable."""
+    """The MCP transport is unavailable or failed during a request."""
 
 
 def _monorepo_mcp_command() -> str | None:
@@ -309,6 +370,8 @@ class MCPGateway:
         self._active_controller_endpoint: dict[str, Any] | None = None
         self._controller_observation_expires_at: float | None = None
         self._monitor_task: asyncio.Task[None] | None = None
+        self._reconnect_task: asyncio.Task[None] | None = None
+        self._stopping = False
         self._call_lock = asyncio.Lock()
         self._lifecycle_lock = asyncio.Lock()
         self._status = MCPStatus(status="stopped")
@@ -347,29 +410,47 @@ class MCPGateway:
                 "cannot bind an incomplete engineering session: " + ", ".join(missing)
             )
         identity = {field: session[field] for field in SESSION_IDENTITY_FIELDS}
-        workspace_id = session.get("workspace_id")
-        revision_id = session.get("revision_id")
-        metadata = session.get("metadata")
-        workspace_identity = (
-            metadata.get("workspace_identity") if isinstance(metadata, dict) else None
-        )
-        if not workspace_id and isinstance(workspace_identity, dict):
-            workspace_id = workspace_identity.get("workspace_id")
-        if not revision_id and isinstance(workspace_identity, dict):
-            revision_id = workspace_identity.get("revision_id")
-        if isinstance(workspace_id, str) and workspace_id:
-            identity["workspace_id"] = workspace_id
-        if isinstance(revision_id, str) and revision_id:
-            identity["revision_id"] = revision_id
+        if any(field in session for field in WORKSPACE_STATIC_IDENTITY_FIELDS):
+            identity.update(self._workspace_static_identity(session))
         self._active_session_identity = identity
 
-    def bind_agent_workspace(self, workspace_id: str, revision_id: str) -> None:
-        if not workspace_id or not revision_id:
-            raise MCPToolError("cannot bind an incomplete engineering workspace")
-        self._active_session_identity = {
-            "workspace_id": workspace_id,
-            "revision_id": revision_id,
-        }
+    def bind_agent_workspace(self, workspace: dict[str, Any]) -> None:
+        self._active_session_identity = self._workspace_static_identity(workspace)
+
+    @staticmethod
+    def _workspace_static_identity(value: dict[str, Any]) -> dict[str, Any]:
+        missing = [field for field in WORKSPACE_STATIC_IDENTITY_FIELDS if field not in value]
+        if missing:
+            raise MCPToolError(
+                "cannot bind an incomplete engineering workspace: " + ", ".join(missing)
+            )
+        identity = {field: value[field] for field in WORKSPACE_STATIC_IDENTITY_FIELDS}
+        source_kind = identity["source_kind"]
+        provenance_digest = identity["provenance_receipt_digest"]
+        hashes = (
+            provenance_digest,
+            identity["source_sha256"],
+            identity["working_sha256"],
+        )
+        if (
+            not all(
+                isinstance(identity[field], str) and identity[field]
+                for field in ("workspace_id", "revision_id", "working_path")
+            )
+            or source_kind not in {"local_file", "restored_from_controller", "new_build"}
+            or (source_kind == "local_file") != (provenance_digest is None)
+            or any(
+                value is not None
+                and (
+                    not isinstance(value, str)
+                    or len(value) != 64
+                    or any(character not in "0123456789abcdef" for character in value)
+                )
+                for value in hashes
+            )
+        ):
+            raise MCPToolError("cannot bind an invalid engineering workspace identity")
+        return identity
 
     def clear_agent_session(self) -> None:
         self._active_session_identity = None
@@ -402,6 +483,7 @@ class MCPGateway:
 
     async def start(self) -> MCPStatus:
         async with self._lifecycle_lock:
+            self._stopping = False
             if self._client is not None:
                 return self._status
 
@@ -410,10 +492,10 @@ class MCPGateway:
                 logger.info("MCP startup stage=%s", stage)
 
             startup_stage("process_initialize")
-            transport = StdioTransport(
+            transport = _mcp_stdio_transport(
                 command=self._command,
                 args=self._args,
-                env=_mcp_environment(authorization_secret=self._authorization_secret),
+                environment=_mcp_environment(authorization_secret=self._authorization_secret),
                 cwd=self._cwd,
             )
             client: Client[Any] = Client(
@@ -485,6 +567,12 @@ class MCPGateway:
             return self._status
 
     async def stop(self) -> None:
+        self._stopping = True
+        reconnect_task = self._reconnect_task
+        self._reconnect_task = None
+        if reconnect_task is not None and reconnect_task is not asyncio.current_task():
+            reconnect_task.cancel()
+            await asyncio.gather(reconnect_task, return_exceptions=True)
         async with self._lifecycle_lock:
             client = self._client
             monitor_task = self._monitor_task
@@ -536,15 +624,27 @@ class MCPGateway:
             raise MCPToolError(f"tool is not allowed in Host workspace mode: {name}")
         client = self._client
         if client is None or self._status.status != "ready":
-            raise MCPToolError("MCP is not ready")
+            raise MCPTransportError("MCP is not ready")
         try:
             async with self._call_lock:
-                result = await client.call_tool(name, dict(arguments or {}))
+                result = await client.call_tool(
+                    name,
+                    dict(arguments or {}),
+                    **(
+                        {
+                            "timeout": (
+                                HOST_WORKSPACE_LAUNCH_TRANSPORT_TIMEOUT_SECONDS
+                            )
+                        }
+                        if name == "xg5000.open_project"
+                        else {}
+                    ),
+                )
         except ToolError as exc:
             raise MCPToolError(f"{name} was rejected by MCP: {exc}") from exc
         except Exception as exc:
             self._mark_connection_lost(exc)
-            raise MCPToolError(f"{name} failed because MCP disconnected") from exc
+            raise MCPTransportError(f"{name} failed because MCP disconnected") from exc
         return self._decode_tool_result(name, result)
 
     async def call_change_tool(
@@ -718,12 +818,18 @@ class MCPGateway:
 
         client = self._client
         if client is None or self._status.status != "ready":
-            raise MCPToolError("MCP is not ready")
-        result = await self.call_agent_tool(
-            name,
-            arguments,
-            call_tool=client.call_tool,
-        )
+            raise MCPTransportError("MCP is not ready")
+        try:
+            result = await self.call_agent_tool(
+                name,
+                arguments,
+                call_tool=client.call_tool,
+            )
+        except ToolError as exc:
+            raise MCPToolRejectedError(
+                f"{name} was rejected by MCP: {exc}",
+                mcp_error_payload=_exact_tool_error_payload(str(exc)),
+            ) from exc
         return self._decode_tool_result(name, result)
 
     def _safe_arguments(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -736,6 +842,8 @@ class MCPGateway:
             return self._controller_arguments(name, safe_arguments)
         if name == "project.snapshot":
             safe_arguments.pop("workspace_id", None)
+            safe_arguments.pop("plan_kind", None)
+            safe_arguments.pop("host_transaction_id", None)
             safe_arguments["begin_change_transaction"] = False
         if name == "xg5000.attach":
             requested_profile = safe_arguments.get("access_profile")
@@ -757,7 +865,11 @@ class MCPGateway:
                     "the Host-bound XG5000 engineering session is incomplete: "
                     + ", ".join(missing)
                 )
-            protected_fields = set(SESSION_IDENTITY_FIELDS) | set(required_identity_fields)
+            protected_fields = (
+                set(SESSION_IDENTITY_FIELDS)
+                | set(WORKSPACE_STATIC_IDENTITY_FIELDS)
+                | set(required_identity_fields)
+            )
             for field in protected_fields:
                 if (
                     field in required_identity_fields
@@ -1102,6 +1214,47 @@ class MCPGateway:
             agent_tool_count=previous.agent_tool_count,
             error=f"MCP connection lost ({type(exc).__name__})",
         )
+        reconnect_task = self._reconnect_task
+        if (
+            not self._stopping
+            and (reconnect_task is None or reconnect_task.done())
+        ):
+            self._reconnect_task = asyncio.create_task(
+                self._recover_connection(),
+                name="controlstudio-mcp-reconnect",
+            )
+
+    async def _recover_connection(self) -> None:
+        """Replace one broken stdio client without restarting or re-elevating Host."""
+
+        try:
+            async with self._lifecycle_lock:
+                if self._stopping or self._status.status == "ready":
+                    return
+                client = self._client
+                monitor_task = self._monitor_task
+                self._client = None
+                self._monitor_task = None
+                self._active_session_identity = None
+                self._active_controller_endpoint = None
+                self._controller_observation_expires_at = None
+                if monitor_task is not None and monitor_task is not asyncio.current_task():
+                    monitor_task.cancel()
+                    await asyncio.gather(monitor_task, return_exceptions=True)
+                if client is not None:
+                    try:
+                        await client.__aexit__(None, None, None)
+                    except BaseException:  # noqa: BLE001 - broken transports may not close cleanly
+                        logger.warning("Broken MCP client cleanup failed during reconnect", exc_info=True)
+            if self._stopping:
+                return
+            try:
+                await self.start()
+            except MCPStartupError:
+                logger.exception("Automatic MCP reconnect failed")
+        finally:
+            if self._reconnect_task is asyncio.current_task():
+                self._reconnect_task = None
 
     async def __aenter__(self) -> Self:
         await self.start()
@@ -1115,3 +1268,12 @@ def _mcp_environment(*, authorization_secret: str) -> dict[str, str]:
     environment = dict(os.environ)
     environment["CONTROLSTUDIO_MCP_AUTHORIZATION_SECRET"] = authorization_secret
     return environment
+
+
+def _mcp_stdio_transport(
+    *, command: str, args: list[str], environment: dict[str, str], cwd: str | None
+) -> Any:
+    """Use the reviewed Job policy only for the Host's local Windows MCP child."""
+
+    transport_type = ControlStudioWindowsStdioTransport if os.name == "nt" else StdioTransport
+    return transport_type(command=command, args=args, env=environment, cwd=cwd)

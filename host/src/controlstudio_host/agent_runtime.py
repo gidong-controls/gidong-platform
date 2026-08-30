@@ -67,6 +67,28 @@ class AgentOutputContractError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class AgentRuntimeDiagnostic:
+    """Allowlisted non-output runtime failure reported by the sidecar."""
+
+    stage: str
+    exception_kind: str
+    reason_code: str
+
+
+class AgentRuntimeError(RuntimeError):
+    """A sanitized model/runtime failure with an optional stable diagnostic."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostic: AgentRuntimeDiagnostic | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.diagnostic = diagnostic
+
+
+@dataclass(frozen=True)
 class AgentRunOutput:
     content: str
     model: str

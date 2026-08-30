@@ -1,0 +1,136 @@
+# PLC engineering Agent acceptance harness
+
+`scripts/plc_agent_acceptance.manifest.json` is the single command manifest for
+the deterministic part of CA-01 through CA-12. It deliberately runs only
+repeatable local checks:
+
+- Agent mission resume, legacy-repair, JSON fallback, and approval-wait tests;
+- Host change-execution, durable resume, and field-I/O projection tests;
+- MCP subprocess-boundary, field-I/O binding, and independent CLI contract tests;
+- the production web build.
+
+Run it from `gidong-platform`:
+
+```powershell
+host\.venv\Scripts\python.exe scripts\plc_agent_acceptance.py --deterministic-only
+```
+
+The command creates `artifacts/plc-agent-acceptance/run-*/receipt.json`, plus
+bounded stdout/stderr logs for each manifest command. A deterministic-only run
+returns success only when all deterministic commands pass; that exit code does **not**
+mean live acceptance is complete. Its receipt still
+has `overall_status: FAIL_CLOSED` while any live gate is missing. This is
+intentional: passing unit, integration, or web-build checks can never claim an
+XG5000 or SSH acceptance result.
+
+The current Agent, Host, MCP, independent-CLI and Web deterministic gates pass,
+including the command-aware launch lease, absolute deadline, direct-LD Host
+orchestration, and post-close quarantine cases.  CA-01, CA-02, CA-04--CA-07 and
+CA-12 still require their external live receipts and remain fail-closed.
+
+Use `--dry-run` to validate the manifest and inspect the exact commands without
+running them. The runner never starts XG5000, requests UAC, opens a browser, or
+connects over SSH.
+
+## External live gates
+
+CA-01, CA-02, the CA-04--CA-07 approved-mutation/fresh-reopen vertical, and
+CA-12 need a separately captured live receipt. They remain `NOT_RUN`, and the
+overall result remains `FAIL_CLOSED`, until each gate receives a JSON file via:
+
+```powershell
+host\.venv\Scripts\python.exe scripts\plc_agent_acceptance.py `
+  --live-receipt CA-01=C:\evidence\ca01.json `
+  --live-receipt CA-02=C:\evidence\ca02.json `
+  --live-receipt CA-04-CA-07=C:\evidence\ca04-ca07.json `
+  --live-receipt CA-12=C:\evidence\ca12.json
+```
+
+Each supplied receipt must have schema
+`controlstudio-plc-live-gate-receipt/v1`, a matching `gate_id`, `status: PASS`,
+`captured_at`, and the exact `manifest_sha256` printed in the harness receipt.
+`captured_at` must be a timezone-aware ISO-8601 timestamp. It must also meet the gate-specific evidence contract below. Any malformed,
+stale, or mismatched receipt is `FAIL_CLOSED`; the harness does not infer
+success from a test result.
+
+| Gate | Required strict evidence |
+| --- | --- |
+| CA-01 | `first_launch_ready: true`, integer `uac_prompt_count: 1`, and integer `subsequent_prompt_count: 0` |
+| CA-02 | Exact positive PID/HWND, project path/SHA-256, program ID/name, plus verified `program.read_ld` evidence with its payload SHA-256 |
+| CA-04-CA-07 | Approval ID plus approval-plan and result SHA-256; source/reopened PID and HWND must each differ; canonically identical source/reopened project paths; project hashes before/after with final hash equal to reopened SHA-256; `saved: true`; Program Check `status: PASS` and `passed: true`; readback is either `kind: MNE_AND_LD` with before/after MNE and LD SHA-256 (at least one changed pair), or `kind: LD` with one changed before/after LD SHA-256 pair. `kind: LD` is used for a reviewed operand-only vertical change and must not invent MNE evidence. |
+| CA-12 | SSH entry ID and explicit disconnect; interactive Windows session ID plus XG5000 PID/HWND and retained handoff; preserved Host journal run ID, journal schema/SHA-256, and `host_durable_ssh_handoff_observation_v1` source assurance |
+
+Boolean and integer fields are type-checked strictly (`true` is not accepted as
+an integer). A plausible-looking JSON file that merely says `PASS` cannot
+promote a deterministic test run to live acceptance.
+
+## Narrow CA-04--CA-07 live procedure: disposable LD operand change
+
+The next live run is intentionally one offline fixture only.  Use a disposable
+backup/working copy, never the user's source project or a controller-connected
+project.  The reviewed mutation is exactly `MainProgram` LD operand `P0020` to
+`P0021`; do not substitute a different address, create a generic ladder edit,
+or infer physical I/O behavior from this proof.
+
+1. Start or retain one compatible interactive Host session.  If elevation is
+   required, approve it once for that Host lifetime; do not request UAC per
+   operation.
+2. Open the disposable copy as one user-visible attempt and record workspace
+   revision, path/hash, PID, HWND, process creation time, selected program ID,
+   and baseline LD payload digest.  If open fails or is ambiguous, stop and
+   wait for a new explicit user request before one new attempt.
+3. Render a proposal containing the exact token offset, expected `P0020`, and
+   replacement `P0021`; obtain Host approval; then apply only that approved
+   operand mutation, validate it, save, and record the authoritative hash.
+4. Invoke `project.verify_ld_operand_reopen` once.  Its standalone
+   `fresh-reopen-ld-approval-readback` command closes only the reviewed source
+   PID and opens the same saved path in a distinct PID/HWND.  Its operation
+   budget is the lesser of the requested 120 seconds and the remaining portion
+   of the adapter's single 135-second wall-clock budget minus the cleanup/JSON
+   reserve.
+5. In the fresh process, record stable `P0021` LD readback, Program Check with
+   zero errors, the unchanged saved hash, and the approval/result bindings.
+   Only the fully promoted terminal lease may be attached and committed; the
+   intermediate project-open receipt is not transaction success.
+6. Build the CA-04--CA-07 live receipt from those observations and submit it
+   to the deterministic harness command above.  A missing receipt, unchanged
+   PID/HWND, nonzero Program Check, hash mismatch, or unproved readback remains
+   `NOT_RUN`/`FAIL_CLOSED`; it is never represented as a successful mutation.
+
+After the source process is closed, any verification, attach, or commit failure
+must leave both the MCP and Host transactions quarantined.  It must not reuse
+the closed source HWND for rollback or retry silently.  Each explicit user
+request permits exactly one attempt.
+
+This acceptance is strictly offline LD/project evidence.  It does not write,
+force, download, mode-change, or otherwise control a real PLC I/O point.
+
+## CA-12 Host journal
+
+`controlstudio_host.ssh_handoff.SshInteractiveHandoffJournal` persists an
+adapter-observed SSH entry, interactive Windows session/XG5000 PID-HWND handoff,
+and the matching SSH disconnect under one Host run ID. Its
+`acceptance_draft()` produces the CA-12 evidence shape with a Host journal
+SHA-256, but its status is always `NOT_RUN`: it never claims a remote SSH live
+PASS. The module does not install, configure, start, or connect SSH.
+
+An eventual privileged SSH transport adapter and a separate interactive-session
+observer must call it with their fixed adapter identities. A real remote
+topology still has to exercise that path and supply the independently observed
+PASS receipt to this harness.
+
+## CA-01 launcher observation
+
+On Windows the Launcher writes its own observable lifecycle evidence to
+`%LOCALAPPDATA%\ControlStudio\elevation-observations.v1.json`. Each observation
+records whether the initial Host was already verified, whether Windows accepted
+an elevation relaunch, Host readiness, and the post-readiness integrity-retention
+check. An elevated child is labelled `elevated_handoff_child`, so it cannot be
+mistaken for a subsequent user launch.
+
+The Launcher cannot inspect Windows' secure UAC desktop. `elevation_relaunch_requested:
+true` therefore means only that the `RunAs` handoff was accepted, not that a
+visible prompt was counted or approved. CA-01 still needs a clean-profile,
+interactive Windows observation to establish exactly one first-launch prompt
+and zero prompts on a later retained-Host launch. CA-12 remains external until
+an SSH/session-handoff implementation produces its own evidence.

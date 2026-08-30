@@ -7,6 +7,7 @@ from urllib.parse import quote
 
 from .config import LauncherSettings
 from .constants import CANONICAL_BASE_URL
+from .elevation_receipt import ElevationReceiptStore
 from .errors import HostStartError, LauncherAlreadyRunning, UnexpectedServiceError
 from .health import HealthProbe, HealthResult, HealthState
 from .host import (
@@ -17,7 +18,11 @@ from .host import (
     write_launcher_diagnostic,
 )
 from .instance import InstanceGuard
-from .integrity import ElevationBroker, NoopElevationBroker
+from .integrity import (
+    ELEVATION_HANDOFF_ENVIRONMENT,
+    ElevationBroker,
+    NoopElevationBroker,
+)
 from .token import LaunchTokenStore
 from .ui import UiOpener
 
@@ -49,6 +54,7 @@ class ControlStudioLauncher:
         instance_guard: InstanceGuard,
         token_store: LaunchTokenStore,
         elevation_broker: ElevationBroker | None = None,
+        elevation_receipts: ElevationReceiptStore | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -59,6 +65,7 @@ class ControlStudioLauncher:
         self._instance_guard = instance_guard
         self._token_store = token_store
         self._elevation_broker = elevation_broker or NoopElevationBroker()
+        self._elevation_receipts = elevation_receipts or ElevationReceiptStore()
         self._monotonic = monotonic
         self._sleep = sleep
 
@@ -74,25 +81,65 @@ class ControlStudioLauncher:
                 and elevation_probe.payload is not None
             )
         )
-        if self._elevation_broker.relaunch_if_required(
-            verified_host=verified_host,
-            parent_opens_ui=open_ui,
-        ):
+        elevated_handoff_child = os.environ.pop(ELEVATION_HANDOFF_ENVIRONMENT, None) == "1"
+        observation = self._elevation_receipts.begin(
+            initial_host_state=elevation_probe.state.value,
+            initial_host_verified=verified_host,
+            role="elevated_handoff_child" if elevated_handoff_child else "launcher",
+        )
+        if not elevated_handoff_child:
+            os.environ[ELEVATION_HANDOFF_ENVIRONMENT] = "1"
+        try:
+            elevation_relaunch_requested = self._elevation_broker.relaunch_if_required(
+                verified_host=verified_host,
+                parent_opens_ui=open_ui,
+            )
+        except BaseException:
+            self._elevation_receipts.finish(
+                observation,
+                elevation_relaunch_requested=False,
+                host_ready=False,
+                elevated_host_retention_verified=False,
+                outcome="failed",
+            )
+            raise
+        finally:
+            if not elevated_handoff_child:
+                os.environ.pop(ELEVATION_HANDOFF_ENVIRONMENT, None)
+        if elevation_relaunch_requested:
             _take_host_only_environment()
             write_launcher_diagnostic(
                 "elevation handoff started before launcher instance lock"
             )
-            self._wait_until_ready(None)
-            launch_token = self._token_store.load()
-            if launch_token is None:
-                raise HostStartError(
-                    "elevated Host became ready but its launch session token "
-                    "is unavailable"
+            try:
+                self._wait_until_ready(None)
+                launch_token = self._token_store.load()
+                if launch_token is None:
+                    raise HostStartError(
+                        "elevated Host became ready but its launch session token "
+                        "is unavailable"
+                    )
+                self._verify_launch_token_until_ready(launch_token, None)
+                self._verify_elevated_host_retention()
+                if open_ui:
+                    self._open_elevation_handoff_under_instance_guard(launch_token)
+                self._elevation_receipts.finish(
+                    observation,
+                    elevation_relaunch_requested=True,
+                    host_ready=True,
+                    elevated_host_retention_verified=True,
+                    outcome="ready",
                 )
-            self._verify_launch_token_until_ready(launch_token, None)
-            if open_ui:
-                self._open_elevation_handoff_under_instance_guard(launch_token)
-            return
+                return
+            except Exception:
+                self._elevation_receipts.finish(
+                    observation,
+                    elevation_relaunch_requested=True,
+                    host_ready=False,
+                    elevated_host_retention_verified=False,
+                    outcome="failed",
+                )
+                raise
 
         host_only_environment = _take_host_only_environment()
 
@@ -150,6 +197,7 @@ class ControlStudioLauncher:
                     self._wait_until_ready(process)
 
                 self._verify_launch_token_until_ready(launch_token, process)
+                self._verify_elevated_host_retention()
 
                 if open_ui:
                     self._open_ui(
@@ -163,12 +211,46 @@ class ControlStudioLauncher:
                         ),
                     )
                 launch_succeeded = True
+            except BaseException:
+                self._elevation_receipts.finish(
+                    observation,
+                    elevation_relaunch_requested=False,
+                    host_ready=False,
+                    elevated_host_retention_verified=False,
+                    outcome="failed",
+                )
+                raise
+            else:
+                self._elevation_receipts.finish(
+                    observation,
+                    elevation_relaunch_requested=False,
+                    host_ready=True,
+                    elevated_host_retention_verified=True,
+                    outcome="ready",
+                )
             finally:
                 if process is not None:
                     if launch_succeeded:
                         release_process_started_by_launcher(process)
                     else:
                         stop_process_started_by_launcher(process)
+
+    def _verify_elevated_host_retention(self) -> None:
+        """Re-check the live listener after readiness without requesting UAC.
+
+        On Windows this asks the broker to compare the running Host token to
+        the XG5000-required integrity level. A compliant verified host returns
+        false; any inadequate/ambiguous listener fails closed before a receipt
+        can describe it as retained.
+        """
+
+        if self._elevation_broker.relaunch_if_required(
+            verified_host=True,
+            parent_opens_ui=False,
+        ):
+            raise UnexpectedServiceError(
+                "ControlStudio unexpectedly requested elevation while verifying a ready Host"
+            )
 
     def _open_elevation_handoff_under_instance_guard(
         self,
@@ -196,10 +278,44 @@ class ControlStudioLauncher:
             return
 
         handoff = self._health_probe.issue_browser_handoff(launch_token)
-        if not handoff.issued or handoff.ticket is None:
+        if (
+            not handoff.issued
+            or handoff.ticket is None
+            or handoff.readiness_receipt is None
+        ):
             raise UnexpectedServiceError(handoff.detail)
         self._ui_opener.open(
             f"{CANONICAL_BASE_URL}/#handoff_ticket={quote(handoff.ticket, safe='')}"
+        )
+        self._wait_for_browser_bootstrap(launch_token, handoff.readiness_receipt)
+
+    def _wait_for_browser_bootstrap(
+        self,
+        launch_token: str,
+        readiness_receipt: str,
+    ) -> None:
+        """Verify the Host-observed bootstrap, not Chromium's visual surface."""
+
+        deadline = self._monotonic() + self._settings.startup_timeout_seconds
+        last_detail = "browser bootstrap has not answered yet"
+        while self._monotonic() < deadline:
+            readiness = self._health_probe.probe_browser_readiness(
+                launch_token,
+                readiness_receipt,
+            )
+            if readiness.ready:
+                return
+            if not readiness.retryable:
+                raise UnexpectedServiceError(readiness.detail)
+            last_detail = readiness.detail
+            self._sleep(self._settings.poll_interval_seconds)
+        write_launcher_diagnostic(
+            "browser bootstrap readiness timeout "
+            f"seconds={self._settings.startup_timeout_seconds:g} detail={last_detail!r}"
+        )
+        raise HostStartError(
+            "ControlStudio browser did not complete its authenticated bootstrap within "
+            f"{self._settings.startup_timeout_seconds:g} seconds ({last_detail})"
         )
 
     def _wait_until_ready(self, process: HostProcess | None) -> None:

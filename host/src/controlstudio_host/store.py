@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from .agent_runtime import MAX_ENGINEERING_AUTONOMOUS_CYCLES
+from .api_models import canonical_engineering_mission_snapshot
+from .change_outcome import change_outcome_evidence, change_outcome_projection
 from .models import (
     ApprovalDecision,
     ChangeApproval,
@@ -694,6 +696,109 @@ MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
             """
             CREATE INDEX idx_engineering_agent_checkpoints_target
             ON engineering_agent_checkpoints(workspace_id, revision_id, updated_at)
+            """,
+        ),
+    ),
+    (
+        20,
+        "bind_engineering_mission_change_transaction",
+        (
+            """
+            ALTER TABLE engineering_missions
+            ADD COLUMN change_transaction_id TEXT
+                REFERENCES change_transactions(id) ON DELETE RESTRICT
+            """,
+            """
+            UPDATE engineering_missions
+            SET change_transaction_id = (
+                SELECT MIN(candidate.id)
+                FROM change_transactions AS candidate
+                WHERE candidate.conversation_id = engineering_missions.conversation_id
+                  AND candidate.run_id = engineering_missions.updated_by_run_id
+            )
+            WHERE json_extract(snapshot_json, '$.status') = 'waiting_for_approval'
+              AND (
+                  SELECT COUNT(*)
+                  FROM change_transactions AS candidate
+                  WHERE candidate.conversation_id = engineering_missions.conversation_id
+                    AND candidate.run_id = engineering_missions.updated_by_run_id
+              ) = 1
+            """,
+            """
+            CREATE INDEX idx_engineering_missions_change_transaction
+            ON engineering_missions(change_transaction_id)
+            """,
+        ),
+    ),
+    (
+        21,
+        "recover_legacy_engineering_mission_change_binding",
+        (
+            """
+            UPDATE engineering_missions
+            SET change_transaction_id = (
+                SELECT MIN(candidate.id)
+                FROM change_transactions AS candidate
+                WHERE candidate.conversation_id = engineering_missions.conversation_id
+                  AND json_extract(candidate.target_identity_json, '$.workspace_id')
+                      = engineering_missions.workspace_id
+                  AND json_extract(candidate.target_identity_json, '$.revision_id')
+                      = engineering_missions.revision_id
+                  AND (
+                      (
+                          candidate.state = 'PENDING_APPROVAL'
+                          AND julianday(candidate.approval_expires_at) > julianday('now')
+                      )
+                      OR candidate.state IN (
+                          'APPROVED', 'EXECUTING', 'VERIFYING',
+                          'OBSERVING', 'QUARANTINED'
+                      )
+                  )
+            )
+            WHERE change_transaction_id IS NULL
+              AND json_extract(snapshot_json, '$.status') = 'waiting_for_approval'
+              AND (
+                  SELECT COUNT(*)
+                  FROM change_transactions AS candidate
+                  WHERE candidate.conversation_id = engineering_missions.conversation_id
+                    AND json_extract(candidate.target_identity_json, '$.workspace_id')
+                        = engineering_missions.workspace_id
+                    AND json_extract(candidate.target_identity_json, '$.revision_id')
+                        = engineering_missions.revision_id
+                    AND (
+                        (
+                            candidate.state = 'PENDING_APPROVAL'
+                            AND julianday(candidate.approval_expires_at) > julianday('now')
+                        )
+                        OR candidate.state IN (
+                            'APPROVED', 'EXECUTING', 'VERIFYING',
+                            'OBSERVING', 'QUARANTINED'
+                        )
+                    )
+              ) = 1
+            """,
+            """
+            UPDATE engineering_missions
+            SET change_transaction_id = (
+                SELECT MIN(candidate.id)
+                FROM change_transactions AS candidate
+                WHERE candidate.conversation_id = engineering_missions.conversation_id
+                  AND json_extract(candidate.target_identity_json, '$.workspace_id')
+                      = engineering_missions.workspace_id
+                  AND json_extract(candidate.target_identity_json, '$.revision_id')
+                      = engineering_missions.revision_id
+            )
+            WHERE change_transaction_id IS NULL
+              AND json_extract(snapshot_json, '$.status') = 'waiting_for_approval'
+              AND (
+                  SELECT COUNT(*)
+                  FROM change_transactions AS candidate
+                  WHERE candidate.conversation_id = engineering_missions.conversation_id
+                    AND json_extract(candidate.target_identity_json, '$.workspace_id')
+                        = engineering_missions.workspace_id
+                    AND json_extract(candidate.target_identity_json, '$.revision_id')
+                        = engineering_missions.revision_id
+              ) = 1
             """,
         ),
     ),
@@ -1701,6 +1806,332 @@ class HostStore:
             ).fetchone()
         return self._engineering_agent_checkpoint_from_row(row) if row is not None else None
 
+    def reverify_blocked_engineering_mission_step(
+        self,
+        *,
+        conversation_id: str,
+        operation_id: str,
+        completed_report: bool = False,
+    ) -> tuple[EngineeringMission, bool]:
+        """Explicitly reopen one blocked step or one completed final report.
+
+        The transition is intentionally narrow: completed steps and every
+        evidence reference remain immutable, while only the selected blocked
+        step's blocker outcome is cleared.  The existing Agent checkpoint keeps
+        its messages/cycle and is re-digested solely for the new mission digest.
+        """
+
+        timestamp = _utc_now()
+        event_type = (
+            "mission.completed_report_reverified"
+            if completed_report
+            else "mission.blocked_step_reverified"
+        )
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                prior_event = connection.execute(
+                    """
+                    SELECT conversation_id FROM events
+                    WHERE event_type = ?
+                      AND json_extract(payload_json, '$.operationId') = ?
+                    ORDER BY sequence ASC LIMIT 1
+                    """,
+                    (event_type, operation_id),
+                ).fetchone()
+                if prior_event is not None:
+                    if prior_event["conversation_id"] != conversation_id:
+                        raise EngineeringMissionConflict(
+                            "operationId belongs to another conversation"
+                        )
+                    row = connection.execute(
+                        "SELECT * FROM engineering_missions WHERE conversation_id = ?",
+                        (conversation_id,),
+                    ).fetchone()
+                    if row is None:
+                        raise EngineeringMissionConflict("mission conversation was not found")
+                    connection.rollback()
+                    return self._engineering_mission_from_row(row), False
+
+                row = connection.execute(
+                    "SELECT * FROM engineering_missions WHERE conversation_id = ?",
+                    (conversation_id,),
+                ).fetchone()
+                if row is None:
+                    raise EngineeringMissionConflict("conversation has no durable engineering mission")
+                snapshot = _json_load(str(row["snapshot_json"]))
+                expected_status = "completed" if completed_report else "blocked"
+                if snapshot.get("status") != expected_status:
+                    raise EngineeringMissionConflict(
+                        "the engineering mission is not in the requested reverify state"
+                    )
+                try:
+                    snapshot, previous_canonical_digest = (
+                        canonical_engineering_mission_snapshot(snapshot)
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise EngineeringMissionConflict(
+                        "stored engineering mission is invalid"
+                    ) from exc
+                steps = snapshot.get("steps")
+                if not isinstance(steps, list) or not steps:
+                    raise EngineeringMissionConflict("stored engineering mission steps are invalid")
+                selected_step: dict[str, Any] | None
+                if completed_report:
+                    final_step = steps[-1] if isinstance(steps[-1], dict) else None
+                    final_title = str(final_step.get("title") or "") if final_step else ""
+                    selected_step = (
+                        final_step
+                        if final_step is not None
+                        and final_step.get("status") == "completed"
+                        and not final_step.get("evidenceRefs")
+                        and (
+                            "최종" in final_title and "보고" in final_title
+                            or "final" in final_title.casefold()
+                            and "report" in final_title.casefold()
+                        )
+                        else None
+                    )
+                else:
+                    selected_step = next(
+                        (
+                            step
+                            for step in steps
+                            if isinstance(step, dict) and step.get("status") == "blocked"
+                        ),
+                        None,
+                    )
+                    if selected_step is None:
+                        selected_step = next(
+                            (
+                                step
+                                for step in steps
+                                if isinstance(step, dict)
+                                and step.get("status") != "completed"
+                            ),
+                            None,
+                        )
+                if (
+                    selected_step is None
+                    or not isinstance(selected_step.get("stepId"), str)
+                    or not selected_step["stepId"]
+                ):
+                    raise EngineeringMissionConflict("mission has no reverifyable step")
+
+                previous_digest = str(row["digest"])
+                if previous_canonical_digest != previous_digest:
+                    raise EngineeringMissionConflict("stored engineering mission digest does not match")
+                selected_step_id = selected_step["stepId"]
+                selected_step["status"] = "active"
+                # Keep its existing evidence (for example, a successful read)
+                # because the false-negative is the blocker interpretation, not
+                # evidence invalidation.  Only that blocker outcome is cleared.
+                selected_step["outcome"] = None
+                snapshot["status"] = "active"
+                snapshot["activeStepId"] = selected_step_id
+                snapshot["blockingQuestions"] = []
+                snapshot["nextAction"] = (
+                    "Re-render the explicitly reopened completed final report from retained evidence."
+                    if completed_report
+                    else "Re-verify the explicitly reopened blocked step."
+                )
+                snapshot["stopReason"] = "continuing"
+                snapshot, digest = canonical_engineering_mission_snapshot(snapshot)
+                canonical_snapshot = _json_dump(snapshot)
+
+                checkpoint_row = connection.execute(
+                    "SELECT * FROM engineering_agent_checkpoints WHERE conversation_id = ?",
+                    (conversation_id,),
+                ).fetchone()
+                if checkpoint_row is None:
+                    raise EngineeringMissionConflict("mission has no compatible Agent checkpoint")
+                checkpoint = _json_load(str(checkpoint_row["checkpoint_json"]))
+                if (
+                    not isinstance(checkpoint, dict)
+                    or checkpoint.get("schemaVersion") != "1"
+                    or checkpoint.get("missionDigest") != previous_digest
+                    or not isinstance(checkpoint.get("cycle"), int)
+                    or not isinstance(checkpoint.get("messages"), list)
+                ):
+                    raise EngineeringMissionConflict("stored Agent checkpoint is incompatible")
+                checkpoint["missionDigest"] = digest
+                checkpoint_json = _json_dump(checkpoint)
+                checkpoint_digest = hashlib.sha256(checkpoint_json.encode("utf-8")).hexdigest()
+                next_revision = int(row["revision"]) + 1
+                connection.execute(
+                    """
+                    UPDATE engineering_missions
+                    SET revision = ?, snapshot_json = ?, digest = ?, updated_at = ?
+                    WHERE conversation_id = ? AND revision = ? AND digest = ?
+                    """,
+                    (
+                        next_revision,
+                        canonical_snapshot,
+                        digest,
+                        timestamp,
+                        conversation_id,
+                        int(row["revision"]),
+                        previous_digest,
+                    ),
+                )
+                connection.execute(
+                    """
+                    UPDATE engineering_agent_checkpoints
+                    SET mission_digest = ?, checkpoint_json = ?, digest = ?, updated_at = ?
+                    WHERE conversation_id = ?
+                    """,
+                    (digest, checkpoint_json, checkpoint_digest, timestamp, conversation_id),
+                )
+                self._insert_event(
+                    connection,
+                    conversation_id=conversation_id,
+                    event_type=event_type,
+                    payload={
+                        "conversationId": conversation_id,
+                        "operationId": operation_id,
+                        "previousRevision": int(row["revision"]),
+                        "revision": next_revision,
+                        "previousDigest": previous_digest,
+                        "digest": digest,
+                        "stepId": selected_step_id,
+                        "automaticRetry": False,
+                    },
+                )
+                updated = connection.execute(
+                    "SELECT * FROM engineering_missions WHERE conversation_id = ?",
+                    (conversation_id,),
+                ).fetchone()
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        assert updated is not None
+        return self._engineering_mission_from_row(updated), True
+
+    def repair_buggy_reverified_engineering_mission_digests(self) -> int:
+        """Repair only the short-lived reverify null-field digest defect.
+
+        The repair is deliberately bounded to a mission whose most recent
+        mission event is the affected explicit reverify event and whose row and
+        checkpoint all still agree on the same non-canonical digest.  It never
+        changes a mission snapshot, revision, evidence, cycle, or messages.
+        """
+
+        timestamp = _utc_now()
+        repaired = 0
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                candidates = connection.execute(
+                    """
+                    SELECT mission.*,
+                           checkpoint.mission_digest AS checkpoint_mission_digest,
+                           checkpoint.checkpoint_json,
+                           checkpoint.digest AS checkpoint_digest
+                    FROM engineering_missions AS mission
+                    JOIN engineering_agent_checkpoints AS checkpoint
+                      ON checkpoint.conversation_id = mission.conversation_id
+                    WHERE mission.snapshot_json LIKE '%\"outcome\":null%'
+                    """
+                ).fetchall()
+                for row in candidates:
+                    latest_event = connection.execute(
+                        """
+                        SELECT event_type, payload_json FROM events
+                        WHERE conversation_id = ?
+                        ORDER BY sequence DESC LIMIT 1
+                        """,
+                        (row["conversation_id"],),
+                    ).fetchone()
+                    if (
+                        latest_event is None
+                        or latest_event["event_type"]
+                        != "mission.blocked_step_reverified"
+                    ):
+                        continue
+                    try:
+                        snapshot, canonical_digest = canonical_engineering_mission_snapshot(
+                            _json_load(str(row["snapshot_json"]))
+                        )
+                        checkpoint = _json_load(str(row["checkpoint_json"]))
+                    except (TypeError, ValueError):
+                        continue
+                    old_digest = str(row["digest"])
+                    if (
+                        old_digest == canonical_digest
+                        or str(row["checkpoint_mission_digest"]) != old_digest
+                        or checkpoint.get("missionDigest") != old_digest
+                        or hashlib.sha256(
+                            _json_dump(checkpoint).encode("utf-8")
+                        ).hexdigest()
+                        != str(row["checkpoint_digest"])
+                        or not isinstance(checkpoint.get("cycle"), int)
+                        or not isinstance(checkpoint.get("messages"), list)
+                    ):
+                        continue
+                    # The old value must be exactly the historic raw JSON hash;
+                    # otherwise this is not the known defect and must fail closed.
+                    raw_snapshot = _json_load(str(row["snapshot_json"]))
+                    if hashlib.sha256(_json_dump(raw_snapshot).encode("utf-8")).hexdigest() != old_digest:
+                        continue
+                    checkpoint["missionDigest"] = canonical_digest
+                    checkpoint_json = _json_dump(checkpoint)
+                    checkpoint_digest = hashlib.sha256(
+                        checkpoint_json.encode("utf-8")
+                    ).hexdigest()
+                    snapshot_json = _json_dump(snapshot)
+                    mission_updated = connection.execute(
+                        """
+                        UPDATE engineering_missions
+                        SET snapshot_json = ?, digest = ?, updated_at = ?
+                        WHERE conversation_id = ? AND revision = ? AND digest = ?
+                        """,
+                        (
+                            snapshot_json,
+                            canonical_digest,
+                            timestamp,
+                            row["conversation_id"],
+                            row["revision"],
+                            old_digest,
+                        ),
+                    ).rowcount
+                    checkpoint_updated = connection.execute(
+                        """
+                        UPDATE engineering_agent_checkpoints
+                        SET mission_digest = ?, checkpoint_json = ?, digest = ?, updated_at = ?
+                        WHERE conversation_id = ? AND mission_digest = ?
+                        """,
+                        (
+                            canonical_digest,
+                            checkpoint_json,
+                            checkpoint_digest,
+                            timestamp,
+                            row["conversation_id"],
+                            old_digest,
+                        ),
+                    ).rowcount
+                    if mission_updated != 1 or checkpoint_updated != 1:
+                        raise EngineeringMissionConflict(
+                            "reverify mission digest repair conflicted"
+                        )
+                    self._insert_event(
+                        connection,
+                        conversation_id=str(row["conversation_id"]),
+                        event_type="mission.recovery_digest_repaired",
+                        payload={
+                            "conversationId": row["conversation_id"],
+                            "revision": row["revision"],
+                            "previousDigest": old_digest,
+                            "digest": canonical_digest,
+                        },
+                    )
+                    repaired += 1
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return repaired
+
     def checkpoint_engineering_mission(
         self,
         *,
@@ -1712,6 +2143,8 @@ class HostStore:
         digest: str,
         agent_checkpoint: dict[str, Any],
         agent_checkpoint_digest: str,
+        change_transaction_id: str | None = None,
+        supplemental_evidence: dict[str, Any] | None = None,
         final_message_content: str | None = None,
         final_message_metadata: dict[str, Any] | None = None,
     ) -> tuple[EngineeringMission, Message | None]:
@@ -1734,8 +2167,13 @@ class HostStore:
             raise EngineeringMissionConflict(
                 "responding mission checkpoint requires its atomic final message"
             )
+        try:
+            engineering_mission, actual_digest = canonical_engineering_mission_snapshot(
+                engineering_mission
+            )
+        except (TypeError, ValueError) as exc:
+            raise EngineeringMissionConflict("engineering mission checkpoint is invalid") from exc
         canonical_snapshot = _json_dump(engineering_mission)
-        actual_digest = hashlib.sha256(canonical_snapshot.encode("utf-8")).hexdigest()
         if digest != actual_digest:
             raise EngineeringMissionConflict("mission checkpoint digest does not match")
         checkpoint_json = _json_dump(agent_checkpoint)
@@ -1789,6 +2227,42 @@ class HostStore:
                 if run is None or run["conversation_id"] != conversation_id:
                     raise EngineeringMissionConflict(
                         "mission checkpoint run does not belong to the conversation"
+                    )
+                linked_change = None
+                if change_transaction_id is not None:
+                    linked_change = connection.execute(
+                        """
+                        SELECT *
+                        FROM change_transactions WHERE id = ?
+                        """,
+                        (change_transaction_id,),
+                    ).fetchone()
+                    if (
+                        linked_change is None
+                        or linked_change["conversation_id"] != conversation_id
+                    ):
+                        raise EngineeringMissionConflict(
+                            "mission change transaction does not belong to the conversation"
+                        )
+                mission_status = engineering_mission.get("status")
+                if mission_status == "waiting_for_approval":
+                    if (
+                        linked_change is None
+                        or linked_change["state"]
+                        != ChangeTransactionState.PENDING_APPROVAL.value
+                    ):
+                        raise EngineeringMissionConflict(
+                            "approval-waiting mission requires its exact pending change"
+                        )
+                elif linked_change is not None and linked_change["state"] not in {
+                    ChangeTransactionState.COMPLETED.value,
+                    ChangeTransactionState.ROLLED_BACK.value,
+                    ChangeTransactionState.FAILED.value,
+                    ChangeTransactionState.REJECTED.value,
+                    ChangeTransactionState.EXPIRED.value,
+                }:
+                    raise EngineeringMissionConflict(
+                        "non-waiting mission can retain only a terminal change outcome"
                     )
                 previous_checkpoint = connection.execute(
                     """
@@ -1864,6 +2338,58 @@ class HostStore:
                 checkpoint_refs = self._engineering_mission_evidence_refs(
                     engineering_mission
                 )
+                if supplemental_evidence is not None:
+                    if linked_change is None:
+                        raise EngineeringMissionConflict(
+                            "supplemental mission evidence requires its linked change"
+                        )
+                    expected_evidence = change_outcome_evidence(
+                        change_outcome_projection(
+                            self._change_transaction_from_row(linked_change, None)
+                        )
+                    )
+                    evidence_id = expected_evidence["evidenceId"]
+                    if supplemental_evidence != expected_evidence:
+                        raise EngineeringMissionConflict(
+                            "supplemental mission evidence differs from its linked change"
+                        )
+                    if evidence_id in checkpoint_refs:
+                        existing_evidence_rows = connection.execute(
+                            """
+                            SELECT events.* FROM events
+                            INNER JOIN runs
+                              ON runs.id = events.run_id
+                             AND runs.conversation_id = events.conversation_id
+                            WHERE events.conversation_id = ?
+                              AND events.event_type = 'evidence.added'
+                              AND json_extract(events.payload_json, '$.evidenceId') = ?
+                            ORDER BY events.sequence ASC
+                            """,
+                            (conversation_id, evidence_id),
+                        ).fetchall()
+                        if existing_evidence_rows:
+                            existing_events = [
+                                self._event_from_row(row)
+                                for row in existing_evidence_rows
+                            ]
+                            origin = existing_events[0]
+                            if origin.payload != expected_evidence or any(
+                                event.run_id != origin.run_id
+                                or event.payload != origin.payload
+                                for event in existing_events[1:]
+                            ):
+                                raise EngineeringMissionConflict(
+                                    "supplemental mission evidence id was rebound"
+                                )
+                        else:
+                            self._insert_event(
+                                connection,
+                                conversation_id=conversation_id,
+                                run_id=run_id,
+                                event_type="evidence.added",
+                                payload=expected_evidence,
+                            )
+                        current_run_refs.add(evidence_id)
                 if not checkpoint_refs.issubset(previous_refs | current_run_refs):
                     raise EngineeringMissionConflict(
                         "mission checkpoint cites evidence outside its durable history"
@@ -1875,9 +2401,10 @@ class HostStore:
                     """
                     INSERT INTO engineering_missions(
                         conversation_id, workspace_id, revision_id, revision,
-                        snapshot_json, digest, updated_by_run_id, created_at, updated_at
+                        snapshot_json, digest, updated_by_run_id,
+                        change_transaction_id, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         workspace_id = excluded.workspace_id,
                         revision_id = excluded.revision_id,
@@ -1885,6 +2412,7 @@ class HostStore:
                         snapshot_json = excluded.snapshot_json,
                         digest = excluded.digest,
                         updated_by_run_id = excluded.updated_by_run_id,
+                        change_transaction_id = excluded.change_transaction_id,
                         updated_at = excluded.updated_at
                     """,
                     (
@@ -1895,6 +2423,7 @@ class HostStore:
                         canonical_snapshot,
                         digest,
                         run_id,
+                        change_transaction_id,
                         created_at,
                         timestamp,
                     ),
@@ -2596,6 +3125,67 @@ class HostStore:
                 (conversation_id, run_id),
             ).fetchall()
         return [self._event_from_row(row) for row in rows]
+
+    def resolve_conversation_evidence(
+        self,
+        *,
+        conversation_id: str,
+        evidence_ids: set[str],
+        require_all: bool = True,
+    ) -> dict[str, StoredEvent]:
+        """Resolve exact durable evidence already bound to one conversation.
+
+        Repeated journal rows are accepted only when their origin and payload are
+        identical.  A missing or rebound id makes the durable mission unusable
+        instead of silently turning an old citation into a different fact.
+        """
+
+        if not evidence_ids:
+            return {}
+        resolved: dict[str, StoredEvent] = {}
+        ordered_ids = sorted(evidence_ids)
+        with self._connection() as connection:
+            for offset in range(0, len(ordered_ids), 500):
+                batch = ordered_ids[offset : offset + 500]
+                placeholders = ", ".join("?" for _ in batch)
+                rows = connection.execute(
+                    f"""
+                    SELECT events.* FROM events
+                    INNER JOIN runs
+                      ON runs.id = events.run_id
+                     AND runs.conversation_id = events.conversation_id
+                    WHERE events.conversation_id = ?
+                      AND events.event_type = 'evidence.added'
+                      AND json_extract(events.payload_json, '$.evidenceId')
+                          IN ({placeholders})
+                    ORDER BY events.sequence ASC
+                    """,
+                    [conversation_id, *batch],
+                ).fetchall()
+                for row in rows:
+                    event = self._event_from_row(row)
+                    evidence_id = event.payload.get("evidenceId")
+                    if not isinstance(evidence_id, str) or evidence_id not in evidence_ids:
+                        continue
+                    if not isinstance(event.run_id, str) or not event.run_id:
+                        raise EngineeringMissionConflict(
+                            "durable mission evidence has no originating run"
+                        )
+                    previous = resolved.get(evidence_id)
+                    if previous is not None and (
+                        previous.run_id != event.run_id
+                        or previous.payload != event.payload
+                    ):
+                        raise EngineeringMissionConflict(
+                            "durable mission evidence id was rebound"
+                        )
+                    resolved[evidence_id] = event
+        missing = sorted(evidence_ids.difference(resolved))
+        if require_all and missing:
+            raise EngineeringMissionConflict(
+                "durable mission evidence is missing: " + ", ".join(missing)
+            )
+        return resolved
 
     def latest_event_sequence(self) -> int:
         with self._connection() as connection:
@@ -4574,6 +5164,7 @@ class HostStore:
             engineering_mission=_json_load(str(row["snapshot_json"])),
             digest=row["digest"],
             updated_by_run_id=row["updated_by_run_id"],
+            change_transaction_id=row["change_transaction_id"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

@@ -69,6 +69,49 @@
         }
       }
     },
+    "/api/launcher/readiness": {
+      "get": {
+        "summary": "Browser Handoff Readiness",
+        "description": "Consume a launcher-held receipt only after browser bootstrap succeeds.\n\nThe opaque receipt never enters the browser URL. The browser can only\nadvance it by consuming the separate one-time ticket and then making a\nsession-authenticated bootstrap request. This intentionally observes\nprotocol state, never a Chromium title, pixels, or accessibility tree.",
+        "operationId": "browser_handoff_readiness_api_launcher_readiness_get",
+        "parameters": [
+          {
+            "name": "receipt",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 32,
+              "maxLength": 512,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "title": "Receipt"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LauncherReadinessV1"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/session": {
       "post": {
         "summary": "Establish Browser Session",
@@ -306,6 +349,64 @@
         }
       }
     },
+    "/api/v1/host/restart": {
+      "post": {
+        "summary": "Request Host Restart",
+        "description": "Replace this Host after the response, without re-running UAC.\n\nThe process command and environment are owned by ``__main__``.  The\nbrowser contributes no executable, path, command, or environment data.",
+        "operationId": "request_host_restart_api_v1_host_restart_post",
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostRestartResponseV1"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/host/restart/{restart_receipt}": {
+      "get": {
+        "summary": "Host Restart Status",
+        "operationId": "host_restart_status_api_v1_host_restart__restart_receipt__get",
+        "parameters": [
+          {
+            "name": "restart_receipt",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Restart Receipt"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostRestartResponseV1"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/bootstrap": {
       "get": {
         "summary": "Bootstrap V1",
@@ -533,6 +634,56 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SendMessageResponseV1"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conversations/{conversation_id}/engineering-mission/reverify-blocked-step": {
+      "post": {
+        "summary": "Reverify Blocked Engineering Mission Step V1",
+        "description": "User-only recovery for a false-negative blocked read step.\n\nThis changes no PLC/XG5000 state and deliberately creates no Agent run.\nA later explicit user action remains necessary to continue the mission.",
+        "operationId": "reverify_blocked_engineering_mission_step_v1_api_v1_conversations__conversation_id__engineering_mission_reverify_blocked_step_post",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Conversation Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EngineeringMissionBlockedStepReverifyRequestV1"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineeringMissionV1"
                 }
               }
             }
@@ -2245,6 +2396,45 @@
           }
         }
       }
+    },
+    "/api/v1/xg5000/reviewed-no-save-close": {
+      "post": {
+        "summary": "Reviewed No Save Close V1",
+        "description": "Explicitly close one displayed target; opening another remains separate.",
+        "operationId": "reviewed_no_save_close_v1_api_v1_xg5000_reviewed_no_save_close_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewedNoSaveCloseRequestV1"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewedNoSaveCloseResponseV1"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2349,6 +2539,11 @@
               }
             ],
             "title": "Projecthash"
+          },
+          "allowUnboundExistingTarget": {
+            "type": "boolean",
+            "title": "Allowunboundexistingtarget",
+            "default": false
           }
         },
         "additionalProperties": false,
@@ -2690,9 +2885,12 @@
           },
           "verificationScope": {
             "type": "string",
-            "const": "offline_native_check_only",
+            "enum": [
+              "offline_native_check_only",
+              "offline_native_reopen"
+            ],
             "title": "Verificationscope",
-            "default": "offline_native_check_only"
+            "default": "offline_native_reopen"
           },
           "validation": {
             "items": {
@@ -2700,11 +2898,12 @@
               "enum": [
                 "structural_diff",
                 "xg5000_program_check",
-                "project_save"
+                "project_save",
+                "project_reopen"
               ]
             },
             "type": "array",
-            "maxItems": 3,
+            "maxItems": 4,
             "minItems": 3,
             "title": "Validation"
           },
@@ -6941,6 +7140,28 @@
         ],
         "title": "EngineeringLocationV2"
       },
+      "EngineeringMissionBlockedStepReverifyRequestV1": {
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 8,
+            "title": "Operationid"
+          },
+          "completedReport": {
+            "type": "boolean",
+            "title": "Completedreport",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "operationId"
+        ],
+        "title": "EngineeringMissionBlockedStepReverifyRequestV1",
+        "description": "Explicit user authority to reopen one durably blocked read step."
+      },
       "EngineeringMissionResumeRequestV1": {
         "properties": {
           "operationId": {
@@ -7159,6 +7380,18 @@
             "type": "string",
             "title": "Updatedbyrunid"
           },
+          "changeTransactionId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changetransactionid"
+          },
           "updatedAt": {
             "type": "string",
             "format": "date-time",
@@ -7215,6 +7448,18 @@
           "updatedByRunId": {
             "type": "string",
             "title": "Updatedbyrunid"
+          },
+          "changeTransactionId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changetransactionid"
           },
           "createdAt": {
             "type": "string",
@@ -7750,6 +7995,29 @@
             ],
             "title": "Processid"
           },
+          "windowHandle": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Windowhandle"
+          },
+          "processCreateTime": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processcreatetime"
+          },
           "sessionId": {
             "anyOf": [
               {
@@ -7760,6 +8028,30 @@
               }
             ],
             "title": "Sessionid"
+          },
+          "projectPath": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32768
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Projectpath"
+          },
+          "projectHash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Projecthash"
           },
           "sessionVerified": {
             "type": "boolean",
@@ -7983,6 +8275,32 @@
           "static_ui"
         ],
         "title": "HealthResponse"
+      },
+      "HostRestartResponseV1": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "scheduled",
+              "ready"
+            ],
+            "title": "Status"
+          },
+          "restartReceipt": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 32,
+            "title": "Restartreceipt"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "restartReceipt"
+        ],
+        "title": "HostRestartResponseV1",
+        "description": "Non-secret receipt for polling a Host-owned replacement."
       },
       "HostStatusV1": {
         "properties": {
@@ -9417,6 +9735,10 @@
             "type": "string",
             "title": "Handoffticket"
           },
+          "readinessReceipt": {
+            "type": "string",
+            "title": "Readinessreceipt"
+          },
           "expiresAt": {
             "type": "string",
             "format": "date-time",
@@ -9427,9 +9749,35 @@
         "type": "object",
         "required": [
           "handoffTicket",
+          "readinessReceipt",
           "expiresAt"
         ],
         "title": "LauncherHandoffV1"
+      },
+      "LauncherReadinessV1": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "ready"
+            ],
+            "title": "Status"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expiresat"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "expiresAt"
+        ],
+        "title": "LauncherReadinessV1",
+        "description": "Launcher-only observation of a single browser bootstrap handoff."
       },
       "LocalWorkingCopyV1": {
         "properties": {
@@ -9493,7 +9841,8 @@
             "type": "string",
             "enum": [
               "local_file",
-              "restored_from_controller"
+              "restored_from_controller",
+              "new_build"
             ],
             "title": "Sourcekind"
           },
@@ -9619,7 +9968,8 @@
             "type": "string",
             "enum": [
               "local_file",
-              "restored_from_controller"
+              "restored_from_controller",
+              "new_build"
             ],
             "title": "Sourcekind"
           },
@@ -9650,9 +10000,13 @@
                 "$ref": "#/components/schemas/ControllerRestoreWorkspaceProvenanceV1"
               },
               {
+                "$ref": "#/components/schemas/NewBuildWorkspaceProvenanceV1"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Provenance"
           }
         },
         "additionalProperties": false,
@@ -9816,6 +10170,64 @@
           "baselineInstructionCount"
         ],
         "title": "MneAnchorFocusV1"
+      },
+      "MneFieldIoBindingV1": {
+        "properties": {
+          "device": {
+            "type": "string",
+            "pattern": "^P[0-9A-F]+$",
+            "title": "Device"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "input",
+              "output"
+            ],
+            "title": "Direction"
+          },
+          "pointKind": {
+            "type": "string",
+            "enum": [
+              "digital_input",
+              "digital_output"
+            ],
+            "title": "Pointkind"
+          },
+          "module": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Module"
+          },
+          "channel": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Channel"
+          },
+          "terminalRange": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Terminalrange"
+          },
+          "bindingDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Bindingdigest"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "device",
+          "direction",
+          "pointKind",
+          "module",
+          "channel",
+          "terminalRange",
+          "bindingDigest"
+        ],
+        "title": "MneFieldIoBindingV1",
+        "description": "Public, typed terminal fact attached only to physical-P proposals."
       },
       "MneFullProgramBaselineBindingV2-Input": {
         "properties": {
@@ -9997,6 +10409,25 @@
             "pattern": "^[0-9a-f]{64}$",
             "title": "Targetprogramdigest"
           },
+          "hardwareContextDigest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hardwarecontextdigest"
+          },
+          "fieldIoBindings": {
+            "items": {
+              "$ref": "#/components/schemas/MneFieldIoBindingV1"
+            },
+            "type": "array",
+            "title": "Fieldiobindings"
+          },
           "candidateDigest": {
             "type": "string",
             "pattern": "^[0-9a-f]{64}$",
@@ -10089,6 +10520,25 @@
             "type": "string",
             "pattern": "^[0-9a-f]{64}$",
             "title": "Targetprogramdigest"
+          },
+          "hardwareContextDigest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hardwarecontextdigest"
+          },
+          "fieldIoBindings": {
+            "items": {
+              "$ref": "#/components/schemas/MneFieldIoBindingV1"
+            },
+            "type": "array",
+            "title": "Fieldiobindings"
           },
           "candidateDigest": {
             "type": "string",
@@ -10613,6 +11063,25 @@
             ],
             "title": "Simulationprofile"
           },
+          "hardwareContextDigest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hardwarecontextdigest"
+          },
+          "fieldIoBindings": {
+            "items": {
+              "$ref": "#/components/schemas/MneFieldIoBindingV1"
+            },
+            "type": "array",
+            "title": "Fieldiobindings"
+          },
           "candidateDigest": {
             "type": "string",
             "pattern": "^[0-9a-f]{64}$",
@@ -10851,6 +11320,25 @@
             "type": "string",
             "pattern": "^[0-9a-f]{64}$",
             "title": "Targetprogramdigest"
+          },
+          "hardwareContextDigest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hardwarecontextdigest"
+          },
+          "fieldIoBindings": {
+            "items": {
+              "$ref": "#/components/schemas/MneFieldIoBindingV1"
+            },
+            "type": "array",
+            "title": "Fieldiobindings"
           },
           "candidateDigest": {
             "type": "string",
@@ -11253,6 +11741,107 @@
           "decisionRecorded"
         ],
         "title": "NativeSimulationTrialDecisionV1"
+      },
+      "NewBuildWorkspaceProvenanceV1": {
+        "properties": {
+          "schema": {
+            "type": "string",
+            "const": "controlstudio-new-build-workspace-provenance/v1",
+            "title": "Schema"
+          },
+          "nativeProjectId": {
+            "type": "string",
+            "pattern": "^[0-9a-f-]{36}$",
+            "title": "Nativeprojectid"
+          },
+          "reviewedPlanDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Reviewedplandigest"
+          },
+          "buildBundleId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Buildbundleid"
+          },
+          "buildReceiptDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Buildreceiptdigest"
+          },
+          "savedProjectSha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Savedprojectsha256"
+          },
+          "receiptDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Receiptdigest"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "schema",
+          "nativeProjectId",
+          "reviewedPlanDigest",
+          "buildBundleId",
+          "buildReceiptDigest",
+          "savedProjectSha256",
+          "receiptDigest"
+        ],
+        "title": "NewBuildWorkspaceProvenanceV1"
+      },
+      "OfflineOperandMissionV1": {
+        "properties": {
+          "schemaVersion": {
+            "type": "string",
+            "const": "1",
+            "title": "Schemaversion",
+            "default": "1"
+          },
+          "programId": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Programid"
+          },
+          "programName": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Programname"
+          },
+          "expectedOperand": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Expectedoperand"
+          },
+          "replacementOperand": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Replacementoperand"
+          },
+          "tokenOffsetSource": {
+            "type": "string",
+            "const": "fresh_ld_evidence",
+            "title": "Tokenoffsetsource"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "programId",
+          "programName",
+          "expectedOperand",
+          "replacementOperand",
+          "tokenOffsetSource"
+        ],
+        "title": "OfflineOperandMissionV1",
+        "description": "Host-owned typed intent for one evidence-derived offline LD operand edit."
       },
       "OpenLocalWorkspaceRequestV1": {
         "properties": {
@@ -13230,6 +13819,11 @@
             "type": "integer",
             "exclusiveMinimum": 0.0,
             "title": "Hwnd"
+          },
+          "relaunchIfUnavailable": {
+            "type": "boolean",
+            "title": "Relaunchifunavailable",
+            "default": false
           }
         },
         "additionalProperties": false,
@@ -13240,7 +13834,7 @@
           "hwnd"
         ],
         "title": "ReconcileChangeTransactionRequestV1",
-        "description": "Explicit XG5000 window selected for recovery-only reattachment."
+        "description": "Explicit XG5000 target for recovery-only reconciliation."
       },
       "ReconcileNativeProjectRequestV1": {
         "properties": {
@@ -13259,6 +13853,19 @@
             "maxLength": 32768,
             "minLength": 1,
             "title": "Expectedprojectpath"
+          },
+          "observedProjectPath": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32768,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observedprojectpath"
           },
           "expectedProjectSha256": {
             "anyOf": [
@@ -13297,6 +13904,130 @@
         "additionalProperties": false,
         "type": "object",
         "title": "ResumeLocalWorkspaceRequestV1"
+      },
+      "ReviewedNoSaveCloseRequestV1": {
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Sessionid"
+          },
+          "pid": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Pid"
+          },
+          "hwnd": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Hwnd"
+          },
+          "processCreateTime": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Processcreatetime"
+          },
+          "projectPath": {
+            "type": "string",
+            "maxLength": 32768,
+            "minLength": 1,
+            "title": "Projectpath"
+          },
+          "projectHash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Projecthash"
+          },
+          "confirmNoSave": {
+            "type": "boolean",
+            "const": true,
+            "title": "Confirmnosave"
+          },
+          "timeoutSeconds": {
+            "type": "number",
+            "maximum": 60.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Timeoutseconds",
+            "default": 45
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "sessionId",
+          "pid",
+          "hwnd",
+          "processCreateTime",
+          "projectPath",
+          "projectHash",
+          "confirmNoSave"
+        ],
+        "title": "ReviewedNoSaveCloseRequestV1",
+        "description": "Explicit user-confirmed close; it never implies opening another workspace."
+      },
+      "ReviewedNoSaveCloseResponseV1": {
+        "properties": {
+          "operation": {
+            "type": "string",
+            "const": "xg5000.reviewed_no_save_close",
+            "title": "Operation"
+          },
+          "verified": {
+            "type": "boolean",
+            "const": true,
+            "title": "Verified"
+          },
+          "sourceClosed": {
+            "type": "boolean",
+            "const": true,
+            "title": "Sourceclosed"
+          },
+          "automaticWorkspaceOpen": {
+            "type": "boolean",
+            "const": false,
+            "title": "Automaticworkspaceopen"
+          },
+          "processTerminated": {
+            "type": "boolean",
+            "const": false,
+            "title": "Processterminated"
+          },
+          "reviewedBinding": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Reviewedbinding"
+          },
+          "close": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Close"
+          },
+          "receiptDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Receiptdigest"
+          },
+          "nextStep": {
+            "type": "string",
+            "const": "explicit_user_confirmed_workspace_open_required",
+            "title": "Nextstep"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "operation",
+          "verified",
+          "sourceClosed",
+          "automaticWorkspaceOpen",
+          "processTerminated",
+          "reviewedBinding",
+          "close",
+          "receiptDigest",
+          "nextStep"
+        ],
+        "title": "ReviewedNoSaveCloseResponseV1"
       },
       "ReviewedProjectPlanBindingV1": {
         "properties": {
@@ -13533,6 +14264,16 @@
             ],
             "title": "Verificationscope",
             "default": "offline_native_reopen"
+          },
+          "offlineOperandMission": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OfflineOperandMissionV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -14116,5 +14857,5 @@
       }
     }
   },
-  "x-controlstudio-contract-major": 5
+  "x-controlstudio-contract-major": 6
 }

@@ -136,6 +136,13 @@ class EngineeringMission(BaseModel):
     engineering_mission: dict[str, Any]
     digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     updated_by_run_id: str = Field(min_length=1)
+    change_transaction_id: str | None = Field(
+        default=None,
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        ),
+    )
     created_at: datetime
     updated_at: datetime
 

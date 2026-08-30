@@ -1,0 +1,77 @@
+name: Windows quality
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      CONTROLSTUDIO_RUN_XGWX_ACCEPTANCE: "0"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: "0.11.21"
+          enable-cache: true
+          cache-dependency-glob: host/uv.lock
+
+      - name: Install Host dependencies
+        run: uv sync --project host --extra dev --frozen
+
+      - name: Compile Python
+        run: >-
+          uv run --project host --extra dev --frozen python -m compileall -q
+          host/src host/tests launcher/src packages/python/controlstudio-contracts/src
+          packaging scripts
+
+      - name: Lint Python
+        run: uv run --project host --extra dev --frozen ruff check --select F,E9,I host/src host/tests
+
+      - name: Guard generated contracts
+        run: uv run --project host --extra dev --frozen python scripts/contracts/contract_guard.py
+
+      - name: Test Host
+        run: uv run --project host --extra dev --frozen python -m unittest discover -s host/tests -v
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            packages/typescript/controlstudio-contracts/package-lock.json
+            web/package-lock.json
+
+      - name: Install TypeScript contract dependencies
+        run: npm ci --prefix packages/typescript/controlstudio-contracts
+
+      - name: Check TypeScript contracts
+        run: npm run typecheck --prefix packages/typescript/controlstudio-contracts
+
+      - name: Build TypeScript contracts
+        run: npm run build --prefix packages/typescript/controlstudio-contracts
+
+      - name: Install Web dependencies
+        run: npm ci --prefix web
+
+      - name: Check Web types
+        run: npm run typecheck --prefix web
+
+      - name: Build Web
+        run: npm run build --prefix web

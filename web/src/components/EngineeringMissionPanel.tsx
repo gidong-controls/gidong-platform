@@ -9,8 +9,13 @@ export interface EngineeringMissionPanelProps {
   availableEvidenceIds: readonly string[];
   onOpenEvidence: (evidenceId: string, trigger: HTMLButtonElement) => void;
   resumeAvailable: boolean;
+  resumeUnavailableMessage?: string;
   resumeBusy: boolean;
   onResume: () => void;
+  reverifyAvailable: boolean;
+  reverifyUnavailableMessage?: string;
+  reverifyBusy: boolean;
+  onReverifyBlockedStep: () => void;
   startNewAvailable: boolean;
   startNewBusy: boolean;
   onStartNew: () => void;
@@ -36,8 +41,13 @@ export function EngineeringMissionPanel({
   availableEvidenceIds,
   onOpenEvidence,
   resumeAvailable,
+  resumeUnavailableMessage,
   resumeBusy,
   onResume,
+  reverifyAvailable,
+  reverifyUnavailableMessage,
+  reverifyBusy,
+  onReverifyBlockedStep,
   startNewAvailable,
   startNewBusy,
   onStartNew,
@@ -46,7 +56,10 @@ export function EngineeringMissionPanel({
   const completed = snapshot.steps.filter(
     (step) => step.status === "completed",
   ).length;
-  const canResume = snapshot.status === "active" && resumeAvailable;
+  const waitingForChangeOutcome = snapshot.status === "waiting_for_approval";
+  const canResume =
+    (snapshot.status === "active" || waitingForChangeOutcome) &&
+    resumeAvailable;
 
   return (
     <section className="engineering-mission" aria-label="엔지니어링 에이전트 작업 계획">
@@ -145,15 +158,43 @@ export function EngineeringMissionPanel({
             mission digest <code>{mission.digest.slice(0, 12)}…</code>
           </small>
         </div>
-        {snapshot.status === "active" && (
+        {(snapshot.status === "active" || waitingForChangeOutcome) && (
           <button
             type="button"
             className="button primary-button"
+            data-testid="engineering-mission-resume"
             disabled={!canResume || resumeBusy}
             aria-busy={resumeBusy || undefined}
+            title={
+              !canResume
+                ? resumeUnavailableMessage ||
+                  (waitingForChangeOutcome
+                    ? "변경이 완료·원복·실패·거절·만료로 확정되면 계속할 수 있습니다."
+                    : undefined)
+                : undefined
+            }
             onClick={onResume}
           >
-            {resumeBusy ? "작업 재개 중…" : "작업 계속 실행"}
+            {resumeBusy
+              ? "작업 재개 중…"
+              : waitingForChangeOutcome
+                ? canResume
+                  ? "결과 확인하고 계속"
+                  : "승인·실행·복구 결과 대기"
+                : "작업 계속 실행"}
+          </button>
+        )}
+        {snapshot.status === "blocked" && (
+          <button
+            type="button"
+            className="button primary-button"
+            data-testid="engineering-mission-reverify"
+            disabled={!reverifyAvailable || reverifyBusy}
+            aria-busy={reverifyBusy || undefined}
+            title={!reverifyAvailable ? reverifyUnavailableMessage : undefined}
+            onClick={onReverifyBlockedStep}
+          >
+            {reverifyBusy ? "차단 단계 준비 중…" : "차단 단계 다시 검증"}
           </button>
         )}
         {(snapshot.status === "completed" || snapshot.status === "blocked") && (

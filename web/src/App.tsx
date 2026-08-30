@@ -4,6 +4,12 @@ import remarkGfm from "remark-gfm";
 import { hostApi, HostApiError } from "./api/client";
 import { isChangeTransaction } from "./api/changeContracts";
 import { ControlStudioEventStream } from "./api/sse";
+import {
+  appendStreamingDraft,
+  clearStreamingDraftForRun,
+  type StreamingDraft,
+  visibleStreamingDraftText,
+} from "./streamingDraft";
 import type {
   Conversation,
   ConversationSummary,
@@ -19,6 +25,8 @@ import type {
   HostStatusResponse,
   LocalWorkspaceCompare,
   NativeProjectOperation,
+  ReviewedNoSaveCloseRequest,
+  ReviewedNoSaveCloseResponse,
   RunState,
   ServiceState,
   XG5000Instance,
@@ -169,7 +177,7 @@ const PRIMARY_CHANGE_STATES = new Set<ChangeTransaction["state"]>([
   "expired",
 ]);
 
-const ACKNOWLEDGEABLE_CHANGE_STATES = new Set<ChangeTransaction["state"]>([
+const TERMINAL_CHANGE_OUTCOME_STATES = new Set<ChangeTransaction["state"]>([
   "completed",
   "rolled_back",
   "failed",
@@ -177,11 +185,26 @@ const ACKNOWLEDGEABLE_CHANGE_STATES = new Set<ChangeTransaction["state"]>([
   "expired",
 ]);
 
+type MissionActionEligibility = {
+  available: boolean;
+  unavailableMessage: string;
+};
+
+function availableMissionAction(): MissionActionEligibility {
+  return { available: true, unavailableMessage: "" };
+}
+
+function unavailableMissionAction(
+  unavailableMessage: string,
+): MissionActionEligibility {
+  return { available: false, unavailableMessage };
+}
+
 function isRestorableChange(transaction: ChangeTransaction): boolean {
   return (
     isChangeTransaction(transaction) &&
     PRIMARY_CHANGE_STATES.has(transaction.state) &&
-    (!ACKNOWLEDGEABLE_CHANGE_STATES.has(transaction.state) ||
+    (!TERMINAL_CHANGE_OUTCOME_STATES.has(transaction.state) ||
       !transaction.receiptAcknowledgedAt)
   );
 }
@@ -1016,12 +1039,21 @@ function App() {
   >("offline_native_reopen");
   const [sending, setSending] = useState(false);
   const [missionResumeBusy, setMissionResumeBusy] = useState(false);
+  const [missionReverifyBusy, setMissionReverifyBusy] = useState(false);
   const [missionStartBusy, setMissionStartBusy] = useState(false);
   const [localProjectOpen, setLocalProjectOpen] = useState(false);
   const [localProjectPath, setLocalProjectPath] = useState("");
   const [localProjectBusy, setLocalProjectBusy] = useState(false);
   const [localProjectBrowseBusy, setLocalProjectBrowseBusy] = useState(false);
   const [localProjectNotice, setLocalProjectNotice] = useState("");
+  const [reviewedCloseDialogOpen, setReviewedCloseDialogOpen] = useState(false);
+  const [reviewedCloseBusy, setReviewedCloseBusy] = useState(false);
+  const [reviewedCloseAttempted, setReviewedCloseAttempted] = useState(false);
+  const [reviewedCloseNotice, setReviewedCloseNotice] = useState("");
+  const [reviewedCloseReceipt, setReviewedCloseReceipt] =
+    useState<ReviewedNoSaveCloseResponse | null>(null);
+  const [reviewedCloseDialogTarget, setReviewedCloseDialogTarget] =
+    useState<ReviewedNoSaveCloseRequest | null>(null);
   const [workspaceResumeBusy, setWorkspaceResumeBusy] = useState(false);
   const [workspaceResumeNotice, setWorkspaceResumeNotice] = useState("");
   const [workspaceCompare, setWorkspaceCompare] =
@@ -1040,6 +1072,7 @@ function App() {
   const [instancePickerOpen, setInstancePickerOpen] = useState(false);
   const [instances, setInstances] = useState<XG5000Instance[]>([]);
   const [instancesLoading, setInstancesLoading] = useState(false);
+  const [recoveryAttachIntent, setRecoveryAttachIntent] = useState(false);
   const [attachingHwnd, setAttachingHwnd] = useState<number | null>(null);
   const [restorePreflightBusyHwnd, setRestorePreflightBusyHwnd] = useState<
     number | null
@@ -1058,13 +1091,18 @@ function App() {
   const [activeChange, setActiveChange] = useState<ChangeTransaction | null>(
     null,
   );
+  const [missionChangeTransaction, setMissionChangeTransaction] =
+    useState<ChangeTransaction | null>(null);
   const [changeBusy, setChangeBusy] = useState(false);
   const [changeNotice, setChangeNotice] = useState("");
   const streamRef = useRef<ControlStudioEventStream | null>(null);
+  const streamingDraftRef = useRef<StreamingDraft | null>(null);
   const requestAbortRef = useRef<AbortController | null>(null);
   const statusRefreshRef = useRef<Promise<void> | null>(null);
   const statusRefreshEpochRef = useRef(0);
   const conversationIdRef = useRef<string | null>(null);
+  const missionChangeTransactionIdRef = useRef<string | null>(null);
+  const missionChangeRefreshEpochRef = useRef(0);
   const conversationRefreshEpochRef = useRef(0);
   const targetActivationEpochRef = useRef(0);
   const changeRecoveryReplayPinRef = useRef<{
@@ -1116,9 +1154,28 @@ function App() {
   const terminalEngineeringMission =
     conversation?.engineeringMission?.snapshot.status === "completed" ||
     conversation?.engineeringMission?.snapshot.status === "blocked";
+  const missionChangeTransactionId =
+    conversation?.engineeringMission?.changeTransactionId ?? null;
+  const waitingMissionHasTerminalChangeOutcome = Boolean(
+    conversation?.engineeringMission?.snapshot.status ===
+      "waiting_for_approval" &&
+      missionChangeTransactionId &&
+      missionChangeTransaction &&
+      missionChangeTransaction.transactionId === missionChangeTransactionId &&
+      TERMINAL_CHANGE_OUTCOME_STATES.has(missionChangeTransaction.state),
+  );
   const canCancelActiveRun =
     Boolean(activeRunId) &&
     (!activeRunState || !TERMINAL_RUN_STATES.has(activeRunState));
+  const visibleStreamingText = visibleStreamingDraftText(
+    streamingDraftRef.current,
+    activeRunId,
+    Boolean(
+      activeRunState && !TERMINAL_RUN_STATES.has(activeRunState),
+    ),
+  )
+    ? streamingText
+    : "";
   const canChat =
     hostReady &&
     (planningConversationActive
@@ -1132,15 +1189,33 @@ function App() {
         (conversationMatchesCurrentTarget(conversation, status) ||
           conversationMissionMatchesCurrentTarget(conversation, status)) &&
         currentEngineeringTarget(status) !== null));
-  const canResumeEngineeringMission =
-    hostReady &&
-    engineeringAgentReady &&
-    mcpReady &&
-    conversation !== null &&
-    conversation.engineeringMission?.snapshot.status === "active" &&
-    !canCancelActiveRun &&
-    !sending &&
-    conversationMissionMatchesCurrentTarget(conversation, status);
+  const evaluateMissionResumeEligibility = (): MissionActionEligibility => {
+    const mission = conversation?.engineeringMission;
+    if (!conversation || !mission) {
+      return unavailableMissionAction("저장된 엔지니어링 작업을 찾지 못했습니다. 대화를 다시 불러와 주세요.");
+    }
+    if (
+      mission.snapshot.status !== "active" &&
+      !waitingMissionHasTerminalChangeOutcome
+    ) {
+      return unavailableMissionAction("현재 미션 상태에서는 작업을 계속 실행할 수 없습니다.");
+    }
+    if (!hostReady || !engineeringAgentReady || !mcpReady) {
+      return unavailableMissionAction("Host, Agent, MCP가 모두 준비된 뒤 작업을 계속 실행할 수 있습니다.");
+    }
+    if (canCancelActiveRun) {
+      return unavailableMissionAction("이미 실행 중인 작업이 있습니다. 완료 또는 취소된 뒤 다시 실행해 주세요.");
+    }
+    if (sending) {
+      return unavailableMissionAction("다른 요청을 처리 중입니다. 완료된 뒤 다시 실행해 주세요.");
+    }
+    if (!conversationMissionMatchesCurrentTarget(conversation, status)) {
+      return unavailableMissionAction("현재 XG5000 작업 대상이 저장된 미션 대상과 다릅니다. 대상을 다시 확인해 주세요.");
+    }
+    return availableMissionAction();
+  };
+  const missionResumeEligibility = evaluateMissionResumeEligibility();
+  const canResumeEngineeringMission = missionResumeEligibility.available;
   const canStartNewEngineeringMission =
     hostReady &&
     engineeringAgentReady &&
@@ -1151,6 +1226,31 @@ function App() {
     !canCancelActiveRun &&
     !sending &&
     conversationMissionMatchesCurrentTarget(conversation, status);
+  const evaluateMissionReverifyEligibility = (): MissionActionEligibility => {
+    const mission = conversation?.engineeringMission;
+    if (!conversation || !mission) {
+      return unavailableMissionAction("저장된 엔지니어링 작업을 찾지 못했습니다. 대화를 다시 불러와 주세요.");
+    }
+    if (mission.snapshot.status !== "blocked") {
+      return unavailableMissionAction("차단된 단계만 다시 검증할 수 있습니다.");
+    }
+    if (!hostReady) {
+      return unavailableMissionAction("Host가 준비된 뒤 차단 단계를 다시 검증할 수 있습니다.");
+    }
+    if (canCancelActiveRun) {
+      return unavailableMissionAction("이미 실행 중인 작업이 있습니다. 완료 또는 취소된 뒤 다시 검증해 주세요.");
+    }
+    if (sending) {
+      return unavailableMissionAction("다른 요청을 처리 중입니다. 완료된 뒤 다시 검증해 주세요.");
+    }
+    if (!conversationMissionMatchesCurrentTarget(conversation, status)) {
+      return unavailableMissionAction("현재 XG5000 작업 대상이 저장된 미션 대상과 다릅니다. 대상을 다시 확인해 주세요.");
+    }
+    return availableMissionAction();
+  };
+  const missionReverifyEligibility = evaluateMissionReverifyEligibility();
+  const canReverifyBlockedEngineeringMissionStep =
+    missionReverifyEligibility.available;
 
   useEffect(() => {
     setChangeRequestScope("analysis_only");
@@ -1219,7 +1319,41 @@ function App() {
     return request;
   }, []);
 
+  const refreshMissionChangeTransaction = useCallback(
+    async (transactionId = missionChangeTransactionIdRef.current) => {
+      const refreshEpoch = ++missionChangeRefreshEpochRef.current;
+      if (!transactionId) {
+        setMissionChangeTransaction(null);
+        return;
+      }
+      setMissionChangeTransaction(null);
+      const transaction = await hostApi.getChangeTransaction(transactionId);
+      if (
+        refreshEpoch === missionChangeRefreshEpochRef.current &&
+        missionChangeTransactionIdRef.current === transactionId
+      ) {
+        setMissionChangeTransaction(
+          transaction.transactionId === transactionId ? transaction : null,
+        );
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    missionChangeTransactionIdRef.current = missionChangeTransactionId;
+    if (missionChangeTransactionId) {
+      void refreshMissionChangeTransaction(missionChangeTransactionId).catch(
+        () => undefined,
+      );
+    } else {
+      missionChangeRefreshEpochRef.current += 1;
+      setMissionChangeTransaction(null);
+    }
+  }, [missionChangeTransactionId, refreshMissionChangeTransaction]);
+
   const refreshServerPriorityChange = useCallback(async (): Promise<void> => {
+    void refreshMissionChangeTransaction().catch(() => undefined);
     const requestEpoch = ++changePriorityRefreshEpochRef.current;
     try {
       // A target-changing status update invalidates the snapshot. Retry once
@@ -1236,7 +1370,7 @@ function App() {
         }
 
         const activeOperation = nextStatus.activeOperation;
-        const transaction =
+        const activeTransaction =
           activeOperation?.kind === "change" &&
           typeof activeOperation.transactionId === "string"
             ? await hostApi.getChangeTransaction(activeOperation.transactionId)
@@ -1248,15 +1382,27 @@ function App() {
           continue;
         }
 
-        applyHostStatus(nextStatus);
         const currentConversationId = conversationIdRef.current;
+        const recentTransactions = currentConversationId
+          ? await hostApi.listChangeTransactions(currentConversationId, 20)
+          : [];
+        if (requestEpoch !== changePriorityRefreshEpochRef.current) {
+          return;
+        }
+        if (statusEpoch !== statusRefreshEpochRef.current) {
+          continue;
+        }
+
+        applyHostStatus(nextStatus);
+        const transaction =
+          activeTransaction &&
+          currentConversationId &&
+          activeTransaction.conversationId === currentConversationId &&
+          isRestorableChange(activeTransaction)
+            ? activeTransaction
+            : recentTransactions.find(isRestorableChange) ?? null;
         setActiveChange(
-          transaction &&
-            currentConversationId &&
-            transaction.conversationId === currentConversationId &&
-            isRestorableChange(transaction)
-            ? transaction
-            : null,
+          transaction,
         );
         return;
       }
@@ -1265,7 +1411,7 @@ function App() {
         throw error;
       }
     }
-  }, [applyHostStatus]);
+  }, [applyHostStatus, refreshMissionChangeTransaction]);
 
   const addActivity = useCallback(
     (
@@ -1399,9 +1545,14 @@ function App() {
       }
 
       if (event.eventType === "agent.token") {
-        const delta = event.payload.delta;
-        if (typeof delta === "string") {
-          setStreamingText((current) => current + delta);
+        const nextDraft = appendStreamingDraft(
+          streamingDraftRef.current,
+          event.runId,
+          typeof event.payload.delta === "string" ? event.payload.delta : undefined,
+        );
+        if (nextDraft !== streamingDraftRef.current) {
+          streamingDraftRef.current = nextDraft;
+          setStreamingText(nextDraft?.text ?? "");
         }
         return;
       }
@@ -1460,6 +1611,8 @@ function App() {
         event.eventType === "message.appended" ||
         event.eventType === "agent.message" ||
         event.eventType === "mission.checkpointed" ||
+        event.eventType === "mission.blocked_step_reverified" ||
+        event.eventType === "mission.recovery_digest_repaired" ||
         event.eventType === "run.created" ||
         event.eventType === "run.state" ||
         event.eventType === "run.state_changed"
@@ -1486,7 +1639,14 @@ function App() {
       }
 
       if (event.eventType === "agent.message") {
-        setStreamingText("");
+        const nextDraft = clearStreamingDraftForRun(
+          streamingDraftRef.current,
+          event.runId,
+        );
+        if (nextDraft !== streamingDraftRef.current) {
+          streamingDraftRef.current = nextDraft;
+          setStreamingText("");
+        }
         addActivity(event, "에이전트 응답을 저장했습니다.", event.runId ?? "agent");
         return;
       }
@@ -1498,6 +1658,16 @@ function App() {
       ) {
         const runState = eventRunState(event);
         if (runState) {
+          if (TERMINAL_RUN_STATES.has(runState)) {
+            const nextDraft = clearStreamingDraftForRun(
+              streamingDraftRef.current,
+              event.runId,
+            );
+            if (nextDraft !== streamingDraftRef.current) {
+              streamingDraftRef.current = nextDraft;
+              setStreamingText("");
+            }
+          }
           if (event.runId) {
             setActiveRunId(event.runId);
           }
@@ -1619,6 +1789,7 @@ function App() {
     analysisProgramCatalogLoadRef.current = null;
     returnWorkspaceRef.current = null;
     setMessage("");
+    streamingDraftRef.current = null;
     setStreamingText("");
     setEvidence([]);
     setActivities([]);
@@ -1630,6 +1801,9 @@ function App() {
     setActiveRunId(null);
     setActiveRunState(null);
     setActiveChange(null);
+    missionChangeTransactionIdRef.current = null;
+    missionChangeRefreshEpochRef.current += 1;
+    setMissionChangeTransaction(null);
     setChangeNotice("");
     setCancelNotice("");
   }, []);
@@ -1948,14 +2122,13 @@ function App() {
       if (controller.signal.aborted) {
         return;
       }
-      const recentChanges =
-        activeNativeProject || recoverableChange
-          ? []
-          : await hostApi.listChangeTransactions(
-              activeConversation.conversationId,
-              20,
-              controller.signal,
-            );
+      const recentChanges = activeNativeProject
+        ? []
+        : await hostApi.listChangeTransactions(
+            activeConversation.conversationId,
+            20,
+            controller.signal,
+          );
       if (controller.signal.aborted) {
         return;
       }
@@ -2236,7 +2409,8 @@ function App() {
     }
   };
 
-  const openInstancePicker = async () => {
+  const openInstancePicker = async (recoverExistingTarget = false) => {
+    setRecoveryAttachIntent(recoverExistingTarget);
     setInstancePickerOpen(true);
     setInstancesLoading(true);
     setRestorePreflight(null);
@@ -2262,18 +2436,33 @@ function App() {
   };
 
   const attachInstance = async (instance: XG5000Instance) => {
+    const attachForReviewedClose = recoveryAttachIntent;
     setAttachingHwnd(instance.hwnd);
     setInstanceNotice("");
     try {
       await hostApi.attachXG5000({
         pid: instance.pid,
         hwnd: instance.hwnd,
+        // A locally opened static workspace can coexist with an older XG5000
+        // process.  In that recovery state the Host must discover and prove
+        // the selected window's identity itself, never inherit the new
+        // workspace's path/hash.
+        allowUnboundExistingTarget: attachForReviewedClose,
       });
       const nextStatus = await hostApi.getStatus();
       if (
         nextStatus.engineeringSystem.sessionVerified ||
         nextStatus.engineeringSystem.readReady
       ) {
+        if (attachForReviewedClose) {
+          applyHostStatus(nextStatus);
+          setInstancePickerOpen(false);
+          setLocalProjectOpen(true);
+          setConnectionMessage(
+            "선택한 기존 XG5000 창의 정체성을 확인했습니다. 저장 없이 닫으려면 표시된 PID/HWND를 검토하세요.",
+          );
+          return;
+        }
         await activateEngineeringTargetConversation(nextStatus);
         setWorkChooserOpen(false);
         setInstancePickerOpen(false);
@@ -2516,7 +2705,11 @@ function App() {
     }
   };
 
-  const reconcileChange = async (pid: number, hwnd: number) => {
+  const reconcileChange = async (
+    pid: number,
+    hwnd: number,
+    relaunchIfUnavailable = false,
+  ) => {
     if (
       !activeChange ||
       activeChange.state !== "quarantined" ||
@@ -2533,6 +2726,7 @@ function App() {
           expectedPlanDigest: activeChange.planDigest,
           pid,
           hwnd,
+          ...(relaunchIfUnavailable ? { relaunchIfUnavailable: true } : {}),
         },
       );
       if (!response.reconciled) {
@@ -2678,6 +2872,43 @@ function App() {
     }
   };
 
+  const restartControlStudio = async () => {
+    setShutdownBusy(true);
+    setShutdownNotice("");
+    try {
+      const restart = await hostApi.restartHost();
+      streamRef.current?.stop();
+      requestAbortRef.current?.abort();
+      const deadline = Date.now() + 45_000;
+      while (Date.now() < deadline) {
+        try {
+          const status = await hostApi.getRestartStatus(restart.restartReceipt);
+          if (status.status === "ready") {
+            window.location.reload();
+            return;
+          }
+        } catch {
+          // A refused connection is expected while the old listener hands off
+          // to its already-elevated replacement. Never retry with UAC here.
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      }
+      setShutdownNotice(
+        "Host 재시작 준비 시간이 초과되었습니다. UAC를 다시 요청하지 않았습니다. 상태를 확인한 뒤 Launcher에서 다시 열어 주세요.",
+      );
+    } catch (error) {
+      setShutdownNotice(
+        error instanceof HostApiError && error.status === 409
+          ? `현재 작업 때문에 재시작할 수 없습니다: ${error.message}`
+          : error instanceof HostApiError
+            ? error.message
+            : "ControlStudio Host 재시작 요청에 실패했습니다.",
+      );
+    } finally {
+      setShutdownBusy(false);
+    }
+  };
+
   const executeApprovedTransaction = async (
     approved: ChangeTransaction,
   ): Promise<void> => {
@@ -2763,7 +2994,7 @@ function App() {
   const acknowledgeChangeReceipt = async () => {
     if (
       !activeChange ||
-      !ACKNOWLEDGEABLE_CHANGE_STATES.has(activeChange.state) ||
+      !TERMINAL_CHANGE_OUTCOME_STATES.has(activeChange.state) ||
       changeBusy
     ) {
       return;
@@ -3369,20 +3600,30 @@ function App() {
   const resumeEngineeringMission = async () => {
     const conversationId = conversation?.conversationId;
     const mission = conversation?.engineeringMission;
+    if (missionResumeBusy) {
+      setConnectionMessage("저장된 엔지니어링 작업 재개 요청을 이미 처리 중입니다.");
+      return;
+    }
+    const eligibility = evaluateMissionResumeEligibility();
+    if (!eligibility.available) {
+      setConnectionMessage(eligibility.unavailableMessage);
+      return;
+    }
     if (
       !conversationId ||
-      !mission ||
-      mission.snapshot.status !== "active" ||
-      !canResumeEngineeringMission ||
-      sending ||
-      missionResumeBusy
+      !mission
     ) {
+      setConnectionMessage("저장된 엔지니어링 작업을 찾지 못했습니다. 대화를 다시 불러와 주세요.");
       return;
     }
 
     setMissionResumeBusy(true);
     setStreamingText("");
-    setConnectionMessage("에이전트가 저장된 작업 계획의 다음 단계를 계속 실행합니다.");
+    setConnectionMessage(
+      mission.snapshot.status === "waiting_for_approval"
+        ? "에이전트가 확정된 변경 결과를 확인하고 저장된 작업 계획을 계속 실행합니다."
+        : "에이전트가 저장된 작업 계획의 다음 단계를 계속 실행합니다.",
+    );
     try {
       const result = await hostApi.resumeEngineeringMission(conversationId, {
         operationId: newOperationId(),
@@ -3398,6 +3639,45 @@ function App() {
       );
     } finally {
       setMissionResumeBusy(false);
+    }
+  };
+
+  const reverifyBlockedEngineeringMissionStep = async () => {
+    const conversationId = conversation?.conversationId;
+    const mission = conversation?.engineeringMission;
+    if (missionReverifyBusy) {
+      setConnectionMessage("차단 단계 재검증 요청을 이미 처리 중입니다.");
+      return;
+    }
+    const eligibility = evaluateMissionReverifyEligibility();
+    if (!eligibility.available) {
+      setConnectionMessage(eligibility.unavailableMessage);
+      return;
+    }
+    if (
+      !conversationId ||
+      !mission
+    ) {
+      setConnectionMessage("저장된 엔지니어링 작업을 찾지 못했습니다. 대화를 다시 불러와 주세요.");
+      return;
+    }
+    setMissionReverifyBusy(true);
+    try {
+      await hostApi.reverifyBlockedEngineeringMissionStep(conversationId, {
+        operationId: newOperationId(),
+      });
+      await refreshConversation(conversationId);
+      setConnectionMessage(
+        "차단 단계를 다시 검증할 준비가 되었습니다. 자동으로 Agent를 다시 실행하지 않습니다.",
+      );
+    } catch (error) {
+      setConnectionMessage(
+        error instanceof HostApiError
+          ? error.message
+          : "차단 단계를 다시 검증하지 못했습니다.",
+      );
+    } finally {
+      setMissionReverifyBusy(false);
     }
   };
 
@@ -3496,6 +3776,68 @@ function App() {
     workspaceTargetActive && !status.engineeringSystem.readReady;
   const directXgTargetActive =
     status.engineeringSystem.readReady && !workspaceTargetActive;
+  const reviewedCloseTarget =
+    status.engineeringSystem.sessionId &&
+    status.engineeringSystem.processId &&
+    status.engineeringSystem.windowHandle &&
+    status.engineeringSystem.processCreateTime &&
+    status.engineeringSystem.projectPath &&
+    status.engineeringSystem.projectHash
+      ? {
+          sessionId: status.engineeringSystem.sessionId,
+          pid: status.engineeringSystem.processId,
+          hwnd: status.engineeringSystem.windowHandle,
+          processCreateTime: status.engineeringSystem.processCreateTime,
+          projectPath: status.engineeringSystem.projectPath,
+          projectHash: status.engineeringSystem.projectHash,
+        }
+      : null;
+  const recoveryAttachRequired =
+    Boolean(status.workspace) && !status.engineeringSystem.readReady;
+
+  const openReviewedCloseDialog = () => {
+    if (!reviewedCloseTarget) return;
+    setReviewedCloseAttempted(false);
+    setReviewedCloseBusy(false);
+    setReviewedCloseNotice("");
+    setReviewedCloseReceipt(null);
+    setReviewedCloseDialogTarget({
+      ...reviewedCloseTarget,
+      confirmNoSave: true,
+    });
+    setReviewedCloseDialogOpen(true);
+  };
+
+  const reviewedNoSaveClose = async () => {
+    if (
+      !reviewedCloseDialogTarget ||
+      reviewedCloseBusy ||
+      reviewedCloseAttempted
+    ) {
+      return;
+    }
+    setReviewedCloseAttempted(true);
+    setReviewedCloseBusy(true);
+    setReviewedCloseNotice("");
+    try {
+      const receipt = await hostApi.reviewedNoSaveClose({
+        ...reviewedCloseDialogTarget,
+      });
+      setReviewedCloseReceipt(receipt);
+      applyHostStatus(await hostApi.getStatus());
+      setConnectionMessage(
+        "검토한 XG5000 창을 저장 없이 닫았습니다. 새 프로젝트 열기는 별도로 선택해야 합니다.",
+      );
+    } catch (error) {
+      setReviewedCloseNotice(
+        error instanceof HostApiError
+          ? error.message
+          : "저장 없이 닫기를 완료하지 못했습니다. 현재 XG5000 창은 그대로 유지됩니다.",
+      );
+    } finally {
+      setReviewedCloseBusy(false);
+    }
+  };
   const controllerTargetActive =
     !status.engineeringSystem.readReady &&
     status.controller.state === "ready" &&
@@ -3939,13 +4281,14 @@ function App() {
             </button>
           )}
           <button
-            className="header-text-button"
+            className="header-text-button header-history-button"
             type="button"
             disabled={canCancelActiveRun}
             onClick={() => void openConversationHistory()}
+            aria-label="작업 기록"
           >
             <Icon name="history" size={16} />
-            작업 기록
+            <span className="header-history-button__label">작업 기록</span>
           </button>
           <button
             className="header-text-button"
@@ -4206,7 +4549,9 @@ function App() {
                   </div>
                 </div>
 
-                {status.workspace && !hasEngineeringTarget && (
+                {status.workspace &&
+                  (!hasEngineeringTarget ||
+                    !status.engineeringSystem.readReady) && (
                   <section
                     className="workspace-resume-card"
                     aria-labelledby="workspace-resume-title"
@@ -4268,6 +4613,19 @@ function App() {
                           ? "대상 재검증 중…"
                           : "이 작업 계속하기"}
                       </button>
+                      {!status.engineeringSystem.readReady && (
+                        <button
+                          className="button secondary-button"
+                          type="button"
+                          disabled={workspaceResumeBusy || !localAnalysisAvailable}
+                          onClick={() => {
+                            setWorkChooserOpen(false);
+                            void openInstancePicker(false);
+                          }}
+                        >
+                          기존 XG5000 창에 이 작업 연결
+                        </button>
+                      )}
                     </div>
                   </section>
                 )}
@@ -4319,6 +4677,30 @@ function App() {
                     }}
                   />
                 </div>
+
+                {recoveryAttachRequired && (
+                  <div className="recovery-entry" role="status">
+                    <Icon name="warning" size={18} />
+                    <div>
+                      <strong>이전에 열린 XG5000 창을 먼저 확인</strong>
+                      <p>
+                        현재 작업 복사본은 offline 분석 대상으로만 전환됐습니다. Host는
+                        남아 있을 수 있는 XG5000 창을 이 작업 복사본으로 추측 결속하거나
+                        자동으로 닫지 않습니다.
+                      </p>
+                    </div>
+                    <button
+                      className="button secondary-button"
+                      type="button"
+                      onClick={() => {
+                        setWorkChooserOpen(false);
+                        void openInstancePicker(true);
+                      }}
+                    >
+                      PID/HWND로 기존 창 확인
+                    </button>
+                  </div>
+                )}
 
                 {onlineObserveAvailable && (
                   <details className="alternative-entry">
@@ -4502,6 +4884,36 @@ function App() {
                 원본 파일은 변경하지 않습니다. 해시로 고정한 별도 작업 복사본을
                 만든 뒤 그 복사본만 XG5000에서 엽니다.
               </p>
+              {recoveryAttachRequired && (
+                <div className="inline-notice warning-notice reviewed-close-recovery" role="status">
+                  <Icon name="warning" size={17} />
+                  <span>
+                    현재 작업 복사본은 정적 분석 대상으로 열려 있습니다. 이전 XG5000
+                    창은 추측하여 닫지 않습니다. 아래의 “이미 열린 XG5000 창 선택”에서
+                    PID와 HWND를 직접 선택해 해당 창의 프로젝트 정체성을 먼저 검증하세요.
+                  </span>
+                </div>
+              )}
+              {reviewedCloseTarget && (
+                <div className="reviewed-close-entry" role="status">
+                  <div>
+                    <strong>현재 XG5000 창을 새 프로젝트 전에 정리</strong>
+                    <p>
+                      확인된 PID {reviewedCloseTarget.pid} · HWND {reviewedCloseTarget.hwnd}
+                      창만 저장 없이 닫을 수 있습니다. 새 프로젝트 열기는 자동으로
+                      실행되지 않습니다.
+                    </p>
+                  </div>
+                  <button
+                    className="button secondary-button"
+                    type="button"
+                    disabled={localProjectBusy || localProjectBrowseBusy}
+                    onClick={openReviewedCloseDialog}
+                  >
+                    저장 없이 닫기 검토
+                  </button>
+                </div>
+              )}
               <form
                 className="local-project-form"
                 onSubmit={(event) => {
@@ -4566,7 +4978,7 @@ function App() {
                   disabled={localProjectBusy || localProjectBrowseBusy}
                   onClick={() => {
                     setLocalProjectOpen(false);
-                    void openInstancePicker();
+                    void openInstancePicker(recoveryAttachRequired);
                   }}
                 >
                   이미 열린 XG5000 창 선택
@@ -4745,7 +5157,7 @@ function App() {
                     attachingHwnd !== null ||
                     restorePreflightBusyHwnd !== null
                   }
-                  onClick={() => void openInstancePicker()}
+                  onClick={() => void openInstancePicker(recoveryAttachIntent)}
                 >
                   다시 확인
                 </button>
@@ -5031,8 +5443,19 @@ function App() {
                 availableEvidenceIds={evidence.map((item) => item.evidenceId)}
                 onOpenEvidence={openMissionEvidence}
                 resumeAvailable={canResumeEngineeringMission}
+                resumeUnavailableMessage={
+                  missionResumeEligibility.unavailableMessage
+                }
                 resumeBusy={missionResumeBusy}
                 onResume={() => void resumeEngineeringMission()}
+                reverifyAvailable={canReverifyBlockedEngineeringMissionStep}
+                reverifyUnavailableMessage={
+                  missionReverifyEligibility.unavailableMessage
+                }
+                reverifyBusy={missionReverifyBusy}
+                onReverifyBlockedStep={() =>
+                  void reverifyBlockedEngineeringMissionStep()
+                }
                 startNewAvailable={canStartNewEngineeringMission}
                 startNewBusy={missionStartBusy}
                 onStartNew={() => void startNewEngineeringMission()}
@@ -5057,7 +5480,7 @@ function App() {
                   </span>
                 </aside>
               )}
-              {currentMessages.length === 0 && !streamingText ? (
+              {currentMessages.length === 0 && !visibleStreamingText ? (
                 <div className="empty-conversation">
                   <span className="agent-orb" aria-hidden="true">
                     <Icon name="spark" size={26} />
@@ -5175,7 +5598,7 @@ function App() {
                       </div>
                     </li>
                   ))}
-                  {streamingText && (
+                  {visibleStreamingText && (
                     <li className="message-item message-assistant message-streaming">
                       <div className="message-meta">
                         <strong>ControlStudio</strong>
@@ -5183,7 +5606,7 @@ function App() {
                       </div>
                       <div className="message-content">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                          {streamingText}
+                          {visibleStreamingText}
                         </ReactMarkdown>
                       </div>
                     </li>
@@ -5562,6 +5985,114 @@ function App() {
         onClose={() => setKnowledgeOpen(false)}
       />
 
+      {reviewedCloseDialogOpen && reviewedCloseDialogTarget && (
+        <div
+          className="dialog-backdrop"
+          role="presentation"
+          onMouseDown={() => {
+            if (!reviewedCloseBusy) setReviewedCloseDialogOpen(false);
+          }}
+        >
+          <section
+            className="shutdown-dialog reviewed-close-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reviewed-close-dialog-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className="shutdown-dialog-header">
+              <span>
+                <Icon name="warning" size={20} />
+              </span>
+              <div>
+                <p className="eyebrow">REVIEWED NO-SAVE CLOSE</p>
+                <h2 id="reviewed-close-dialog-title">저장하지 않고 닫기</h2>
+              </div>
+            </header>
+            <div className="shutdown-dialog-body">
+              {!reviewedCloseReceipt ? (
+                <>
+                  <p>
+                    다음에 표시된 정확한 XG5000 세션만 닫습니다. 저장 대화상자가
+                    예상과 다르거나 정체성이 달라지면 작업은 중단되고 창은 닫지 않습니다.
+                  </p>
+                  <dl className="reviewed-close-binding">
+                    <div><dt>프로젝트</dt><dd>{reviewedCloseDialogTarget.projectPath}</dd></div>
+                    <div><dt>PID / HWND</dt><dd>{reviewedCloseDialogTarget.pid} / {reviewedCloseDialogTarget.hwnd}</dd></div>
+                    <div><dt>프로세스 생성 시각</dt><dd>{reviewedCloseDialogTarget.processCreateTime}</dd></div>
+                    <div><dt>세션 ID</dt><dd>{reviewedCloseDialogTarget.sessionId}</dd></div>
+                    <div><dt>프로젝트 해시</dt><dd>{reviewedCloseDialogTarget.projectHash}</dd></div>
+                  </dl>
+                  <p>
+                    이 동작은 한 번만 요청하며, 성공해도 다른 프로젝트를 열거나 다시
+                    시도하지 않습니다.
+                  </p>
+                </>
+              ) : (
+                <div className="reviewed-close-result" role="status">
+                  <strong>저장 없이 닫기 완료</strong>
+                  <p>
+                    PID {reviewedCloseReceipt.reviewedBinding.pid} · HWND {reviewedCloseReceipt.reviewedBinding.hwnd}
+                    의 확인된 세션을 닫았고, durable receipt를 기록했습니다.
+                  </p>
+                  <code>{reviewedCloseReceipt.receiptDigest}</code>
+                  <p>새 프로젝트는 아래 버튼을 누른 뒤 별도로 선택해 여세요.</p>
+                </div>
+              )}
+              {reviewedCloseNotice && (
+                <div className="inline-notice warning-notice reviewed-close-recovery" role="status">
+                  <Icon name="warning" size={17} />
+                  <span>{reviewedCloseNotice}</span>
+                </div>
+              )}
+            </div>
+            <footer className="shutdown-dialog-actions">
+              {!reviewedCloseReceipt ? (
+                <>
+                  <button
+                    className="button secondary-button"
+                    type="button"
+                    disabled={reviewedCloseBusy}
+                    onClick={() => setReviewedCloseDialogOpen(false)}
+                  >
+                    취소
+                  </button>
+                  <button
+                    className="button danger-button"
+                    type="button"
+                    disabled={reviewedCloseBusy || reviewedCloseAttempted}
+                    onClick={() => void reviewedNoSaveClose()}
+                  >
+                    {reviewedCloseBusy ? "닫는 중…" : "저장하지 않고 닫기"}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    className="button secondary-button"
+                    type="button"
+                    onClick={() => setReviewedCloseDialogOpen(false)}
+                  >
+                    결과 닫기
+                  </button>
+                  <button
+                    className="button primary-button"
+                    type="button"
+                    onClick={() => {
+                      setReviewedCloseDialogOpen(false);
+                      setWorkChooserOpen(false);
+                      setLocalProjectOpen(true);
+                    }}
+                  >
+                    별도로 프로젝트 열기
+                  </button>
+                </>
+              )}
+            </footer>
+          </section>
+        </div>
+      )}
+
       {shutdownDialogOpen && (
         <div
           className="dialog-backdrop"
@@ -5597,6 +6128,11 @@ function App() {
                 실행 중인 분석 또는 안전 확인 작업이 있으면 Host가 종료를
                 거부하며, 해당 이유를 이 화면에 표시합니다.
               </p>
+              <p>
+                개발 코드 변경을 반영할 때는 재시작을 선택하세요. 이미 실행 중인
+                elevated Host가 replacement를 시작하므로 추가 UAC 확인을 요청하지
+                않으며, XG5000은 종료하거나 다시 열지 않습니다.
+              </p>
               {shutdownNotice && (
                 <div
                   className="inline-notice warning-notice shutdown-notice"
@@ -5631,6 +6167,14 @@ function App() {
                   {cancelBusy ? "취소 요청 중…" : "실행 중 작업 취소"}
                 </button>
               )}
+              <button
+                className="button secondary-button"
+                type="button"
+                disabled={shutdownBusy}
+                onClick={() => void restartControlStudio()}
+              >
+                {shutdownBusy ? "재시작 확인 중…" : "코드 다시 불러오기 (UAC 없음)"}
+              </button>
               <button
                 className="button danger-button"
                 type="button"

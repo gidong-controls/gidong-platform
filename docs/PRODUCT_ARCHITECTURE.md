@@ -1,6 +1,6 @@
 # GIDONG 제품 아키텍처
 
-최종 갱신: 2026-08-10
+최종 갱신: 2026-08-31
 결정 상태: three-repository 논리·물리 경계는 로컬에서 완료됐다. production
 release와 실제 PLC online 기능은 별도 evidence gate가 남아 있다.
 
@@ -22,11 +22,23 @@ online 기능을 완료로 선언하지 않는다.
       private gidong-agent            private gidong-plc-mcp
        Pydantic AI / model / RAG       vendor action / operation journal
        proposal only                   precondition / readback / rollback
+                                                       │
+                     migrated vendor commands → separate deterministic vendor CLI
+                                                       │
+                                              XG5000 adapter / UI API
 ```
 
 Platform은 Agent와 MCP child process를 시작·health check·종료하고, 두 프로세스의
 독립 실패를 처리한다. Agent는 MCP subprocess/raw client를 갖지 않으며 MCP는
 Agent prompt/model credential/user conversation을 갖지 않는다.
+
+MCP가 vendor command를 CLI로 위임한 경로의 실행 사슬은
+`Agent → Platform/ExecutionBroker → MCP adapter → separate CLI → XG5000 adapter`다.
+Agent는 CLI를 직접 호출하지 않고 여전히 MCP tool action만 제안한다. separate CLI는
+모델 권한 경계가 아니라 독립적·결정적인 vendor adapter/API transport 경계다. 따라서
+vendor별 process·JSON request/receipt·timeout을 MCP protocol과 분리할 수 있다. 아직
+모든 MCP vendor route가 CLI로 이관된 것은 아니며, 이관되지 않은 route의 책임·검증
+경계도 MCP에 남는다.
 
 ## 컴포넌트 책임
 

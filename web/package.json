@@ -6,9 +6,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "npm run typecheck && vite build",
+    "build": "npm run typecheck && vite build && npm run verify-production-entry",
     "preview": "vite preview",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "test:recovery-contract": "node --experimental-strip-types --test scripts/tests/change-recovery-contract.test.mts",
+    "verify-production-entry": "node scripts/verify-production-entry.mjs"
   },
   "dependencies": {
     "@controlstudio/contracts": "file:../packages/typescript/controlstudio-contracts",

@@ -225,8 +225,9 @@ def _typed_target_program(transaction: ChangeTransaction) -> dict[str, Any]:
         }
         if patch_contract.supports_xgsim:
             expected.add("simulation_profile")
+        hardware_fields = {"hardware_context_digest", "field_io_bindings"}
         if (
-            set(candidate) != expected
+            set(candidate) not in {expected, expected | hardware_fields}
             or candidate.get("schema") != patch_contract.candidate_schema
         ):
             raise ChangeExecutionPreconditionError("plan.candidate has an unexpected schema")
@@ -251,6 +252,19 @@ def _typed_target_program(transaction: ChangeTransaction) -> dict[str, Any]:
             "target_program_digest": str(candidate["target_program_digest"]),
             "target_mne_sha256": str(candidate["target_mne_sha256"]),
         }
+        if "hardware_context_digest" in candidate:
+            if (
+                not _SHA256.fullmatch(str(candidate.get("hardware_context_digest") or ""))
+                or not isinstance(candidate.get("field_io_bindings"), list)
+                or not candidate["field_io_bindings"]
+            ):
+                raise ChangeExecutionPreconditionError(
+                    "plan.candidate hardware binding is incomplete"
+                )
+            result["hardware_context_digest"] = str(
+                candidate["hardware_context_digest"]
+            )
+            result["field_io_bindings"] = list(candidate["field_io_bindings"])
         if transaction.plan.get("verification_scope") == MNE_XGSIM_VERIFICATION_SCOPE:
             profile = candidate.get("simulation_profile")
             if not isinstance(profile, Mapping) or not _SHA256.fullmatch(
@@ -1534,6 +1548,73 @@ def _validated_persisted_apply_receipts(
     return baseline, plan, application
 
 
+def validated_terminal_mne_reopen(
+    transaction: ChangeTransaction,
+) -> dict[str, Any] | None:
+    """Return the exact independently reopened target for a terminal MNE change."""
+
+    if (
+        transaction.plan.get("plan_kind") not in MNE_STRUCTURAL_PLAN_KINDS
+        or transaction.state
+        not in {
+            ChangeTransactionState.COMPLETED,
+            ChangeTransactionState.ROLLED_BACK,
+        }
+    ):
+        return None
+    apply_evidence = _object(
+        transaction.result.get("apply"),
+        "terminal MNE apply evidence",
+    )
+    if (
+        apply_evidence.get("host_transaction_id") != transaction.id
+        or apply_evidence.get("host_plan_digest") != transaction.plan_digest
+        or apply_evidence.get("plan_kind") != MNE_PLAN_KIND
+    ):
+        raise ChangeExecutionPreconditionError(
+            "terminal MNE apply evidence differs from the Host transaction"
+        )
+    plan = _object(apply_evidence.get("plan"), "terminal MNE plan")
+    baseline = _object(apply_evidence.get("baseline"), "terminal MNE baseline")
+    application = _object(
+        apply_evidence.get("application"),
+        "terminal MNE application",
+    )
+    if (
+        apply_evidence.get("mcp_plan_id") != plan.get("plan_id")
+        or apply_evidence.get("mcp_plan_digest") != plan.get("plan_digest")
+    ):
+        raise ChangeExecutionPreconditionError(
+            "terminal MNE plan identity differs from apply evidence"
+        )
+    verification_evidence = _object(
+        transaction.result.get("verification"),
+        "terminal MNE verification evidence",
+    )
+    if transaction.state is ChangeTransactionState.COMPLETED:
+        receipt = _validate_verification_receipt(
+            verification_evidence.get("verification"),
+            transaction=transaction,
+            plan=plan,
+            application=application,
+        )
+        return dict(_object(receipt.get("reopen"), "terminal MNE reopen"))
+
+    simulation_finalization = transaction.result.get("simulation_finalization")
+    rollback_value: object = verification_evidence.get("rollback")
+    if isinstance(simulation_finalization, dict):
+        rollback_value = simulation_finalization.get("rollback")
+        if rollback_value is None:
+            rollback_value = simulation_finalization.get("terminal_receipt")
+    rollback = _validate_rollback_receipt(
+        rollback_value,
+        transaction=transaction,
+        plan=plan,
+        baseline=baseline,
+    )
+    return dict(_object(rollback.get("reopen"), "terminal MNE rollback reopen"))
+
+
 class CompositeChangeExecutionService:
     """Dispatch immutable v1 operand edits and v2 full-program replacements."""
 
@@ -1779,6 +1860,15 @@ class MNEChangeExecutionService:
                     raise ChangeExecutionPreconditionError(
                         "MNE plan does not match the approved instruction candidate"
                     )
+                if "hardware_context_digest" in candidate and (
+                    planned.get("hardware_context_digest")
+                    != candidate.get("hardware_context_digest")
+                    or planned.get("field_io_bindings")
+                    != candidate.get("field_io_bindings")
+                ):
+                    raise ChangeExecutionPreconditionError(
+                        "MNE plan lost its approved hardware terminal binding"
+                    )
             mcp_plan_id = _required_text(plan, "plan_id", "MNE plan")
             mcp_plan_digest = _sha256(plan.get("plan_digest"), "MNE plan digest")
             lease_generation = _required_text(
@@ -1905,6 +1995,10 @@ class MNEChangeExecutionService:
             "runtime_identity_digest": capability.runtime_identity_digest,
             "lease_generation": lease_generation,
         }
+        if "hardware_context_digest" in transaction.plan.get("candidate", {}):
+            apply_arguments["hardware_context_digest"] = transaction.plan[
+                "candidate"
+            ]["hardware_context_digest"]
         authorization = self._authorization(
             transaction=transaction,
             mcp_transaction_id=mcp_transaction_id,
@@ -1938,6 +2032,15 @@ class MNEChangeExecutionService:
                 plan=plan,
                 baseline=baseline,
             )
+            if "hardware_context_digest" in transaction.plan.get("candidate", {}) and (
+                applied.get("hardware_context_digest")
+                != transaction.plan["candidate"].get("hardware_context_digest")
+                or applied.get("field_io_bindings")
+                != transaction.plan["candidate"].get("field_io_bindings")
+            ):
+                raise ChangeExecutionPreconditionError(
+                    "MNE application receipt lost its approved hardware terminal binding"
+                )
             self._validate_checkpoint(
                 transaction=transaction,
                 checkpoint=_object(
@@ -4088,4 +4191,5 @@ __all__ = [
     "MNE_PLAN_KIND",
     "MNE_TARGET_PROGRAM_SCHEMA",
     "MNE_VERIFICATION_SCOPE",
+    "validated_terminal_mne_reopen",
 ]

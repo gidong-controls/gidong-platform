@@ -16,7 +16,6 @@ from .errors import UiOpenError
 CONTROLSTUDIO_WINDOW_TITLE = "ControlStudio"
 CONTROLSTUDIO_WINDOW_PROPERTY = "ControlStudio.LauncherOwned"
 WINDOW_OPEN_TIMEOUT_SECONDS = 30.0
-INITIAL_RENDER_GRACE_SECONDS = 2.0
 _BROWSER_EXECUTABLE_NAMES = frozenset({"chrome.exe", "msedge.exe"})
 
 
@@ -255,70 +254,6 @@ def _set_launcher_owned_marker(window: int) -> bool:
     return bool(user32.SetPropW(window, CONTROLSTUDIO_WINDOW_PROPERTY, 1))
 
 
-def _window_has_rendered_controlstudio_content(window: int) -> bool:
-    """Return whether Chromium exposed the React root through accessibility.
-
-    Edge app-mode can occasionally create and paint its native frame while the
-    first WebView remains white. The Host has already answered and the page has
-    often completed its handoff in this state, so window existence alone is not
-    sufficient launch readiness.
-    """
-
-    try:
-        from pywinauto import Desktop
-
-        app_window = Desktop(backend="uia").window(handle=window)
-        return any(
-            control.element_info.automation_id == "RootWebArea"
-            for control in app_window.descendants()
-        )
-    except Exception:
-        return False
-
-
-def _refresh_controlstudio_window(
-    window: int,
-    *,
-    focus_window: Callable[[int], bool] | None = None,
-    foreground_window: Callable[[], int] | None = None,
-    send_keys: Callable[..., object] | None = None,
-) -> bool:
-    """Ask the verified app window to reload without creating another window."""
-
-    if focus_window is None:
-        focus_window = _focus_controlstudio_window
-    if not focus_window(window):
-        return False
-    if foreground_window is None:
-        import ctypes
-        from ctypes import wintypes
-
-        user32 = ctypes.WinDLL("user32", use_last_error=True)
-        user32.GetForegroundWindow.argtypes = ()
-        user32.GetForegroundWindow.restype = wintypes.HWND
-
-        def get_foreground_window() -> int:
-            return int(user32.GetForegroundWindow() or 0)
-
-        foreground_window = get_foreground_window
-    if int(foreground_window() or 0) != int(window):
-        return False
-
-    if send_keys is None:
-        from pywinauto.keyboard import send_keys as pywinauto_send_keys
-
-        send_keys = pywinauto_send_keys
-    try:
-        # Global keyboard input is used only after exact process, origin,
-        # ownership, and foreground checks. Chromium ignores synthetic F5
-        # messages on the blank first WebView but accepts its normal reload
-        # accelerator once this exact app window owns the foreground.
-        send_keys("^r", pause=0.05)
-    except Exception:
-        return False
-    return True
-
-
 def close_existing_controlstudio_windows(
     browser_paths: tuple[Path, ...],
     *,
@@ -475,10 +410,14 @@ def wait_for_single_controlstudio_window(
     timeout_seconds: float = WINDOW_OPEN_TIMEOUT_SECONDS,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
-    rendered_probe: Callable[[int], bool] = _window_has_rendered_controlstudio_content,
-    refresher: Callable[[int], bool] = _refresh_controlstudio_window,
 ) -> bool:
-    """Wait until one owned app window has rendered usable React content."""
+    """Wait until exactly one verified browser app window exists.
+
+    UIA cannot reliably expose Edge app-mode documents on every supported
+    Windows/Edge combination. Browser bootstrap readiness is instead proven by
+    the Host's one-time protocol receipt in ``ControlStudioLauncher``. This
+    routine deliberately performs only process/ownership checks.
+    """
 
     deadline = monotonic() + timeout_seconds
     while monotonic() < deadline:
@@ -499,28 +438,10 @@ def wait_for_single_controlstudio_window(
                 != matching_windows
             ):
                 return False
-            # Verified rendering, not foreground-steal permission, is authoritative.
+            # The launcher verifies protocol bootstrap separately. Do not infer
+            # it from browser title, pixels, or accessibility tree state.
             _focus_controlstudio_window(window)
-
-            # Give the first navigation a short chance to render normally. If
-            # Edge only created a white native frame, reload this exact verified
-            # window once; never create a second PWA/app window.
-            initial_render_deadline = min(
-                deadline,
-                monotonic() + INITIAL_RENDER_GRACE_SECONDS,
-            )
-            while monotonic() < initial_render_deadline:
-                if rendered_probe(window):
-                    _focus_controlstudio_window(window)
-                    return True
-                sleep(0.05)
-            refresher(window)
-            while monotonic() < deadline:
-                if rendered_probe(window):
-                    _focus_controlstudio_window(window)
-                    return True
-                sleep(0.05)
-            return False
+            return True
         sleep(0.05)
     return False
 

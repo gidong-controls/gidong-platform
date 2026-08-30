@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
+import json
 import logging
 import os
 import re
@@ -32,6 +35,8 @@ from .agent_runtime import (
     AgentOutputContractError,
     AgentOutputValidationIssue,
     AgentRunOutput,
+    AgentRuntimeDiagnostic,
+    AgentRuntimeError,
     ChangePlanCallback,
     MissionCheckpointCallback,
     ModelCapabilityResult,
@@ -39,10 +44,17 @@ from .agent_runtime import (
     TokenCallback,
     ToolEventCallback,
 )
+from .api_models import OfflineOperandMissionV1
 from .execution_broker import ExecutionBroker
-from .mcp_client import AGENT_TOOL_NAMES, MCPToolError
+from .mcp_client import (
+    AGENT_TOOL_NAMES,
+    MCPToolError,
+    MCPToolRejectedError,
+    MCPTransportError,
+)
 from .model_connection import StoredModelConnection
 from .models import Message, MessageRole
+from .native_engineering_status import validate_native_engineering_status
 from .structural_evidence import (
     STRUCTURAL_ANALYSIS_EVIDENCE_SCHEMA,
     STRUCTURAL_ANALYSIS_TOOL_COVERAGE,
@@ -51,10 +63,36 @@ from .structural_evidence import (
     state_model_context,
     structural_observation_statement,
     structural_receipt_tool_name,
+    validate_project_search_context,
     validate_structural_evidence_contract,
 )
 
 logger = logging.getLogger(__name__)
+
+_HISTORICAL_EVIDENCE_BUNDLE_KEYS = {
+    "schemaVersion",
+    "missionDigest",
+    "items",
+    "bundleDigest",
+}
+_HISTORICAL_EVIDENCE_ITEM_KEYS = {"sourceRunId", "evidence"}
+_MAX_HISTORICAL_EVIDENCE_ITEMS = 2_500
+_MAX_HISTORICAL_EVIDENCE_BUNDLE_BYTES = 1_500_000
+_MAX_AGENT_CHECKPOINT_BYTES = 1_500_000
+_DURABLE_RESUME_SYNC_CAPABILITY = "durable-resume-sync-v1"
+
+# The exact typed operand route is Host-selected from a durable mission rather
+# than inferred from conversational prose.  Its sidecar finalization is fully
+# deterministic after an approval-only proposal succeeds.  Keep this wire
+# prompt ASCII-only: older sidecars use the prompt's script to select a
+# user-prose validator, while their deterministic approval message is English.
+# The original objective remains in the signed Host mission snapshot.
+_EXACT_OFFLINE_OPERAND_CONTINUATION_PROMPT = (
+    "Continue the exact Host-bound offline operand mission. The trusted mission "
+    "snapshot is authoritative. Use no target outside that snapshot. Any change "
+    "proposal remains approval-only; do not mutate a project, controller, or "
+    "runtime state."
+)
 
 _SIDECAR_STRIPPED_ENVIRONMENT = frozenset(
     {
@@ -62,6 +100,158 @@ _SIDECAR_STRIPPED_ENVIRONMENT = frozenset(
         "CONTROLSTUDIO_APPROVAL_SECRET",
     }
 )
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _exact_offline_operand_continuation_prompt(
+    trusted_context: Mapping[str, Any],
+) -> str | None:
+    """Return the compatibility prompt only for a bound active exact route.
+
+    This does not alter the durable mission, tool catalog, approval authority,
+    or final-output validation.  It is deliberately unavailable before the
+    Host has supplied a typed operand mission and an existing mission snapshot.
+    """
+
+    if trusted_context.get("workflow") != "engineering":
+        return None
+    try:
+        operand_mission = OfflineOperandMissionV1.model_validate(
+            trusted_context.get("offline_operand_mission")
+        )
+    except (TypeError, ValueError):
+        return None
+    mission = trusted_context.get("engineering_mission")
+    if not isinstance(mission, dict) or mission.get("schemaVersion") != "1":
+        return None
+    if mission.get("status") != "active":
+        return None
+    objective = mission.get("objective")
+    steps = mission.get("steps")
+    if (
+        not isinstance(objective, str)
+        or not isinstance(steps, list)
+        or not all(
+            value in objective
+            for value in (
+                operand_mission.program_name,
+                operand_mission.expected_operand,
+                operand_mission.replacement_operand,
+            )
+        )
+        or mission.get("activeStepId") != "propose_offline_change"
+        or not any(
+            isinstance(step, dict)
+            and step.get("stepId") == "propose_offline_change"
+            and step.get("status") == "active"
+            for step in steps
+        )
+    ):
+        return None
+    return _EXACT_OFFLINE_OPERAND_CONTINUATION_PROMPT
+
+
+def validate_historical_evidence_bundle(
+    value: object,
+    *,
+    mission_digest: str | None = None,
+    expected_evidence_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    """Validate the exact Host-owned projection of mission-bound old evidence."""
+
+    if not isinstance(value, dict) or set(value) != _HISTORICAL_EVIDENCE_BUNDLE_KEYS:
+        raise AgentProtocolError("historical evidence bundle fields are invalid")
+    items = value.get("items")
+    bound_mission_digest = value.get("missionDigest")
+    bundle_digest = value.get("bundleDigest")
+    if (
+        value.get("schemaVersion") != "1"
+        or not isinstance(bound_mission_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", bound_mission_digest) is None
+        or (mission_digest is not None and bound_mission_digest != mission_digest)
+        or not isinstance(bundle_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", bundle_digest) is None
+        or not isinstance(items, list)
+        or len(items) > _MAX_HISTORICAL_EVIDENCE_ITEMS
+    ):
+        raise AgentProtocolError("historical evidence bundle binding is invalid")
+    evidence_ids: list[str] = []
+    for item in items:
+        if not isinstance(item, dict) or set(item) != _HISTORICAL_EVIDENCE_ITEM_KEYS:
+            raise AgentProtocolError("historical evidence item fields are invalid")
+        source_run_id = item.get("sourceRunId")
+        evidence = item.get("evidence")
+        evidence_id = evidence.get("evidenceId") if isinstance(evidence, dict) else None
+        tool_name = evidence.get("toolName") if isinstance(evidence, dict) else None
+        try:
+            canonical_evidence_id = (
+                str(uuid.UUID(evidence_id)) if isinstance(evidence_id, str) else None
+            )
+        except ValueError:
+            canonical_evidence_id = None
+        if (
+            not isinstance(source_run_id, str)
+            or not source_run_id
+            or len(source_run_id) > 256
+            or canonical_evidence_id != evidence_id
+            or not isinstance(tool_name, str)
+            or not tool_name
+        ):
+            raise AgentProtocolError("historical evidence item is invalid")
+        assert_agent_safe_payload(evidence)
+        evidence_ids.append(evidence_id)
+    if evidence_ids != sorted(evidence_ids) or len(evidence_ids) != len(set(evidence_ids)):
+        raise AgentProtocolError("historical evidence ids are not canonical and unique")
+    if expected_evidence_ids is not None and set(evidence_ids) != expected_evidence_ids:
+        raise AgentProtocolError("historical evidence does not match the durable mission")
+    encoded_bundle = _canonical_json(value).encode("utf-8")
+    if len(encoded_bundle) > _MAX_HISTORICAL_EVIDENCE_BUNDLE_BYTES:
+        raise AgentProtocolError("historical evidence bundle exceeds its durable bound")
+    unsigned = {key: value[key] for key in value if key != "bundleDigest"}
+    actual_digest = hashlib.sha256(_canonical_json(unsigned).encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(actual_digest, bundle_digest):
+        raise AgentProtocolError("historical evidence bundle digest mismatched")
+    return json.loads(_canonical_json(value))
+
+
+def build_historical_evidence_bundle(
+    *,
+    mission_digest: str,
+    evidence: Mapping[str, tuple[str, dict[str, Any]]],
+) -> dict[str, Any]:
+    """Build one deterministic bundle from exact durable journal rows."""
+
+    unsigned = {
+        "schemaVersion": "1",
+        "missionDigest": mission_digest,
+        "items": [
+            {
+                "sourceRunId": source_run_id,
+                "evidence": payload,
+            }
+            for evidence_id in sorted(evidence)
+            for source_run_id, payload in [evidence[evidence_id]]
+        ],
+    }
+    bundle = {
+        **unsigned,
+        "bundleDigest": hashlib.sha256(
+            _canonical_json(unsigned).encode("utf-8")
+        ).hexdigest(),
+    }
+    return validate_historical_evidence_bundle(
+        bundle,
+        mission_digest=mission_digest,
+        expected_evidence_ids=set(evidence),
+    )
 _STRUCTURAL_ANALYSIS_TOOL_ALIASES = {
     alias: raw_name
     for alias, raw_name in AGENT_TOOL_NAMES.items()
@@ -116,6 +306,46 @@ _OUTPUT_CONTRACT_REASON_CODES = frozenset(
         "unexpected_model_output",
     }
 )
+_RUNTIME_EXCEPTION_KINDS = frozenset(
+    {
+        "usage_limit_exceeded",
+        "model_transport",
+        "model_api_error",
+        "runtime_error",
+    }
+)
+_RUNTIME_REASON_CODES = frozenset(
+    {
+        "tool_call_budget",
+        "request_budget",
+        "token_budget",
+        "runtime_budget",
+        "provider_timeout",
+        "provider_connection",
+        "provider_rejected",
+        "runtime_invariant",
+    }
+)
+_CHANGE_OUTCOME_KEYS = frozenset(
+    {
+        "schemaVersion",
+        "transactionId",
+        "planDigest",
+        "state",
+        "disposition",
+        "evidenceId",
+        "outcomeDigest",
+        "verificationEvidenceDigest",
+        "errorCode",
+    }
+)
+_CHANGE_OUTCOME_DISPOSITIONS = {
+    "COMPLETED": "applied",
+    "ROLLED_BACK": "rolled_back",
+    "FAILED": "failed",
+    "REJECTED": "rejected",
+    "EXPIRED": "expired",
+}
 _OUTPUT_CONTRACT_VALIDATOR_CODES = frozenset(
     {
         "not_applicable",
@@ -147,6 +377,12 @@ _OUTPUT_CONTRACT_VALIDATOR_CODES = frozenset(
         "native_ladder_execution_guarantee",
         "native_configuration",
         "native_attempt_status",
+        "continuation_approval",
+        "continuation_citation",
+        "continuation_contract",
+        "continuation_mission_binding",
+        "continuation_no_progress",
+        "continuation_structural_binding",
     }
 )
 _VALIDATION_LOCATION_CHARACTERS = frozenset(
@@ -202,6 +438,7 @@ class AgentSupervisor:
         self._stdout_task: asyncio.Task[None] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
         self._manifest_agent_id: str | None = None
+        self._manifest_capabilities: frozenset[str] = frozenset()
         self._active_run_id: str | None = None
 
     @property
@@ -244,6 +481,7 @@ class AgentSupervisor:
                     raise AgentProtocolError("Agent initialization omitted a manifest")
                 manifest = parse_manifest(manifest_payload)
                 self._manifest_agent_id = manifest.agent_id
+                self._manifest_capabilities = frozenset(manifest.capabilities)
                 health = await asyncio.wait_for(
                     self._request({"type": "health"}, expected="health.result"),
                     timeout=self._startup_timeout_seconds,
@@ -261,6 +499,8 @@ class AgentSupervisor:
         payload: Mapping[str, Any],
         *,
         on_message: Callable[[AgentProtocolMessage], Awaitable[None]],
+        historical_evidence: Mapping[str, Any] | None = None,
+        agent_checkpoint: Mapping[str, Any] | None = None,
     ) -> None:
         """Run one supervised Agent operation until its terminal sidecar frame."""
 
@@ -271,6 +511,21 @@ class AgentSupervisor:
             try:
                 await self.ensure_started()
                 self._active_run_id = run_id
+                if (
+                    historical_evidence is not None or agent_checkpoint is not None
+                ) and (
+                    _DURABLE_RESUME_SYNC_CAPABILITY
+                    not in self._manifest_capabilities
+                ):
+                    raise AgentProtocolError(
+                        "Agent sidecar does not support durable resume sync"
+                    )
+                if historical_evidence is not None:
+                    await self._sync_historical_evidence_locked(
+                        historical_evidence
+                    )
+                if agent_checkpoint is not None:
+                    await self._sync_agent_checkpoint_locked(agent_checkpoint)
                 await self._send("run.start", payload)
                 while True:
                     message = await self._next_message_with_timeout("run response")
@@ -290,6 +545,93 @@ class AgentSupervisor:
             finally:
                 if self._active_run_id == run_id:
                     self._active_run_id = None
+
+    async def _sync_historical_evidence_locked(
+        self,
+        bundle: Mapping[str, Any],
+    ) -> None:
+        """Sync one exact bundle while the caller holds the run lock."""
+
+        bundle_digest = bundle.get("bundleDigest")
+        mission_digest = bundle.get("missionDigest")
+        items = bundle.get("items")
+        if (
+            not isinstance(bundle_digest, str)
+            or not isinstance(mission_digest, str)
+            or not isinstance(items, list)
+        ):
+            raise AgentProtocolError("historical evidence sync bundle is invalid")
+        ready = await self._request(
+            {
+                "type": "historical_evidence.sync.begin",
+                "payload": {
+                    "schemaVersion": "1",
+                    "missionDigest": mission_digest,
+                    "bundleDigest": bundle_digest,
+                    "itemCount": len(items),
+                },
+            },
+            expected="historical_evidence.sync.ready",
+        )
+        if ready.payload.get("bundleDigest") != bundle_digest:
+            raise AgentProtocolError("historical evidence sync ready digest mismatched")
+        for index, item in enumerate(items):
+            accepted = await self._request(
+                {
+                    "type": "historical_evidence.sync.item",
+                    "payload": {
+                        "bundleDigest": bundle_digest,
+                        "index": index,
+                        "item": item,
+                    },
+                },
+                expected="historical_evidence.sync.accepted",
+            )
+            if (
+                accepted.payload.get("bundleDigest") != bundle_digest
+                or accepted.payload.get("index") != index
+            ):
+                raise AgentProtocolError(
+                    "historical evidence sync item acknowledgement mismatched"
+                )
+        synced = await self._request(
+            {
+                "type": "historical_evidence.sync.commit",
+                "payload": {"bundleDigest": bundle_digest},
+            },
+            expected="historical_evidence.synced",
+        )
+        if synced.payload != {
+            "missionDigest": mission_digest,
+            "bundleDigest": bundle_digest,
+            "itemCount": len(items),
+        }:
+            raise AgentProtocolError("historical evidence sync acknowledgement is invalid")
+
+    async def _sync_agent_checkpoint_locked(
+        self,
+        checkpoint: Mapping[str, Any],
+    ) -> None:
+        """Sync the bounded checkpoint outside the aggregate run.start frame."""
+
+        canonical_checkpoint = json.loads(_canonical_json(checkpoint))
+        assert_agent_safe_payload(canonical_checkpoint)
+        encoded = _canonical_json(canonical_checkpoint).encode("utf-8")
+        if len(encoded) > _MAX_AGENT_CHECKPOINT_BYTES:
+            raise AgentProtocolError("Agent checkpoint exceeds its durable bound")
+        checkpoint_digest = hashlib.sha256(encoded).hexdigest()
+        synced = await self._request(
+            {
+                "type": "engineering_checkpoint.sync",
+                "payload": {
+                    "checkpoint": canonical_checkpoint,
+                    "checkpointDigest": checkpoint_digest,
+                },
+            },
+            expected="engineering_checkpoint.synced",
+        )
+        if synced.payload != {"checkpointDigest": checkpoint_digest}:
+            raise AgentProtocolError("Agent checkpoint sync acknowledgement is invalid")
 
     async def send_tool_result(self, payload: Mapping[str, Any]) -> None:
         await self._send("tool.result", payload)
@@ -401,7 +743,9 @@ class AgentSupervisor:
             raise AgentProtocolError("Agent command type is invalid")
         await self._send(message_type, command.get("payload", {}))
         while True:
-            response = await self._next_message()
+            response = await self._next_message_with_timeout(
+                f"{message_type} response"
+            )
             if response.type == expected:
                 return response
             if response.type == "protocol.error":
@@ -489,6 +833,7 @@ class AgentSupervisor:
         self._stdout_task = None
         self._stderr_task = None
         self._manifest_agent_id = None
+        self._manifest_capabilities = frozenset()
         self._active_run_id = None
         if process is not None and process.returncode is None:
             try:
@@ -579,22 +924,52 @@ class SubprocessAgentClient:
                 if tool.tool_name not in _MNE_CANDIDATE_TOOL_ALIASES
             ]
         catalog = {tool.tool_name for tool in tools}
+        safe_trusted_context = _safe_trusted_context(
+            trusted_context,
+            knowledge_search_available=self._knowledge_snapshot_callback is not None,
+            change_planner_available=self._change_plan_callback is not None,
+            mne_change_planner_available=mne_change_planner_available,
+        ) or {}
+        historical_evidence = safe_trusted_context.pop(
+            "historical_evidence",
+            None,
+        )
+        if historical_evidence is not None:
+            safe_trusted_context["historical_evidence_ref"] = {
+                "schemaVersion": "1",
+                "missionDigest": historical_evidence["missionDigest"],
+                "bundleDigest": historical_evidence["bundleDigest"],
+                "itemCount": len(historical_evidence["items"]),
+            }
+        checkpoint_digest: str | None = None
+        if agent_checkpoint is not None:
+            if "engineering_mission" not in safe_trusted_context:
+                raise AgentProtocolError(
+                    "Agent checkpoint requires a durable engineering mission"
+                )
+            encoded_checkpoint = _canonical_json(agent_checkpoint).encode("utf-8")
+            if len(encoded_checkpoint) > _MAX_AGENT_CHECKPOINT_BYTES:
+                raise AgentProtocolError("Agent checkpoint exceeds its durable bound")
+            checkpoint_digest = hashlib.sha256(encoded_checkpoint).hexdigest()
+        sidecar_prompt = (
+            _exact_offline_operand_continuation_prompt(safe_trusted_context)
+            or prompt
+        )
         payload = {
             "conversation_id": conversation_id,
             "run_id": run_id,
-            "prompt": prompt,
-            "history": _safe_history(history),
-            "trusted_context": _safe_trusted_context(
-                trusted_context,
-                knowledge_search_available=self._knowledge_snapshot_callback is not None,
-                change_planner_available=self._change_plan_callback is not None,
-                mne_change_planner_available=mne_change_planner_available,
-            ),
+            "prompt": sidecar_prompt,
+            "history": [] if agent_checkpoint is not None else _safe_history(history),
+            "trusted_context": safe_trusted_context,
             "model": _model_payload(self._settings),
             "tools": [tool.model_dump(mode="json") for tool in tools],
         }
+        if checkpoint_digest is not None:
+            payload["agent_checkpoint_ref"] = {
+                "schemaVersion": "1",
+                "checkpointDigest": checkpoint_digest,
+            }
         assert_agent_safe_payload(payload)
-        payload["agent_checkpoint"] = agent_checkpoint
         result: AgentRunOutput | None = None
         last_progress_stage: str | None = None
         last_mission_cycle = 0
@@ -706,11 +1081,24 @@ class SubprocessAgentClient:
                         "Agent output failed its structured contract",
                         diagnostic=diagnostic,
                     )
+                if message.payload.get("code") == "agent_runtime":
+                    diagnostic = _runtime_diagnostic_from_payload(
+                        message.payload.get("diagnostic")
+                    )
+                    raise AgentRuntimeError(
+                        "Agent sidecar runtime could not complete the run",
+                        diagnostic=diagnostic,
+                    )
                 raise AgentSidecarError("Agent sidecar could not complete the run")
             raise AgentProtocolError("unexpected Agent sidecar run message")
 
         try:
-            await self._supervisor.run(payload, on_message=handle)
+            await self._supervisor.run(
+                payload,
+                on_message=handle,
+                historical_evidence=historical_evidence,
+                agent_checkpoint=agent_checkpoint,
+            )
         except asyncio.CancelledError:
             await asyncio.shield(self._supervisor.cancel_run(run_id))
             raise
@@ -741,6 +1129,21 @@ class SubprocessAgentClient:
                     evidence_ref = dict(returned)
 
         callback_event_payload: dict[str, Any] | None = None
+
+        async def send_failure(failure_kind: str) -> None:
+            if callback_event_payload is not None:
+                await capture_event(
+                    "tool.failed",
+                    {**callback_event_payload, "failure_kind": failure_kind},
+                )
+            await self._supervisor.send_tool_result(
+                {
+                    "request_id": request.request_id,
+                    "status": "failed",
+                    "failure_kind": failure_kind,
+                }
+            )
+
         try:
             if request.tool_name in catalog:
                 sink = capture_event
@@ -761,32 +1164,19 @@ class SubprocessAgentClient:
             else:
                 raise AgentSidecarError("Agent requested a disallowed Host callback")
         except asyncio.CancelledError:
-            if callback_event_payload is not None:
-                await capture_event(
-                    "tool.failed",
-                    {**callback_event_payload, "failure_kind": "cancelled"},
-                )
-            await self._supervisor.send_tool_result(
-                {
-                    "request_id": request.request_id,
-                    "status": "failed",
-                    "failure_kind": "cancelled",
-                }
-            )
+            await send_failure("cancelled")
             raise
+        except MCPToolRejectedError:
+            await send_failure("tool_error")
+            return
+        except MCPTransportError:
+            await send_failure("transport")
+            return
+        except MCPToolError:
+            await send_failure("host_policy")
+            return
         except Exception:  # noqa: BLE001 - never expose Host callback diagnostics to Agent
-            if callback_event_payload is not None:
-                await capture_event(
-                    "tool.failed",
-                    {**callback_event_payload, "failure_kind": "host_policy"},
-                )
-            await self._supervisor.send_tool_result(
-                {
-                    "request_id": request.request_id,
-                    "status": "failed",
-                    "failure_kind": "host_policy",
-                }
-            )
+            await send_failure("host_policy")
             return
         if request.tool_name in _STRUCTURAL_ANALYSIS_TOOL_ALIASES:
             try:
@@ -1025,10 +1415,49 @@ def _safe_trusted_context(
         "offline_native_reopen_xgsim",
     }:
         context["verification_scope"] = value["verification_scope"]
+    if "offline_operand_mission" in value:
+        try:
+            mission = OfflineOperandMissionV1.model_validate(
+                value["offline_operand_mission"]
+            ).model_dump(mode="json", by_alias=True)
+        except (TypeError, ValueError) as exc:
+            raise AgentProtocolError("offline operand mission is invalid") from exc
+        context["offline_operand_mission"] = mission
     if isinstance(value.get("stage"), str):
         context["stage"] = value["stage"]
-    if isinstance(value.get("engineering_mission"), dict):
-        context["engineering_mission"] = value["engineering_mission"]
+    engineering_mission = value.get("engineering_mission")
+    if isinstance(engineering_mission, dict):
+        context["engineering_mission"] = engineering_mission
+    if "historical_evidence" in value:
+        if not isinstance(engineering_mission, dict):
+            raise AgentProtocolError(
+                "historical evidence requires a durable engineering mission"
+            )
+        steps = engineering_mission.get("steps")
+        if not isinstance(steps, list):
+            raise AgentProtocolError("engineering mission evidence binding is invalid")
+        expected_evidence_ids: set[str] = set()
+        for step in steps:
+            evidence_refs = step.get("evidenceRefs") if isinstance(step, dict) else None
+            if not isinstance(evidence_refs, list) or any(
+                not isinstance(evidence_id, str) for evidence_id in evidence_refs
+            ):
+                raise AgentProtocolError(
+                    "engineering mission evidence binding is invalid"
+                )
+            expected_evidence_ids.update(evidence_refs)
+        mission_digest = hashlib.sha256(
+            _canonical_json(engineering_mission).encode("utf-8")
+        ).hexdigest()
+        context["historical_evidence"] = validate_historical_evidence_bundle(
+            value["historical_evidence"],
+            mission_digest=mission_digest,
+            expected_evidence_ids=expected_evidence_ids,
+        )
+    if "native_engineering_status" in value:
+        context["native_engineering_status"] = validate_native_engineering_status(
+            value["native_engineering_status"]
+        )
     pending_change = value.get("pending_change")
     if isinstance(pending_change, dict) and set(pending_change) == {
         "transactionId",
@@ -1037,6 +1466,48 @@ def _safe_trusted_context(
         "approvalExpiresAt",
     }:
         context["pending_change"] = dict(pending_change)
+    change_outcome = value.get("change_outcome")
+    if isinstance(change_outcome, dict) and set(change_outcome) == _CHANGE_OUTCOME_KEYS:
+        transaction_id = change_outcome.get("transactionId")
+        evidence_id = change_outcome.get("evidenceId")
+        state = change_outcome.get("state")
+        disposition = change_outcome.get("disposition")
+        digests = (
+            change_outcome.get("planDigest"),
+            change_outcome.get("outcomeDigest"),
+        )
+        verification_digest = change_outcome.get("verificationEvidenceDigest")
+        error_code = change_outcome.get("errorCode")
+        try:
+            canonical_ids = bool(
+                isinstance(transaction_id, str)
+                and str(uuid.UUID(transaction_id)) == transaction_id
+                and isinstance(evidence_id, str)
+                and str(uuid.UUID(evidence_id)) == evidence_id
+            )
+        except ValueError:
+            canonical_ids = False
+        if (
+            change_outcome.get("schemaVersion") == "1"
+            and canonical_ids
+            and isinstance(state, str)
+            and _CHANGE_OUTCOME_DISPOSITIONS.get(state) == disposition
+            and all(
+                isinstance(digest, str)
+                and re.fullmatch(r"[0-9a-f]{64}", digest) is not None
+                for digest in digests
+            )
+            and (
+                verification_digest is None
+                or (
+                    isinstance(verification_digest, str)
+                    and re.fullmatch(r"[0-9a-f]{64}", verification_digest)
+                    is not None
+                )
+            )
+            and (error_code is None or isinstance(error_code, str))
+        ):
+            context["change_outcome"] = dict(change_outcome)
     return context
 
 
@@ -1085,23 +1556,17 @@ def _structural_observation_facts(
     return facts
 
 
-def _structural_tool_result_payload(
+def _structural_evidence_projection(
     *,
-    request_id: str,
-    tool_alias: str,
-    evidence_ref: Mapping[str, Any] | None,
-    raw_result: Any,
-) -> dict[str, Any]:
-    """Project a structural result to its bounded Host-authored receipt."""
+    evidence_tool_name: str,
+    evidence_ref: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Rebuild the exact evidence object exposed to the Agent."""
 
-    evidence_tool_name = _STRUCTURAL_ANALYSIS_TOOL_ALIASES.get(tool_alias)
-    if evidence_tool_name is None or not isinstance(evidence_ref, Mapping):
-        raise AgentProtocolError("Structural analysis result has no Host evidence receipt")
     expected_tool_name = structural_receipt_tool_name(evidence_tool_name)
-    receipt = evidence_ref.get("receipt")
     try:
         validated_receipt = validate_structural_evidence_contract(
-            receipt,
+            evidence_ref.get("receipt"),
             expected_tool=expected_tool_name,
         )
     except (TypeError, ValueError, MCPToolError) as exc:
@@ -1142,13 +1607,43 @@ def _structural_tool_result_payload(
         safe_evidence_ref = scrub_agent_tool_result(evidence_ref)
         if not isinstance(safe_evidence_ref, dict) or safe_evidence_ref != evidence_ref:
             raise AgentProtocolError("Structural analysis evidence is invalid")
-
+    retained_model_context = safe_evidence_ref.get("modelContext")
+    retained_model_context_digest = safe_evidence_ref.get("modelContextDigest")
+    if expected_tool_name == "project.search" and retained_model_context is not None:
+        try:
+            canonical_model_context = validate_project_search_context(
+                retained_model_context,
+                receipt=validated_receipt,
+            )
+        except (TypeError, ValueError, MCPToolError) as exc:
+            raise AgentProtocolError(
+                "Project search evidence context is invalid"
+            ) from exc
+        if canonical_model_context != retained_model_context:
+            raise AgentProtocolError(
+                "Project search evidence context is not canonical"
+            )
+        if retained_model_context_digest != canonical_digest(
+            canonical_model_context
+        ):
+            raise AgentProtocolError(
+                "Project search evidence context digest is invalid"
+            )
+    elif expected_tool_name == "project.search" and retained_model_context_digest is not None:
+        raise AgentProtocolError(
+            "Project search evidence context digest has no context"
+        )
+    elif expected_tool_name != "project.search" and (
+        retained_model_context is not None
+        or retained_model_context_digest is not None
+    ):
+        raise AgentProtocolError(
+            "Structural analysis evidence has an unexpected model context"
+        )
     safe_evidence_ref = {
         **safe_evidence_ref,
         "observationFacts": _structural_observation_facts(validated_receipt),
     }
-
-    evidence_id = safe_evidence_ref.get("evidenceId")
     receipt = safe_evidence_ref.get("receipt")
     expected_receipt_schema = (
         _PROJECT_STRUCTURE_EVIDENCE_PROJECTION_SCHEMA
@@ -1156,13 +1651,53 @@ def _structural_tool_result_payload(
         else STRUCTURAL_ANALYSIS_EVIDENCE_SCHEMA
     )
     if (
-        not isinstance(evidence_id, str)
-        or not evidence_id
+        not isinstance(safe_evidence_ref.get("evidenceId"), str)
         or not isinstance(receipt, Mapping)
         or receipt.get("schema") != expected_receipt_schema
         or receipt.get("toolName") != expected_tool_name
     ):
         raise AgentProtocolError("Structural analysis evidence receipt is invalid")
+    assert_agent_safe_payload(safe_evidence_ref)
+    return safe_evidence_ref, validated_receipt
+
+
+def project_historical_evidence(evidence_ref: Mapping[str, Any]) -> dict[str, Any]:
+    """Project a journaled receipt exactly as it was exposed in its source run."""
+
+    tool_name = evidence_ref.get("toolName")
+    if not isinstance(tool_name, str) or not tool_name:
+        raise AgentProtocolError("Historical evidence toolName is invalid")
+    if tool_name in STRUCTURAL_ANALYSIS_TOOL_COVERAGE:
+        projected, _ = _structural_evidence_projection(
+            evidence_tool_name=tool_name,
+            evidence_ref=evidence_ref,
+        )
+        return projected
+    safe_evidence_ref = scrub_agent_tool_result(evidence_ref)
+    if not isinstance(safe_evidence_ref, dict):
+        raise AgentProtocolError("Historical evidence is not Agent-safe")
+    assert_agent_safe_payload(safe_evidence_ref)
+    return safe_evidence_ref
+
+
+def _structural_tool_result_payload(
+    *,
+    request_id: str,
+    tool_alias: str,
+    evidence_ref: Mapping[str, Any] | None,
+    raw_result: Any,
+) -> dict[str, Any]:
+    """Project a structural result to its bounded Host-authored receipt."""
+
+    evidence_tool_name = _STRUCTURAL_ANALYSIS_TOOL_ALIASES.get(tool_alias)
+    if evidence_tool_name is None or not isinstance(evidence_ref, Mapping):
+        raise AgentProtocolError("Structural analysis result has no Host evidence receipt")
+    expected_tool_name = structural_receipt_tool_name(evidence_tool_name)
+    safe_evidence_ref, validated_receipt = _structural_evidence_projection(
+        evidence_tool_name=evidence_tool_name,
+        evidence_ref=evidence_ref,
+    )
+    receipt = safe_evidence_ref.get("receipt")
 
     result: dict[str, Any] = {
         "schema": _STRUCTURAL_TOOL_RESULT_PROJECTION_SCHEMA,
@@ -1175,21 +1710,25 @@ def _structural_tool_result_payload(
     if expected_tool_name == "program.state_model":
         model_context = state_model_context(raw_result)
     elif expected_tool_name == "project.search":
-        model_context = project_search_context(raw_result)
-        if model_context is not None and (
-            model_context["searchDigest"]
-            != validated_receipt["scope"]["query"].get("searchDigest")
-            or model_context["coverageUnitKeys"]
-            != validated_receipt["scope"]["coverageUnitKeys"]
-        ):
-            raise AgentProtocolError("Project search context is not receipt-bound")
+        model_context = validate_project_search_context(
+            project_search_context(raw_result),
+            receipt=validated_receipt,
+        )
+        if safe_evidence_ref.get("modelContext") != model_context:
+            raise AgentProtocolError(
+                "Journaled project search context differs from the tool result"
+            )
     else:
         model_context = None
     if model_context is not None:
-        result["modelContext"] = {
-            "sourceReceiptDigest": receipt["receiptDigest"],
-            **model_context,
-        }
+        result["modelContext"] = (
+            model_context
+            if expected_tool_name == "project.search"
+            else {
+                "sourceReceiptDigest": receipt["receiptDigest"],
+                **model_context,
+            }
+        )
     payload = {
         "request_id": request_id,
         "status": "completed",
@@ -1285,6 +1824,34 @@ def _output_contract_diagnostic_from_payload(
         reason_code=reason_code,
         validator_code=validator_code,
         validation_errors=tuple(validation_errors),
+    )
+
+
+def _runtime_diagnostic_from_payload(value: Any) -> AgentRuntimeDiagnostic | None:
+    """Accept only the sidecar's fixed non-sensitive runtime diagnostic codes."""
+
+    if not isinstance(value, Mapping) or set(value) != {
+        "stage",
+        "exceptionKind",
+        "reasonCode",
+    }:
+        return None
+    stage = value.get("stage")
+    exception_kind = value.get("exceptionKind")
+    reason_code = value.get("reasonCode")
+    if (
+        not isinstance(stage, str)
+        or stage not in _OUTPUT_CONTRACT_STAGES
+        or not isinstance(exception_kind, str)
+        or exception_kind not in _RUNTIME_EXCEPTION_KINDS
+        or not isinstance(reason_code, str)
+        or reason_code not in _RUNTIME_REASON_CODES
+    ):
+        return None
+    return AgentRuntimeDiagnostic(
+        stage=stage,
+        exception_kind=exception_kind,
+        reason_code=reason_code,
     )
 
 

@@ -1013,6 +1013,18 @@ function hasExecutableChangeContract(
         hardwareStatus[name] === "observed" &&
         hardwareBinding?.[`${name}_status`] === hardwareStatus[name],
     );
+  // An offline candidate is explicitly limited to the bound working copy and
+  // native reopen verification.  Its retained hardware evidence must still be
+  // complete and digest-bound below, but signed runtime blockers are displayed
+  // rather than treated as permission to reject the offline-only contract.
+  // A permanent offline revision retains the stricter resolved-hardware gate.
+  const requiresResolvedHardware =
+    plan.requestScope === "permanent_offline_revision";
+  const hardwareReadyForScope =
+    !requiresResolvedHardware ||
+    (stringList(hardwareBinding?.blocking_reasons).length === 0 &&
+      requiredHardwareObserved &&
+      relevantHardwareBlockers.length === 0);
   return (
     plan.changeMode === "offline_working_copy_revision" &&
     (plan.requestScope === "offline_candidate_revision" ||
@@ -1061,8 +1073,6 @@ function hasExecutableChangeContract(
     hardwareBinding.context_digest ===
       (target.hardwareContextDigest ?? target.hardware_context_digest) &&
     Array.isArray(hardwareBinding.blocking_reasons) &&
-    stringList(hardwareBinding.blocking_reasons).length === 0 &&
-    requiredHardwareObserved &&
     hardwareContext !== undefined &&
     hardwareCpu !== undefined &&
     Array.isArray(hardwareTimerAreasValue) &&
@@ -1070,7 +1080,7 @@ function hasExecutableChangeContract(
     hardwareIoMapping !== undefined &&
     typeof externalWiringObserved === "boolean" &&
     Array.isArray(hardwareContext.blockers) &&
-    relevantHardwareBlockers.length === 0 &&
+    hardwareReadyForScope &&
     typeof (
       hardwareContext.offlineCandidateReady ??
       hardwareContext.offline_candidate_ready
@@ -1403,6 +1413,11 @@ function executionReceiptChecks(
         hasObjectField(verification, "save") ||
         result.projectSaved === true,
     },
+    {
+      label: "새 XG5000 프로세스 재열기와 LD P0021 readback",
+      passed: hasObjectField(verification, "fresh_reopen") &&
+        hasObjectField(verification, "fresh_reopen_attach"),
+    },
   ];
 }
 
@@ -1692,7 +1707,7 @@ export function ChangeApprovalPanel({
                     ? "범위: 승인된 guard 1행 삽입 readback, XG5000 검사, 저장과 독립 재열기"
                     : mnePlan
                       ? "범위: typed 전체 프로그램 readback, XG5000 검사, 저장과 독립 재열기"
-                      : "범위: 오프라인 작업 복사본의 네이티브 변경과 XG5000 검사까지"}
+                      : "범위: 승인된 피연산자 변경, XG5000 검사, 저장, 새 프로세스 재열기와 LD readback"}
             </p>
             <ul>
               {transaction.plan.validation.map((step) => (

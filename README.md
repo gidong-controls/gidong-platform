@@ -62,6 +62,24 @@ Windows의 사용자별 PowerShell 실행 정책을 변경하지 않고, 저장�
 명령을 실행한다. 실행 중인 Host가 없을 때만 smoke가 Host를 시작하고, 그 경우에만 검사
 후 자신이 시작한 Host를 종료한다.
 
+개발 코드를 반영하려면 실행 중인 앱 헤더의 `종료` 확인 화면에서 `코드 다시 불러오기
+(UAC 없음)`을 누른다. 현재 elevated Host가 고정된 self-restart bootstrap을 실행하므로
+추가 `RunAs`/UAC 확인이 없다. bootstrap은 기존 Host가 8767을 반납한 후에만 동일 Python,
+working directory, Agent/MCP/independent XG5000 CLI 환경으로 replacement Host를 시작한다.
+XG5000 프로세스·창을 자동으로 종료하거나 재시작하지 않는다. Agent run, mutation, native XG5000
+create 또는 ACTIVE target-operation lease가 있으면 재시작은 `409`으로 거부된다. workspace,
+conversation과 두 SQLite DB는 기존 경로를 그대로 사용한다.
+
+검증을 마친 XG5000은 Host/MCP stdio 자식 수명과 분리된 외부 engineering session이다.
+따라서 replacement MCP의 stdin 종료도 그 PID/HWND/create-time을 닫거나 새로 열지 않으며,
+새 Host는 같은 exact identity를 명시적으로 재-attach한다. 기존 named launcher Job에서
+시작한 Host도 reload 진입 시 breakaway 권한을 idempotent하게 갱신하므로 이 수명 분리에
+추가 UAC가 필요하지 않다.
+
+source-development 보조 기동도 동일한 named launcher Job을 사용한다. 따라서 검증을
+마친 XG5000만 문서화된 breakaway 경로를 사용하며, Host/MCP 재시작 후의 exact identity
+재연결은 기존 reconcile 절차가 fail-closed로 처리한다.
+
 Beta는 source checkout을 beta라고 표시해 실행하지 않는다. 세 immutable artifact와
 public contracts wheel을 `assemble_release.py --channel beta`로 조립하고 생성된
 `ControlStudio Beta` 설치본을 실행해야 한다. 실제 채널 권위는 branch 이름이 아니라

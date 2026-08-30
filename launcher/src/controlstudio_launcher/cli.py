@@ -25,7 +25,7 @@ from .errors import (
 from .health import HttpHealthProbe
 from .host import SubprocessHostStarter
 from .instance import create_instance_guard
-from .integrity import create_elevation_broker
+from .integrity import apply_elevation_context, create_elevation_broker
 from .token import FileLaunchTokenStore
 from .ui import SystemUiOpener
 
@@ -71,6 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="verify/start the Host without opening a browser (local diagnostics only)",
     )
+    parser.add_argument("--elevation-context", help=argparse.SUPPRESS)
     return parser
 
 
@@ -114,6 +115,8 @@ def _main(
     parser = build_parser()
     arguments = parser.parse_args(argv)
     try:
+        if arguments.elevation_context is not None:
+            apply_elevation_context(arguments.elevation_context)
         settings = resolve_settings(arguments)
         launcher = ControlStudioLauncher(
             settings=settings,

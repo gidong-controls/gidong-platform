@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ctypes
+import base64
+import json
 import os
 import socket
 import subprocess
@@ -18,6 +20,21 @@ _HIGH_INTEGRITY_RID = 0x3000
 _TOKEN_ELEVATION_TYPE_DEFAULT = 1
 _TOKEN_ELEVATION_TYPE_FULL = 2
 _TOKEN_ELEVATION_TYPE_LIMITED = 3
+ELEVATION_HANDOFF_ENVIRONMENT = "CONTROLSTUDIO_ELEVATION_HANDOFF_V1"
+_ELEVATION_CONTEXT_ARGUMENT = "--elevation-context"
+_ELEVATION_CONTEXT_SCHEMA = "controlstudio-elevation-context/v1"
+_ELEVATION_CONTEXT_ENVIRONMENT = (
+    "LOCALAPPDATA",
+    "CONTROLSTUDIO_RELEASE_CHANNEL",
+    "CONTROLSTUDIO_PRODUCT_RELEASE",
+    "CONTROLSTUDIO_DEVELOPMENT_MODEL_BASE_URL",
+    "CONTROLSTUDIO_DEVELOPMENT_MODEL_NAME",
+    "CONTROLSTUDIO_DEVELOPMENT_MODEL_TIMEOUT_SECONDS",
+    "CONTROLSTUDIO_AGENT_COMMAND",
+    "CONTROLSTUDIO_MCP_COMMAND",
+    "CONTROLSTUDIO_XG5000_CLI_COMMAND",
+)
+_MAX_ELEVATION_CONTEXT_BYTES = 32 * 1024
 
 
 class ElevationBroker(Protocol):
@@ -122,7 +139,7 @@ class WindowsElevationBroker:
             arguments = self._arguments
             if parent_opens_ui and "--no-open" not in arguments:
                 arguments = (*arguments, "--no-open")
-            self._relaunch(arguments)
+            self._relaunch(_arguments_with_elevation_context(arguments))
             return True
         return False
 
@@ -131,6 +148,73 @@ def create_elevation_broker(arguments: Sequence[str]) -> ElevationBroker:
     if os.name == "nt":
         return WindowsElevationBroker(arguments)
     return NoopElevationBroker()
+
+
+def encode_elevation_context(environ: dict[str, str] | None = None) -> str:
+    """Carry only the fixed development launch context across ShellExecute.
+
+    ``runas`` does not preserve the caller's modified environment.  The
+    allowlist intentionally excludes API keys and arbitrary variable names.
+    """
+
+    values = os.environ if environ is None else environ
+    environment = {
+        name: value
+        for name in _ELEVATION_CONTEXT_ENVIRONMENT
+        if isinstance((value := values.get(name)), str)
+        and value
+        and "\x00" not in value
+        and len(value) <= 4096
+    }
+    payload = {
+        "schema": _ELEVATION_CONTEXT_SCHEMA,
+        "environment": environment,
+    }
+    raw = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode(
+        "ascii"
+    )
+    if len(raw) > _MAX_ELEVATION_CONTEXT_BYTES:
+        raise ElevationError("the fixed elevation context is too large")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def apply_elevation_context(encoded: str, environ: dict[str, str] | None = None) -> None:
+    """Validate and consume the explicit elevated-child launch context."""
+
+    if not isinstance(encoded, str) or not encoded or len(encoded) > 64 * 1024:
+        raise ElevationError("the elevation context is invalid")
+    try:
+        padded = encoded + "=" * (-len(encoded) % 4)
+        raw = base64.b64decode(padded, altchars=b"-_", validate=True)
+        payload = json.loads(raw.decode("ascii"))
+    except (ValueError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ElevationError("the elevation context is invalid") from exc
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"schema", "environment"}
+        or payload.get("schema") != _ELEVATION_CONTEXT_SCHEMA
+        or not isinstance(payload.get("environment"), dict)
+    ):
+        raise ElevationError("the elevation context contract is invalid")
+    supplied = payload["environment"]
+    if not set(supplied).issubset(_ELEVATION_CONTEXT_ENVIRONMENT):
+        raise ElevationError("the elevation context contains an unsupported setting")
+    target = os.environ if environ is None else environ
+    for name, value in supplied.items():
+        if (
+            not isinstance(value, str)
+            or not value
+            or "\x00" in value
+            or len(value) > 4096
+        ):
+            raise ElevationError("the elevation context contains an invalid value")
+        if name == "LOCALAPPDATA":
+            path = Path(value)
+            if not path.is_absolute() or not path.is_dir():
+                raise ElevationError("the elevation context local app-data root is invalid")
+            value = str(path.resolve())
+        target[name] = value
+    target[ELEVATION_HANDOFF_ENVIRONMENT] = "1"
 
 
 def _installed_xg5000_target_integrity(current_integrity: int) -> int:
@@ -202,6 +286,21 @@ def _relaunch_current_launcher_elevated(arguments: Sequence[str]) -> None:
             "XG5000 automation requires ControlStudio to use the vendor integrity "
             "level; elevation was not approved."
         )
+
+
+def _arguments_with_elevation_context(arguments: Sequence[str]) -> tuple[str, ...]:
+    filtered: list[str] = []
+    skip = False
+    for argument in arguments:
+        if skip:
+            skip = False
+            continue
+        if argument == _ELEVATION_CONTEXT_ARGUMENT:
+            skip = True
+            continue
+        filtered.append(argument)
+    context = encode_elevation_context()
+    return (*filtered, _ELEVATION_CONTEXT_ARGUMENT, context)
 
 
 def _shell_execute_runas(target: str, parameters: str) -> int:

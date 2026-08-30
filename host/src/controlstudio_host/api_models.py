@@ -86,7 +86,11 @@ class EngineeringSystemStatusV1(ServiceStatusV1):
     vendor: str = "ls"
     application: str = "XG5000"
     process_id: int | None = None
+    window_handle: int | None = None
+    process_create_time: float | None = Field(default=None, gt=0)
     session_id: str | None = None
+    project_path: str | None = Field(default=None, max_length=32_768)
+    project_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     session_verified: bool = False
     read_ready: bool = False
     target_workspace_id: str | None = Field(default=None, min_length=1, max_length=256)
@@ -230,6 +234,13 @@ class BootstrapV1(ApiModel):
     csrf_token: str | None = None
     client_session_id: str
     last_event_sequence: int
+
+
+class HostRestartResponseV1(ApiModel):
+    """Non-secret receipt for polling a Host-owned replacement."""
+
+    status: Literal["scheduled", "ready"]
+    restart_receipt: str = Field(min_length=32, max_length=512)
 
 
 class ProjectPlanItemV1(ApiModel):
@@ -1375,6 +1386,25 @@ class EngineeringMissionSnapshotV1(ApiModel):
         return self
 
 
+def canonical_engineering_mission_snapshot(value: Any) -> tuple[dict[str, Any], str]:
+    """Validate and serialize the one Host-canonical engineering mission form."""
+
+    snapshot = EngineeringMissionSnapshotV1.model_validate(value).model_dump(
+        mode="json",
+        by_alias=True,
+        exclude_none=True,
+    )
+    digest = hashlib.sha256(
+        json.dumps(
+            snapshot,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    return snapshot, digest
+
+
 class EngineeringMissionV1(ApiModel):
     schema_version: Literal["1"] = "1"
     conversation_id: str
@@ -1384,6 +1414,7 @@ class EngineeringMissionV1(ApiModel):
     snapshot: EngineeringMissionSnapshotV1
     digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     updated_by_run_id: str
+    change_transaction_id: EngineeringEvidenceIdV1 | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -1403,6 +1434,7 @@ class EngineeringMissionSummaryV1(ApiModel):
     ]
     digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     updated_by_run_id: str
+    change_transaction_id: EngineeringEvidenceIdV1 | None = None
     updated_at: datetime
 
 
@@ -1530,6 +1562,23 @@ class ConversationCreateV1(ApiModel):
         return self
 
 
+class OfflineOperandMissionV1(ApiModel):
+    """Host-owned typed intent for one evidence-derived offline LD operand edit."""
+
+    schema_version: Literal["1"] = "1"
+    program_id: str = Field(min_length=1, max_length=256)
+    program_name: str = Field(min_length=1, max_length=512)
+    expected_operand: str = Field(min_length=1, max_length=256)
+    replacement_operand: str = Field(min_length=1, max_length=256)
+    token_offset_source: Literal["fresh_ld_evidence"]
+
+    @model_validator(mode="after")
+    def validate_distinct_operands(self) -> OfflineOperandMissionV1:
+        if self.expected_operand == self.replacement_operand:
+            raise ValueError("offline operand mission requires a changed operand")
+        return self
+
+
 class SendMessageRequestV1(ApiModel):
     content: str = Field(min_length=1, max_length=1_000_000)
     operation_id: str = Field(min_length=8, max_length=128)
@@ -1545,6 +1594,7 @@ class SendMessageRequestV1(ApiModel):
     verification_scope: Literal[
         "offline_native_reopen", "offline_native_reopen_xgsim"
     ] = "offline_native_reopen"
+    offline_operand_mission: OfflineOperandMissionV1 | None = None
 
     @model_validator(mode="after")
     def validate_project_brief_workflow(self) -> SendMessageRequestV1:
@@ -1564,6 +1614,15 @@ class SendMessageRequestV1(ApiModel):
             raise ValueError(
                 "offline_native_reopen_xgsim requires offline_candidate_revision"
             )
+        if self.offline_operand_mission is not None and (
+            self.workflow != "engineering"
+            or self.change_request_scope != "offline_candidate_revision"
+            or self.verification_scope != "offline_native_reopen"
+        ):
+            raise ValueError(
+                "offlineOperandMission requires engineering offline_candidate_revision "
+                "with offline_native_reopen"
+            )
         return self
 
     @field_validator("operation_id")
@@ -1582,6 +1641,20 @@ class SendMessageResponseV1(ApiModel):
 
 class EngineeringMissionResumeRequestV1(ApiModel):
     operation_id: str = Field(min_length=8, max_length=128)
+
+    @field_validator("operation_id")
+    @classmethod
+    def validate_operation_id(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", value):
+            raise ValueError("operation_id contains invalid characters")
+        return value
+
+
+class EngineeringMissionBlockedStepReverifyRequestV1(ApiModel):
+    """Explicit user authority to reopen one durably blocked read step."""
+
+    operation_id: str = Field(min_length=8, max_length=128)
+    completed_report: bool = False
 
     @field_validator("operation_id")
     @classmethod
@@ -1629,6 +1702,14 @@ class BrowserSessionV1(ApiModel):
 
 class LauncherHandoffV1(ApiModel):
     handoff_ticket: str
+    readiness_receipt: str
+    expires_at: datetime
+
+
+class LauncherReadinessV1(ApiModel):
+    """Launcher-only observation of a single browser bootstrap handoff."""
+
+    status: Literal["pending", "ready"]
     expires_at: datetime
 
 
@@ -1640,7 +1721,7 @@ class RunCancellationV1(ApiModel):
     detail: str | None = None
 
 
-VerificationScope = Literal["offline_native_check_only"]
+VerificationScope = Literal["offline_native_check_only", "offline_native_reopen"]
 ChangeMode = Literal["offline_working_copy_revision"]
 ChangeRequestScope = Literal[
     "offline_candidate_revision",
@@ -1650,11 +1731,13 @@ OfflineNativeValidationStep = Literal[
     "structural_diff",
     "xg5000_program_check",
     "project_save",
+    "project_reopen",
 ]
 OFFLINE_NATIVE_VALIDATION_STEPS = (
     "structural_diff",
     "xg5000_program_check",
     "project_save",
+    "project_reopen",
 )
 MNE_FULL_PROGRAM_VALIDATION_STEPS = (
     "structural_diff",
@@ -1750,11 +1833,11 @@ class ChangePlanV1(ApiModel):
         default_factory=list,
         max_length=len(REQUIRED_CHANGE_COVERAGE_AREAS),
     )
-    verification_scope: VerificationScope = "offline_native_check_only"
+    verification_scope: VerificationScope = "offline_native_reopen"
     validation: list[OfflineNativeValidationStep] = Field(
         default_factory=lambda: list(OFFLINE_NATIVE_VALIDATION_STEPS),
         min_length=3,
-        max_length=3,
+        max_length=4,
     )
     manual_follow_up: list[str] = Field(default_factory=list, max_length=200)
     rollback: list[str] = Field(min_length=1, max_length=200)
@@ -1783,10 +1866,13 @@ class ChangePlanV1(ApiModel):
             raise ValueError("plan.current.value is required")
         if not isinstance(proposed_value, str) or not proposed_value:
             raise ValueError("plan.proposed.value is required")
-        if tuple(self.validation) != OFFLINE_NATIVE_VALIDATION_STEPS:
+        if (
+            self.verification_scope != "offline_native_reopen"
+            or tuple(self.validation) != OFFLINE_NATIVE_VALIDATION_STEPS
+        ):
             raise ValueError(
-                "offline_native_check_only must execute structural_diff, "
-                "xg5000_program_check, and project_save in that order"
+                "offline_native_reopen must execute structural_diff, "
+                "xg5000_program_check, project_save, and project_reopen in that order"
             )
         return self
 
@@ -1898,6 +1984,39 @@ class ChangePlanV1(ApiModel):
             "hardwareContextBinding",
             self.target.get("hardware_context_binding"),
         )
+        runtime_deployment_ready = self.target.get(
+            "runtimeDeploymentReady",
+            self.target.get("runtime_deployment_ready"),
+        )
+        runtime_deployment_blockers = self.target.get(
+            "runtimeDeploymentBlockingReasons",
+            self.target.get("runtime_deployment_blocking_reasons"),
+        )
+        if self.request_scope == "offline_candidate_revision":
+            if (
+                runtime_deployment_ready is not False
+                or not isinstance(runtime_deployment_blockers, list)
+                or not runtime_deployment_blockers
+                or any(
+                    not isinstance(item, str) or not item
+                    for item in runtime_deployment_blockers
+                )
+                or len(set(runtime_deployment_blockers))
+                != len(runtime_deployment_blockers)
+                or "online_runtime_deployment_unsupported"
+                not in runtime_deployment_blockers
+            ):
+                raise ValueError(
+                    "offline candidate plans require exact runtime deployment blockers"
+                )
+        elif (
+            runtime_deployment_ready is not None
+            or runtime_deployment_blockers is not None
+        ):
+            raise ValueError(
+                "runtime-blocked candidate evidence is valid only for "
+                "offline_candidate_revision"
+            )
         try:
             canonical_evidence_ref = str(uuid.UUID(str(analysis_evidence_ref)))
         except ValueError as exc:
@@ -2059,16 +2178,22 @@ class ChangePlanV1(ApiModel):
                 item not in allowed_hardware_context
                 for item in required_hardware_context
             )
-            or hardware_context_binding.get("blocking_reasons") != []
-            or any(
-                hardware_context_binding.get(name) != status
-                for name, status in observed_hardware_status.items()
+            or (
+                self.request_scope != "offline_candidate_revision"
+                and (
+                    hardware_context_binding.get("blocking_reasons") != []
+                    or any(
+                        hardware_context_binding.get(name) != status
+                        for name, status in observed_hardware_status.items()
+                    )
+                    or any(
+                        hardware_context_binding.get(f"{item}_status")
+                        != "observed"
+                        for item in required_hardware_context
+                    )
+                    or bool(relevant_hardware_blockers)
+                )
             )
-            or any(
-                hardware_context_binding.get(f"{item}_status") != "observed"
-                for item in required_hardware_context
-            )
-            or relevant_hardware_blockers
         ):
             raise ValueError(
                 "plan.target.hardwareContextBinding has unobserved required context"
@@ -2399,6 +2524,39 @@ class MneSeriesGuardPatchV3(ApiModel):
         return self
 
 
+class MneFieldIoBindingV1(ApiModel):
+    """Public, typed terminal fact attached only to physical-P proposals."""
+
+    device: str = Field(pattern=r"^P[0-9A-F]+$")
+    direction: Literal["input", "output"]
+    point_kind: Literal["digital_input", "digital_output"]
+    module: dict[str, Any]
+    channel: dict[str, Any]
+    terminal_range: dict[str, Any]
+    binding_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_typed_terminal_binding(self) -> MneFieldIoBindingV1:
+        if not self.module or not self.channel or not self.terminal_range:
+            raise ValueError("field I/O binding must retain module, channel, and terminal range")
+        if (self.direction == "input") != (self.point_kind == "digital_input"):
+            raise ValueError("field I/O direction and point kind disagree")
+        return self
+
+
+def _validate_mne_field_io_envelope(
+    hardware_context_digest: str | None,
+    bindings: list[MneFieldIoBindingV1],
+) -> None:
+    if (hardware_context_digest is None) != (not bindings):
+        raise ValueError(
+            "hardwareContextDigest and fieldIoBindings must be supplied together"
+        )
+    keys = [(binding.device, binding.direction) for binding in bindings]
+    if keys != sorted(keys) or len(keys) != len(set(keys)):
+        raise ValueError("fieldIoBindings must be uniquely ordered by device and direction")
+
+
 class MneSeriesGuardCandidateV3(ApiModel):
     """Digest-only compiler receipt; no raw program payload crosses the API."""
 
@@ -2417,6 +2575,10 @@ class MneSeriesGuardCandidateV3(ApiModel):
     target_mne_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     design_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     target_program_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    hardware_context_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    field_io_bindings: list[MneFieldIoBindingV1] = Field(default_factory=list)
     candidate_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_serializer(mode="wrap")
@@ -2424,12 +2586,18 @@ class MneSeriesGuardCandidateV3(ApiModel):
         serialized = handler(self)
         if "schema_value" in serialized:
             serialized["schema"] = serialized.pop("schema_value")
+        if serialized.get("hardware_context_digest") is None:
+            serialized.pop("hardware_context_digest", None)
+            serialized.pop("field_io_bindings", None)
         return serialized
 
     @model_validator(mode="after")
     def validate_candidate(self) -> MneSeriesGuardCandidateV3:
         if self.program_id != self.program_id.strip() or self.program_name != self.program_name.strip():
             raise ValueError("candidate program identity must be exact non-blank text")
+        _validate_mne_field_io_envelope(
+            self.hardware_context_digest, self.field_io_bindings
+        )
         if self.target_instruction_count != self.baseline_instruction_count + 1:
             raise ValueError("candidate targetInstructionCount must add exactly one guard")
         if self.patch.output_instruction_index >= self.baseline_instruction_count - 1:
@@ -2437,10 +2605,11 @@ class MneSeriesGuardCandidateV3(ApiModel):
         # The candidate originates at MCP and its digest covers that exact
         # snake-case receipt. Public camelCase serialization must not redefine it.
         unsigned = self.model_dump(
-            mode="json",
-            by_alias=False,
-            exclude={"candidate_digest"},
+            mode="json", by_alias=False, exclude={"candidate_digest"}
         )
+        if self.hardware_context_digest is None:
+            unsigned.pop("hardware_context_digest", None)
+            unsigned.pop("field_io_bindings", None)
         if self.candidate_digest != _canonical_sha256(unsigned):
             raise ValueError("candidate.candidateDigest is not canonical")
         return self
@@ -2530,6 +2699,10 @@ class MneInstructionPatchCandidateV4(ApiModel):
     target_mne_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     design_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     target_program_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    hardware_context_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    field_io_bindings: list[MneFieldIoBindingV1] = Field(default_factory=list)
     candidate_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_serializer(mode="wrap")
@@ -2537,12 +2710,18 @@ class MneInstructionPatchCandidateV4(ApiModel):
         serialized = handler(self)
         if "schema_value" in serialized:
             serialized["schema"] = serialized.pop("schema_value")
+        if serialized.get("hardware_context_digest") is None:
+            serialized.pop("hardware_context_digest", None)
+            serialized.pop("field_io_bindings", None)
         return serialized
 
     @model_validator(mode="after")
     def validate_candidate(self) -> MneInstructionPatchCandidateV4:
         if self.program_id != self.program_id.strip() or self.program_name != self.program_name.strip():
             raise ValueError("candidate program identity must be exact non-blank text")
+        _validate_mne_field_io_envelope(
+            self.hardware_context_digest, self.field_io_bindings
+        )
         if self.patch.anchor_instruction_index >= self.baseline_instruction_count - 1:
             raise ValueError("candidate anchor is outside the executable baseline")
         if (self.patch.context_before is None) != (self.patch.anchor_instruction_index == 0):
@@ -2557,10 +2736,11 @@ class MneInstructionPatchCandidateV4(ApiModel):
         if self.target_instruction_count != self.baseline_instruction_count + delta:
             raise ValueError("candidate targetInstructionCount is inconsistent")
         unsigned = self.model_dump(
-            mode="json",
-            by_alias=False,
-            exclude={"candidate_digest"},
+            mode="json", by_alias=False, exclude={"candidate_digest"}
         )
+        if self.hardware_context_digest is None:
+            unsigned.pop("hardware_context_digest", None)
+            unsigned.pop("field_io_bindings", None)
         if self.candidate_digest != _canonical_sha256(unsigned):
             raise ValueError("candidate.candidateDigest is not canonical")
         return self
@@ -2584,6 +2764,10 @@ class MneInstructionBatchPatchCandidateV5(ApiModel):
     target_mne_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     design_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     target_program_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    hardware_context_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    field_io_bindings: list[MneFieldIoBindingV1] = Field(default_factory=list)
     candidate_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_serializer(mode="wrap")
@@ -2591,12 +2775,18 @@ class MneInstructionBatchPatchCandidateV5(ApiModel):
         serialized = handler(self)
         if "schema_value" in serialized:
             serialized["schema"] = serialized.pop("schema_value")
+        if serialized.get("hardware_context_digest") is None:
+            serialized.pop("hardware_context_digest", None)
+            serialized.pop("field_io_bindings", None)
         return serialized
 
     @model_validator(mode="after")
     def validate_candidate(self) -> MneInstructionBatchPatchCandidateV5:
         if self.program_id != self.program_id.strip() or self.program_name != self.program_name.strip():
             raise ValueError("candidate program identity must be exact non-blank text")
+        _validate_mne_field_io_envelope(
+            self.hardware_context_digest, self.field_io_bindings
+        )
         anchor_indexes = [item.anchor_instruction_index for item in self.patches]
         if anchor_indexes != sorted(anchor_indexes) or len(anchor_indexes) != len(
             set(anchor_indexes)
@@ -2618,10 +2808,11 @@ class MneInstructionBatchPatchCandidateV5(ApiModel):
         if self.target_instruction_count != self.baseline_instruction_count + delta:
             raise ValueError("candidate targetInstructionCount is inconsistent")
         unsigned = self.model_dump(
-            mode="json",
-            by_alias=False,
-            exclude={"candidate_digest"},
+            mode="json", by_alias=False, exclude={"candidate_digest"}
         )
+        if self.hardware_context_digest is None:
+            unsigned.pop("hardware_context_digest", None)
+            unsigned.pop("field_io_bindings", None)
         if self.candidate_digest != _canonical_sha256(unsigned):
             raise ValueError("candidate.candidateDigest is not canonical")
         return self
@@ -2818,6 +3009,10 @@ class MneRungPatchCandidateV6(ApiModel):
     design_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     target_program_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     simulation_profile: dict[str, Any] | None = None
+    hardware_context_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    field_io_bindings: list[MneFieldIoBindingV1] = Field(default_factory=list)
     candidate_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_serializer(mode="wrap")
@@ -2825,12 +3020,18 @@ class MneRungPatchCandidateV6(ApiModel):
         serialized = handler(self)
         if "schema_value" in serialized:
             serialized["schema"] = serialized.pop("schema_value")
+        if serialized.get("hardware_context_digest") is None:
+            serialized.pop("hardware_context_digest", None)
+            serialized.pop("field_io_bindings", None)
         return serialized
 
     @model_validator(mode="after")
     def validate_candidate(self) -> MneRungPatchCandidateV6:
         if self.program_id != self.program_id.strip() or self.program_name != self.program_name.strip():
             raise ValueError("candidate program identity must be exact non-blank text")
+        _validate_mne_field_io_envelope(
+            self.hardware_context_digest, self.field_io_bindings
+        )
         if self.patch.anchor.index >= self.baseline_instruction_count:
             raise ValueError("candidate anchor is outside the baseline")
         baseline_rung = self.patch.anchor_rung
@@ -2932,10 +3133,11 @@ class MneRungPatchCandidateV6(ApiModel):
             ):
                 raise ValueError("candidate simulationProfile catalog proof is invalid")
         unsigned = self.model_dump(
-            mode="json",
-            by_alias=False,
-            exclude={"candidate_digest"},
+            mode="json", by_alias=False, exclude={"candidate_digest"}
         )
+        if self.hardware_context_digest is None:
+            unsigned.pop("hardware_context_digest", None)
+            unsigned.pop("field_io_bindings", None)
         if self.candidate_digest != _canonical_sha256(unsigned):
             raise ValueError("candidate.candidateDigest is not canonical")
         return self
@@ -3193,10 +3395,11 @@ class FinalizeSimulationChangeRequestV1(ApiModel):
 
 
 class ReconcileChangeTransactionRequestV1(ExecuteChangeTransactionRequestV1):
-    """Explicit XG5000 window selected for recovery-only reattachment."""
+    """Explicit XG5000 target for recovery-only reconciliation."""
 
     pid: int = Field(gt=0)
     hwnd: int = Field(gt=0)
+    relaunch_if_unavailable: bool = False
 
 
 class ChangeTargetIdentityV1(ApiModel):
@@ -3586,6 +3789,11 @@ class ReconcileNativeProjectRequestV1(ApiModel):
     pid: int = Field(gt=0)
     hwnd: int = Field(gt=0)
     expected_project_path: str = Field(min_length=1, max_length=32_768)
+    observed_project_path: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=32_768,
+    )
     expected_project_sha256: str | None = Field(
         default=None,
         min_length=64,
@@ -3882,28 +4090,63 @@ class ControllerRestoreWorkspaceProvenanceV1(ApiModel):
         return self
 
 
+class NewBuildWorkspaceProvenanceV1(ApiModel):
+    receipt_schema: Literal[
+        "controlstudio-new-build-workspace-provenance/v1"
+    ] = Field(alias="schema")
+    native_project_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
+    reviewed_plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    build_bundle_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    build_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    saved_project_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_provenance(self) -> NewBuildWorkspaceProvenanceV1:
+        if str(uuid.UUID(self.native_project_id)) != self.native_project_id:
+            raise ValueError("new-build provenance nativeProjectId is not canonical")
+        unsigned = {
+            "schema": self.receipt_schema,
+            "native_project_id": self.native_project_id,
+            "reviewed_plan_digest": self.reviewed_plan_digest,
+            "build_bundle_id": self.build_bundle_id,
+            "build_receipt_digest": self.build_receipt_digest,
+            "saved_project_sha256": self.saved_project_sha256,
+        }
+        if _canonical_sha256(unsigned) != self.receipt_digest:
+            raise ValueError("new-build provenance digest mismatched")
+        return self
+
+
 class LocalWorkspaceV1(ApiModel):
     workspace_id: str
     revision_id: str
-    source_kind: Literal["local_file", "restored_from_controller"]
+    source_kind: Literal["local_file", "restored_from_controller", "new_build"]
     vendor: Literal["ls"]
     engineering_system: Literal["XG5000"]
     created_at: datetime
     source: LocalWorkspaceSourceV1
     working_copy: LocalWorkingCopyV1
-    provenance: ControllerRestoreWorkspaceProvenanceV1 | None = None
+    provenance: (
+        ControllerRestoreWorkspaceProvenanceV1
+        | NewBuildWorkspaceProvenanceV1
+        | None
+    ) = None
 
     @model_validator(mode="after")
     def validate_source_provenance(self) -> LocalWorkspaceV1:
-        if (self.source_kind == "restored_from_controller") != (
-            self.provenance is not None
-        ):
-            raise ValueError("workspace source kind and restore provenance disagree")
+        expected_provenance_type = {
+            "local_file": type(None),
+            "restored_from_controller": ControllerRestoreWorkspaceProvenanceV1,
+            "new_build": NewBuildWorkspaceProvenanceV1,
+        }[self.source_kind]
+        if not isinstance(self.provenance, expected_provenance_type):
+            raise ValueError("workspace source kind and provenance disagree")
         if (
             self.provenance is not None
             and self.provenance.saved_project_sha256 != self.source.sha256
         ):
-            raise ValueError("restore provenance does not match workspace source")
+            raise ValueError("workspace provenance does not match workspace source")
         return self
 
 
@@ -3978,7 +4221,7 @@ class LocalWorkspaceCompareV1(ApiModel):
     verified: Literal[True]
     workspace_id: str
     revision_id: str
-    source_kind: Literal["local_file", "restored_from_controller"]
+    source_kind: Literal["local_file", "restored_from_controller", "new_build"]
     source: WorkspaceCompareFileV1
     working_copy: WorkspaceCompareFileV1
     file_identical: bool
@@ -4169,11 +4412,39 @@ class AttachXG5000RequestV1(ApiModel):
     hwnd: int = Field(gt=0)
     project_path: str | None = Field(default=None, max_length=32_768)
     project_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    # Recovery must never silently bind a selected old IDE window to whichever
+    # workspace happens to be active in the browser.
+    allow_unbound_existing_target: bool = False
 
 
 class AttachXG5000ResponseV1(ApiModel):
     status: Literal["attached"] = "attached"
     session: EngineeringSessionV1
+
+
+class ReviewedNoSaveCloseRequestV1(ApiModel):
+    """Explicit user-confirmed close; it never implies opening another workspace."""
+
+    session_id: str = Field(min_length=1, max_length=256)
+    pid: int = Field(gt=0)
+    hwnd: int = Field(gt=0)
+    process_create_time: float = Field(gt=0)
+    project_path: str = Field(min_length=1, max_length=32_768)
+    project_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    confirm_no_save: Literal[True]
+    timeout_seconds: float = Field(default=45, gt=0, le=60)
+
+
+class ReviewedNoSaveCloseResponseV1(ApiModel):
+    operation: Literal["xg5000.reviewed_no_save_close"]
+    verified: Literal[True]
+    source_closed: Literal[True]
+    automatic_workspace_open: Literal[False]
+    process_terminated: Literal[False]
+    reviewed_binding: dict[str, Any]
+    close: dict[str, Any]
+    receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    next_step: Literal["explicit_user_confirmed_workspace_open_required"]
 
 
 class KnowledgeSourceV1(ApiModel):

@@ -10,6 +10,7 @@ $launcher = Join-Path $platform 'launcher\.venv\Scripts\controlstudio.exe'
 $agentDevPython = Join-Path $workspace 'gidong-agent\.venv-dev\Scripts\python.exe'
 $agentExecutable = Join-Path $workspace 'gidong-agent\.venv\Scripts\controlstudio-agent.exe'
 $mcp = Join-Path $workspace 'gidong-plc-mcp\.venv\Scripts\controlstudio-plc-mcp.exe'
+$xg5000Cli = Join-Path $workspace 'controlstudio-xg5000-cli\.venv\Scripts\controlstudio-xg5000.exe'
 
 if (Test-Path -LiteralPath $agentDevPython -PathType Leaf) {
     $agentRuntime = $agentDevPython
@@ -22,7 +23,8 @@ if (Test-Path -LiteralPath $agentDevPython -PathType Leaf) {
 foreach ($entry in @(
     @{ Name = 'Platform launcher'; Path = $launcher },
     @{ Name = 'Agent sidecar'; Path = $agentRuntime },
-    @{ Name = 'PLC MCP sidecar'; Path = $mcp }
+    @{ Name = 'PLC MCP sidecar'; Path = $mcp },
+    @{ Name = 'XG5000 CLI'; Path = $xg5000Cli }
 )) {
     if (-not (Test-Path -LiteralPath $entry.Path -PathType Leaf)) {
         throw "$($entry.Name) development executable is missing: $($entry.Path)"
@@ -37,6 +39,7 @@ $env:CONTROLSTUDIO_DEVELOPMENT_MODEL_TIMEOUT_SECONDS = '300'
 $env:CONTROLSTUDIO_DEVELOPMENT_MODEL_API_KEY = 'sk-1234567890'
 $env:CONTROLSTUDIO_AGENT_COMMAND = $agentCommand
 $env:CONTROLSTUDIO_MCP_COMMAND = $mcp
+$env:CONTROLSTUDIO_XG5000_CLI_COMMAND = $xg5000Cli
 
 $arguments = @('--no-config')
 if ($NoOpen) { $arguments += '--no-open' }

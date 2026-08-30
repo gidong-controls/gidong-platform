@@ -1,0 +1,1181 @@
+﻿[CmdletBinding()]
+param(
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string]$Spec,
+
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string]$Bundle,
+
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string]$LocalAppData,
+
+    [Parameter(Mandatory)]
+    [ValidateRange(1, [int]::MaxValue)]
+    [int]$ExpectedHostListenerPid,
+
+    [ValidateRange(0, [int]::MaxValue)]
+    [int]$ExpectedXgPid = 0,
+
+    [ValidateNotNullOrEmpty()]
+    [string]$XgExecutable = 'C:\XG5000\XG5000.exe',
+
+    [switch]$DebugCertification,
+    [switch]$SelfTest,
+    [switch]$ResumeAfterReviewedXgClose,
+    [string]$ResumeAuthorization,
+    [switch]$ResumePreflightOnly,
+    [switch]$ResumeExecutionPathSelfTest,
+    [switch]$ResumeAfterHiddenScratchLaunch,
+    [string]$HiddenScratchResumeAuthorization,
+    [switch]$HiddenScratchResumePreflightOnly,
+    [switch]$HiddenScratchResumeExecutionPathSelfTest,
+    [switch]$ResumeAfterReviewedVisibleScratch,
+    [string]$VisibleScratchResumeAuthorization,
+    [string]$ReopenIntoWorkspaceId,
+    [switch]$ResumeAfterReviewedNoXgWorkspaceLaunch,
+    [string]$NoXgWorkspaceLaunchAuthorization,
+    [switch]$CleanupReviewedHeadlessXgThenNoXgWorkspaceLaunch,
+    [string]$HeadlessXgCleanupAuthorization,
+    [switch]$HeadlessXgCleanupPreflightOnly
+)
+
+# Developer-only, one-shot certification/restart harness. It accepts the
+# artifact data root as an argument rather than making the product launcher
+# depend on test artifacts. The same in-memory secret is supplied to the
+# certificate command and to the subsequently launched Host/MCP pair.
+$ErrorActionPreference = 'Stop'
+$platform = Split-Path -Parent $PSScriptRoot
+$workspace = Split-Path -Parent $platform
+$certifier = Join-Path $workspace 'gidong-plc-mcp\.venv\Scripts\controlstudio-certify-mne-capability.exe'
+$mcpPython = Join-Path $workspace 'gidong-plc-mcp\.venv\Scripts\python.exe'
+$hostPython = Join-Path $platform 'host\.venv\Scripts\python.exe'
+$agentDevPython = Join-Path $workspace 'gidong-agent\.venv-dev\Scripts\python.exe'
+$agentExecutable = Join-Path $workspace 'gidong-agent\.venv\Scripts\controlstudio-agent.exe'
+$mcp = Join-Path $workspace 'gidong-plc-mcp\.venv\Scripts\controlstudio-plc-mcp.exe'
+$baseUrl = 'http://127.0.0.1:8767'
+
+function Initialize-ReviewedModalNativeApi {
+    if ($null -ne ('ControlStudioMneModalNative' -as [type])) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public sealed class ControlStudioMneModalSnapshot {
+    public long Handle;
+    public long Parent;
+    public string Title;
+    public string ClassName;
+    public string[] ChildTexts;
+    public int[] ChildControlIds;
+}
+
+public static class ControlStudioMneModalNative {
+    private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+    private const uint BM_CLICK = 0x00F5;
+    private const uint SMTO_ABORTIFHUNG = 0x0002;
+    private const uint SMTO_ERRORONEXIT = 0x0020;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc callback, IntPtr lParam);
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern int GetWindowTextW(IntPtr hwnd, StringBuilder text, int maximum);
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern int GetClassNameW(IntPtr hwnd, StringBuilder text, int maximum);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr GetParent(IntPtr hwnd);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool IsWindowEnabled(IntPtr hwnd);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr GetDlgItem(IntPtr dialog, int id);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern int GetDlgCtrlID(IntPtr hwnd);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SendMessageTimeoutW(
+        IntPtr hwnd, uint message, UIntPtr wParam, IntPtr lParam,
+        uint flags, uint timeoutMilliseconds, out IntPtr result);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool ShowWindowAsync(IntPtr hwnd, int command);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool ShowWindow(IntPtr hwnd, int command);
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CommandLineToArgvW(string commandLine, out int argumentCount);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr LocalFree(IntPtr memory);
+
+    private static string TextOf(IntPtr hwnd) {
+        var text = new StringBuilder(4096);
+        GetWindowTextW(hwnd, text, text.Capacity);
+        return text.ToString();
+    }
+
+    private static string ClassOf(IntPtr hwnd) {
+        var text = new StringBuilder(512);
+        GetClassNameW(hwnd, text, text.Capacity);
+        return text.ToString();
+    }
+
+    public static ControlStudioMneModalSnapshot[] FindVisibleEnabledOwnedWindows(uint expectedPid, long mainHwnd) {
+        var result = new List<ControlStudioMneModalSnapshot>();
+        EnumWindows(delegate(IntPtr hwnd, IntPtr ignored) {
+            uint pid;
+            GetWindowThreadProcessId(hwnd, out pid);
+            if (pid != expectedPid || GetParent(hwnd).ToInt64() != mainHwnd || !IsWindowVisible(hwnd) || !IsWindowEnabled(hwnd)) {
+                return true;
+            }
+            var childTexts = new List<string>();
+            var childControlIds = new List<int>();
+            EnumChildWindows(hwnd, delegate(IntPtr child, IntPtr ignoredChild) {
+                childTexts.Add(TextOf(child));
+                childControlIds.Add(GetDlgCtrlID(child));
+                return true;
+            }, IntPtr.Zero);
+            result.Add(new ControlStudioMneModalSnapshot {
+                Handle = hwnd.ToInt64(), Parent = GetParent(hwnd).ToInt64(),
+                Title = TextOf(hwnd), ClassName = ClassOf(hwnd), ChildTexts = childTexts.ToArray(),
+                ChildControlIds = childControlIds.ToArray()
+            });
+            return true;
+        }, IntPtr.Zero);
+        return result.ToArray();
+    }
+
+    // This deliberately enumerates only top-level windows of one reviewed PID.
+    // It is used solely to recover the window hidden by a reviewed launcher.
+    public static ControlStudioMneModalSnapshot[] FindTopLevelWindows(uint expectedPid) {
+        var result = new List<ControlStudioMneModalSnapshot>();
+        EnumWindows(delegate(IntPtr hwnd, IntPtr ignored) {
+            uint pid;
+            GetWindowThreadProcessId(hwnd, out pid);
+            if (pid != expectedPid) return true;
+            result.Add(new ControlStudioMneModalSnapshot {
+                Handle = hwnd.ToInt64(), Parent = GetParent(hwnd).ToInt64(),
+                Title = TextOf(hwnd), ClassName = ClassOf(hwnd),
+                ChildTexts = new string[0], ChildControlIds = new int[0]
+            });
+            return true;
+        }, IntPtr.Zero);
+        return result.ToArray();
+    }
+
+    public static bool IsVisibleAndEnabled(long hwnd) {
+        IntPtr handle = new IntPtr(hwnd);
+        return IsWindowVisible(handle) && IsWindowEnabled(handle);
+    }
+
+    public static bool IsVisible(long hwnd) {
+        return IsWindowVisible(new IntPtr(hwnd));
+    }
+
+    public static void RestoreWindow(long hwnd) {
+        IntPtr handle = new IntPtr(hwnd);
+        // SW_RESTORE is intentionally bounded to this one reviewed top-level HWND.
+        ShowWindowAsync(handle, 9);
+        ShowWindow(handle, 9);
+    }
+
+    public static string[] ParseCommandLine(string commandLine) {
+        if (String.IsNullOrWhiteSpace(commandLine)) {
+            throw new ArgumentException("A process command line is required", "commandLine");
+        }
+        int count;
+        IntPtr argv = CommandLineToArgvW(commandLine, out count);
+        if (argv == IntPtr.Zero || count <= 0) {
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "CommandLineToArgvW failed");
+        }
+        try {
+            var result = new string[count];
+            for (int index = 0; index < count; index++) {
+                result[index] = Marshal.PtrToStringUni(Marshal.ReadIntPtr(argv, index * IntPtr.Size));
+            }
+            return result;
+        } finally {
+            LocalFree(argv);
+        }
+    }
+
+    public static void ClickEnabledNoButton(long dialogHwnd) {
+        IntPtr dialog = new IntPtr(dialogHwnd);
+        IntPtr button = GetDlgItem(dialog, 7);
+        if (button == IntPtr.Zero || GetDlgCtrlID(button) != 7 || !IsWindowVisible(button) || !IsWindowEnabled(button)) {
+            throw new InvalidOperationException("The exact enabled IDNO button is unavailable");
+        }
+        IntPtr ignored;
+        if (SendMessageTimeoutW(button, BM_CLICK, UIntPtr.Zero, IntPtr.Zero, SMTO_ABORTIFHUNG | SMTO_ERRORONEXIT, 5000, out ignored) == IntPtr.Zero) {
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "IDNO BM_CLICK delivery failed");
+        }
+    }
+}
+'@
+}
+
+function Test-ExactNoSaveModalShape {
+    param(
+        [Parameter(Mandatory)]$Candidate,
+        [Parameter(Mandatory)][int64]$ExpectedMainHwnd
+    )
+
+    if ($Candidate.Parent -ne $ExpectedMainHwnd -or $Candidate.Title -cne 'XG5000' -or $Candidate.ClassName -cne '#32770') {
+        return $false
+    }
+    $prompt = "프로젝트창이 닫힙니다.`n저장하시겠습니까?"
+    return @($Candidate.ChildTexts | Where-Object {
+        ([string]$_).Replace("`r`n", "`n") -ceq $prompt
+    }).Count -eq 1
+}
+
+function Test-KnownDecorativeOwnedWindow {
+    param([Parameter(Mandatory)]$Candidate)
+
+    return (
+        [string]$Candidate.ClassName -ceq 'BCGPShadowSideWnd' -and
+        [string]$Candidate.Title -ceq '' -and
+        @($Candidate.ChildControlIds).Count -eq 0
+    )
+}
+
+function Get-ActionableOwnedWindows {
+    param([Parameter(Mandatory)]$Candidates)
+    return @($Candidates | Where-Object { -not (Test-KnownDecorativeOwnedWindow -Candidate $_) })
+}
+
+function Resolve-ExactNoSaveModal {
+    param(
+        [Parameter(Mandatory)][int]$XgPid,
+        [Parameter(Mandatory)][int64]$MainHwnd
+    )
+
+    Initialize-ReviewedModalNativeApi
+    $modals = @([ControlStudioMneModalNative]::FindVisibleEnabledOwnedWindows([uint32]$XgPid, $MainHwnd))
+    $actionable = @(Get-ActionableOwnedWindows -Candidates $modals)
+    if ($actionable.Count -eq 0) { return $null }
+    if ($actionable.Count -ne 1 -or -not (Test-ExactNoSaveModalShape -Candidate $actionable[0] -ExpectedMainHwnd $MainHwnd)) {
+        $diagnostic = @($modals | ForEach-Object {
+            [pscustomobject]@{
+                class = $_.ClassName
+                title = $_.Title
+                parent = $_.Parent
+                childControlIds = @($_.ChildControlIds)
+            }
+        }) | ConvertTo-Json -Compress -Depth 4
+        throw "Unexpected or ambiguous XG5000 modal; refusing to choose a button. candidateCount=$($modals.Count); actionableCandidateCount=$($actionable.Count); candidates=$diagnostic"
+    }
+    return $actionable[0]
+}
+
+function Close-ReviewedXgForCertification {
+    param([Parameter(Mandatory)]$XgProcess)
+
+    $mainHwnd = [int64]$XgProcess.MainWindowHandle
+    if ($mainHwnd -eq 0) { throw 'The reviewed XG5000 main window is unavailable' }
+    $modal = Resolve-ExactNoSaveModal -XgPid $XgProcess.Id -MainHwnd $mainHwnd
+    if ($null -ne $modal) {
+        [ControlStudioMneModalNative]::ClickEnabledNoButton($modal.Handle)
+    } elseif (-not $XgProcess.CloseMainWindow()) {
+        throw 'The reviewed XG5000 main window did not accept a clean close; no process was terminated.'
+    }
+
+    # XG5000 can finish its no-save shutdown after its modal button has
+    # returned.  Keep the exact modal/IDNO path and never force-kill it; allow
+    # the observed natural shutdown window before declaring the boundary dirty.
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
+    $clickedHandle = if ($null -ne $modal) { [int64]$modal.Handle } else { $null }
+    $graceUntil = if ($null -ne $clickedHandle) { [DateTimeOffset]::UtcNow.AddSeconds(3) } else { [DateTimeOffset]::MinValue }
+    while ([DateTimeOffset]::UtcNow -lt $deadline) {
+        $XgProcess.Refresh()
+        if ($XgProcess.HasExited) { return }
+        if ([DateTimeOffset]::UtcNow -lt $graceUntil) {
+            Start-Sleep -Milliseconds 250
+            continue
+        }
+        $nextModal = Resolve-ExactNoSaveModal -XgPid $XgProcess.Id -MainHwnd $mainHwnd
+        if ($null -ne $nextModal) {
+            if ($null -ne $clickedHandle -and [int64]$nextModal.Handle -eq $clickedHandle) {
+                Start-Sleep -Milliseconds 250
+                continue
+            }
+            if ($null -ne $clickedHandle) { throw 'A different modal appeared after the exact no-save click; refusing a second click.' }
+            [ControlStudioMneModalNative]::ClickEnabledNoButton($nextModal.Handle)
+            $clickedHandle = [int64]$nextModal.Handle
+            $graceUntil = [DateTimeOffset]::UtcNow.AddSeconds(3)
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    throw 'XG5000 did not exit after the exact no-save decision; no process was terminated.'
+}
+
+function Assert-ResumeAfterReviewedXgClose {
+    param(
+        [Parameter(Mandatory)][string]$AuthorizationPath,
+        [Parameter(Mandatory)][string]$SpecPath,
+        [Parameter(Mandatory)]$Template,
+        [Parameter(Mandatory)][string]$BundlePath
+    )
+
+    if ($null -ne (Get-Process -Name XG5000 -ErrorAction SilentlyContinue)) { throw 'Resume requires no XG5000 process' }
+    if (Test-Path -LiteralPath $BundlePath) { throw 'Resume requires the capability bundle to remain absent' }
+    $exactAuthorizationPath = [System.IO.Path]::GetFullPath($AuthorizationPath)
+    if (-not (Test-Path -LiteralPath $exactAuthorizationPath -PathType Leaf)) { throw 'Resume authorization is not a file' }
+    $authorization = [System.IO.File]::ReadAllText($exactAuthorizationPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $expectedKeys = @('schema', 'priorResult', 'inputs', 'hostListener', 'expectedFailure')
+    if (
+        ((@($authorization.PSObject.Properties.Name | Sort-Object) -join ',')) -cne
+        ((@($expectedKeys | Sort-Object) -join ','))
+    ) {
+        throw 'Resume authorization fields are invalid'
+    }
+    if ($authorization.schema -cne 'controlstudio-mne-resume-after-xg-close/v1' -or $authorization.expectedFailure -cne 'unexpected_modal_after_reviewed_clean_stop/v1') {
+        throw 'Resume authorization purpose is invalid'
+    }
+    $listenerAuthorization = $authorization.hostListener
+    if ($null -eq $listenerAuthorization -or [int]$listenerAuthorization.pid -le 0 -or [int]$listenerAuthorization.closedXgPid -le 0 -or [string]::IsNullOrWhiteSpace([string]$listenerAuthorization.startTimeUtc)) {
+        throw 'Resume authorization host identity is invalid'
+    }
+    if ((Get-DevelopmentListenerPid) -ne [int]$listenerAuthorization.pid) { throw 'Resume requires the reviewed Host listener PID' }
+    $listener = Get-Process -Id ([int]$listenerAuthorization.pid) -ErrorAction Stop
+    if ($listener.StartTime.ToUniversalTime().ToString('o') -cne [string]$listenerAuthorization.startTimeUtc) {
+        throw 'Resume requires the reviewed Host listener start time'
+    }
+    $inputs = $authorization.inputs
+    if ($null -eq $inputs -or $inputs.specPath -cne $SpecPath -or $inputs.scratchPath -cne $Template.target.project_path -or $inputs.backupPath -cne $Template.scratch.backup_path -or $inputs.markerPath -cne $Template.scratch.marker_path) {
+        throw 'Resume authorization does not bind these exact certification inputs'
+    }
+    foreach ($item in @(
+        @{ Path = $SpecPath; Hash = $inputs.specSha256 },
+        @{ Path = [string]$Template.scratch.backup_path; Hash = $inputs.backupSha256 },
+        @{ Path = [string]$Template.scratch.marker_path; Hash = $inputs.markerSha256 }
+    )) {
+        if (-not (Test-Path -LiteralPath $item.Path -PathType Leaf) -or (Get-FileHash -LiteralPath $item.Path -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$item.Hash).ToLowerInvariant()) {
+            throw 'Resume authorization input digest mismatched'
+        }
+    }
+    $prior = $authorization.priorResult
+    $priorPath = [System.IO.Path]::GetFullPath([string]$prior.path)
+    if (-not (Test-Path -LiteralPath $priorPath -PathType Leaf) -or (Get-FileHash -LiteralPath $priorPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$prior.sha256).ToLowerInvariant() -or (Get-Item -LiteralPath $priorPath).LastWriteTimeUtc.ToString('o') -cne [string]$prior.lastWriteTimeUtc) {
+        throw 'Resume authorization prior-result digest or timestamp mismatched'
+    }
+    $priorJson = [System.IO.File]::ReadAllText($priorPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    if (
+        $priorJson.status -cne 'error' -or
+        [int]$priorJson.exitCode -ne 1 -or
+        [string]::IsNullOrWhiteSpace([string]$prior.outputFragment) -or
+        ([string]$priorJson.output).IndexOf([string]$prior.outputFragment, [System.StringComparison]::Ordinal) -lt 0
+    ) {
+        throw 'Resume authorization does not bind the reviewed clean-stop failure'
+    }
+    return $listenerAuthorization
+}
+
+function Get-DevelopmentListenerPid {
+    $netstat = Join-Path $env:SystemRoot 'System32\netstat.exe'
+    $line = (& $netstat -ano -p TCP | Where-Object {
+        $_ -match '^\s*TCP\s+127\.0\.0\.1:8767\s+\S+\s+LISTENING\s+(\d+)\s*$'
+    } | Select-Object -First 1)
+    if ($line -match 'LISTENING\s+(\d+)\s*$') {
+        return [int]$Matches[1]
+    }
+    return $null
+}
+
+function Get-ExactProcessTree {
+    param([Parameter(Mandatory)][int]$RootPid)
+
+    $all = Get-CimInstance Win32_Process
+    $records = @{}
+    foreach ($record in $all) { $records[[int]$record.ProcessId] = $record }
+    if (-not $records.ContainsKey($RootPid)) {
+        throw "The expected listener process is gone: $RootPid"
+    }
+    $pending = [System.Collections.Generic.Queue[object]]::new()
+    $pending.Enqueue([pscustomobject]@{ Pid = $RootPid; Depth = 0 })
+    $seen = [System.Collections.Generic.HashSet[int]]::new()
+    $tree = @()
+    while ($pending.Count -gt 0) {
+        $entry = $pending.Dequeue()
+        if (-not $seen.Add([int]$entry.Pid)) { continue }
+        $record = $records[[int]$entry.Pid]
+        if ($null -eq $record) { continue }
+        try { $started = (Get-Process -Id ([int]$record.ProcessId) -ErrorAction Stop).StartTime.ToUniversalTime() }
+        catch { throw "Unable to capture start time for exact process $($record.ProcessId)" }
+        $tree += [pscustomobject]@{
+            Pid = [int]$record.ProcessId
+            ParentPid = [int]$record.ParentProcessId
+            Name = [string]$record.Name
+            Depth = [int]$entry.Depth
+            StartedUtc = $started
+        }
+        foreach ($child in $records.Values) {
+            if ([int]$child.ParentProcessId -eq [int]$record.ProcessId) {
+                $pending.Enqueue([pscustomobject]@{ Pid = [int]$child.ProcessId; Depth = ([int]$entry.Depth + 1) })
+            }
+        }
+    }
+    return $tree
+}
+
+function Stop-ExactDevelopmentTree {
+    param(
+        [Parameter(Mandatory)][int]$ListenerPid,
+        [Parameter(Mandatory)][int]$XgPid
+    )
+
+    if ((Get-DevelopmentListenerPid) -ne $ListenerPid) {
+        throw "Port 8767 is not owned by the reviewed listener PID $ListenerPid"
+    }
+    $tree = Get-ExactProcessTree -RootPid $ListenerPid
+    $xg = $tree | Where-Object { $_.Pid -eq $XgPid -and $_.Name -ieq 'XG5000.exe' }
+    if ($null -eq $xg) {
+        throw "Reviewed XG5000 PID $XgPid is not in the reviewed Host listener tree"
+    }
+    $xgProcess = Get-Process -Id $XgPid -ErrorAction Stop
+    Close-ReviewedXgForCertification -XgProcess $xgProcess
+
+    foreach ($entry in ($tree | Where-Object { $_.Pid -ne $XgPid } | Sort-Object Depth -Descending)) {
+        $current = Get-Process -Id $entry.Pid -ErrorAction SilentlyContinue
+        if ($null -eq $current) { continue }
+        if ($current.StartTime.ToUniversalTime() -ne $entry.StartedUtc) {
+            throw "PID reuse detected for $($entry.Pid); refusing to terminate it"
+        }
+        Stop-Process -Id $entry.Pid -Force -ErrorAction Stop
+    }
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(25)
+    while ([DateTimeOffset]::UtcNow -lt $deadline) {
+        if ($null -eq (Get-DevelopmentListenerPid)) { return }
+        Start-Sleep -Milliseconds 250
+    }
+    throw 'The exact prior Host listener did not release port 8767'
+}
+
+function Stop-ExactHostTreeAfterReviewedXgClose {
+    param(
+        [Parameter(Mandatory)][int]$ListenerPid,
+        [Parameter(Mandatory)][string]$ListenerStartTimeUtc,
+        [Parameter(Mandatory)][int]$ClosedXgPid,
+        [switch]$NoOp
+    )
+
+    if ((Get-DevelopmentListenerPid) -ne $ListenerPid) {
+        throw 'The reviewed Host listener PID changed before resume'
+    }
+    $tree = Get-ExactProcessTree -RootPid $ListenerPid
+    $listenerRecord = $tree | Where-Object { $_.Pid -eq $ListenerPid }
+    if ($null -eq $listenerRecord -or $listenerRecord.StartedUtc.ToString('o') -cne $ListenerStartTimeUtc) {
+        throw 'The reviewed Host listener start time changed before resume'
+    }
+    if ($null -ne ($tree | Where-Object { $_.Pid -eq $ClosedXgPid -or $_.Name -ieq 'XG5000.exe' })) {
+        throw 'Resume requires the reviewed XG5000 process to remain absent from the Host tree'
+    }
+    if ($null -ne (Get-Process -Name XG5000 -ErrorAction SilentlyContinue)) {
+        throw 'Resume requires no XG5000 process'
+    }
+    if ($NoOp) {
+        return [pscustomobject]@{ listenerPid = $ListenerPid; processCount = @($tree).Count; result = 'ready_to_stop_exact_host_tree' }
+    }
+    foreach ($entry in ($tree | Sort-Object Depth -Descending)) {
+        $current = Get-Process -Id $entry.Pid -ErrorAction SilentlyContinue
+        if ($null -eq $current) { continue }
+        if ($current.StartTime.ToUniversalTime() -ne $entry.StartedUtc) {
+            throw "PID reuse detected for $($entry.Pid); refusing to terminate it"
+        }
+        Stop-Process -Id $entry.Pid -Force -ErrorAction Stop
+    }
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(25)
+    while ([DateTimeOffset]::UtcNow -lt $deadline) {
+        if ($null -eq (Get-DevelopmentListenerPid)) { return }
+        Start-Sleep -Milliseconds 250
+    }
+    throw 'The reviewed Host listener did not release port 8767'
+}
+
+function Wait-ForScratchXgWindow {
+    param([Parameter(Mandatory)]$Process)
+
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(60)
+    while ([DateTimeOffset]::UtcNow -lt $deadline) {
+        $Process.Refresh()
+        if ($Process.HasExited) { throw 'Scratch XG5000 exited before its main window became available' }
+        if ($Process.MainWindowHandle -ne 0 -and $Process.MainWindowTitle -match 'XG5000') {
+            return $Process
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    throw 'Scratch XG5000 did not expose its main window within 60 seconds'
+}
+
+function Test-ExactHiddenScratchWindow {
+    param(
+        [Parameter(Mandatory)]$Snapshot,
+        [Parameter(Mandatory)]$Reviewed
+    )
+
+    return (
+        [int64]$Snapshot.Handle -eq [int64]$Reviewed.hwnd -and
+        [string]$Snapshot.Title -ceq [string]$Reviewed.title -and
+        [string]$Snapshot.ClassName -ceq [string]$Reviewed.className -and
+        -not [ControlStudioMneModalNative]::IsVisibleAndEnabled([int64]$Snapshot.Handle)
+    )
+}
+
+function Get-ArgvDigest {
+    param([Parameter(Mandatory)][string[]]$Arguments)
+
+    $bytes = [Text.Encoding]::UTF8.GetBytes(($Arguments -join [char]0))
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
+
+function Assert-ResumeAfterHiddenScratchLaunch {
+    param(
+        [Parameter(Mandatory)][string]$AuthorizationPath,
+        [Parameter(Mandatory)][string]$SpecPath,
+        [Parameter(Mandatory)]$Template,
+        [Parameter(Mandatory)][string]$BundlePath,
+        [switch]$RequireVisible
+    )
+
+    if ($null -ne (Get-DevelopmentListenerPid)) { throw 'Hidden-scratch resume requires port 8767 to remain unbound' }
+    if (Test-Path -LiteralPath $BundlePath) { throw 'Hidden-scratch resume requires the capability bundle to remain absent' }
+    $exactAuthorizationPath = [System.IO.Path]::GetFullPath($AuthorizationPath)
+    if (-not (Test-Path -LiteralPath $exactAuthorizationPath -PathType Leaf)) { throw 'Hidden-scratch resume authorization is not a file' }
+    $authorization = [System.IO.File]::ReadAllText($exactAuthorizationPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $expectedKeys = @('schema', 'priorResult', 'inputs', 'scratchProcess', 'expectedFailure')
+    if ((@($authorization.PSObject.Properties.Name | Sort-Object) -join ',') -cne ((@($expectedKeys | Sort-Object) -join ','))) {
+        throw 'Hidden-scratch resume authorization fields are invalid'
+    }
+    # A visible process quarantined after a disabled scratch probe is reusable
+    # only for the reviewed no-save close plus official workspace reopen path.
+    # It is not interchangeable with earlier COM-ready or receipt-only resume.
+    $expectedSchema = if ($RequireVisible) { 'controlstudio-mne-resume-after-visible-scratch/v3' } else { 'controlstudio-mne-resume-after-hidden-scratch-launch/v1' }
+    $expectedFailure = if ($RequireVisible) { 'mne_probe_quarantined_after_disabled_receipt/v1' } else { 'hidden_scratch_main_window/v1' }
+    if ($authorization.schema -cne $expectedSchema -or $authorization.expectedFailure -cne $expectedFailure) {
+        throw 'Hidden-scratch resume authorization purpose is invalid'
+    }
+    $inputs = $authorization.inputs
+    if ($null -eq $inputs -or $inputs.specPath -cne $SpecPath -or $inputs.scratchPath -cne $Template.target.project_path -or $inputs.backupPath -cne $Template.scratch.backup_path -or $inputs.markerPath -cne $Template.scratch.marker_path) {
+        throw 'Hidden-scratch resume authorization does not bind these exact certification inputs'
+    }
+    foreach ($item in @(
+        @{ Path = $SpecPath; Hash = $inputs.specSha256 },
+        @{ Path = [string]$Template.scratch.backup_path; Hash = $inputs.backupSha256 },
+        @{ Path = [string]$Template.scratch.marker_path; Hash = $inputs.markerSha256 }
+    )) {
+        if (-not (Test-Path -LiteralPath $item.Path -PathType Leaf) -or (Get-FileHash -LiteralPath $item.Path -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$item.Hash).ToLowerInvariant()) {
+            throw 'Hidden-scratch resume authorization input digest mismatched'
+        }
+    }
+    # XG5000 holds the live scratch exclusively.  Its pre-launch digest is bound
+    # by the schema's project_hash and the reviewed failed launch receipt; once
+    # the exact still-running process is identified, attempting a second read is
+    # neither possible nor safer.
+    if ([string]$Template.target.project_hash -cne [string]$inputs.scratchSha256) { throw 'Hidden-scratch resume scratch digest is not bound by the static spec' }
+    $prior = $authorization.priorResult
+    $priorPath = [System.IO.Path]::GetFullPath([string]$prior.path)
+    if (-not (Test-Path -LiteralPath $priorPath -PathType Leaf) -or (Get-FileHash -LiteralPath $priorPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$prior.sha256).ToLowerInvariant() -or (Get-Item -LiteralPath $priorPath).LastWriteTimeUtc.ToString('o') -cne [string]$prior.lastWriteTimeUtc) {
+        throw 'Hidden-scratch resume prior-result digest or timestamp mismatched'
+    }
+    $priorJson = [System.IO.File]::ReadAllText($priorPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    if ($RequireVisible) {
+        $priorOutput = ''
+        $priorAttemptDirectory = [IO.Path]::GetFullPath((Split-Path -Parent $priorPath))
+        foreach ($stream in @(
+            @{ ManifestField = 'stdout'; AuthorizationPath = 'stdoutPath'; AuthorizationHash = 'stdoutSha256' },
+            @{ ManifestField = 'stderr'; AuthorizationPath = 'stderrPath'; AuthorizationHash = 'stderrSha256' }
+        )) {
+            $authorizedPath = [IO.Path]::GetFullPath([string]$prior.($stream.AuthorizationPath))
+            $reportedPath = [IO.Path]::GetFullPath([string]$priorJson.($stream.ManifestField))
+            if (
+                [string]::IsNullOrWhiteSpace([string]$prior.($stream.AuthorizationPath)) -or
+                [string]::IsNullOrWhiteSpace([string]$prior.($stream.AuthorizationHash)) -or
+                $authorizedPath -cne $reportedPath -or
+                (Split-Path -Parent $authorizedPath) -cne $priorAttemptDirectory -or
+                -not (Test-Path -LiteralPath $authorizedPath -PathType Leaf) -or
+                (Get-FileHash -LiteralPath $authorizedPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$prior.($stream.AuthorizationHash)).ToLowerInvariant()
+            ) {
+                throw 'Visible-scratch resume attempt output binding is invalid'
+            }
+            $priorOutput += [IO.File]::ReadAllText($authorizedPath, [Text.Encoding]::UTF8)
+        }
+        if ($priorJson.state -cne 'failed' -or [int]$priorJson.exitCode -ne 1 -or (([string]$priorJson.wrapperException).IndexOf([string]$prior.outputFragment, [System.StringComparison]::Ordinal) -lt 0 -and $priorOutput.IndexOf([string]$prior.outputFragment, [System.StringComparison]::Ordinal) -lt 0)) {
+            throw 'Visible-scratch resume does not bind the reviewed workspace-identity failure'
+        }
+    } elseif ($priorJson.status -cne 'error' -or [int]$priorJson.exitCode -ne 1 -or ([string]$priorJson.output).IndexOf([string]$prior.outputFragment, [System.StringComparison]::Ordinal) -lt 0) {
+        throw 'Hidden-scratch resume does not bind the reviewed hidden-launch failure'
+    }
+    $reviewed = $authorization.scratchProcess
+    if ($null -eq $reviewed -or [int]$reviewed.pid -le 0 -or [int64]$reviewed.hwnd -le 0) { throw 'Hidden-scratch resume process identity is invalid' }
+    [string[]]$reviewedArgv = @($reviewed.argv | ForEach-Object { [string]$_ })
+    if ($reviewedArgv.Length -notin @(2,3) -or $reviewedArgv[0] -cne [string]$reviewed.executablePath -or $reviewedArgv[$reviewedArgv.Length - 1] -cne [string]$Template.target.project_path -or ($reviewedArgv.Length -eq 3 -and $reviewedArgv[1] -cne '/Automation')) {
+        throw 'Hidden-scratch resume authorization argv is not the exact reviewed executable and scratch path'
+    }
+    $allXg = @(Get-Process -Name XG5000 -ErrorAction SilentlyContinue)
+    if ($allXg.Count -ne 1 -or $allXg[0].Id -ne [int]$reviewed.pid) { throw 'Hidden-scratch resume requires exactly the reviewed global XG5000 PID' }
+    $process = Get-Process -Id ([int]$reviewed.pid) -ErrorAction Stop
+    if ($process.StartTime.ToUniversalTime().ToString('o') -cne [string]$reviewed.startTimeUtc) { throw 'Hidden-scratch resume detected XG5000 PID reuse' }
+    $record = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [int]$reviewed.pid) | Select-Object -First 1
+    if ($null -eq $record -or [string]$record.ExecutablePath -cne [string]$reviewed.executablePath) {
+        throw 'Hidden-scratch resume process executable mismatched'
+    }
+    Initialize-ReviewedModalNativeApi
+    $expectedArgv = $reviewedArgv
+    [string[]]$actualArgv = [ControlStudioMneModalNative]::ParseCommandLine([string]$record.CommandLine)
+    if ($expectedArgv.Length -eq 0 -or $actualArgv.Length -ne $expectedArgv.Length) {
+        throw "Hidden-scratch resume process argv length mismatched; actualCount=$($actualArgv.Length); actualDigest=$(Get-ArgvDigest -Arguments $actualArgv); expectedCount=$($expectedArgv.Length); expectedDigest=$(Get-ArgvDigest -Arguments $expectedArgv)"
+    }
+    for ($argumentIndex = 0; $argumentIndex -lt $expectedArgv.Length; $argumentIndex++) {
+        if ($actualArgv[$argumentIndex] -cne $expectedArgv[$argumentIndex]) {
+            throw "Hidden-scratch resume process argv mismatched; actualDigest=$(Get-ArgvDigest -Arguments $actualArgv); expectedDigest=$(Get-ArgvDigest -Arguments $expectedArgv)"
+        }
+    }
+    $snapshots = @([ControlStudioMneModalNative]::FindTopLevelWindows([uint32]$reviewed.pid))
+    $matches = @($snapshots | Where-Object {
+        if ($RequireVisible) {
+            [int64]$_.Handle -eq [int64]$reviewed.hwnd -and [string]$_.Title -ceq [string]$reviewed.title -and [string]$_.ClassName -ceq [string]$reviewed.className -and [ControlStudioMneModalNative]::IsVisibleAndEnabled([int64]$_.Handle)
+        } else {
+            Test-ExactHiddenScratchWindow -Snapshot $_ -Reviewed $reviewed
+        }
+    })
+    if ($matches.Count -ne 1) {
+        $matchFailure = if ($RequireVisible) { 'Visible-scratch resume did not find exactly one reviewed visible XG5000 main window' } else { 'Hidden-scratch resume did not find exactly one reviewed hidden XG5000 main window' }
+        throw $matchFailure
+    }
+    return [pscustomobject]@{ Process = $process; Reviewed = $reviewed }
+}
+
+function Assert-ResumeAfterReviewedVisibleScratch {
+    param(
+        [Parameter(Mandatory)][string]$AuthorizationPath,
+        [Parameter(Mandatory)][string]$SpecPath,
+        [Parameter(Mandatory)]$Template,
+        [Parameter(Mandatory)][string]$BundlePath
+    )
+    return Assert-ResumeAfterHiddenScratchLaunch -AuthorizationPath $AuthorizationPath -SpecPath $SpecPath -Template $Template -BundlePath $BundlePath -RequireVisible
+}
+
+function Restore-ReviewedHiddenScratchWindow {
+    param([Parameter(Mandatory)]$Resume)
+
+    [ControlStudioMneModalNative]::RestoreWindow([int64]$Resume.Reviewed.hwnd)
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(15)
+    while ([DateTimeOffset]::UtcNow -lt $deadline) {
+        $Resume.Process.Refresh()
+        if ($Resume.Process.HasExited) { throw 'Reviewed hidden scratch XG5000 exited during restore' }
+        $snapshots = @([ControlStudioMneModalNative]::FindTopLevelWindows([uint32]$Resume.Process.Id))
+        $visible = @($snapshots | Where-Object {
+            [int64]$_.Handle -eq [int64]$Resume.Reviewed.hwnd -and
+            [string]$_.Title -ceq [string]$Resume.Reviewed.title -and
+            [string]$_.ClassName -ceq [string]$Resume.Reviewed.className -and
+            [ControlStudioMneModalNative]::IsVisibleAndEnabled([int64]$_.Handle)
+        })
+        if ($visible.Count -eq 1) {
+            return [pscustomobject]@{ Process = $Resume.Process; Hwnd = [int64]$Resume.Reviewed.hwnd }
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    throw 'Reviewed hidden scratch XG5000 main window did not become uniquely visible after restore'
+}
+
+function Open-ExactWorkspaceWorkingCopy {
+    param(
+        [Parameter(Mandatory)][string]$WorkspaceId,
+        [Parameter(Mandatory)][string]$ExpectedHash,
+        [Parameter(Mandatory)][string]$WorkspaceRoot,
+        [Parameter(Mandatory)][string]$PythonExecutable
+    )
+
+    $openCode = @'
+import json, sys, time
+from pathlib import Path
+from xg5000_control.project_launcher import open_workspace_in_xg5000
+from xg5000_control.project.catalog import _mdi_client, _project_grid_candidates
+workspace_id, expected_hash, workspace_root = sys.argv[1:]
+result = open_workspace_in_xg5000(
+    workspace_id, expected_hash, workspace_root=Path(workspace_root), timeout_seconds=60.0,
+    automation=False
+)
+instance = result.get('instance') or {}
+pid, hwnd = int(instance.get('pid') or 0), int(instance.get('hwnd') or 0)
+deadline = time.monotonic() + 30.0
+while time.monotonic() < deadline:
+    if pid > 0 and hwnd > 0 and len(_project_grid_candidates(hwnd, _mdi_client(hwnd))) == 1:
+        break
+    time.sleep(0.2)
+else:
+    raise RuntimeError('official visible workspace launch did not reach one visible Project grid before timeout')
+print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+'@
+    $saved = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $raw = & $PythonExecutable -c $openCode $WorkspaceId $ExpectedHash $WorkspaceRoot 2>&1
+        $exit = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $saved }
+    if ($exit -ne 0) { throw "Official workspace open failed with exit code ${exit}: $($raw | Out-String)" }
+    $json = @($raw | Where-Object { $_ -match '^\{' } | Select-Object -Last 1)
+    if ($json.Count -ne 1) { throw 'Official workspace open returned no canonical result' }
+    return ($json[0] | ConvertFrom-Json)
+}
+
+function Write-JsonAtomically {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)]$Value)
+    $temporary = "$Path.$([Guid]::NewGuid().ToString('N')).tmp"
+    [IO.File]::WriteAllText($temporary, ($Value | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding($false)))
+    Move-Item -LiteralPath $temporary -Destination $Path -Force
+}
+
+function Assert-ResumeAfterReviewedNoXgWorkspaceLaunch {
+    param([Parameter(Mandatory)][string]$AuthorizationPath,[Parameter(Mandatory)][string]$SpecPath,[Parameter(Mandatory)]$Template,[Parameter(Mandatory)][string]$BundlePath,[Parameter(Mandatory)][string]$WorkspaceRoot,[Parameter(Mandatory)][string]$PythonExecutable)
+    if ($null -ne (Get-Process -Name XG5000 -ErrorAction SilentlyContinue) -or $null -ne (Get-DevelopmentListenerPid) -or (Test-Path -LiteralPath $BundlePath)) { throw 'No-XG workspace launch preconditions are not clean' }
+    $auth = [IO.File]::ReadAllText([IO.Path]::GetFullPath($AuthorizationPath),[Text.Encoding]::UTF8)|ConvertFrom-Json
+    if ($auth.schema -cne 'controlstudio-mne-resume-after-no-xg-workspace-launch/v1' -or $auth.expectedFailure -cne 'official_workspace_open_title_mismatch_cleanup/v1') { throw 'No-XG workspace launch authorization purpose is invalid' }
+    $priorPath=[IO.Path]::GetFullPath([string]$auth.priorResult.path)
+    if ((Get-FileHash $priorPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$auth.priorResult.sha256).ToLowerInvariant() -or (Get-Item $priorPath).LastWriteTimeUtc.ToString('o') -cne [string]$auth.priorResult.lastWriteTimeUtc) { throw 'No-XG workspace launch prior manifest mismatched' }
+    foreach($s in @(@{n='stdout';p=$auth.priorResult.stdoutPath;h=$auth.priorResult.stdoutSha256},@{n='stderr';p=$auth.priorResult.stderrPath;h=$auth.priorResult.stderrSha256})) { $p=[IO.Path]::GetFullPath([string]$s.p); if((Split-Path -Parent $p) -cne (Split-Path -Parent $priorPath) -or (Get-FileHash $p -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$s.h).ToLowerInvariant()){throw 'No-XG workspace launch prior output mismatched'} }
+    if ($auth.inputs.specPath -cne $SpecPath -or $auth.inputs.scratchPath -cne $Template.target.project_path -or [string]$auth.inputs.scratchSha256 -cne [string]$Template.target.project_hash) { throw 'No-XG workspace launch inputs mismatched' }
+    $code='import json,sys; from xg5000_control.workspaces import workspace_status; s=workspace_status(sys.argv[1]); print(json.dumps(s,ensure_ascii=False))'
+    $saved=$ErrorActionPreference;try{$ErrorActionPreference='Continue';$raw=& $PythonExecutable -c $code ([string]$auth.workspace.workspaceId) 2>&1;$exit=$LASTEXITCODE}finally{$ErrorActionPreference=$saved};if($exit -ne 0){throw 'No-XG workspace status failed'}
+    $status=(@($raw|Where-Object{$_ -match '^\{'}|Select-Object -Last 1)[0]|ConvertFrom-Json)
+    if($status.verified -ne $true -or $status.workspace_id -cne [string]$auth.workspace.workspaceId -or $status.revision_id -cne [string]$auth.workspace.revisionId -or $status.working_copy.state -cne 'clean' -or $status.working_copy.current_sha256 -cne [string]$auth.workspace.workingSha256 -or ([IO.Path]::GetFileName([string]$status.working_copy.path)) -cne [string]$auth.workspace.workingName){throw 'No-XG workspace status identity mismatched'}
+    return $status
+}
+
+function Test-ExactHeadlessXgCleanupAuthorizationShape {
+    param([Parameter(Mandatory)]$Authorization)
+
+    $expected = @('schema','attempt','inputs','scratchProcess','noXgAuthorization','expectedFailure')
+    if ((@($Authorization.PSObject.Properties.Name | Sort-Object) -join ',') -cne ((@($expected | Sort-Object) -join ','))) { return $false }
+    return (
+        $Authorization.schema -ceq 'controlstudio-mne-cleanup-headless-owned-xg/v1' -and
+        $Authorization.expectedFailure -ceq 'same_com_active_object_not_found_headless_owned_xg/v1' -and
+        $null -ne $Authorization.attempt -and
+        $null -ne $Authorization.inputs -and $null -ne $Authorization.scratchProcess -and
+        $null -ne $Authorization.noXgAuthorization
+    )
+}
+
+function Assert-CleanupReviewedHeadlessXgThenNoXgWorkspaceLaunch {
+    param(
+        [Parameter(Mandatory)][string]$AuthorizationPath,
+        [Parameter(Mandatory)][string]$SpecPath,
+        [Parameter(Mandatory)]$Template,
+        [Parameter(Mandatory)][string]$BundlePath
+    )
+
+    if ($null -ne (Get-DevelopmentListenerPid) -or (Test-Path -LiteralPath $BundlePath)) { throw 'Headless cleanup requires port 8767 and capability bundle to remain absent' }
+    $exactPath = [IO.Path]::GetFullPath($AuthorizationPath)
+    if (-not (Test-Path -LiteralPath $exactPath -PathType Leaf)) { throw 'Headless cleanup authorization is not a file' }
+    $authorization = [IO.File]::ReadAllText($exactPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    if (-not (Test-ExactHeadlessXgCleanupAuthorizationShape -Authorization $authorization)) { throw 'Headless cleanup authorization fields or purpose are invalid' }
+    $inputs = $authorization.inputs
+    if ($inputs.specPath -cne $SpecPath -or $inputs.scratchPath -cne $Template.target.project_path -or $inputs.backupPath -cne $Template.scratch.backup_path -or $inputs.markerPath -cne $Template.scratch.marker_path) { throw 'Headless cleanup authorization inputs differ' }
+    foreach ($item in @(
+        @{ Path = $SpecPath; Hash = $inputs.specSha256 },
+        @{ Path = [string]$Template.scratch.backup_path; Hash = $inputs.backupSha256 },
+        @{ Path = [string]$Template.scratch.marker_path; Hash = $inputs.markerSha256 }
+    )) {
+        if (-not (Test-Path -LiteralPath $item.Path -PathType Leaf) -or (Get-FileHash -LiteralPath $item.Path -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$item.Hash).ToLowerInvariant()) { throw 'Headless cleanup input digest mismatched' }
+    }
+    $manifestPath = [IO.Path]::GetFullPath([string]$inputs.workspaceManifestPath)
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf) -or (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$inputs.workspaceManifestSha256).ToLowerInvariant()) { throw 'Headless cleanup workspace manifest digest mismatched' }
+    $manifest = [IO.File]::ReadAllText($manifestPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    $relativeWorking = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $manifestPath) ([string]$manifest.working_copy.relative_path)))
+    if ($manifest.schema_version -cne '1' -or [string]$manifest.workspace_id -cne [string]$Template.target.workspace_id -or $relativeWorking -cne [string]$Template.target.project_path -or [string]$manifest.source.sha256 -cne [string]$inputs.scratchSha256 -or [string]$manifest.working_copy.baseline_sha256 -cne [string]$inputs.scratchSha256 -or [string]$manifest.source.sha256 -cne [string]$manifest.working_copy.baseline_sha256) { throw 'Headless cleanup workspace manifest is not the exact clean baseline' }
+    foreach ($artifact in @(
+        @{ Value = $authorization.attempt; Label = 'attempt' },
+        @{ Value = $authorization.noXgAuthorization; Label = 'no-XG authorization' }
+    )) {
+        $value = $artifact.Value
+        $path = [IO.Path]::GetFullPath([string]$value.path)
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$value.sha256).ToLowerInvariant()) { throw "Headless cleanup $($artifact.Label) digest mismatched" }
+        if ($null -ne $value.lastWriteTimeUtc -and (Get-Item -LiteralPath $path).LastWriteTimeUtc.ToString('o') -cne [string]$value.lastWriteTimeUtc) { throw "Headless cleanup $($artifact.Label) timestamp mismatched" }
+    }
+    $attemptPath = [IO.Path]::GetFullPath([string]$authorization.attempt.path)
+    $attempt = [IO.File]::ReadAllText($attemptPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    if ($attempt.state -cne 'failed' -or [int]$attempt.exitCode -ne 1) { throw 'Headless cleanup attempt is not the reviewed failed no-XG launch' }
+    foreach ($stream in @(
+        @{ Name = 'stdout'; Path = $authorization.attempt.stdoutPath; Hash = $authorization.attempt.stdoutSha256 },
+        @{ Name = 'stderr'; Path = $authorization.attempt.stderrPath; Hash = $authorization.attempt.stderrSha256 }
+    )) {
+        $path = [IO.Path]::GetFullPath([string]$stream.Path)
+        if ([string]$attempt.($stream.Name) -cne $path -or (Split-Path -Parent $path) -cne (Split-Path -Parent $attemptPath) -or -not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$stream.Hash).ToLowerInvariant()) { throw "Headless cleanup attempt $($stream.Name) binding mismatched" }
+    }
+    $reviewed = $authorization.scratchProcess
+    [string[]]$expectedArgv = @($reviewed.argv | ForEach-Object { [string]$_ })
+    $hiddenMain = $reviewed.hiddenMain
+    if ($null -eq $hiddenMain -or [int]$reviewed.pid -le 0 -or [int64]$reviewed.hwnd -ne 0 -or [int]$reviewed.visibleTopLevelCount -ne 0 -or [int64]$hiddenMain.hwnd -le 0 -or [string]::IsNullOrWhiteSpace([string]$hiddenMain.title) -or [string]::IsNullOrWhiteSpace([string]$hiddenMain.className) -or $expectedArgv.Length -ne 3 -or $expectedArgv[0] -cne [string]$reviewed.executablePath -or $expectedArgv[1] -cne '/Automation' -or $expectedArgv[2] -cne [string]$Template.target.project_path -or ([string]$hiddenMain.title).IndexOf([IO.Path]::GetFileNameWithoutExtension([string]$Template.target.project_path), [System.StringComparison]::Ordinal) -lt 0) { throw 'Headless cleanup reviewed process identity is invalid' }
+    $allXg = @(Get-Process -Name XG5000 -ErrorAction SilentlyContinue)
+    if ($allXg.Count -ne 1 -or $allXg[0].Id -ne [int]$reviewed.pid) { throw 'Headless cleanup requires exactly one reviewed global XG5000 process' }
+    $process = Get-Process -Id ([int]$reviewed.pid) -ErrorAction Stop
+    if ($process.StartTime.ToUniversalTime().ToString('o') -cne [string]$reviewed.startTimeUtc -or [int64]$process.MainWindowHandle -ne 0 -or [string]$process.MainWindowTitle -cne '') { throw 'Headless cleanup detected PID reuse or a surfaced XG5000 window' }
+    $record = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [int]$reviewed.pid) | Select-Object -First 1
+    if ($null -eq $record -or [string]$record.ExecutablePath -cne [string]$reviewed.executablePath) { throw 'Headless cleanup process executable mismatched' }
+    Initialize-ReviewedModalNativeApi
+    [string[]]$actualArgv = [ControlStudioMneModalNative]::ParseCommandLine([string]$record.CommandLine)
+    if ($actualArgv.Length -ne $expectedArgv.Length) { throw 'Headless cleanup WMI argv length mismatched' }
+    for ($index = 0; $index -lt $expectedArgv.Length; $index++) { if ($actualArgv[$index] -cne $expectedArgv[$index]) { throw "Headless cleanup WMI argv mismatched; actualDigest=$(Get-ArgvDigest -Arguments $actualArgv); expectedDigest=$(Get-ArgvDigest -Arguments $expectedArgv)" } }
+    $topLevel = @([ControlStudioMneModalNative]::FindTopLevelWindows([uint32]$reviewed.pid))
+    if (@($topLevel | Where-Object { [ControlStudioMneModalNative]::IsVisible([int64]$_.Handle) }).Count -ne [int]$reviewed.visibleTopLevelCount) { throw 'Headless cleanup visible top-level window count changed' }
+    if (@($topLevel | Where-Object { [int64]$_.Handle -eq [int64]$hiddenMain.hwnd -and [string]$_.Title -ceq [string]$hiddenMain.title -and [string]$_.ClassName -ceq [string]$hiddenMain.className -and -not [ControlStudioMneModalNative]::IsVisible([int64]$_.Handle) }).Count -ne 1) { throw 'Headless cleanup reviewed hidden main window mismatched' }
+    return [pscustomobject]@{ Process = $process; Reviewed = $reviewed; ExpectedWorkingHash = [string]$inputs.scratchSha256 }
+}
+
+function Stop-ExactReviewedHeadlessXg {
+    param([Parameter(Mandatory)]$Reviewed)
+
+    $process = $Reviewed.Process
+    $identity = $Reviewed.Reviewed
+    $process.Refresh()
+    $hiddenMain = $identity.hiddenMain
+    $topLevel = @([ControlStudioMneModalNative]::FindTopLevelWindows([uint32]$process.Id))
+    if ($process.HasExited -or $process.StartTime.ToUniversalTime().ToString('o') -cne [string]$identity.startTimeUtc -or [int64]$process.MainWindowHandle -ne 0 -or [string]$process.MainWindowTitle -cne '' -or @($topLevel | Where-Object { [ControlStudioMneModalNative]::IsVisible([int64]$_.Handle) }).Count -ne [int]$identity.visibleTopLevelCount -or @($topLevel | Where-Object { [int64]$_.Handle -eq [int64]$hiddenMain.hwnd -and [string]$_.Title -ceq [string]$hiddenMain.title -and [string]$_.ClassName -ceq [string]$hiddenMain.className -and -not [ControlStudioMneModalNative]::IsVisible([int64]$_.Handle) }).Count -ne 1) { throw 'Headless cleanup process changed before exact termination' }
+    Stop-Process -Id $process.Id -Force -ErrorAction Stop
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(15)
+    while ([DateTimeOffset]::UtcNow -lt $deadline) {
+        if ($null -eq (Get-Process -Name XG5000 -ErrorAction SilentlyContinue)) { return }
+        Start-Sleep -Milliseconds 250
+    }
+    throw 'Reviewed headless XG5000 did not exit after exact termination'
+}
+
+function Assert-WorkingHashAfterExactHeadlessCleanup {
+    param([Parameter(Mandatory)]$Template,[Parameter(Mandatory)][string]$ExpectedHash)
+
+    $path = [string]$Template.target.project_path
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Working project is unavailable after exact headless cleanup' }
+    $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -cne $ExpectedHash.ToLowerInvariant()) { throw 'Working project hash differs after exact headless cleanup; refusing new XG5000 launch' }
+}
+
+if ($SelfTest) {
+    Initialize-ReviewedModalNativeApi
+    $valid = [pscustomobject]@{
+        Parent = [int64]1575014
+        Title = 'XG5000'
+        ClassName = '#32770'
+        ChildTexts = @("프로젝트창이 닫힙니다.`r`n저장하시겠습니까?")
+    }
+    $wrongText = [pscustomobject]@{
+        Parent = [int64]1575014
+        Title = 'XG5000'
+        ClassName = '#32770'
+        ChildTexts = @('다른 확인 창')
+    }
+    $wrongClass = [pscustomobject]@{
+        Parent = [int64]1575014
+        Title = 'XG5000'
+        ClassName = 'OtherClass'
+        ChildTexts = @("프로젝트창이 닫힙니다.`r`n저장하시겠습니까?")
+    }
+    $shadow = [pscustomobject]@{
+        Parent = [int64]1575014
+        Title = ''
+        ClassName = 'BCGPShadowSideWnd'
+        ChildTexts = @()
+        ChildControlIds = @()
+    }
+    $hiddenReviewed = [pscustomobject]@{
+        hwnd = [int64]3410170
+        title = 'UI 레더 수직검증 20260817 - XG5000'
+        className = 'Afx:00400000:8:00010003:00000000:0016083D'
+    }
+    $wrongHidden = [pscustomobject]@{
+        hwnd = [int64]3410171
+        title = 'UI 레더 수직검증 20260817 - XG5000'
+        className = 'Afx:00400000:8:00010003:00000000:0016083D'
+    }
+    if (
+        -not (Test-ExactNoSaveModalShape -Candidate $valid -ExpectedMainHwnd 1575014) -or
+        (Test-ExactNoSaveModalShape -Candidate $wrongText -ExpectedMainHwnd 1575014) -or
+        (Test-ExactNoSaveModalShape -Candidate $wrongClass -ExpectedMainHwnd 1575014)
+    ) {
+        throw 'Exact no-save modal helper self-test failed'
+    }
+    $withShadows = @(Get-ActionableOwnedWindows -Candidates @($shadow, $shadow, $shadow, $shadow, $valid))
+    $shadowsOnly = @(Get-ActionableOwnedWindows -Candidates @($shadow, $shadow, $shadow, $shadow))
+    if ($withShadows.Count -ne 1 -or -not (Test-ExactNoSaveModalShape -Candidate $withShadows[0] -ExpectedMainHwnd 1575014) -or $shadowsOnly.Count -ne 0) {
+        throw 'Decorative shadow modal classifier self-test failed'
+    }
+    # The predicate's visibility check is exercised against only an invalid
+    # HWND here; a live hidden XG window is never touched by self-test.
+    if ((Test-ExactHiddenScratchWindow -Snapshot $wrongHidden -Reviewed $hiddenReviewed)) {
+        throw 'Hidden scratch identity helper self-test failed'
+    }
+    [string[]]$parsedArgv = [ControlStudioMneModalNative]::ParseCommandLine('"C:\XG5000\XG5000.exe" /Automation "C:\scratch path\scratch.xgwx"')
+    if ($parsedArgv.Length -ne 3 -or $parsedArgv[0] -cne 'C:\XG5000\XG5000.exe' -or $parsedArgv[1] -cne '/Automation' -or $parsedArgv[2] -cne 'C:\scratch path\scratch.xgwx') {
+        throw 'Command-line argv parser self-test failed'
+    }
+    $badHeadlessAuthorization = '{"schema":"controlstudio-mne-cleanup-headless-owned-xg/v1","attempt":{},"inputs":{},"scratchProcess":{},"noXgAuthorization":{},"expectedFailure":"wrong"}' | ConvertFrom-Json
+    if (Test-ExactHeadlessXgCleanupAuthorizationShape -Authorization $badHeadlessAuthorization) {
+        throw 'Headless cleanup authorization negative self-test failed'
+    }
+    'Exact no-save modal helper self-test: OK'
+    exit 0
+}
+
+foreach ($entry in @(
+    @{ Name = 'MNE certification executable'; Path = $certifier },
+    @{ Name = 'MCP Python'; Path = $mcpPython },
+    @{ Name = 'Host Python'; Path = $hostPython },
+    @{ Name = 'PLC MCP sidecar'; Path = $mcp },
+    @{ Name = 'XG5000 executable'; Path = $XgExecutable }
+)) {
+    if (-not (Test-Path -LiteralPath $entry.Path -PathType Leaf)) {
+        throw "$($entry.Name) is missing: $($entry.Path)"
+    }
+}
+
+$specPath = [System.IO.Path]::GetFullPath($Spec)
+$bundlePath = [System.IO.Path]::GetFullPath($Bundle)
+$dataRoot = [System.IO.Path]::GetFullPath($LocalAppData)
+if (-not (Test-Path -LiteralPath $specPath -PathType Leaf)) { throw "Certification spec is not a file: $specPath" }
+if (-not (Test-Path -LiteralPath $dataRoot -PathType Container)) { throw "LOCALAPPDATA root is not a directory: $dataRoot" }
+if (Test-Path -LiteralPath $bundlePath) { throw "Bundle output already exists: $bundlePath" }
+$launchTokenPath = Join-Path $dataRoot 'ControlStudio Development\session.token'
+if (-not (Test-Path -LiteralPath $launchTokenPath -PathType Leaf)) { throw "Development launch token is missing: $launchTokenPath" }
+
+$template = [System.IO.File]::ReadAllText(
+    $specPath,
+    [System.Text.Encoding]::UTF8
+) | ConvertFrom-Json
+if (-not (Test-Path -LiteralPath $template.target.project_path -PathType Leaf)) {
+    throw 'Certification template does not name an existing scratch project'
+}
+$validateSpec = @'
+import json
+import sys
+from pathlib import Path
+from xg5000_control.mne_capability_cli import _normalize_spec
+
+_normalize_spec(json.loads(Path(sys.argv[1]).read_text(encoding='utf-8')))
+'@
+& $mcpPython -c $validateSpec $specPath
+if ($LASTEXITCODE -ne 0) {
+    throw 'Certification template failed the CLI static schema and disposable-proof preflight'
+}
+
+$selectedResumeModes = @($ResumeAfterReviewedXgClose, $ResumeAfterHiddenScratchLaunch, $ResumeAfterReviewedVisibleScratch) | Where-Object { $_ }
+if (@($selectedResumeModes).Count -gt 1) {
+    throw 'Only one reviewed resume mode may be selected'
+}
+if ($ResumeAfterReviewedXgClose) {
+    if ([string]::IsNullOrWhiteSpace($ResumeAuthorization)) { throw 'Resume requires an explicit authorization file' }
+    $resumeHost = Assert-ResumeAfterReviewedXgClose -AuthorizationPath $ResumeAuthorization -SpecPath $specPath -Template $template -BundlePath $bundlePath
+    if ($ExpectedHostListenerPid -ne [int]$resumeHost.pid -or $ExpectedXgPid -ne [int]$resumeHost.closedXgPid) {
+        throw 'Resume command identifiers do not match its reviewed authorization'
+    }
+    if ($ResumePreflightOnly) {
+        [pscustomobject]@{
+            schema = 'controlstudio-mne-resume-preflight/v1'
+            listenerPid = [int]$resumeHost.pid
+            listenerStartTimeUtc = [string]$resumeHost.startTimeUtc
+            closedXgPid = [int]$resumeHost.closedXgPid
+            result = 'ready_to_stop_exact_host_tree'
+        } | ConvertTo-Json -Compress
+        exit 0
+    }
+    if ($ResumeExecutionPathSelfTest) {
+        $resolvedStop = Get-Command Stop-ExactHostTreeAfterReviewedXgClose -CommandType Function -ErrorAction Stop
+        $stopReadiness = Stop-ExactHostTreeAfterReviewedXgClose -ListenerPid ([int]$resumeHost.pid) -ListenerStartTimeUtc ([string]$resumeHost.startTimeUtc) -ClosedXgPid ([int]$resumeHost.closedXgPid) -NoOp
+        [pscustomobject]@{
+            schema = 'controlstudio-mne-resume-execution-path/v1'
+            resolvedCommand = $resolvedStop.Name
+            listenerPid = $stopReadiness.listenerPid
+            processCount = $stopReadiness.processCount
+            result = 'ready_to_launch_scratch'
+        } | ConvertTo-Json -Compress
+        exit 0
+    }
+    Stop-ExactHostTreeAfterReviewedXgClose -ListenerPid ([int]$resumeHost.pid) -ListenerStartTimeUtc ([string]$resumeHost.startTimeUtc) -ClosedXgPid ([int]$resumeHost.closedXgPid)
+} else {
+    if ($CleanupReviewedHeadlessXgThenNoXgWorkspaceLaunch) {
+        if ([string]::IsNullOrWhiteSpace($HeadlessXgCleanupAuthorization) -or [string]::IsNullOrWhiteSpace($NoXgWorkspaceLaunchAuthorization)) { throw 'Headless cleanup-and-certify requires both exact authorization files' }
+        $headlessCleanup = Assert-CleanupReviewedHeadlessXgThenNoXgWorkspaceLaunch -AuthorizationPath $HeadlessXgCleanupAuthorization -SpecPath $specPath -Template $template -BundlePath $bundlePath
+        if ($HeadlessXgCleanupPreflightOnly) {
+            [pscustomobject]@{
+                schema = 'controlstudio-mne-headless-cleanup-preflight/v1'
+                xgPid = [int]$headlessCleanup.Reviewed.pid
+                result = 'ready_to_terminate_exact_headless_xg_then_launch_workspace'
+            } | ConvertTo-Json -Compress
+            exit 0
+        }
+        Stop-ExactReviewedHeadlessXg -Reviewed $headlessCleanup
+        Assert-WorkingHashAfterExactHeadlessCleanup -Template $template -ExpectedHash $headlessCleanup.ExpectedWorkingHash
+    } elseif (-not $ResumeAfterHiddenScratchLaunch -and -not $ResumeAfterReviewedVisibleScratch -and -not $ResumeAfterReviewedNoXgWorkspaceLaunch) {
+        Stop-ExactDevelopmentTree -ListenerPid $ExpectedHostListenerPid -XgPid $ExpectedXgPid
+    }
+}
+$restoredScratchHwnd = $null
+if ($ResumeAfterReviewedNoXgWorkspaceLaunch -or $CleanupReviewedHeadlessXgThenNoXgWorkspaceLaunch) {
+    if ([string]::IsNullOrWhiteSpace($NoXgWorkspaceLaunchAuthorization)) { throw 'No-XG workspace launch requires an explicit authorization file' }
+    $env:LOCALAPPDATA = $dataRoot; $env:CONTROLSTUDIO_RELEASE_CHANNEL = 'development'
+    $workspaceRoot = Join-Path $dataRoot 'ControlStudio Development\workspaces'
+    $noXgWorkspace = Assert-ResumeAfterReviewedNoXgWorkspaceLaunch -AuthorizationPath $NoXgWorkspaceLaunchAuthorization -SpecPath $specPath -Template $template -BundlePath $bundlePath -WorkspaceRoot $workspaceRoot -PythonExecutable $mcpPython
+    $opened = Open-ExactWorkspaceWorkingCopy -WorkspaceId ([string]$noXgWorkspace.workspace_id) -ExpectedHash ([string]$noXgWorkspace.working_copy.current_sha256) -WorkspaceRoot $workspaceRoot -PythonExecutable $mcpPython
+    $instance=$opened.instance
+    if($opened.verified -ne $true -or $null -eq $instance -or [int]$instance.pid -le 0 -or [int64]$instance.hwnd -le 0){throw 'No-XG official workspace open did not verify an exact instance'}
+    $template.target.workspace_id=[string]$opened.workspace_id;$template.target.project_path=[string]$opened.working_path;$template.target.pid=[int]$instance.pid;$template.target.hwnd=[int64]$instance.hwnd
+    $marker=[IO.File]::ReadAllText([string]$template.scratch.marker_path,[Text.Encoding]::UTF8)|ConvertFrom-Json;$marker.project_path=[string]$opened.working_path;$marker.project_sha256=[string]$opened.working_hash;Write-JsonAtomically -Path ([string]$template.scratch.marker_path) -Value $marker;Write-JsonAtomically -Path $specPath -Value $template
+    $scratchXg=Get-Process -Id ([int]$instance.pid)-ErrorAction Stop;$restoredScratchHwnd=[int64]$instance.hwnd
+} elseif ($ResumeAfterReviewedVisibleScratch) {
+    if ([string]::IsNullOrWhiteSpace($VisibleScratchResumeAuthorization)) { throw 'Visible-scratch resume requires an explicit authorization file' }
+    $visibleScratch = Assert-ResumeAfterReviewedVisibleScratch -AuthorizationPath $VisibleScratchResumeAuthorization -SpecPath $specPath -Template $template -BundlePath $bundlePath
+    if ($ExpectedXgPid -ne [int]$visibleScratch.Reviewed.pid) { throw 'Visible-scratch resume command PID does not match its reviewed authorization' }
+    if ([string]::IsNullOrWhiteSpace($ReopenIntoWorkspaceId)) {
+        $scratchXg = $visibleScratch.Process
+        $restoredScratchHwnd = [int64]$visibleScratch.Reviewed.hwnd
+    } else {
+        # The selected visible scratch is never repurposed as a workspace by
+        # metadata alone.  Close it through the reviewed no-save path, then use
+        # the official launcher to open the immutable workspace working copy.
+        Close-ReviewedXgForCertification -XgProcess $visibleScratch.Process
+        $closedDeadline = [DateTimeOffset]::UtcNow.AddSeconds(5)
+        while ([DateTimeOffset]::UtcNow -lt $closedDeadline -and $null -ne (Get-Process -Name XG5000 -ErrorAction SilentlyContinue)) {
+            Start-Sleep -Milliseconds 250
+        }
+        if ($null -ne (Get-Process -Name XG5000 -ErrorAction SilentlyContinue)) {
+            throw 'Reviewed scratch did not leave a clean XG5000 process boundary before workspace open'
+        }
+        $env:LOCALAPPDATA = $dataRoot
+        $env:CONTROLSTUDIO_RELEASE_CHANNEL = 'development'
+        $workspaceRoot = Join-Path $dataRoot 'ControlStudio Development\workspaces'
+        $opened = Open-ExactWorkspaceWorkingCopy -WorkspaceId $ReopenIntoWorkspaceId -ExpectedHash ([string]$template.target.project_hash) -WorkspaceRoot $workspaceRoot -PythonExecutable $mcpPython
+        $instance = $opened.instance
+        if ($opened.verified -ne $true -or $opened.workspace_id -cne $ReopenIntoWorkspaceId -or [string]$opened.working_hash -cne [string]$template.target.project_hash -or $null -eq $instance -or [int]$instance.pid -le 0 -or [int64]$instance.hwnd -le 0) {
+            throw 'Official workspace open did not return one exact verified working-copy instance'
+        }
+        $template.target.workspace_id = [string]$opened.workspace_id
+        $template.target.project_path = [string]$opened.working_path
+        $template.target.pid = [int]$instance.pid
+        $template.target.hwnd = [int64]$instance.hwnd
+        $marker = [IO.File]::ReadAllText([string]$template.scratch.marker_path, [Text.Encoding]::UTF8) | ConvertFrom-Json
+        $marker.project_path = [string]$opened.working_path
+        $marker.project_sha256 = [string]$opened.working_hash
+        Write-JsonAtomically -Path ([string]$template.scratch.marker_path) -Value $marker
+        Write-JsonAtomically -Path $specPath -Value $template
+        $scratchXg = Get-Process -Id ([int]$instance.pid) -ErrorAction Stop
+        $restoredScratchHwnd = [int64]$instance.hwnd
+    }
+} elseif ($ResumeAfterHiddenScratchLaunch) {
+    if ([string]::IsNullOrWhiteSpace($HiddenScratchResumeAuthorization)) { throw 'Hidden-scratch resume requires an explicit authorization file' }
+    $hiddenScratch = Assert-ResumeAfterHiddenScratchLaunch -AuthorizationPath $HiddenScratchResumeAuthorization -SpecPath $specPath -Template $template -BundlePath $bundlePath
+    if ($ExpectedXgPid -ne [int]$hiddenScratch.Reviewed.pid) { throw 'Hidden-scratch resume command PID does not match its reviewed authorization' }
+    if ($HiddenScratchResumePreflightOnly) {
+        [pscustomobject]@{
+            schema = 'controlstudio-mne-hidden-scratch-resume-preflight/v1'
+            xgPid = [int]$hiddenScratch.Reviewed.pid
+            hwnd = [int64]$hiddenScratch.Reviewed.hwnd
+            result = 'ready_to_certify_existing_scratch'
+        } | ConvertTo-Json -Compress
+        exit 0
+    }
+    if ($HiddenScratchResumeExecutionPathSelfTest) {
+        $restoreCommand = Get-Command Restore-ReviewedHiddenScratchWindow -CommandType Function -ErrorAction Stop
+        [pscustomobject]@{
+            schema = 'controlstudio-mne-hidden-scratch-execution-path/v1'
+            resolvedCommand = $restoreCommand.Name
+            xgPid = [int]$hiddenScratch.Reviewed.pid
+            hwnd = [int64]$hiddenScratch.Reviewed.hwnd
+            result = 'ready_to_certify_existing_scratch'
+        } | ConvertTo-Json -Compress
+        exit 0
+    }
+    $restored = Restore-ReviewedHiddenScratchWindow -Resume $hiddenScratch
+    $scratchXg = $restored.Process
+    $restoredScratchHwnd = [int64]$restored.Hwnd
+} else {
+    $scratchXg = Start-Process -FilePath $XgExecutable -ArgumentList @('/Automation', ('"' + [string]$template.target.project_path + '"')) -PassThru
+    $scratchXg = Wait-ForScratchXgWindow -Process $scratchXg
+}
+$template.target.pid = [int]$scratchXg.Id
+$template.target.hwnd = if ($null -ne $restoredScratchHwnd) { $restoredScratchHwnd } else { [int64]$scratchXg.MainWindowHandle }
+$runtimeSpecPath = Join-Path (Split-Path -Parent $specPath) ("mne-certification-runtime-$($scratchXg.Id).json")
+[System.IO.File]::WriteAllText(
+    $runtimeSpecPath,
+    ($template | ConvertTo-Json -Depth 20),
+    (New-Object System.Text.UTF8Encoding($false))
+)
+
+$keyBytes = New-Object byte[] 48
+$random = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+try { $random.GetBytes($keyBytes) }
+finally { $random.Dispose() }
+$env:CONTROLSTUDIO_MCP_AUTHORIZATION_SECRET = [Convert]::ToBase64String($keyBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+$env:CONTROLSTUDIO_MNE_CAPABILITY_BUNDLE = $bundlePath
+$env:LOCALAPPDATA = $dataRoot
+$env:CONTROLSTUDIO_RELEASE_CHANNEL = 'development'
+$env:CONTROLSTUDIO_PRODUCT_RELEASE = 'source-dev'
+$env:CONTROLSTUDIO_LAUNCH_TOKEN = (Get-Content -LiteralPath $launchTokenPath -Raw).Trim()
+$env:CONTROLSTUDIO_DEVELOPMENT_MODEL_BASE_URL = 'http://100.65.0.1:8978/v1'
+$env:CONTROLSTUDIO_DEVELOPMENT_MODEL_NAME = 'nemotron-3-ultra'
+$env:CONTROLSTUDIO_DEVELOPMENT_MODEL_TIMEOUT_SECONDS = '300'
+$env:CONTROLSTUDIO_DEVELOPMENT_MODEL_API_KEY = 'sk-1234567890'
+$xg5000Cli = Join-Path $workspace 'controlstudio-xg5000-cli\.venv\Scripts\controlstudio-xg5000.exe'
+if (-not (Test-Path -LiteralPath $xg5000Cli -PathType Leaf)) {
+    throw "Independent XG5000 CLI is missing: $xg5000Cli"
+}
+$env:CONTROLSTUDIO_XG5000_CLI_COMMAND = $xg5000Cli
+$env:CONTROLSTUDIO_AGENT_COMMAND = if (Test-Path -LiteralPath $agentDevPython -PathType Leaf) {
+    '"' + $agentDevPython + '" -m controlstudio_agent.sidecar'
+} else {
+    '"' + $agentExecutable + '"'
+}
+$env:CONTROLSTUDIO_MCP_COMMAND = $mcp
+
+$certArguments = @('--spec', $runtimeSpecPath, '--output', $bundlePath, '--confirmed-disposable')
+if ($DebugCertification) { $certArguments += '--debug' }
+$certifierStdout = "$runtimeSpecPath.certifier.stdout.txt"
+$certifierStderr = "$runtimeSpecPath.certifier.stderr.txt"
+$certifierArgumentLine = (($certArguments | ForEach-Object {
+    $value = [string]$_
+    if ($value -match '[\s"]') { '"' + $value.Replace('"', '\"') + '"' } else { $value }
+}) -join ' ')
+$certifierProcess = Start-Process -FilePath $certifier -ArgumentList $certifierArgumentLine -PassThru -Wait -NoNewWindow -RedirectStandardOutput $certifierStdout -RedirectStandardError $certifierStderr
+foreach ($diagnosticPath in @($certifierStdout, $certifierStderr)) {
+    if (Test-Path -LiteralPath $diagnosticPath) {
+        Get-Content -LiteralPath $diagnosticPath -Raw | Write-Output
+    }
+}
+if ($certifierProcess.ExitCode -ne 0) {
+    throw "MNE scratch certification failed with exit code $($certifierProcess.ExitCode). The development Host was not started."
+}
+if (-not (Test-Path -LiteralPath $bundlePath -PathType Leaf)) {
+    throw 'MNE certification reported success without writing its bundle. The development Host was not started.'
+}
+
+$hostStartedUtc = [DateTime]::UtcNow
+$hostProcess = Start-Process -FilePath $hostPython -ArgumentList @('-m', 'controlstudio_host') -WorkingDirectory $platform -WindowStyle Hidden -PassThru
+$deadline = [DateTimeOffset]::UtcNow.AddSeconds(60)
+while ([DateTimeOffset]::UtcNow -lt $deadline) {
+    try {
+        $health = Invoke-RestMethod -Uri "$baseUrl/api/health" -TimeoutSec 2
+        $listenerPid = Get-DevelopmentListenerPid
+        $listener = if ($null -ne $listenerPid) { Get-Process -Id $listenerPid -ErrorAction SilentlyContinue } else { $null }
+        if ($health.status -eq 'ready' -and $null -ne $listener -and $listener.StartTime.ToUniversalTime() -ge $hostStartedUtc) {
+            [pscustomobject]@{
+                schema = 'controlstudio-mne-certification-restart/v1'
+                hostPid = $listenerPid
+                hostLauncherPid = $hostProcess.Id
+                xgPid = $scratchXg.Id
+                xgHwnd = [int64]$scratchXg.MainWindowHandle
+                runtimeSpec = $runtimeSpecPath
+                bundle = $bundlePath
+                result = 'ready'
+            } | ConvertTo-Json -Compress
+            exit 0
+        }
+    } catch { }
+    $hostProcess.Refresh()
+    if ($hostProcess.HasExited) { throw "Restarted Host exited with code $($hostProcess.ExitCode)" }
+    Start-Sleep -Milliseconds 250
+}
+throw 'Certified development Host did not become ready on its exact listener PID within 60 seconds'

@@ -1026,10 +1026,15 @@ export function isLegacyChangePlanV1(value: unknown): value is ChangePlanV1 {
     !isStringList(value.risks) ||
     !isStringList(value.manualFollowUp) ||
     !isStringList(value.rollback, true) ||
-    value.verificationScope !== "offline_native_check_only" ||
+    value.verificationScope !== "offline_native_reopen" ||
     !Array.isArray(value.validation) ||
     value.validation.join("\u0000") !==
-      ["structural_diff", "xg5000_program_check", "project_save"].join("\u0000")
+      [
+        "structural_diff",
+        "xg5000_program_check",
+        "project_save",
+        "project_reopen",
+      ].join("\u0000")
   ) {
     return false;
   }
@@ -1044,6 +1049,27 @@ export function isLegacyChangePlanV1(value: unknown): value is ChangePlanV1 {
       value.stopConditions,
     ].every((items) => items === undefined || isStringList(items))
   );
+}
+
+/**
+ * Recovery may act only on a plan the UI can validate exactly.  Legacy LD
+ * operand plans predate planKind, so their own strict validator is the
+ * authoritative compatibility boundary.
+ */
+export function hasSupportedChangeRecoveryContract(value: unknown): boolean {
+  if (isMneFullProgramReplacementPlan(value)) {
+    return (
+      value.verificationScope === "offline_native_reopen" &&
+      value.validation.join("\u0000") ===
+        [
+          "structural_diff",
+          "xg5000_program_check",
+          "project_save",
+          "project_reopen",
+        ].join("\u0000")
+    );
+  }
+  return isLegacyChangePlanV1(value);
 }
 
 export function isChangePlan(value: unknown): value is ChangePlan {

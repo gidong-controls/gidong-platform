@@ -47,7 +47,11 @@ export interface EngineeringSystemStatus extends ServiceStatus {
   vendor: string;
   application: string;
   processId?: number;
+  windowHandle?: number;
+  processCreateTime?: number;
   sessionId?: string;
+  projectPath?: string;
+  projectHash?: string;
   targetWorkspaceId?: string;
   targetRevisionId?: string;
   sessionVerified: boolean;
@@ -521,6 +525,7 @@ export interface EngineeringMission {
   snapshot: EngineeringMissionSnapshot;
   digest: string;
   updatedByRunId: string;
+  changeTransactionId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -534,6 +539,7 @@ export interface EngineeringMissionSummary {
   status: EngineeringMissionStatus;
   digest: string;
   updatedByRunId: string;
+  changeTransactionId?: string | null;
   updatedAt: string;
 }
 
@@ -651,6 +657,10 @@ export interface SendMessageResponse {
 }
 
 export interface ResumeEngineeringMissionRequest {
+  operationId: string;
+}
+
+export interface ReverifyBlockedEngineeringMissionStepRequest {
   operationId: string;
 }
 
@@ -1437,6 +1447,7 @@ export interface ReconcileNativeProjectRequest {
   pid: number;
   hwnd: number;
   expectedProjectPath: string;
+  observedProjectPath?: string;
   expectedProjectSha256?: string;
 }
 
@@ -1464,7 +1475,7 @@ export interface XG5000ProjectFileSelection {
 export interface LocalWorkspace {
   workspaceId: string;
   revisionId: string;
-  sourceKind: "local_file" | "restored_from_controller";
+  sourceKind: "local_file" | "restored_from_controller" | "new_build";
   vendor: "ls";
   engineeringSystem: "XG5000";
   createdAt: string;
@@ -1481,15 +1492,25 @@ export interface LocalWorkspace {
     currentSha256: string;
     state: "clean" | "modified";
   };
-  provenance?: {
-    schema: "controlstudio-controller-restore-workspace-provenance/v1";
-    operationId: string;
-    handoffReceiptDigest: string;
-    sourcePid: number;
-    sourceHwnd: number;
-    savedProjectSha256: string;
-    receiptDigest: string;
-  };
+  provenance?:
+    | {
+        schema: "controlstudio-controller-restore-workspace-provenance/v1";
+        operationId: string;
+        handoffReceiptDigest: string;
+        sourcePid: number;
+        sourceHwnd: number;
+        savedProjectSha256: string;
+        receiptDigest: string;
+      }
+    | {
+        schema: "controlstudio-new-build-workspace-provenance/v1";
+        nativeProjectId: string;
+        reviewedPlanDigest: string;
+        buildBundleId: string;
+        buildReceiptDigest: string;
+        savedProjectSha256: string;
+        receiptDigest: string;
+      };
 }
 
 export interface WorkspaceCompareDigestItem {
@@ -1521,7 +1542,7 @@ export interface LocalWorkspaceCompare {
   verified: true;
   workspaceId: string;
   revisionId: string;
-  sourceKind: "local_file" | "restored_from_controller";
+  sourceKind: "local_file" | "restored_from_controller" | "new_build";
   source: { sha256: string; size: number };
   workingCopy: { sha256: string; size: number };
   fileIdentical: boolean;
@@ -1567,6 +1588,8 @@ export interface AttachXG5000Request {
   hwnd: number;
   projectPath?: string;
   projectHash?: string;
+  /** Attach only if the selected IDE can prove its own project identity. */
+  allowUnboundExistingTarget?: boolean;
 }
 
 export interface AttachXG5000Response {
@@ -1577,6 +1600,41 @@ export interface AttachXG5000Response {
 export interface HostShutdownResponse {
   status?: "shutting_down";
   detail?: string;
+}
+
+export interface ReviewedNoSaveCloseRequest {
+  sessionId: string;
+  pid: number;
+  hwnd: number;
+  processCreateTime: number;
+  projectPath: string;
+  projectHash: string;
+  confirmNoSave: true;
+  timeoutSeconds?: number;
+}
+
+export interface ReviewedNoSaveCloseResponse {
+  operation: "xg5000.reviewed_no_save_close";
+  verified: true;
+  sourceClosed: true;
+  automaticWorkspaceOpen: false;
+  processTerminated: false;
+  reviewedBinding: {
+    sessionId: string;
+    pid: number;
+    hwnd: number;
+    processCreateTime: number;
+    projectPath: string;
+    projectHash: string;
+  };
+  close: Record<string, unknown>;
+  receiptDigest: string;
+  nextStep: "explicit_user_confirmed_workspace_open_required";
+}
+
+export interface HostRestartResponse {
+  status: "scheduled" | "ready";
+  restartReceipt: string;
 }
 
 export interface BrowserSessionResponse {
@@ -2036,6 +2094,7 @@ export interface ReconcileChangeTransactionRequest {
   expectedPlanDigest: string;
   pid: number;
   hwnd: number;
+  relaunchIfUnavailable?: boolean;
 }
 
 export interface ChangeTransactionCreatedResponse {
@@ -2077,6 +2136,8 @@ export type HostEventType =
   | "agent.progress"
   | "agent.message"
   | "mission.checkpointed"
+  | "mission.blocked_step_reverified"
+  | "mission.recovery_digest_repaired"
   | "agent.checkpointed"
   | "tool.started"
   | "tool.progress"

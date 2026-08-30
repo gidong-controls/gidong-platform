@@ -51,7 +51,7 @@ _MODEL_CONTEXT_ITEM_LIMIT = 32
 _PAYLOAD_BINDING_LIMIT = 200
 _LOCATION_FACT_BYTE_LIMIT = 80_000
 _RELATION_FACT_BYTE_LIMIT = 120_000
-_STRUCTURE_FACT_BYTE_LIMIT = 120_000
+_STRUCTURE_FACT_BYTE_LIMIT = 48_000
 _PROJECT_STRUCTURE_RAW_BYTE_LIMIT = 32 * 1024 * 1024
 _DEVICE_TOKEN = re.compile(r"(?<![A-Z0-9.])([A-Z][A-Z0-9]*[0-9][A-Z0-9.]*)")
 _EXACT_DEVICE = re.compile(r"^[A-Z][A-Z0-9]*[0-9][A-Z0-9.]*$")
@@ -3304,6 +3304,14 @@ def _project_search_contract(
             maximum=500,
             allow_empty=False,
         )
+    pagination = _mapping(search.get("pagination"), "project search pagination")
+    offset = _integer(pagination.get("offset"), "project search offset")
+    page_limit = _integer(pagination.get("limit"), "project search limit", maximum=100)
+    page_returned = _integer(pagination.get("returned"), "project search page count")
+    page_total = _integer(pagination.get("total"), "project search page total")
+    next_offset = pagination.get("next_offset")
+    if next_offset is not None:
+        next_offset = _integer(next_offset, "project search next offset")
     payloads = _items(search.get("payloads"), "project search payload bindings")
     scope, capture_limitations = _payload_scope(
         {**envelope, "payloads": payloads},
@@ -3312,6 +3320,14 @@ def _project_search_contract(
             "literal": query,
             "programId": program_filter,
             "searchDigest": supplied_digest,
+            # Pagination is part of the signed search scope.  A page is evidence
+            # only for this exact literal and cursor; callers must never infer a
+            # later page from an otherwise identical receipt.
+            "offset": offset,
+            "limit": page_limit,
+            "returned": page_returned,
+            "total": page_total,
+            "nextOffset": next_offset,
         },
         coverage_unit_keys=[],
         counts_additive=True,
@@ -3327,14 +3343,6 @@ def _project_search_contract(
     matches = _items(search.get("matches"), "project search matches")
     returned_count = _integer(search.get("match_count"), "project search returned count")
     total_count = _integer(search.get("total_match_count"), "project search total count")
-    pagination = _mapping(search.get("pagination"), "project search pagination")
-    offset = _integer(pagination.get("offset"), "project search offset")
-    page_limit = _integer(pagination.get("limit"), "project search limit", maximum=100)
-    page_returned = _integer(pagination.get("returned"), "project search page count")
-    page_total = _integer(pagination.get("total"), "project search page total")
-    next_offset = pagination.get("next_offset")
-    if next_offset is not None:
-        next_offset = _integer(next_offset, "project search next offset")
     if not (
         page_limit >= 1
         and returned_count == page_returned == len(matches)
@@ -3591,11 +3599,20 @@ def _project_search_contract(
     coverage = _with_capture_limitations(
         _coverage(
             area="programs",
-            status="complete" if status == "complete" else "partial",
+            # A receipt describes one bounded page.  Even the final non-zero
+            # page cannot represent the whole literal search on its own.
+            status=(
+                "complete"
+                if status == "complete" and offset == 0 and next_offset is None
+                else "partial"
+            ),
             observed_count=returned_count,
             total_count=total_count,
-            truncated=next_offset is not None,
-            limitations=limitations,
+            truncated=next_offset is not None or offset > 0,
+            limitations=_stable_union(
+                limitations,
+                (["search_result_page_noninitial"] if offset > 0 else []),
+            ),
         ),
         capture_limitations,
     )
@@ -3608,15 +3625,13 @@ def _project_search_contract(
     )
 
 
-def project_search_context(result: Any) -> dict[str, Any] | None:
+def project_search_context(result: Any) -> dict[str, Any]:
     """Return bounded, receipt-bound search candidates for inference only."""
 
     if isinstance(result, Mapping) and result.get("operation") == "workspace.search":
         result = result.get("project_search")
     candidates: list[dict[str, Any]] = []
     receipt = _project_search_contract(result, model_candidates=candidates)
-    if not candidates:
-        return None
     candidates_by_kind = {
         kind: [item for item in candidates if item["kind"] == kind]
         for kind in ("program_name", "structure_item", "ladder_record")
@@ -3627,13 +3642,248 @@ def project_search_context(result: Any) -> dict[str, Any] | None:
         for kind in candidates_by_kind
         if index < len(candidates_by_kind[kind])
     ][:_MODEL_CONTEXT_ITEM_LIMIT]
+    # A bounded general-purpose projection must still retain the exact P OUTPUT
+    # candidate needed by the deterministic engineering mission.  This does not
+    # assert that the page is exhaustive: it promotes one already receipt-bound
+    # match using a stable identity ordering.
+    exact_p_outputs = [
+        item
+        for item in candidates
+        if (
+            item.get("kind") == "ladder_record"
+            and item.get("recordKind") == "OUTPUT"
+            and item.get("access") == "write"
+            and isinstance(item.get("device"), str)
+            and re.fullmatch(r"P[0-9A-F]{4,5}", item["device"].upper())
+            and isinstance(item.get("programId"), str)
+            and isinstance(item.get("programName"), str)
+            and isinstance(item.get("visualRow"), int)
+            and not isinstance(item.get("visualRow"), bool)
+            and isinstance(item.get("tokenOffset"), int)
+            and not isinstance(item.get("tokenOffset"), bool)
+            and isinstance(item.get("matchId"), str)
+        )
+    ]
+    if exact_p_outputs:
+        exact_candidate = min(
+            exact_p_outputs,
+            key=lambda item: (
+                item["programId"],
+                item["programName"],
+                item["visualRow"],
+                item["tokenOffset"],
+                item["matchId"],
+            ),
+        )
+        bounded_candidates = [
+            exact_candidate,
+            *(
+                item
+                for item in bounded_candidates
+                if item["matchId"] != exact_candidate["matchId"]
+            ),
+        ][:_MODEL_CONTEXT_ITEM_LIMIT]
     return {
+        "sourceReceiptDigest": receipt["receiptDigest"],
         "searchDigest": receipt["scope"]["query"]["searchDigest"],
         "coverageUnitKeys": receipt["scope"]["coverageUnitKeys"],
         "candidates": bounded_candidates,
         "candidateCount": len(candidates),
         "truncated": len(candidates) > _MODEL_CONTEXT_ITEM_LIMIT,
     }
+
+
+def validate_project_search_context(
+    value: Any,
+    *,
+    receipt: Any,
+) -> dict[str, Any]:
+    """Validate the durable model projection against its structural receipt."""
+
+    context = dict(_mapping(value, "project search model context"))
+    if set(context) != {
+        "sourceReceiptDigest",
+        "searchDigest",
+        "coverageUnitKeys",
+        "candidates",
+        "candidateCount",
+        "truncated",
+    }:
+        raise ValueError("project search model context fields are invalid")
+    validated_receipt = validate_structural_evidence_contract(
+        receipt,
+        expected_tool="project.search",
+    )
+    coverage_keys = validated_receipt["scope"]["coverageUnitKeys"]
+    candidates = _items(context["candidates"], "project search model candidates")
+    candidate_count = _integer(
+        context["candidateCount"],
+        "project search model candidate count",
+    )
+    if (
+        context["sourceReceiptDigest"] != validated_receipt["receiptDigest"]
+        or context["searchDigest"]
+        != validated_receipt["scope"]["query"].get("searchDigest")
+        or context["coverageUnitKeys"] != coverage_keys
+        or candidate_count != len(coverage_keys)
+        or len(candidates) > _MODEL_CONTEXT_ITEM_LIMIT
+        or _boolean(context["truncated"], "project search context truncation")
+        != (candidate_count > len(candidates))
+    ):
+        raise ValueError("project search model context is not receipt-bound")
+
+    canonical_candidates: list[dict[str, Any]] = []
+    for candidate_value in candidates:
+        candidate = dict(_mapping(candidate_value, "project search model candidate"))
+        kind = candidate.get("kind")
+        match_id = _raw_sha256(
+            candidate.get("matchId"),
+            "project search model match id",
+        )
+        if match_id not in coverage_keys:
+            raise ValueError("project search model candidate is outside its receipt")
+        if kind == "program_name":
+            if set(candidate) != {
+                "kind",
+                "matchId",
+                "programId",
+                "programName",
+            }:
+                raise ValueError("project search program candidate fields are invalid")
+            canonical = {
+                "kind": kind,
+                "matchId": match_id,
+                "programId": _text(
+                    candidate["programId"],
+                    "project search candidate program id",
+                    maximum=500,
+                ),
+                "programName": _text(
+                    candidate["programName"],
+                    "project search candidate program name",
+                    maximum=4_096,
+                ),
+            }
+        elif kind == "ladder_record":
+            allowed = {
+                "kind",
+                "matchId",
+                "programId",
+                "programName",
+                "recordKind",
+                "visualRow",
+                "tokenOffset",
+                "access",
+                "column",
+                "device",
+            }
+            required = allowed - {"column", "device"}
+            if not required.issubset(candidate) or set(candidate) - allowed:
+                raise ValueError("project search ladder candidate fields are invalid")
+            access = _text(
+                candidate["access"],
+                "project search candidate access",
+                maximum=50,
+            )
+            if access not in _ACCESS_KINDS:
+                raise ValueError("project search candidate access is invalid")
+            canonical = {
+                "kind": kind,
+                "matchId": match_id,
+                "programId": _text(
+                    candidate["programId"],
+                    "project search candidate program id",
+                    maximum=500,
+                ),
+                "programName": _text(
+                    candidate["programName"],
+                    "project search candidate program name",
+                    maximum=4_096,
+                ),
+                "recordKind": _text(
+                    candidate["recordKind"],
+                    "project search candidate record kind",
+                    maximum=100,
+                ),
+                "visualRow": _integer(
+                    candidate["visualRow"],
+                    "project search candidate visual row",
+                ),
+                "tokenOffset": _integer(
+                    candidate["tokenOffset"],
+                    "project search candidate token offset",
+                ),
+                "access": access,
+            }
+            if "column" in candidate:
+                canonical["column"] = _integer(
+                    candidate["column"],
+                    "project search candidate column",
+                )
+            if "device" in candidate:
+                canonical["device"] = _text(
+                    candidate["device"],
+                    "project search candidate device",
+                    maximum=100,
+                )
+        elif kind == "structure_item":
+            if set(candidate) != {
+                "kind",
+                "matchId",
+                "section",
+                "matchedField",
+                "structureLocator",
+            }:
+                raise ValueError("project search structure candidate fields are invalid")
+            section = _text(
+                candidate["section"],
+                "project search candidate section",
+                maximum=100,
+            )
+            if section not in {"code_units", "symbols", "devices"}:
+                raise ValueError("project search candidate section is invalid")
+            locator = dict(
+                _mapping(
+                    candidate["structureLocator"],
+                    "project search candidate structure locator",
+                )
+            )
+            validated_locator = _fact_without_fingerprint(
+                _validate_structure_fact(
+                    {"fingerprint": canonical_digest(locator), **locator}
+                )
+            )
+            canonical = {
+                "kind": kind,
+                "matchId": match_id,
+                "section": section,
+                "matchedField": _text(
+                    candidate["matchedField"],
+                    "project search candidate matched field",
+                    maximum=100,
+                ),
+                "structureLocator": validated_locator,
+            }
+        else:
+            raise ValueError("project search model candidate kind is invalid")
+        if canonical != candidate:
+            raise ValueError("project search model candidate is not canonical")
+        canonical_candidates.append(canonical)
+    if len({item["matchId"] for item in canonical_candidates}) != len(
+        canonical_candidates
+    ):
+        raise ValueError("project search model candidates are not unique")
+    canonical_context = {
+        "sourceReceiptDigest": validated_receipt["receiptDigest"],
+        "searchDigest": validated_receipt["scope"]["query"]["searchDigest"],
+        "coverageUnitKeys": coverage_keys,
+        "candidates": canonical_candidates,
+        "candidateCount": candidate_count,
+        "truncated": candidate_count > len(canonical_candidates),
+    }
+    if canonical_context != context:
+        raise ValueError("project search model context is not canonical")
+    return canonical_context
 
 
 def build_structural_evidence_contract(
@@ -4116,6 +4366,39 @@ def validate_structural_evidence_contract(
     )
     if len(unit_keys) != len(set(unit_keys)):
         raise ValueError("structural receipt coverage unit keys are not unique")
+    if tool_name == "project.search":
+        required_search_query = {
+            "literal",
+            "programId",
+            "searchDigest",
+            "offset",
+            "limit",
+            "returned",
+            "total",
+            "nextOffset",
+        }
+        if set(query) != required_search_query:
+            raise ValueError("project search receipt pagination scope is invalid")
+        literal = _text(query.get("literal"), "project search scope literal", maximum=256)
+        program_id = query.get("programId")
+        if program_id is not None:
+            _text(program_id, "project search scope program id", maximum=500)
+        _raw_sha256(query.get("searchDigest"), "project search scope digest")
+        offset = _integer(query.get("offset"), "project search scope offset")
+        limit = _integer(query.get("limit"), "project search scope limit")
+        returned = _integer(query.get("returned"), "project search scope returned")
+        total = _integer(query.get("total"), "project search scope total")
+        next_offset = query.get("nextOffset")
+        if next_offset is not None:
+            next_offset = _integer(next_offset, "project search scope next offset")
+        if not (
+            literal
+            and 1 <= limit <= 100
+            and returned == len(unit_keys)
+            and offset + returned <= total
+            and next_offset == (offset + returned if offset + returned < total else None)
+        ):
+            raise ValueError("project search receipt pagination scope is inconsistent")
     payload_set_digest = _text(
         scope_value["payloadSetDigest"],
         "payload-set digest",
@@ -4522,4 +4805,5 @@ __all__ = [
     "structural_receipt_tool_name",
     "structural_observation_statement",
     "validate_structural_evidence_contract",
+    "validate_project_search_context",
 ]

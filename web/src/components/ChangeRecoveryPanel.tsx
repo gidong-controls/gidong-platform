@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { hostApi, HostApiError } from "../api/client";
 import {
-  isLegacyChangePlanV1,
-  isMneFullProgramReplacementPlan,
+  hasSupportedChangeRecoveryContract,
 } from "../api/changeContracts";
+import {
+  canOfferRecoveryRelaunch,
+  journaledRecoveryRelaunchTarget,
+} from "../api/changeRecovery";
 import type {
   ChangeTransaction,
   XG5000Instance,
@@ -13,7 +16,11 @@ import { Icon } from "./Icon";
 interface ChangeRecoveryPanelProps {
   transaction: ChangeTransaction;
   busy: boolean;
-  onReconcile: (pid: number, hwnd: number) => Promise<void>;
+  onReconcile: (
+    pid: number,
+    hwnd: number,
+    relaunchIfUnavailable?: boolean,
+  ) => Promise<void>;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -48,27 +55,7 @@ function recoveryCheckpoint(
 }
 
 function hasSupportedRecoveryContract(transaction: ChangeTransaction): boolean {
-  const plan = transaction.plan;
-  if (isMneFullProgramReplacementPlan(plan)) {
-    return (
-      plan.verificationScope === "offline_native_reopen" &&
-      plan.validation.join("\u0000") ===
-        [
-          "structural_diff",
-          "xg5000_program_check",
-          "project_save",
-          "project_reopen",
-        ].join("\u0000")
-    );
-  }
-  return (
-    isLegacyChangePlanV1(plan) &&
-    plan.verificationScope === "offline_native_check_only" &&
-    plan.validation.join("\u0000") ===
-      ["structural_diff", "xg5000_program_check", "project_save"].join(
-        "\u0000",
-      )
-  );
+  return hasSupportedChangeRecoveryContract(transaction.plan);
 }
 
 function recoveryOutcome(transaction: ChangeTransaction): string {
@@ -110,6 +97,7 @@ export function ChangeRecoveryPanel({
   const [instancesLoading, setInstancesLoading] = useState(
     transaction.state === "quarantined" && recoverySupported,
   );
+  const [inventoryConfirmedEmpty, setInventoryConfirmedEmpty] = useState(false);
   const [instanceNotice, setInstanceNotice] = useState("");
 
   const selectedInstance = useMemo(
@@ -121,11 +109,15 @@ export function ChangeRecoveryPanel({
 
   const loadInstances = async () => {
     setInstancesLoading(true);
+    setInventoryConfirmedEmpty(false);
     setInstanceNotice("");
     setSelectedHwnd("");
     try {
       const response = await hostApi.getXG5000Instances();
       setInstances(response.instances);
+      setInventoryConfirmedEmpty(
+        response.status === "ready" && response.instances.length === 0,
+      );
       if (response.status !== "ready" || response.instances.length === 0) {
         setInstanceNotice(
           "복구 대상을 확인할 수 없습니다. 해당 작업 복사본을 연 XG5000 창을 준비한 뒤 다시 확인해 주세요.",
@@ -133,6 +125,7 @@ export function ChangeRecoveryPanel({
       }
     } catch (error) {
       setInstances([]);
+      setInventoryConfirmedEmpty(false);
       setInstanceNotice(
         error instanceof HostApiError
           ? error.message
@@ -164,6 +157,15 @@ export function ChangeRecoveryPanel({
     typeof checkpoint?.current_project_hash === "string"
       ? checkpoint.current_project_hash
       : undefined;
+  const relaunchTarget = journaledRecoveryRelaunchTarget(
+    transaction.targetIdentity,
+  );
+  const relaunchAvailable = canOfferRecoveryRelaunch({
+    transactionState: transaction.state,
+    recoverySupported,
+    inventoryConfirmedEmpty,
+    targetIdentity: transaction.targetIdentity,
+  });
 
   return (
     <section
@@ -229,6 +231,18 @@ export function ChangeRecoveryPanel({
           >
             {busy ? "복구 증거 확인 중…" : "선택한 창으로 격리 복구 검사"}
           </button>
+          {relaunchAvailable && relaunchTarget && (
+            <button
+              className="button secondary-button"
+              type="button"
+              disabled={busy || instancesLoading}
+              onClick={() =>
+                void onReconcile(relaunchTarget.pid, relaunchTarget.hwnd, true)
+              }
+            >
+              XG5000에서 작업 복사본 다시 열어 복구
+            </button>
+          )}
         </form>
       )}
 

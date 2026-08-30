@@ -16,6 +16,7 @@ from .constants import (
     CANONICAL_CHALLENGE_URL,
     CANONICAL_HANDOFF_URL,
     CANONICAL_HEALTH_URL,
+    CANONICAL_READINESS_URL,
     EXPECTED_HOST_API_VERSION,
     EXPECTED_HOST_SERVICE,
 )
@@ -50,6 +51,14 @@ class BrowserHandoffResult:
     issued: bool
     detail: str
     ticket: str | None = None
+    readiness_receipt: str | None = None
+
+
+@dataclass(frozen=True)
+class BrowserReadinessResult:
+    ready: bool
+    detail: str
+    retryable: bool = False
 
 
 class HealthProbe(Protocol):
@@ -58,6 +67,12 @@ class HealthProbe(Protocol):
     def verify_launch_token(self, launch_token: str) -> LaunchVerificationResult: ...
 
     def issue_browser_handoff(self, launch_token: str) -> BrowserHandoffResult: ...
+
+    def probe_browser_readiness(
+        self,
+        launch_token: str,
+        readiness_receipt: str,
+    ) -> BrowserReadinessResult: ...
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -241,13 +256,90 @@ class HttpHealthProbe:
         if not isinstance(payload, dict):
             return BrowserHandoffResult(False, "browser handoff must be a JSON object")
         ticket = payload.get("handoffTicket")
+        readiness_receipt = payload.get("readinessReceipt")
         if (
             not isinstance(ticket, str)
             or not 32 <= len(ticket) <= 512
             or any(character.isspace() or ord(character) < 33 for character in ticket)
         ):
             return BrowserHandoffResult(False, "browser handoff ticket is invalid")
-        return BrowserHandoffResult(True, "issued one-time browser handoff", ticket)
+        if (
+            not isinstance(readiness_receipt, str)
+            or not 32 <= len(readiness_receipt) <= 512
+            or any(
+                character.isspace() or ord(character) < 33
+                for character in readiness_receipt
+            )
+        ):
+            return BrowserHandoffResult(False, "browser readiness receipt is invalid")
+        return BrowserHandoffResult(
+            True,
+            "issued one-time browser handoff",
+            ticket,
+            readiness_receipt,
+        )
+
+    def probe_browser_readiness(
+        self,
+        launch_token: str,
+        readiness_receipt: str,
+    ) -> BrowserReadinessResult:
+        """Consume the Host's protocol receipt for this exact browser handoff."""
+
+        if (
+            not 32 <= len(readiness_receipt) <= 512
+            or any(character.isspace() or ord(character) < 33 for character in readiness_receipt)
+        ):
+            return BrowserReadinessResult(False, "browser readiness receipt is invalid")
+        request = Request(
+            f"{CANONICAL_READINESS_URL}?{urlencode({'receipt': readiness_receipt})}",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {launch_token}",
+            },
+            method="GET",
+        )
+        try:
+            with self._opener.open(request, timeout=self._timeout_seconds) as response:
+                if response.status not in {200, 202}:
+                    return BrowserReadinessResult(
+                        False,
+                        f"browser readiness returned HTTP {response.status}",
+                    )
+                body = response.read(_MAX_HEALTH_BYTES + 1)
+        except HTTPError as exc:
+            return BrowserReadinessResult(
+                False,
+                f"browser readiness could not be verified: {exc}",
+                retryable=(exc.code == 202),
+            )
+        except (URLError, TimeoutError, OSError) as exc:
+            return BrowserReadinessResult(
+                False,
+                f"browser readiness could not be verified: {exc}",
+                retryable=True,
+            )
+        if len(body) > _MAX_HEALTH_BYTES:
+            return BrowserReadinessResult(False, "browser readiness response is too large")
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            return BrowserReadinessResult(
+                False,
+                f"browser readiness is not valid UTF-8 JSON: {exc}",
+            )
+        if not isinstance(payload, dict):
+            return BrowserReadinessResult(False, "browser readiness must be a JSON object")
+        state = payload.get("status")
+        if response.status == 200 and state == "ready":
+            return BrowserReadinessResult(True, "verified browser bootstrap receipt")
+        if response.status == 202 and state == "pending":
+            return BrowserReadinessResult(
+                False,
+                "browser has not completed bootstrap yet",
+                retryable=True,
+            )
+        return BrowserReadinessResult(False, "browser readiness response is invalid")
 
 
 def validate_health_payload(payload: object, *, expected_build: str) -> HealthResult:

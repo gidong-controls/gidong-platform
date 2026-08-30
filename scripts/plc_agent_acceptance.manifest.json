@@ -1,0 +1,65 @@
+{
+  "schema": "controlstudio-plc-agent-acceptance-manifest/v1",
+  "version": 1,
+  "description": "Deterministic acceptance layers for the PLC engineering Agent. Live XG5000 and SSH evidence is deliberately external and fail-closed.",
+  "deterministic_commands": [
+    {
+      "id": "agent-mission-resume-and-approval",
+      "ca_ids": ["CA-03", "CA-04", "CA-11"],
+      "cwd": "gidong-agent",
+      "command": [".venv/Scripts/python.exe", "-m", "unittest", "tests.test_engineering_agent_resume", "tests.test_sidecar_host_tool_results"],
+      "timeout_seconds": 300
+    },
+    {
+      "id": "host-change-execution-and-field-io",
+      "ca_ids": ["CA-03", "CA-04", "CA-05", "CA-06", "CA-08", "CA-09", "CA-10"],
+      "cwd": "gidong-platform/host",
+      "command": [".venv/Scripts/python.exe", "-m", "unittest", "tests.test_agent_resume_transport", "tests.test_engineering_change_mission_vertical", "tests.test_change_execution_vertical", "tests.test_field_io_evidence_projection"],
+      "timeout_seconds": 360
+    },
+    {
+      "id": "mcp-boundary-and-field-io",
+      "ca_ids": ["CA-05", "CA-06", "CA-08", "CA-09", "CA-10"],
+      "cwd": "gidong-plc-mcp",
+      "command": [".venv/Scripts/python.exe", "-m", "unittest", "tests.test_cli_adapter", "tests.test_server_cli_boundary", "tests.test_field_io_binding"],
+      "timeout_seconds": 240
+    },
+    {
+      "id": "independent-xg5000-cli-contract",
+      "ca_ids": ["CA-05", "CA-06", "CA-07"],
+      "cwd": "controlstudio-xg5000-cli",
+      "command": [".venv/Scripts/python.exe", "-m", "unittest", "tests.test_cli_contract"],
+      "timeout_seconds": 180
+    },
+    {
+      "id": "web-production-build",
+      "ca_ids": ["CA-01", "CA-03", "CA-04"],
+      "cwd": "gidong-platform/web",
+      "command": ["npm.cmd", "run", "build"],
+      "timeout_seconds": 240
+    }
+  ],
+  "live_gate_receipt_schema": "controlstudio-plc-live-gate-receipt/v1",
+  "live_gates": [
+    {
+      "id": "CA-01",
+      "title": "Clean-machine first launch and UAC behavior",
+      "reason": "Requires a real Windows desktop, installer, and visible first-launch evidence."
+    },
+    {
+      "id": "CA-02",
+      "title": "Actual XG5000 project/program analysis",
+      "reason": "Requires a selected vendor IDE project and canonical UI readback."
+    },
+    {
+      "id": "CA-04-CA-07",
+      "title": "Approved XG5000 mutation through fresh reopen/readback",
+      "reason": "Requires real operator approval, XG5000 UI, Program Check, save, source close, new PID/HWND, and readback."
+    },
+    {
+      "id": "CA-12",
+      "title": "SSH interruption with interactive Windows-session handoff",
+      "reason": "Requires a remote SSH topology and a separately observed interactive Windows session."
+    }
+  ]
+}

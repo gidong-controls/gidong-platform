@@ -6,14 +6,16 @@ import hmac
 import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import secrets
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, nullcontext
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any
@@ -23,11 +25,18 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__
-from .agent_client import AgentSupervisor, SubprocessAgentClient
-from .agent_protocol import scrub_agent_tool_result
+from .agent_client import (
+    AgentSupervisor,
+    SubprocessAgentClient,
+    build_historical_evidence_bundle,
+    project_historical_evidence,
+)
+from .agent_protocol import AgentProtocolError, scrub_agent_tool_result
 from .agent_runtime import (
     MAX_ENGINEERING_AUTONOMOUS_CYCLES,
+    AgentOutputContractDiagnostic,
     AgentOutputContractError,
+    AgentRuntimeError,
     ModelCapabilityResult,
 )
 from .api_models import (
@@ -74,6 +83,7 @@ from .api_models import (
     EngineeringLocationFocusRequestV1,
     EngineeringLocationFocusV1,
     EngineeringLocationV2,
+    EngineeringMissionBlockedStepReverifyRequestV1,
     EngineeringMissionResumeRequestV1,
     EngineeringMissionSnapshotV1,
     EngineeringMissionSummaryV1,
@@ -85,6 +95,7 @@ from .api_models import (
     EngineeringTargetBindingV1,
     ExecuteChangeTransactionRequestV1,
     FinalizeSimulationChangeRequestV1,
+    HostRestartResponseV1,
     HostStatusV1,
     ImportKnowledgeRequestV1,
     KnowledgeCitationV1,
@@ -95,6 +106,7 @@ from .api_models import (
     KnowledgeSourceV1,
     KnowledgeSummaryV1,
     LauncherHandoffV1,
+    LauncherReadinessV1,
     LocalWorkspaceCompareV1,
     LocalWorkspaceV1,
     LSControllerConnectionStatusV1,
@@ -117,6 +129,8 @@ from .api_models import (
     NativeProjectReconciliationV1,
     NativeSimulationTrialDecisionRequestV1,
     NativeSimulationTrialDecisionV1,
+    NewBuildWorkspaceProvenanceV1,
+    OfflineOperandMissionV1,
     OpenLocalWorkspaceRequestV1,
     OpenLocalWorkspaceResponseV1,
     ProductFeatureStatusV1,
@@ -130,6 +144,8 @@ from .api_models import (
     ReconcileChangeTransactionRequestV1,
     ReconcileNativeProjectRequestV1,
     ResumeLocalWorkspaceRequestV1,
+    ReviewedNoSaveCloseRequestV1,
+    ReviewedNoSaveCloseResponseV1,
     RunCancellationV1,
     SaveModelSettingsRequestV1,
     SendMessageRequestV1,
@@ -140,6 +156,7 @@ from .api_models import (
     XG5000InstancesV1,
     XG5000ProjectFileSelectionV1,
     XG5000ProjectLaunchV1,
+    canonical_engineering_mission_snapshot,
 )
 from .change_execution import (
     ChangeExecutionFailedSafely,
@@ -148,6 +165,12 @@ from .change_execution import (
     ChangeExecutionService,
     ChangeRecoveryTarget,
     calculate_plan_digest,
+    validated_terminal_ld_reopen,
+)
+from .change_outcome import (
+    TERMINAL_CHANGE_OUTCOME_DISPOSITIONS,
+    change_outcome_evidence,
+    change_outcome_projection,
 )
 from .config import HostConfig
 from .control_patterns import iter_builtin_knowledge_documents
@@ -175,6 +198,7 @@ from .mne_change_execution import (
     MNE_PATCH_PLAN_CONTRACTS,
     MNE_STRUCTURAL_PLAN_KINDS,
     CompositeChangeExecutionService,
+    validated_terminal_mne_reopen,
 )
 from .model_connection import (
     MODEL_PROTOCOL,
@@ -201,10 +225,12 @@ from .models import (
     ConversationDetail,
     EngineeringMission,
     HealthResponse,
+    Message,
     MessageRole,
     RunState,
     StoredEvent,
 )
+from .native_engineering_status import derive_native_engineering_status
 from .native_projects import (
     NativeProjectConflict,
     NativeProjectOperation,
@@ -214,6 +240,11 @@ from .native_projects import (
     NativeProjectService,
     NativeProjectSpec,
     _native_simulation_trial_id,
+    validated_new_build_workspace_provenance,
+)
+from .native_session_identity import (
+    fresh_native_trial_identity,
+    native_trial_session_identity,
 )
 from .project_planning import (
     build_project_plan_revision,
@@ -224,6 +255,8 @@ from .project_planning import (
     validate_project_plan_artifact,
     validate_project_plan_scope_evidence,
 )
+from .restart import RestartBootstrapError, RestartHandoff, consume_restart_handoff
+from .ssh_handoff import SshInteractiveHandoffJournal
 from .store import (
     ChangeStoreConflict,
     ConversationActiveRunConflict,
@@ -243,6 +276,7 @@ from .structural_evidence import (
     structural_observation_statement,
     structural_receipt_tool_name,
     structure_membership_value,
+    validate_project_search_context,
     validate_structural_evidence_contract,
 )
 from .windows_dialogs import (
@@ -258,6 +292,10 @@ SERVICE_WORKER_PATHS = {"service-worker.js", "sw.js"}
 BROWSER_SESSION_TTL = timedelta(hours=12)
 BROWSER_SESSION_REFRESH_GRACE = timedelta(hours=24)
 BROWSER_HANDOFF_TTL = timedelta(seconds=30)
+# A consumed handoff needs enough time for the browser to request the initial
+# bootstrap, while remaining short-lived and strictly in-memory.
+BROWSER_READINESS_TTL = timedelta(minutes=2)
+LATE_WORKSPACE_RECONCILE_SECONDS = 15.0
 LAUNCH_CHALLENGE_PREFIX = b"controlstudio-launcher-v1\0"
 BROWSER_CSRF_PREFIX = b"controlstudio-browser-csrf-v1\0"
 _PROJECT_BRIEF_ATTACHMENT_KINDS = frozenset(
@@ -268,6 +306,93 @@ _PROJECT_BRIEF_ATTACHMENT_KINDS = frozenset(
     }
 )
 logger = logging.getLogger(__name__)
+
+
+_WORKSPACE_CLI_FAILURE_DETAIL = re.compile(
+    r"workspace_cli_failure\(kind=([A-Za-z][A-Za-z0-9_.-]{0,79}),message=([^()]{1,480})\)"
+)
+
+
+def _cli_failure_diagnostic(error: Exception) -> tuple[str, str] | None:
+    """Return only the adapter-validated CLI diagnostic, if present."""
+
+    match = _WORKSPACE_CLI_FAILURE_DETAIL.search(str(error))
+    if match is None:
+        return None
+    kind, message = match.groups()
+    # Adapter accepts ASCII single-line safe text only. Keep this second
+    # validation at the Host trust boundary in case an MCP server is replaced.
+    if (
+        not message
+        or any(ord(character) < 0x20 or ord(character) > 0x7E for character in message)
+        or any(character in message for character in ("\\", "/", ":", "=", "\"", "'", "{", "}"))
+    ):
+        return None
+    return kind, message
+
+
+def _workspace_cli_failure_detail(error: Exception) -> str:
+    """Expose a validated workspace CLI reason, never arbitrary MCP text."""
+
+    diagnostic = _cli_failure_diagnostic(error)
+    if diagnostic is None:
+        return "the verified workspace could not be reopened in XG5000 before acceptance"
+    kind, message = diagnostic
+    return f"the verified workspace could not be reopened in XG5000 before acceptance: {kind}: {message}"
+
+
+def _reviewed_no_save_close_failure_detail(error: MCPToolError) -> str:
+    """Expose only the adapter's bounded reviewed-close failure envelope."""
+
+    diagnostic = _cli_failure_diagnostic(error)
+    if diagnostic is None:
+        return (
+            "저장 없이 닫기 검토를 완료하지 못했습니다. 대상 창은 계속 선택되어 "
+            "있습니다."
+        )
+    kind, message = diagnostic
+    return (
+        "저장 없이 닫기 검토를 완료하지 못했습니다: "
+        f"{kind}: {message}. 대상 창은 계속 선택되어 있습니다."
+    )
+
+
+def _reviewed_no_save_close_response(
+    raw: dict[str, Any],
+    *,
+    receipt_digest: str,
+) -> ReviewedNoSaveCloseResponseV1:
+    """Project a verified CLI receipt onto the intentionally small Host response."""
+
+    return ReviewedNoSaveCloseResponseV1.model_validate(
+        {
+            field: raw.get(field)
+            for field in (
+                "operation",
+                "verified",
+                "source_closed",
+                "automatic_workspace_open",
+                "process_terminated",
+                "reviewed_binding",
+                "close",
+                "next_step",
+            )
+        }
+        | {"receipt_digest": receipt_digest}
+    )
+
+
+@dataclass(frozen=True)
+class _BrowserHandoffTicket:
+    expires_at: datetime
+    readiness_receipt: str
+
+
+@dataclass
+class _BrowserReadinessReceipt:
+    expires_at: datetime
+    session_established: bool = False
+    bootstrap_completed: bool = False
 
 _AGENT_TOOL_EVIDENCE: dict[str, tuple[str, str, str, str]] = {
     "xg5000.session_status": (
@@ -611,6 +736,7 @@ def _agent_tool_evidence_ref(
     tool_name: str,
     tool_call_id: str | None,
     evidence_contract: dict[str, Any] | None = None,
+    evidence_context: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     canonical_tool_name = AGENT_TOOL_NAMES.get(tool_name, tool_name)
     definition = _AGENT_TOOL_EVIDENCE.get(canonical_tool_name)
@@ -638,12 +764,13 @@ def _agent_tool_evidence_ref(
     if tool_call_id is not None:
         evidence["toolCallId"] = tool_call_id
     receipt_schema = {
+        "program.read_ld": "controlstudio-program-read-ld-evidence/v1",
         "project.hardware_context": "controlstudio-hardware-context-evidence/v1",
         "workspace.compare": "controlstudio-workspace-compare-evidence/v1",
         "workspace.hardware_context": (
             "controlstudio-workspace-hardware-context-evidence/v1"
         ),
-        "program.change_target_analysis": "controlstudio-change-target-evidence/v1",
+        "program.change_target_analysis": "controlstudio-change-target-evidence/v2",
         "program.compile_mne_series_guard_candidate": (
             "controlstudio-mne-series-guard-candidate-evidence/v1"
         ),
@@ -681,6 +808,29 @@ def _agent_tool_evidence_ref(
         ):
             raise ValueError(f"{canonical_tool_name} evidence contract digest is invalid")
         evidence["receipt"] = evidence_contract
+    if canonical_tool_name in {"project.search", "workspace.search"}:
+        if not isinstance(evidence_context, dict) or not isinstance(
+            evidence_contract,
+            dict,
+        ):
+            raise ValueError(
+                f"{canonical_tool_name} completed without its model context"
+            )
+        canonical_context = validate_project_search_context(
+            evidence_context,
+            receipt=evidence_contract,
+        )
+        evidence["modelContext"] = canonical_context
+        evidence["modelContextDigest"] = hashlib.sha256(
+            json.dumps(
+                canonical_context,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+    elif evidence_context is not None:
+        raise ValueError(f"{canonical_tool_name} returned an unexpected model context")
     return evidence
 
 
@@ -820,6 +970,528 @@ def _planning_prompt_from_brief(brief: ProjectBriefV1) -> str:
             _LEGACY_PROJECT_BRIEF_FOOTER,
         )
     )
+
+
+def _require_offline_operand_mission_plan(
+    mission: dict[str, Any], values: dict[str, Any]
+) -> None:
+    """Bind an Agent legacy operand proposal to the typed Host mission seed."""
+    target = values.get("target")
+    current = values.get("current")
+    proposed = values.get("proposed")
+    if (
+        not isinstance(target, dict)
+        or target.get("programId", target.get("program_id")) != mission["programId"]
+        or target.get("programName", target.get("program_name")) != mission["programName"]
+        or not isinstance(target.get("tokenOffset", target.get("token_offset")), int)
+        or not isinstance(current, dict)
+        or current.get("value", current.get("operand")) != mission["expectedOperand"]
+        or not isinstance(proposed, dict)
+        or proposed.get("value", proposed.get("operand")) != mission["replacementOperand"]
+    ):
+        raise ValueError("proposal differs from the Host-owned offline operand mission")
+
+
+def _rejected_exact_operand_reauthorization_permitted(
+    *,
+    request_message: Message | None,
+    linked_change: ChangeTransaction | None,
+    change_outcome: dict[str, Any] | None,
+    offline_operand_mission: dict[str, Any] | None,
+) -> bool:
+    """Accept a rejected retry only from the same explicit typed user intent."""
+
+    if (
+        request_message is None
+        or request_message.role is not MessageRole.USER
+        or request_message.metadata.get("engineering_mission_continue") is True
+        or linked_change is None
+        or linked_change.state is not ChangeTransactionState.REJECTED
+        or not isinstance(change_outcome, dict)
+        or change_outcome.get("state") != "REJECTED"
+        or change_outcome.get("disposition") != "rejected"
+        or change_outcome.get("transactionId") != linked_change.id
+        or change_outcome.get("planDigest") != linked_change.plan_digest
+        or not isinstance(offline_operand_mission, dict)
+    ):
+        return False
+    try:
+        reauthorization = OfflineOperandMissionV1.model_validate(
+            offline_operand_mission
+        ).model_dump(mode="json", by_alias=True)
+    except (TypeError, ValueError):
+        return False
+    plan = linked_change.plan
+    target = plan.get("target") if isinstance(plan, dict) else None
+    current = plan.get("current") if isinstance(plan, dict) else None
+    proposed = plan.get("proposed") if isinstance(plan, dict) else None
+    if not all(isinstance(value, dict) for value in (target, current, proposed)):
+        return False
+    assert isinstance(target, dict) and isinstance(current, dict) and isinstance(proposed, dict)
+    plan_kind = plan.get("planKind", plan.get("plan_kind"))
+    plan_program_name = target.get("programName", target.get("program_name"))
+    legacy_program_name_omitted = (
+        plan_kind is None
+        and "programName" not in target
+        and "program_name" not in target
+    )
+    return (
+        target.get("programId", target.get("program_id"))
+        == reauthorization["programId"]
+        # Historical ChangePlanV1 transactions did not require programName in
+        # target. The exact programId and operand pair still bind that rejected
+        # decision; the fresh typed mission supplies the name, and every new
+        # proposal is separately checked by _require_offline_operand_mission_plan.
+        and (
+            plan_program_name == reauthorization["programName"]
+            or legacy_program_name_omitted
+        )
+        and current.get("value", current.get("operand"))
+        == reauthorization["expectedOperand"]
+        and proposed.get("value", proposed.get("operand"))
+        == reauthorization["replacementOperand"]
+    )
+
+
+def _expired_exact_operand_reproposal_callback_permitted(
+    mission: dict[str, Any] | None,
+    change_outcome: dict[str, Any] | None,
+    *,
+    rejected_reauthorized: bool = False,
+) -> bool:
+    """Permit a fresh approval-only retry after one safely terminal authority.
+
+    This does not revive the old transaction.  It merely makes the proposal
+    callback available to the Agent's exact P-operand route, which still must
+    supply a new run-local hardware/target/snapshot trio and is limited to one
+    Host transaction by ``proposed_change_authority``. Besides expiration, the
+    Host admits only two narrow terminal outcomes: ``native_change_not_applied``
+    (which is emitted before native mutation can be accepted as applied), and
+    ``explicit_recovery_rolled_back`` with its Host verification digest. The
+    latter proves the uncertain editor state was restored and saved. A rejected
+    proposal is admitted only after a new user-authored, typed operand mission
+    explicitly reauthorizes the exact request. Every uncertain/quarantined or
+    otherwise terminal outcome remains closed.
+    """
+
+    retryable_outcome = bool(
+        isinstance(change_outcome, dict)
+        and (
+            (
+                change_outcome.get("state") == "EXPIRED"
+                and change_outcome.get("disposition") == "expired"
+            )
+            or (
+                rejected_reauthorized
+                and change_outcome.get("state") == "REJECTED"
+                and change_outcome.get("disposition") == "rejected"
+            )
+            or (
+                change_outcome.get("state") == "FAILED"
+                and change_outcome.get("disposition") == "failed"
+                and change_outcome.get("errorCode") == "native_change_not_applied"
+            )
+            or (
+                change_outcome.get("state") == "ROLLED_BACK"
+                and change_outcome.get("disposition") == "rolled_back"
+                and change_outcome.get("errorCode") == "explicit_recovery_rolled_back"
+                and isinstance(change_outcome.get("verificationEvidenceDigest"), str)
+                and re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    change_outcome["verificationEvidenceDigest"],
+                )
+                is not None
+            )
+        )
+    )
+    if (
+        not isinstance(mission, dict)
+        or not retryable_outcome
+        or not isinstance(mission.get("objective"), str)
+        or not isinstance(mission.get("steps"), list)
+    ):
+        return False
+    operands = list(
+        dict.fromkeys(
+            re.findall(
+                r"(?<![A-Z0-9])P[0-9A-F]{4,5}(?![A-Z0-9])",
+                mission["objective"].upper(),
+            )
+        )
+    )
+    if (
+        len(operands) != 2
+        or len(operands[0].encode("utf-16-le"))
+        != len(operands[1].encode("utf-16-le"))
+    ):
+        return False
+    proposal_steps = [
+        step
+        for step in mission["steps"]
+        if isinstance(step, dict)
+        and "propose_offline_change" in str(step.get("title", ""))
+    ]
+    hardware_steps = [
+        step
+        for step in mission["steps"]
+        if isinstance(step, dict)
+        and "inspect_project_hardware_context" in str(step.get("title", ""))
+    ]
+    target_steps = [
+        step
+        for step in mission["steps"]
+        if isinstance(step, dict)
+        and "analyze_change_target" in str(step.get("title", ""))
+    ]
+    if not (
+        len(proposal_steps) == len(hardware_steps) == len(target_steps) == 1
+    ):
+        return False
+    proposal_step = proposal_steps[0]
+    completed_prerequisites = all(
+        step.get("status") == "completed"
+        and isinstance(step.get("evidenceRefs"), list)
+        and bool(step["evidenceRefs"])
+        for step in (*hardware_steps, *target_steps)
+    )
+    if not completed_prerequisites:
+        return False
+    # The Agent deterministically reactivates this exact clean checkpoint only
+    # after it sees the expired terminal outcome.  The callback must therefore
+    # be bound before that reactivation, but no live/pending/rejected authority
+    # can enter through this branch.
+    clean_terminal_wait = (
+        mission.get("status") == "waiting_for_approval"
+        and mission.get("stopReason") == "needs_human_approval"
+        and mission.get("activeStepId") is None
+        and proposal_step.get("status") == "pending"
+    )
+    active_retry = (
+        mission.get("status") == "active"
+        and mission.get("stopReason") == "continuing"
+        and proposal_step.get("stepId") == mission.get("activeStepId")
+        and proposal_step.get("status") == "active"
+    )
+    return clean_terminal_wait or active_retry
+
+
+def _acknowledged_terminal_source_run_change(
+    mission: EngineeringMission,
+    transactions: list[ChangeTransaction],
+) -> ChangeTransaction | None:
+    """Recover one missing mission link from its exact accepted source run.
+
+    This is intentionally an in-memory bridge for an older checkpoint that was
+    persisted before its candidate run later reached a durable terminal state.
+    A normal successful checkpoint remains the only writer of the repaired
+    link.  Recency, title, and target-only matching are never sufficient.
+    """
+
+    if mission.change_transaction_id is not None:
+        return None
+    candidates = [
+        transaction
+        for transaction in transactions
+        if transaction.conversation_id == mission.conversation_id
+        and transaction.run_id == mission.updated_by_run_id
+        and transaction.state in TERMINAL_CHANGE_OUTCOME_DISPOSITIONS
+        and transaction.receipt_acknowledged_at is not None
+        and transaction.target.workspace_id == mission.workspace_id
+        and transaction.target.revision_id == mission.revision_id
+        and transaction.mutation_scope == f"workspace:{mission.workspace_id}"
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+_EXACT_OPERAND_RETRY_TRIO_TOOLS = frozenset(
+    {
+        "project.hardware_context",
+        "program.change_target_analysis",
+        "project.snapshot",
+    }
+)
+_EXACT_OPERAND_RETRY_AFTER_HARDWARE_ACTION = (
+    "Call analyze_change_target with the refreshed current-run hardware context "
+    "before proposing the exact named-program operand candidate."
+)
+
+
+def _authorized_exact_operand_retry_route_refresh(
+    previous: dict[str, Any] | None,
+    current: dict[str, Any],
+    *,
+    retry_permitted: bool,
+    prior_evidence: dict[str, dict[str, Any]],
+    current_run_evidence: dict[str, dict[str, Any]],
+) -> tuple[set[str], set[str]]:
+    """Admit only the first fresh-search checkpoint of a safe terminal retry.
+
+    The Agent resets the exact read-only route before it can reuse a prior
+    session's search, hardware, target, or snapshot.  A terminal retry is the
+    sole exception to immutable completed steps: the checkpoint must have
+    completed a single fresh search and be waiting to read fresh hardware.
+    This permits no proposal, mutation, or arbitrary mission rewrite.
+    """
+
+    if (
+        not retry_permitted
+        or previous is None
+        or current.get("status") != "active"
+        or current.get("stopReason") != "continuing"
+    ):
+        return set(), set()
+    previous_steps = {
+        step.get("stepId"): step
+        for step in previous.get("steps", [])
+        if isinstance(step, dict) and isinstance(step.get("stepId"), str)
+    }
+    current_steps = {
+        step.get("stepId"): step
+        for step in current.get("steps", [])
+        if isinstance(step, dict) and isinstance(step.get("stepId"), str)
+    }
+    if set(previous_steps) != set(current_steps):
+        return set(), set()
+
+    def one_step(marker: str) -> tuple[str, dict[str, Any]] | None:
+        matches = [
+            (step_id, step)
+            for step_id, step in current_steps.items()
+            if marker in str(step.get("title") or "")
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    hardware = one_step("inspect_project_hardware_context")
+    target = one_step("analyze_change_target")
+    proposal = one_step("propose_offline_change")
+    # Korean exact-location titles do not include the English ``search`` token;
+    # identify the unique remaining completed step that carries project.search.
+    search_matches = [
+        (step_id, step)
+        for step_id, step in current_steps.items()
+        if step_id not in {
+            hardware[0] if hardware else None,
+            target[0] if target else None,
+            proposal[0] if proposal else None,
+        }
+        and previous_steps.get(step_id, {}).get("status") == "completed"
+        and all(
+            prior_evidence.get(evidence_id, {}).get("toolName") == "project.search"
+            for evidence_id in previous_steps.get(step_id, {}).get("evidenceRefs", [])
+        )
+        and bool(previous_steps.get(step_id, {}).get("evidenceRefs"))
+    ]
+    if (
+        hardware is None
+        or target is None
+        or proposal is None
+        or len(search_matches) != 1
+    ):
+        return set(), set()
+    search_step_id, current_search = search_matches[0]
+    hardware_step_id, current_hardware = hardware
+    target_step_id, current_target = target
+    proposal_step_id, current_proposal = proposal
+    previous_search = previous_steps[search_step_id]
+    previous_hardware = previous_steps[hardware_step_id]
+    previous_target = previous_steps[target_step_id]
+    previous_proposal = previous_steps[proposal_step_id]
+    if (
+        current.get("activeStepId") != hardware_step_id
+        or "inspect_project_hardware_context" not in str(current.get("nextAction") or "")
+        or any(
+            previous_step.get("status") != "completed"
+            or not isinstance(previous_step.get("evidenceRefs"), list)
+            or not previous_step["evidenceRefs"]
+            for previous_step in (previous_search, previous_hardware, previous_target)
+        )
+        or previous_proposal.get("status") not in {"active", "pending"}
+        or current_search.get("status") != "completed"
+        or current_hardware.get("status") != "active"
+        or current_target.get("status") != "pending"
+        or current_proposal.get("status") != "pending"
+        or current_hardware.get("evidenceRefs") != []
+        or current_target.get("evidenceRefs") != []
+        or current_proposal.get("evidenceRefs") != []
+    ):
+        return set(), set()
+    for step_id, previous_step in previous_steps.items():
+        if step_id in {search_step_id, hardware_step_id, target_step_id, proposal_step_id}:
+            continue
+        if current_steps.get(step_id) != previous_step:
+            return set(), set()
+    removed_refs = set().union(
+        previous_search.get("evidenceRefs", []),
+        previous_hardware.get("evidenceRefs", []),
+        previous_target.get("evidenceRefs", []),
+        previous_proposal.get("evidenceRefs", []),
+    )
+    expected_tools = {
+        search_step_id: "project.search",
+        hardware_step_id: "project.hardware_context",
+        target_step_id: "program.change_target_analysis",
+        proposal_step_id: "project.snapshot",
+    }
+    if any(
+        prior_evidence.get(evidence_id, {}).get("toolName") != expected_tools[step_id]
+        for step_id, previous_step in (
+            (search_step_id, previous_search),
+            (hardware_step_id, previous_hardware),
+            (target_step_id, previous_target),
+            (proposal_step_id, previous_proposal),
+        )
+        for evidence_id in previous_step.get("evidenceRefs", [])
+    ):
+        return set(), set()
+    fresh_search_refs = set(current_search.get("evidenceRefs", [])).difference(
+        previous_search.get("evidenceRefs", [])
+    )
+    if (
+        len(fresh_search_refs) != 1
+        or set(current_search.get("evidenceRefs", [])).intersection(removed_refs)
+        or not removed_refs.isdisjoint(current_run_evidence)
+    ):
+        return set(), set()
+    fresh_search = current_run_evidence.get(next(iter(fresh_search_refs)))
+    if (
+        not isinstance(fresh_search, dict)
+        or fresh_search.get("evidenceId") not in fresh_search_refs
+        or fresh_search.get("toolName") != "project.search"
+        or not isinstance(fresh_search.get("receipt"), dict)
+        or fresh_search["receipt"].get("schema")
+        != "controlstudio-structural-analysis-evidence/v1"
+    ):
+        return set(), set()
+    return removed_refs, {search_step_id, hardware_step_id, target_step_id}
+
+
+def _authorized_exact_operand_retry_evidence_compaction(
+    previous: dict[str, Any] | None,
+    current: dict[str, Any],
+    *,
+    retry_permitted: bool,
+    prior_evidence: dict[str, dict[str, Any]],
+    current_run_evidence: dict[str, dict[str, Any]],
+) -> set[str]:
+    """Replace only a terminal retry's superseded proposal receipt trio.
+
+    The removed receipts and terminal change remain in the Host event journal.
+    Only the bounded resumable working set on the active proposal step is
+    compacted; completed-step and unrelated evidence stay immutable.
+    """
+
+    if (
+        not retry_permitted
+        or previous is None
+        or current.get("status") != "active"
+        or current.get("stopReason") != "continuing"
+        or current.get("nextAction") != _EXACT_OPERAND_RETRY_AFTER_HARDWARE_ACTION
+    ):
+        return set()
+    proposal_step_id = current.get("activeStepId")
+    if not isinstance(proposal_step_id, str) or not proposal_step_id:
+        return set()
+    previous_steps = {
+        step.get("stepId"): step
+        for step in previous.get("steps", [])
+        if isinstance(step, dict) and isinstance(step.get("stepId"), str)
+    }
+    current_steps = {
+        step.get("stepId"): step
+        for step in current.get("steps", [])
+        if isinstance(step, dict) and isinstance(step.get("stepId"), str)
+    }
+    if set(previous_steps) != set(current_steps):
+        return set()
+    previous_proposal = previous_steps.get(proposal_step_id)
+    current_proposal = current_steps.get(proposal_step_id)
+    if (
+        not isinstance(previous_proposal, dict)
+        or not isinstance(current_proposal, dict)
+        or previous_proposal.get("title") != current_proposal.get("title")
+        or "propose_offline_change" not in str(current_proposal.get("title") or "")
+        or previous_proposal.get("status") not in {"active", "pending"}
+        or current_proposal.get("status") != "active"
+        or not (
+            (
+                previous.get("status") == "active"
+                and previous.get("activeStepId") == proposal_step_id
+            )
+            or (
+                previous.get("status") == "waiting_for_approval"
+                and previous.get("activeStepId") is None
+                and previous.get("stopReason") == "needs_human_approval"
+            )
+        )
+    ):
+        return set()
+    for step_id, previous_step in previous_steps.items():
+        if step_id == proposal_step_id:
+            continue
+        current_step = current_steps.get(step_id)
+        if not isinstance(current_step, dict) or current_step != previous_step:
+            return set()
+    previous_refs = set(previous_proposal.get("evidenceRefs", []))
+    current_refs = set(current_proposal.get("evidenceRefs", []))
+    removed_refs = previous_refs.difference(current_refs)
+    added_refs = current_refs.difference(previous_refs)
+    if (
+        not removed_refs
+        or not removed_refs.isdisjoint(current_run_evidence)
+        or len(added_refs) != 1
+    ):
+        return set()
+    fresh_evidence_id = next(iter(added_refs))
+    fresh_evidence = current_run_evidence.get(fresh_evidence_id)
+    fresh_receipt = (
+        fresh_evidence.get("receipt") if isinstance(fresh_evidence, dict) else None
+    )
+    if (
+        not isinstance(fresh_evidence, dict)
+        or fresh_evidence.get("evidenceId") != fresh_evidence_id
+        or fresh_evidence.get("toolName") != "project.hardware_context"
+        or not isinstance(fresh_receipt, dict)
+        or fresh_receipt.get("schema")
+        != "controlstudio-hardware-context-evidence/v1"
+        or not isinstance(fresh_receipt.get("contextDigest"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", fresh_receipt["contextDigest"]) is None
+    ):
+        return set()
+    prunable_refs = {
+        evidence_id
+        for evidence_id in previous_refs
+        if (
+            (evidence := prior_evidence.get(evidence_id)) is not None
+            and evidence.get("evidenceId") == evidence_id
+            and evidence.get("toolName") in _EXACT_OPERAND_RETRY_TRIO_TOOLS
+        )
+    }
+    if removed_refs != prunable_refs:
+        return set()
+    return removed_refs
+
+
+def _matching_change_outcome_supplemental_evidence(
+    change_transaction_id: str | None,
+    evidence: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return an outcome receipt only for the transaction being checkpointed.
+
+    A terminal receipt can reopen the exact operand route, whose next proposal
+    creates a new pending transaction.  The prior terminal receipt is durable
+    history, but cannot supplement the new pending transaction: the store
+    projects supplemental evidence from the linked transaction and pending
+    transactions deliberately have no terminal outcome projection.
+    """
+
+    if not isinstance(change_transaction_id, str) or not change_transaction_id:
+        return None
+    receipt = evidence.get("receipt") if isinstance(evidence, dict) else None
+    if not isinstance(receipt, dict):
+        return None
+    if receipt.get("transactionId") != change_transaction_id:
+        return None
+    return evidence
 
 
 def _event_frame_v1(event: StoredEvent) -> str:
@@ -1082,6 +1754,7 @@ def _engineering_mission_v1(
         ),
         digest=value.digest,
         updated_by_run_id=value.updated_by_run_id,
+        change_transaction_id=value.change_transaction_id,
         created_at=value.created_at,
         updated_at=value.updated_at,
     )
@@ -1103,6 +1776,7 @@ def _engineering_mission_summary_v1(
         status=snapshot.status,
         digest=value.digest,
         updated_by_run_id=value.updated_by_run_id,
+        change_transaction_id=value.change_transaction_id,
         updated_at=value.updated_at,
     )
 
@@ -1126,17 +1800,86 @@ def _conversation_summary_v1(
 def _canonical_engineering_mission(
     value: Any,
 ) -> tuple[dict[str, Any], str]:
-    model = EngineeringMissionSnapshotV1.model_validate(value)
-    snapshot = model.model_dump(mode="json", by_alias=True, exclude_none=True)
-    digest = hashlib.sha256(
-        json.dumps(
-            snapshot,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
-    return snapshot, digest
+    return canonical_engineering_mission_snapshot(value)
+
+
+def _engineering_mission_evidence_refs(value: dict[str, Any]) -> set[str]:
+    return {
+        evidence_ref
+        for step in value["steps"]
+        for evidence_ref in step["evidenceRefs"]
+    }
+
+
+def _historical_evidence_bundle_for_mission(
+    store: HostStore,
+    *,
+    conversation_id: str,
+    mission: dict[str, Any],
+    mission_digest: str,
+    supplemental_evidence: tuple[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    evidence_refs = _engineering_mission_evidence_refs(mission)
+    events = store.resolve_conversation_evidence(
+        conversation_id=conversation_id,
+        evidence_ids=evidence_refs,
+        require_all=supplemental_evidence is None,
+    )
+    projected_evidence: dict[str, tuple[str, dict[str, Any]]] = {}
+    for evidence_id, event in events.items():
+        payload = project_historical_evidence(event.payload)
+        if payload.get("toolName") == "host.change_outcome":
+            receipt = payload.get("receipt")
+            transaction_id = (
+                receipt.get("transactionId") if isinstance(receipt, dict) else None
+            )
+            transaction = (
+                store.get_change_transaction(transaction_id)
+                if isinstance(transaction_id, str)
+                else None
+            )
+            if (
+                transaction is None
+                or transaction.conversation_id != conversation_id
+                or transaction.state not in TERMINAL_CHANGE_OUTCOME_DISPOSITIONS
+                or payload
+                != change_outcome_evidence(change_outcome_projection(transaction))
+            ):
+                raise EngineeringMissionConflict(
+                    "durable change outcome evidence no longer matches its transaction"
+                )
+        projected_evidence[evidence_id] = (str(event.run_id), payload)
+    missing_refs = evidence_refs.difference(projected_evidence)
+    if missing_refs:
+        source_run_id, payload = supplemental_evidence or ("", {})
+        supplemental_id = payload.get("evidenceId")
+        if missing_refs != {supplemental_id} or not source_run_id:
+            raise EngineeringMissionConflict(
+                "durable mission evidence is missing: " + ", ".join(sorted(missing_refs))
+            )
+        projected_evidence[str(supplemental_id)] = (
+            source_run_id,
+            project_historical_evidence(payload),
+        )
+    return build_historical_evidence_bundle(
+        mission_digest=mission_digest,
+        evidence=projected_evidence,
+    )
+
+
+def _journaled_hardware_context_evidence_for_mission(
+    store: HostStore,
+    *,
+    conversation_id: str,
+    mission: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Return Host-journaled receipts, never the model-safe projection."""
+
+    events = store.resolve_conversation_evidence(
+        conversation_id=conversation_id,
+        evidence_ids=_engineering_mission_evidence_refs(mission),
+    )
+    return [event.payload for event in events.values()]
 
 
 def _validate_engineering_mission_progression(
@@ -1144,7 +1887,11 @@ def _validate_engineering_mission_progression(
     current: dict[str, Any],
     *,
     current_run_evidence_refs: set[str],
+    allowed_removed_evidence_refs: set[str] | None = None,
+    allowed_reopened_step_ids: set[str] | None = None,
 ) -> None:
+    allowed_removed = allowed_removed_evidence_refs or set()
+    allowed_reopened = allowed_reopened_step_ids or set()
     if previous["objective"] != current["objective"]:
         raise ValueError("engineering mission objective changed autonomously")
     if previous["completionCriteria"] != current["completionCriteria"]:
@@ -1159,15 +1906,23 @@ def _validate_engineering_mission_progression(
             raise ValueError("engineering mission step was removed autonomously")
         if current_step["title"] != previous_step["title"]:
             raise ValueError("engineering mission stepId was reused with a new title")
-        if not set(previous_step["evidenceRefs"]).issubset(
+        removed_refs = set(previous_step["evidenceRefs"]).difference(
             current_step["evidenceRefs"]
-        ):
+        )
+        if not removed_refs.issubset(allowed_removed):
             raise ValueError("engineering mission step lost evidence")
         if previous_step["status"] != "completed":
             continue
-        if current_step["status"] != "completed":
+        if (
+            current_step["status"] != "completed"
+            and previous_step["stepId"] not in allowed_reopened
+        ):
             raise ValueError("completed engineering mission step was reopened")
-        if current_step.get("outcome") != previous_step.get("outcome"):
+        if (
+            current_step["status"] == "completed"
+            and current_step.get("outcome") != previous_step.get("outcome")
+            and previous_step["stepId"] not in allowed_reopened
+        ):
             raise ValueError("completed engineering mission step history changed")
     for step_id, current_step in current_steps.items():
         previous_step = previous_steps.get(step_id)
@@ -1217,6 +1972,9 @@ def _workspace_resume_identity(value: LocalWorkspaceV1) -> dict[str, str]:
         "workspace_id": value.workspace_id,
         "revision_id": value.revision_id,
         "source_kind": value.source_kind,
+        "provenance_receipt_digest": (
+            value.provenance.receipt_digest if value.provenance is not None else ""
+        ),
         "vendor": value.vendor,
         "engineering_system": value.engineering_system,
         "original_path": normalize_path(value.source.original_path),
@@ -1228,6 +1986,161 @@ def _workspace_resume_identity(value: LocalWorkspaceV1) -> dict[str, str]:
         "working_baseline_sha256": value.working_copy.baseline_sha256.casefold(),
         "working_current_sha256": value.working_copy.current_sha256.casefold(),
     }
+
+
+def _normalized_workspace_path(value: str) -> str:
+    """Normalize a local workspace path only for exact identity comparisons."""
+
+    return os.path.normcase(str(Path(value).resolve()))
+
+
+async def _relaunch_unavailable_change_recovery_target(
+    mcp: MCPGateway,
+    transaction: ChangeTransaction,
+    workspace: LocalWorkspaceV1,
+    *,
+    requested_pid: int,
+    requested_hwnd: int,
+) -> ChangeRecoveryTarget:
+    """Open one exact working copy after its journaled XG5000 target has died.
+
+    This intentionally does not attach or bind the controlled launch.  The
+    recovery executor remains the only consumer of the resulting target.
+    """
+
+    target = transaction.target
+    if (
+        target.engineering_process_id is None
+        or target.engineering_window_handle is None
+        or requested_pid != target.engineering_process_id
+        or requested_hwnd != target.engineering_window_handle
+    ):
+        raise ChangeExecutionPreconditionError(
+            "recovery relaunch requires the transaction's journaled PID and HWND"
+        )
+    try:
+        active_path = _normalized_workspace_path(workspace.working_copy.path)
+        journaled_path = _normalized_workspace_path(target.project_path)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ChangeExecutionPreconditionError(
+            "active recovery workspace path is invalid"
+        ) from exc
+    if (
+        workspace.workspace_id != target.workspace_id
+        or workspace.revision_id != target.revision_id
+        or active_path != journaled_path
+        or workspace.working_copy.current_sha256.casefold()
+        != target.artifact_hash.casefold()
+    ):
+        raise ChangeExecutionPreconditionError(
+            "active recovery workspace is not the transaction's verified working copy"
+        )
+    try:
+        observed = await mcp.call_read_tool("xg5000.instances", {})
+    except MCPToolError as exc:
+        raise ChangeExecutionPreconditionError(
+            "XG5000 availability could not be determined for recovery relaunch"
+        ) from exc
+    instances = observed.get("instances") if isinstance(observed, dict) else None
+    if not isinstance(instances, list) or any(not isinstance(item, dict) for item in instances):
+        raise ChangeExecutionPreconditionError(
+            "XG5000 instance inventory is invalid for recovery relaunch"
+        )
+    if len(instances) > 1:
+        raise ChangeExecutionPreconditionError(
+            "multiple XG5000 instances prevent recovery-only relaunch"
+        )
+    if instances:
+        instance = instances[0]
+        if (
+            instance.get("pid") == requested_pid
+            and instance.get("hwnd") == requested_hwnd
+        ):
+            raise ChangeExecutionPreconditionError(
+                "the journaled XG5000 target is still available for recovery"
+            )
+        raise ChangeExecutionPreconditionError(
+            "a different XG5000 target prevents recovery-only relaunch"
+        )
+
+    try:
+        launch = await mcp.call_workspace_tool(
+            "xg5000.open_project",
+            {
+                "workspace_id": workspace.workspace_id,
+                "expected_working_hash": workspace.working_copy.current_sha256,
+                # Cold XG5000 starts on the engineering workstation have
+                # exposed their exact PID/HWND before the UI thread becomes
+                # responsive. Recovery already owns one bounded launch and
+                # cleanup lease, so give that same attempt the product's
+                # maximum launch window instead of killing it at 60 seconds.
+                "timeout_seconds": 120.0,
+            },
+        )
+    except MCPToolError as exc:
+        # The reconciliation endpoint maps this precondition failure directly
+        # to its 409 detail.  Retain the MCP/XG5000 project-open reason so a
+        # recovery operator can act on the concrete failure rather than a
+        # generic proof failure.
+        raise ChangeExecutionPreconditionError(str(exc)) from exc
+    instance = launch.get("instance") if isinstance(launch, dict) else None
+    observed_instances = launch.get("observed_instances") if isinstance(launch, dict) else None
+    try:
+        launch_pid = launch.get("launch_pid")
+        pid = instance.get("pid") if isinstance(instance, dict) else None
+        hwnd = instance.get("hwnd") if isinstance(instance, dict) else None
+        one_returned_instance = (
+            isinstance(observed_instances, list)
+            and len(observed_instances) == 1
+            and isinstance(observed_instances[0], dict)
+            and observed_instances[0].get("pid") == pid
+            and observed_instances[0].get("hwnd") == hwnd
+        )
+        receipt_matches = (
+            isinstance(launch, dict)
+            and launch.get("ok") is True
+            and launch.get("operation") == "xg5000.open_project"
+            and launch.get("verified") is True
+            and launch.get("workspace_id") == workspace.workspace_id
+            and launch.get("revision_id") == workspace.revision_id
+            and _normalized_workspace_path(str(launch.get("working_path") or ""))
+            == active_path
+            and str(launch.get("working_hash") or "").casefold()
+            == workspace.working_copy.current_sha256.casefold()
+            and launch.get("window_detected") is True
+            and isinstance(
+                launch.get("project_identity_verified_against_selected_pid"), bool
+            )
+            and launch.get("project_identity_read_only_bound_to_selected_pid") is True
+            and launch.get("identity_assurance") == "controlled_launch_read_only"
+            and not isinstance(launch_pid, bool)
+            and not isinstance(pid, bool)
+            and not isinstance(hwnd, bool)
+            and isinstance(launch_pid, int)
+            and isinstance(pid, int)
+            and isinstance(hwnd, int)
+            and launch_pid == pid
+            and pid > 0
+            and hwnd > 0
+            and pid != requested_pid
+            and hwnd != requested_hwnd
+            and one_returned_instance
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        receipt_matches = False
+    if not receipt_matches:
+        raise ChangeExecutionPreconditionError(
+            "recovery-only XG5000 relaunch receipt is incomplete or mismatched"
+        )
+    return ChangeRecoveryTarget(pid=pid, hwnd=hwnd)
+
+
+async def _record_native_handoff_after_freshness(
+    freshness: Awaitable[Any],
+    write: Callable[[], tuple[Any, bool]],
+) -> tuple[Any, bool]:
+    await freshness
+    return write()
 
 
 def _reject_private_change_plan_material(value: Any) -> None:
@@ -1476,12 +2389,76 @@ def _model_capability_cache_key(value: StoredModelConnection) -> tuple[Any, ...]
 
 
 def _engineering_session_identity_verified(session: dict[str, Any] | None) -> bool:
+    """Return whether this session can enter the offline-mutation lifecycle.
+
+    A selected PID's native-file proof is intentionally sufficient for
+    read-only analysis, but it is not the same-COM proof required by MCP for
+    a mutation transaction.  Keep that distinction at the Host boundary so
+    status and candidate preflight do not advertise authority MCP will deny.
+    """
+
     if not isinstance(session, dict):
         return False
     metadata = session.get("metadata")
-    return isinstance(metadata, dict) and bool(
-        metadata.get("project_identity_verified_against_selected_pid")
-    )
+    if not isinstance(metadata, dict):
+        return False
+    if metadata.get("project_identity_verified_against_selected_pid") is True:
+        proof = metadata.get("project_identity_proof")
+        same_com_proof = bool(
+            isinstance(proof, dict)
+            and proof.get("method") == "same_rot_object_project_tree_and_path_v1"
+            and proof.get("same_active_object") is True
+            and proof.get("stable_repeat") is True
+            and proof.get("pid") == session.get("pid")
+            and proof.get("main_hwnd") == session.get("hwnd")
+            and str(proof.get("project_hash") or "").casefold()
+            == str(session.get("project_hash") or "").casefold()
+        )
+        if same_com_proof:
+            return True
+    if (
+        metadata.get("project_identity_read_only_bound_to_selected_pid") is not True
+        or metadata.get("project_identity_assurance") != "controlled_launch_read_only"
+    ):
+        return False
+    proof = metadata.get("controlled_open_read_proof")
+    if not isinstance(proof, dict) or proof.get("method") != (
+        "controlled_open_verified_cli_receipt_v3"
+    ):
+        return False
+    if proof.get("proof_source") not in {
+        "verified_workspace_launch_cli",
+        "verified_ld_reopen_cli",
+        "verified_mne_reopen_cli",
+    }:
+        return False
+    if (
+        proof.get("pid") != session.get("pid")
+        or proof.get("main_hwnd") != session.get("hwnd")
+        or not _is_canonical_uuid(proof.get("workspace_id"))
+        or not str(proof.get("window_title") or "").strip()
+    ):
+        return False
+    created = proof.get("process_create_time")
+    if (
+        not isinstance(created, (int, float))
+        or isinstance(created, bool)
+        or not math.isfinite(float(created))
+        or float(created) <= 0
+    ):
+        return False
+    if str(proof.get("project_hash") or "").casefold() != str(
+        session.get("project_hash") or ""
+    ).casefold():
+        return False
+    try:
+        proof_path = os.path.normcase(str(Path(str(proof.get("project_path") or "")).resolve()))
+        session_path = os.path.normcase(
+            str(Path(str(session.get("project_path") or "")).resolve())
+        )
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return bool(str(proof.get("project_path") or "").strip()) and proof_path == session_path
 
 
 def _engineering_session_read_ready(session: dict[str, Any] | None) -> bool:
@@ -1492,6 +2469,467 @@ def _engineering_session_read_ready(session: dict[str, Any] | None) -> bool:
         metadata.get("project_identity_verified_against_selected_pid")
         or metadata.get("project_identity_read_only_bound_to_selected_pid")
     )
+
+
+def _engineering_session_process_create_time(session: dict[str, Any] | None) -> float | None:
+    """Return only an exact existing session lifetime proof, never an estimate."""
+
+    if not isinstance(session, dict):
+        return None
+    metadata = session.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    for key in ("project_identity_proof", "controlled_open_read_proof"):
+        proof = metadata.get(key)
+        value = proof.get("process_create_time") if isinstance(proof, dict) else None
+        if (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            and float(value) > 0
+        ):
+            return float(value)
+    return None
+
+
+def _engineering_session_exact_lifetime_binding(session: dict[str, Any]) -> bool:
+    """Require the retained process-lifetime proof to bind this exact target."""
+
+    metadata = session.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    proof = metadata.get("project_identity_proof")
+    if not isinstance(proof, dict):
+        proof = metadata.get("controlled_open_read_proof")
+    if not isinstance(proof, dict):
+        return False
+    created = proof.get("process_create_time")
+    if (
+        proof.get("pid") != session.get("pid")
+        or proof.get("main_hwnd") != session.get("hwnd")
+        or not isinstance(created, (int, float))
+        or isinstance(created, bool)
+        or not math.isfinite(float(created))
+        or float(created) <= 0
+        or str(proof.get("project_hash") or "").casefold()
+        != str(session.get("project_hash") or "").casefold()
+    ):
+        return False
+    try:
+        return os.path.normcase(
+            str(Path(str(proof.get("project_path") or "")).resolve())
+        ) == os.path.normcase(str(Path(str(session.get("project_path") or "")).resolve()))
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _validated_engineering_session_result(
+    result: Any,
+    *,
+    session_id: str | None = None,
+    pid: int,
+    hwnd: int,
+    project_path: str | None,
+    project_hash: str | None,
+) -> dict[str, Any] | None:
+    """Accept only one read-ready session bound to the requested live identity."""
+
+    raw_session = (
+        result.get("session")
+        if isinstance(result, dict) and isinstance(result.get("session"), dict)
+        else result
+    )
+    if not isinstance(raw_session, dict):
+        return None
+    if session_id is not None and raw_session.get("session_id") != session_id:
+        return None
+    if raw_session.get("pid") != pid or raw_session.get("hwnd") != hwnd:
+        return None
+    if project_path is not None:
+        try:
+            observed_path = Path(str(raw_session.get("project_path") or "")).resolve()
+            expected_path = Path(project_path).resolve()
+        except (OSError, RuntimeError, ValueError):
+            return None
+        if os.path.normcase(str(observed_path)) != os.path.normcase(str(expected_path)):
+            return None
+    if (
+        project_hash is not None
+        and str(raw_session.get("project_hash") or "").casefold()
+        != project_hash.casefold()
+    ):
+        return None
+    if not _engineering_session_read_ready(raw_session):
+        return None
+    metadata = raw_session.get("metadata")
+    if not isinstance(metadata, dict) or metadata.get("project_identity_assurance") not in {
+        "strong_readback",
+        "controlled_launch_read_only",
+    }:
+        return None
+    if _engineering_session_process_create_time(raw_session) is None:
+        return None
+    if session_id is not None and not _engineering_session_exact_lifetime_binding(raw_session):
+        return None
+    return raw_session
+
+
+async def _revalidate_exact_engineering_session(
+    mcp: MCPGateway,
+    *,
+    session_id: str,
+    pid: int,
+    hwnd: int,
+    project_path: str,
+    project_hash: str,
+) -> dict[str, Any] | None:
+    """Read the owning MCP session again; never promote cached session data."""
+
+    if not isinstance(session_id, str) or not session_id or pid <= 0 or hwnd <= 0:
+        return None
+    try:
+        status_result = await mcp.call_recovery_tool(
+            "xg5000.session_status",
+            {"session_id": session_id},
+        )
+    except MCPToolError:
+        return None
+    return _validated_engineering_session_result(
+        status_result,
+        session_id=session_id,
+        pid=pid,
+        hwnd=hwnd,
+        project_path=project_path,
+        project_hash=project_hash,
+    )
+
+
+async def _rebind_reconciled_change_session(
+    mcp: MCPGateway,
+    transaction: ChangeTransaction,
+    *,
+    expected_project_path: str,
+    expected_project_hash: str,
+) -> dict[str, Any] | None:
+    """Promote only the terminal checkpoint's still-live exact MCP session."""
+
+    checkpoint = _reconciled_terminal_checkpoint(transaction)
+    if checkpoint is None:
+        return None
+    session_id = checkpoint.get("active_session_id")
+    pid = checkpoint.get("pid")
+    hwnd = checkpoint.get("hwnd")
+    if (
+        not isinstance(session_id, str)
+        or not session_id
+        or not isinstance(pid, int)
+        or isinstance(pid, bool)
+        or not isinstance(hwnd, int)
+        or isinstance(hwnd, bool)
+        or pid <= 0
+        or hwnd <= 0
+        or str(checkpoint.get("current_project_hash") or "").casefold()
+        != expected_project_hash.casefold()
+    ):
+        return None
+    try:
+        checkpoint_path = checkpoint.get("project_path")
+        if not isinstance(checkpoint_path, str):
+            return None
+        if os.path.normcase(str(Path(checkpoint_path).resolve())) != os.path.normcase(
+            str(Path(transaction.target.project_path).resolve())
+        ):
+            return None
+        if os.path.normcase(str(Path(expected_project_path).resolve())) != os.path.normcase(
+            str(Path(transaction.target.project_path).resolve())
+        ):
+            return None
+    except (OSError, RuntimeError, ValueError):
+        return None
+    try:
+        status_result = await mcp.call_recovery_tool(
+            "xg5000.session_status",
+            {"session_id": session_id},
+        )
+    except MCPToolError as exc:
+        # A terminal resume is only for an MCP restart that discarded SESSIONS;
+        # any other read failure must remain fail-closed.
+        if "session not found" not in str(exc).casefold():
+            return None
+    else:
+        return _validated_engineering_session_result(
+            status_result,
+            session_id=session_id,
+            pid=pid,
+            hwnd=hwnd,
+            project_path=expected_project_path,
+            project_hash=expected_project_hash,
+        )
+    terminal_transaction_id = checkpoint.get("transaction_id")
+    terminal_plan_digest = checkpoint.get("plan_digest")
+    if (
+        checkpoint.get("state") != "ROLLED_BACK_SAVED"
+        or not isinstance(terminal_transaction_id, str)
+        or not terminal_transaction_id
+        or not isinstance(terminal_plan_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", terminal_plan_digest.casefold()) is None
+    ):
+        return None
+    try:
+        resumed = await mcp.call_workspace_tool(
+            "xg5000.resume_terminal_change_session",
+            {
+                "pid": pid,
+                "hwnd": hwnd,
+                "project_path": expected_project_path,
+                "project_hash": expected_project_hash.casefold(),
+                "workspace_id": transaction.target.workspace_id,
+                "terminal_transaction_id": terminal_transaction_id,
+                "terminal_expected_plan_digest": terminal_plan_digest.casefold(),
+            },
+        )
+    except MCPToolError:
+        return None
+    resumed_session_id = resumed.get("session_id") if isinstance(resumed, dict) else None
+    if not isinstance(resumed_session_id, str) or not resumed_session_id:
+        return None
+    return _validated_engineering_session_result(
+        resumed,
+        session_id=resumed_session_id,
+        pid=pid,
+        hwnd=hwnd,
+        project_path=expected_project_path,
+        project_hash=expected_project_hash,
+    )
+
+
+def _reconciled_terminal_checkpoint(
+    transaction: ChangeTransaction,
+) -> dict[str, Any] | None:
+    """Return a terminal generic-reconciliation checkpoint, or no authority."""
+
+    reconciliation = transaction.result.get("reconciliation")
+    if not isinstance(reconciliation, dict):
+        return None
+    for evidence_key in ("final_status", "status", "lookup"):
+        evidence = reconciliation.get(evidence_key)
+        candidate = (
+            evidence.get("transaction_checkpoint") if isinstance(evidence, dict) else None
+        )
+        if (
+            isinstance(candidate, dict)
+            and candidate.get("terminal") is True
+            and candidate.get("recovery_action") == "already_terminal"
+            and candidate.get("state")
+            in {"COMMITTED", "ROLLED_BACK_SAVED", "ABORTED_NO_MUTATION"}
+        ):
+            return candidate
+    return None
+
+
+async def _recover_locked_reconciled_change_session(
+    mcp: MCPGateway,
+    transaction: ChangeTransaction,
+    *,
+    expected_project_path: str,
+) -> tuple[str, dict[str, Any]] | None:
+    """Use terminal MCP evidence only while an XG file lock blocks rehashing."""
+
+    checkpoint = _reconciled_terminal_checkpoint(transaction)
+    recovered_hash = (
+        checkpoint.get("current_project_hash") if isinstance(checkpoint, dict) else None
+    )
+    if not isinstance(recovered_hash, str) or re.fullmatch(
+        r"[0-9a-f]{64}", recovered_hash.casefold()
+    ) is None:
+        return None
+    session = await _rebind_reconciled_change_session(
+        mcp,
+        transaction,
+        expected_project_path=expected_project_path,
+        expected_project_hash=recovered_hash.casefold(),
+    )
+    if session is None:
+        return None
+    return recovered_hash.casefold(), session
+
+
+async def _reconcile_late_workspace_open(
+    mcp: MCPGateway,
+    workspace: LocalWorkspaceV1,
+    *,
+    bind_session: Callable[[Any], dict[str, Any]],
+    timeout_seconds: float = LATE_WORKSPACE_RECONCILE_SECONDS,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> tuple[XG5000ProjectLaunchV1, dict[str, Any]] | None:
+    """Attach one late-ready exact workspace process without launching again."""
+
+    deadline = monotonic() + max(0.0, timeout_seconds)
+    while monotonic() < deadline:
+        try:
+            observed = await mcp.call_read_tool("xg5000.instances", {})
+        except MCPToolError:
+            return None
+        instances = observed.get("instances") if isinstance(observed, dict) else None
+        if not isinstance(instances, list) or any(
+            not isinstance(item, dict) for item in instances
+        ):
+            return None
+        if len(instances) > 1:
+            return None
+        if len(instances) == 1:
+            instance = instances[0]
+            try:
+                pid = int(instance["pid"])
+                hwnd = int(instance["hwnd"])
+            except (KeyError, TypeError, ValueError):
+                return None
+            if pid <= 0 or hwnd <= 0:
+                return None
+            try:
+                attached = await mcp.call_read_tool(
+                    "xg5000.attach",
+                    {
+                        "pid": pid,
+                        "hwnd": hwnd,
+                        "project_path": workspace.working_copy.path,
+                        "project_hash": workspace.working_copy.current_sha256,
+                        "workspace_id": workspace.workspace_id,
+                    },
+                )
+            except MCPToolError:
+                return None
+            raw_session = (
+                attached.get("session")
+                if isinstance(attached, dict)
+                and isinstance(attached.get("session"), dict)
+                else attached
+            )
+            try:
+                session_path = Path(str(raw_session["project_path"])).resolve()
+                expected_path = Path(workspace.working_copy.path).resolve()
+            except (KeyError, TypeError, ValueError, OSError):
+                return None
+            if (
+                not isinstance(raw_session, dict)
+                or raw_session.get("pid") != pid
+                or raw_session.get("hwnd") != hwnd
+                or os.path.normcase(str(session_path))
+                != os.path.normcase(str(expected_path))
+                or str(raw_session.get("project_hash") or "").casefold()
+                != workspace.working_copy.current_sha256.casefold()
+                or not _engineering_session_read_ready(raw_session)
+            ):
+                return None
+            metadata = raw_session["metadata"]
+            identity_assurance = metadata.get("project_identity_assurance")
+            if identity_assurance not in {
+                "strong_readback",
+                "controlled_launch_read_only",
+            }:
+                return None
+            session = bind_session(attached)
+            return (
+                XG5000ProjectLaunchV1(
+                    operation="xg5000.open_project",
+                    verified=True,
+                    workspace_id=workspace.workspace_id,
+                    working_path=workspace.working_copy.path,
+                    working_hash=workspace.working_copy.current_sha256,
+                    launch_pid=pid,
+                    window_detected=True,
+                    project_identity_verified_against_selected_pid=bool(
+                        raw_session["metadata"].get(
+                            "project_identity_verified_against_selected_pid"
+                        )
+                    ),
+                    project_identity_read_only_bound_to_selected_pid=bool(
+                        raw_session["metadata"].get(
+                            "project_identity_read_only_bound_to_selected_pid"
+                        )
+                    ),
+                    identity_assurance=identity_assurance,
+                    instance=dict(instance),
+                    observed_instances=[dict(instance)],
+                    detail=(
+                        "the single late-ready XG5000 process was attached only after "
+                        "exact workspace path, hash, PID, and HWND readback"
+                    ),
+                ),
+                session,
+            )
+        await sleep(min(0.25, max(0.0, deadline - monotonic())))
+    return None
+
+
+async def _rebind_terminal_mne_session(
+    mcp: MCPGateway,
+    transaction: ChangeTransaction,
+    workspace: dict[str, Any],
+    *,
+    expected_project_path: Path,
+    expected_project_hash: str,
+) -> dict[str, Any] | None:
+    reopen = validated_terminal_mne_reopen(transaction)
+    if reopen is None:
+        return None
+    workspace_id = workspace.get("workspace_id")
+    try:
+        reopened_pid = int(reopen["pid"])
+        reopened_hwnd = int(reopen["hwnd"])
+        reopened_path = Path(str(reopen["project_path"])).resolve()
+    except (KeyError, TypeError, ValueError, OSError) as exc:
+        raise ChangeExecutionPreconditionError(
+            "terminal MNE reopen identity is incomplete"
+        ) from exc
+    if (
+        not isinstance(workspace_id, str)
+        or not workspace_id
+        or reopened_pid <= 0
+        or reopened_hwnd <= 0
+        or reopen.get("project_sha256") != expected_project_hash
+        or os.path.normcase(str(reopened_path))
+        != os.path.normcase(str(expected_project_path))
+    ):
+        raise ChangeExecutionPreconditionError(
+            "terminal MNE reopen differs from the refreshed working copy"
+        )
+    attached = await mcp.call_read_tool(
+        "xg5000.attach",
+        {
+            "pid": reopened_pid,
+            "hwnd": reopened_hwnd,
+            "access_profile": "analysis",
+            "project_path": str(expected_project_path),
+            "project_hash": expected_project_hash,
+            "workspace_id": workspace_id,
+        },
+    )
+    session = (
+        attached.get("session")
+        if isinstance(attached, dict) and isinstance(attached.get("session"), dict)
+        else attached
+    )
+    try:
+        session_path = Path(str(session["project_path"])).resolve()
+    except (KeyError, TypeError, ValueError, OSError) as exc:
+        raise ChangeExecutionPreconditionError(
+            "terminal MNE attach returned no exact project identity"
+        ) from exc
+    if (
+        not isinstance(session, dict)
+        or session.get("pid") != reopened_pid
+        or session.get("hwnd") != reopened_hwnd
+        or session.get("project_hash") != expected_project_hash
+        or os.path.normcase(str(session_path))
+        != os.path.normcase(str(expected_project_path))
+        or not _engineering_session_read_ready(session)
+    ):
+        raise ChangeExecutionPreconditionError(
+            "terminal MNE attach did not prove the independently reopened target"
+        )
+    return dict(session)
 
 
 def create_app(
@@ -1518,6 +2956,7 @@ def create_app(
         store = store or HostStore(config.database_path)
         knowledge_store = knowledge_store or KnowledgeStore(config.knowledge_database_path)
         knowledge_store.seed_control_patterns(_builtin_control_pattern_seeds())
+    ssh_interactive_handoff_journal = SshInteractiveHandoffJournal(store)
     mcp = mcp or MCPGateway()
     execution_broker = MCPExecutionBroker(mcp)
     agent_supervisor = agent_supervisor or AgentSupervisor()
@@ -1588,19 +3027,37 @@ def create_app(
     run_submission_lock = asyncio.Lock()
     file_dialog_lock = asyncio.Lock()
     browser_sessions: dict[str, datetime] = {}
-    browser_handoff_tickets: dict[str, datetime] = {}
+    browser_handoff_tickets: dict[str, _BrowserHandoffTicket] = {}
+    browser_session_readiness: dict[str, str] = {}
+    browser_readiness_receipts: dict[str, _BrowserReadinessReceipt] = {}
+    restart_handoff = consume_restart_handoff()
+    restart_receipts: dict[str, str] = {}
+    if restart_handoff is not None:
+        browser_sessions[restart_handoff.session_token] = restart_handoff.session_expires_at
+        restart_receipts[restart_handoff.receipt] = "ready"
     recent_model_verification: tuple[tuple[Any, ...], ModelCapabilityResult] | None = None
     shutdown_event = asyncio.Event()
     active_engineering_session: dict[str, Any] | None = None
     active_workspace: dict[str, Any] | None = store.get_host_state("active_workspace")
 
+    def workspace_agent_binding(
+        workspace: LocalWorkspaceV1 | dict[str, Any],
+    ) -> dict[str, Any]:
+        parsed = workspace if isinstance(workspace, LocalWorkspaceV1) else _local_workspace_v1(workspace)
+        return {
+            "workspace_id": parsed.workspace_id,
+            "revision_id": parsed.revision_id,
+            "source_kind": parsed.source_kind,
+            "provenance_receipt_digest": (
+                parsed.provenance.receipt_digest if parsed.provenance is not None else None
+            ),
+            "source_sha256": parsed.source.sha256.casefold(),
+            "working_path": parsed.working_copy.path,
+            "working_sha256": parsed.working_copy.current_sha256.casefold(),
+        }
+
     def bind_agent_workspace_target(workspace: LocalWorkspaceV1 | dict[str, Any]) -> None:
-        if isinstance(workspace, LocalWorkspaceV1):
-            workspace_id, revision_id = workspace.workspace_id, workspace.revision_id
-        else:
-            workspace_id = str(workspace.get("workspace_id") or "")
-            revision_id = str(workspace.get("revision_id") or "")
-        execution_broker.bind_agent_workspace(workspace_id, revision_id)
+        execution_broker.bind_agent_workspace(workspace_agent_binding(workspace))
     active_ls_controller: dict[str, Any] | None = store.get_host_state("active_ls_controller")
 
     def resolve_project_brief_attachments(
@@ -1924,9 +3381,69 @@ def create_app(
         trial = simulation.get("trial")
         decision = trial.get("decision") if isinstance(trial, dict) else None
         workspace = workspace_registration.get("workspace")
+        source = workspace.get("source") if isinstance(workspace, dict) else None
         working_copy = (
             workspace.get("working_copy") if isinstance(workspace, dict) else None
         )
+        stored_build_provenance = validated_new_build_workspace_provenance(
+            candidate,
+            workspace,
+            require_capture_verification=True,
+        )
+        active_build_provenance = validated_new_build_workspace_provenance(
+            candidate,
+            active_workspace,
+        )
+        active_source = (
+            active_workspace.get("source") if isinstance(active_workspace, dict) else None
+        )
+        active_working_copy = (
+            active_workspace.get("working_copy") if isinstance(active_workspace, dict) else None
+        )
+        try:
+            active_workspace_is_exact = bool(
+                isinstance(source, dict)
+                and isinstance(working_copy, dict)
+                and isinstance(active_workspace, dict)
+                and isinstance(active_source, dict)
+                and isinstance(active_working_copy, dict)
+                and active_workspace.get("workspace_id")
+                == workspace.get("workspace_id")
+                == engineering_target[0]
+                and active_workspace.get("revision_id")
+                == workspace.get("revision_id")
+                == engineering_target[1]
+                and active_workspace.get("vendor") == workspace.get("vendor")
+                and active_workspace.get("engineering_system")
+                == workspace.get("engineering_system")
+                and active_source.get("sha256") == source.get("sha256")
+                and os.path.normcase(
+                    str(Path(str(active_source.get("original_path") or "")).resolve())
+                )
+                == os.path.normcase(str(Path(str(source.get("original_path") or "")).resolve()))
+                and os.path.normcase(
+                    str(Path(str(active_source.get("captured_path") or "")).resolve())
+                )
+                == os.path.normcase(str(Path(str(source.get("captured_path") or "")).resolve()))
+                and active_working_copy.get("baseline_sha256")
+                == working_copy.get("baseline_sha256")
+                and active_working_copy.get("current_sha256") == working_copy.get("current_sha256")
+                and active_working_copy.get("state") == working_copy.get("state")
+                and os.path.normcase(
+                    str(Path(str(active_working_copy.get("path") or "")).resolve())
+                )
+                == os.path.normcase(str(Path(str(working_copy.get("path") or "")).resolve()))
+            )
+        except (OSError, ValueError):
+            active_workspace_is_exact = False
+        if (
+            stored_build_provenance is None
+            or active_build_provenance != stored_build_provenance
+            or not active_workspace_is_exact
+        ):
+            raise NativeProjectConflict(
+                "native project handoff requires the exact new-build workspace provenance"
+            )
         receipt_schema = receipt.get("schemaVersion") if isinstance(receipt, dict) else None
         scenario_receipt = (
             receipt.get("scenarioReceipt") if isinstance(receipt, dict) else None
@@ -2124,6 +3641,169 @@ def create_app(
             "projectSha256": project_sha256,
         }
 
+    def native_engineering_status_for_conversation(
+        detail: ConversationDetail,
+        engineering_target: tuple[str, str, str],
+    ) -> dict[str, Any] | None:
+        """Re-prove a stored handoff and expose only mission-continuity facts."""
+
+        raw_handoff = detail.engineering_handoff
+        if raw_handoff is None:
+            return None
+        if not isinstance(raw_handoff, dict):
+            raise NativeProjectConflict("engineering handoff record is invalid")
+        try:
+            stored_handoff = EngineeringConversationHandoffV1.model_validate(
+                raw_handoff
+            ).model_dump(mode="json", by_alias=True)
+        except (TypeError, ValueError) as exc:
+            raise NativeProjectConflict("engineering handoff record is invalid") from exc
+        if raw_handoff != stored_handoff:
+            raise NativeProjectConflict("engineering handoff record is not exact")
+
+        planning_conversation_id, current_handoff_raw = (
+            accepted_native_project_handoff(
+                str(stored_handoff["nativeProjectId"]),
+                engineering_target,
+            )
+        )
+        current_handoff = EngineeringConversationHandoffV1.model_validate(
+            current_handoff_raw
+        ).model_dump(mode="json", by_alias=True)
+        if (
+            planning_conversation_id != stored_handoff["planningConversationId"]
+            or current_handoff != stored_handoff
+        ):
+            raise NativeProjectConflict(
+                "engineering handoff no longer matches accepted native provenance"
+            )
+
+        operation = native_project_repository.get(
+            str(stored_handoff["nativeProjectId"])
+        )
+        reviewed_plan = operation.request.get("reviewedPlan") if operation else None
+        if not isinstance(reviewed_plan, dict):
+            raise NativeProjectConflict("reviewed plan handoff binding is missing")
+        if any(
+            reviewed_plan.get(reviewed_key) != stored_handoff.get(handoff_key)
+            for reviewed_key, handoff_key in (
+                ("conversationId", "planningConversationId"),
+                ("messageId", "planningMessageId"),
+                ("planDigest", "reviewedPlanDigest"),
+                ("projectBriefDigest", "projectBriefDigest"),
+                ("attachmentRevisionDigest", "attachmentRevisionDigest"),
+            )
+        ):
+            raise NativeProjectConflict("reviewed plan handoff binding changed")
+        reviewed_section_ids = reviewed_plan.get("reviewedSectionIds")
+        reviewed_item_ids = reviewed_plan.get("reviewedItemIds")
+        if (
+            not isinstance(reviewed_section_ids, list)
+            or not reviewed_section_ids
+            or not all(isinstance(item, str) for item in reviewed_section_ids)
+            or not isinstance(reviewed_item_ids, list)
+            or not reviewed_item_ids
+            or not all(isinstance(item, str) for item in reviewed_item_ids)
+        ):
+            raise NativeProjectConflict("reviewed plan handoff coverage is invalid")
+        try:
+            _review, reviewed_artifact = store.require_reviewed_project_plan(
+                conversation_id=str(stored_handoff["planningConversationId"]),
+                message_id=str(stored_handoff["planningMessageId"]),
+                plan_digest=str(stored_handoff["reviewedPlanDigest"]),
+                reviewed_section_ids=reviewed_section_ids,
+                reviewed_item_ids=reviewed_item_ids,
+                project_brief_digest=str(stored_handoff["projectBriefDigest"]),
+                attachment_revision_digest=str(
+                    stored_handoff["attachmentRevisionDigest"]
+                ),
+                expected_handoff_native_project_id=str(
+                    stored_handoff["nativeProjectId"]
+                ),
+            )
+        except ProjectPlanReviewConflict as exc:
+            raise NativeProjectConflict(
+                "reviewed plan handoff authority is no longer exact"
+            ) from exc
+        planning_detail = store.get_conversation(
+            str(stored_handoff["planningConversationId"])
+        )
+        if planning_detail is None or not isinstance(
+            planning_detail.project_brief,
+            dict,
+        ):
+            raise NativeProjectConflict("reviewed project brief is unavailable")
+        try:
+            return derive_native_engineering_status(
+                handoff=stored_handoff,
+                reviewed_plan=reviewed_artifact,
+                project_brief=planning_detail.project_brief,
+            )
+        except (TypeError, ValueError) as exc:
+            raise NativeProjectConflict(
+                "native engineering status could not be derived exactly"
+            ) from exc
+
+    async def revalidate_native_handoff_freshness(
+        engineering_target: tuple[str, str, str],
+        *,
+        native_project_id: str,
+        trial_id: str,
+        receipt_digest: str,
+    ) -> tuple[LocalWorkspaceV1, dict[str, Any]]:
+        """Refresh both MCP authorities immediately before the durable handoff write."""
+
+        cached_workspace_raw, cached_session = (
+            deepcopy(active_workspace),
+            deepcopy(active_engineering_session),
+        )
+        if (
+            not isinstance(cached_workspace_raw, dict)
+            or not isinstance(cached_session, dict)
+        ):
+            raise NativeProjectConflict("native project handoff target is no longer active")
+        try:
+            cached_workspace = _local_workspace_v1(cached_workspace_raw)
+            cached_identity = native_trial_session_identity(
+                cached_session,
+                cached_workspace,
+            )
+        except (TypeError, ValueError):
+            cached_identity = None
+        cached_resume = (
+            cached_identity.get("native_trial_resume")
+            if isinstance(cached_identity, dict)
+            else None
+        )
+        if (
+            not isinstance(cached_resume, dict)
+            or cached_resume.get("native_project_id") != native_project_id
+            or cached_resume.get("trial_id") != trial_id
+            or cached_resume.get("receipt_digest") != receipt_digest
+            or cached_session.get("session_id") != engineering_target[2]
+        ):
+            raise NativeProjectConflict("native project handoff cached identity changed")
+        try:
+            fresh_workspace, fresh_session = await fresh_native_trial_identity(
+                mcp,
+                cached_workspace,
+                cached_session,
+            )
+        except (MCPToolError, ValueError) as exc:
+            raise NativeProjectConflict(
+                "native project handoff freshness could not be verified"
+            ) from exc
+        if (
+            active_workspace != cached_workspace_raw
+            or active_engineering_session != cached_session
+            or current_engineering_conversation_target() != engineering_target
+            or not _engineering_session_read_ready(fresh_session)
+        ):
+            raise NativeProjectConflict(
+                "native project handoff target drifted before it could be recorded"
+            )
+        return fresh_workspace, fresh_session
+
     def pending_native_project_handoff(
         engineering_target: tuple[str, str, str] | None,
     ) -> tuple[NativeProjectOperation, str] | None:
@@ -2136,14 +3816,23 @@ def create_app(
             workspace = (
                 registration.get("workspace") if isinstance(registration, dict) else None
             )
+            source = workspace.get("source") if isinstance(workspace, dict) else None
             working_copy = (
                 workspace.get("working_copy") if isinstance(workspace, dict) else None
             )
             if (
                 not isinstance(reviewed_plan, dict)
                 or not isinstance(workspace, dict)
+                or not isinstance(source, dict)
                 or not isinstance(working_copy, dict)
             ):
+                continue
+            stored_build_provenance = validated_new_build_workspace_provenance(
+                candidate,
+                workspace,
+                require_capture_verification=True,
+            )
+            if stored_build_provenance is None:
                 continue
             planning_conversation_id = reviewed_plan.get("conversationId")
             expected_workspace_id = workspace.get("workspace_id")
@@ -2176,11 +3865,37 @@ def create_app(
                 and isinstance(active_workspace, dict)
             ):
                 active_working_copy = active_workspace.get("working_copy")
+                active_source = active_workspace.get("source")
+                active_build_provenance = validated_new_build_workspace_provenance(
+                    candidate,
+                    active_workspace,
+                )
                 try:
                     current_target_matches = bool(
                         isinstance(active_working_copy, dict)
+                        and isinstance(active_source, dict)
+                        and active_build_provenance == stored_build_provenance
                         and active_workspace.get("workspace_id") == expected_workspace_id
                         and active_workspace.get("revision_id") == expected_revision_id
+                        and active_workspace.get("vendor") == workspace.get("vendor")
+                        and active_workspace.get("engineering_system")
+                        == workspace.get("engineering_system")
+                        and active_source.get("sha256") == source.get("sha256")
+                        and os.path.normcase(
+                            str(Path(str(active_source.get("original_path") or "")).resolve())
+                        )
+                        == os.path.normcase(
+                            str(Path(str(source.get("original_path") or "")).resolve())
+                        )
+                        and os.path.normcase(
+                            str(Path(str(active_source.get("captured_path") or "")).resolve())
+                        )
+                        == os.path.normcase(
+                            str(Path(str(source.get("captured_path") or "")).resolve())
+                        )
+                        and active_working_copy.get("baseline_sha256")
+                        == working_copy.get("baseline_sha256")
+                        and active_working_copy.get("state") == working_copy.get("state")
                         and os.path.normcase(
                             str(Path(str(active_working_copy.get("path") or "")).resolve())
                         )
@@ -2246,7 +3961,7 @@ def create_app(
             return pending
         return fallback_without_conversation
 
-    def refresh_terminal_change_identity(
+    async def refresh_terminal_change_identity(
         transaction: ChangeTransaction,
         *,
         retain_engineering_session: bool,
@@ -2282,12 +3997,51 @@ def create_app(
                 or not active_path.is_file()
             ):
                 raise OSError("terminal change working copy is unavailable")
+        except (OSError, RuntimeError, ValueError):
+            active_engineering_session = None
+            execution_broker.clear_agent_session()
+            return False
+        try:
             digest_builder = hashlib.sha256()
             with active_path.open("rb") as stream:
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                     digest_builder.update(chunk)
             digest = digest_builder.hexdigest()
         except OSError:
+            # XG5000 can exclusively lock the just-saved working copy.  Do not
+            # treat the old Host memory as proof; only a terminal reconciliation
+            # checkpoint followed by a fresh read from the same MCP session may
+            # supply the exact saved hash while that lock is held.
+            try:
+                recovered = await _recover_locked_reconciled_change_session(
+                    mcp,
+                    transaction,
+                    expected_project_path=str(expected_path),
+                )
+            except (MCPToolError, OSError, RuntimeError, TypeError, ValueError):
+                recovered = None
+            if recovered is not None:
+                recovered_hash, reconciled_session = recovered
+                if reconciled_session is not None:
+                    refreshed_workspace = dict(workspace)
+                    refreshed_working_copy = dict(working_copy)
+                    refreshed_working_copy["current_sha256"] = recovered_hash.casefold()
+                    refreshed_working_copy["state"] = (
+                        "clean"
+                        if recovered_hash.casefold()
+                        == str(
+                            refreshed_working_copy.get("baseline_sha256") or ""
+                        ).casefold()
+                        else "modified"
+                    )
+                    refreshed_workspace["working_copy"] = refreshed_working_copy
+                    active_workspace = refreshed_workspace
+                    store.set_host_state("active_workspace", active_workspace)
+                    active_engineering_session = reconciled_session
+                    broker_session = dict(reconciled_session)
+                    broker_session.update(workspace_agent_binding(refreshed_workspace))
+                    execution_broker.bind_agent_session(broker_session)
+                    return True
             active_engineering_session = None
             execution_broker.clear_agent_session()
             return False
@@ -2303,6 +4057,87 @@ def create_app(
         refreshed_workspace["working_copy"] = refreshed_working_copy
         active_workspace = refreshed_workspace
         store.set_host_state("active_workspace", active_workspace)
+
+        terminal_mne_change = bool(
+            transaction.plan.get("plan_kind") in MNE_STRUCTURAL_PLAN_KINDS
+            and transaction.state
+            in {
+                ChangeTransactionState.COMPLETED,
+                ChangeTransactionState.ROLLED_BACK,
+            }
+        )
+        if not terminal_mne_change:
+            try:
+                reopened_session = validated_terminal_ld_reopen(transaction)
+            except ChangeExecutionPreconditionError as exc:
+                logger.warning(
+                    "terminal LD target could not be rebound (transaction=%s, kind=%s)",
+                    transaction.id,
+                    type(exc).__name__,
+                )
+                active_engineering_session = None
+                bind_agent_workspace_target(active_workspace)
+                return False
+            if reopened_session is not None:
+                active_engineering_session = reopened_session
+                broker_session = dict(reopened_session)
+                broker_session.update(workspace_agent_binding(refreshed_workspace))
+                execution_broker.bind_agent_session(broker_session)
+                return True
+        if terminal_mne_change:
+            try:
+                reopened_session = await _rebind_terminal_mne_session(
+                    mcp,
+                    transaction,
+                    refreshed_workspace,
+                    expected_project_path=expected_path,
+                    expected_project_hash=digest,
+                )
+                if reopened_session is None:
+                    raise ChangeExecutionPreconditionError(
+                        "terminal MNE change has no independent reopen receipt"
+                    )
+            except (
+                MCPToolError,
+                ChangeExecutionPreconditionError,
+                OSError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                logger.warning(
+                    "terminal MNE target could not be rebound (transaction=%s, kind=%s)",
+                    transaction.id,
+                    type(exc).__name__,
+                )
+                active_engineering_session = None
+                bind_agent_workspace_target(active_workspace)
+                return False
+            active_engineering_session = reopened_session
+            broker_session = dict(reopened_session)
+            broker_session.update(workspace_agent_binding(refreshed_workspace))
+            execution_broker.bind_agent_session(broker_session)
+            return True
+
+        # A generic recovered LD transaction can finish in the MCP session used
+        # for rollback/save.  That session has a different identity from the
+        # pre-quarantine target, so retaining the old target would be unsafe.
+        # Re-read the exact checkpoint session from that same MCP before making
+        # it available to the Host or Agent.
+        try:
+            reconciled_session = await _rebind_reconciled_change_session(
+                mcp,
+                transaction,
+                expected_project_path=str(expected_path),
+                expected_project_hash=digest,
+            )
+        except (MCPToolError, OSError, RuntimeError, TypeError, ValueError):
+            reconciled_session = None
+        if reconciled_session is not None:
+            active_engineering_session = reconciled_session
+            broker_session = dict(reconciled_session)
+            broker_session.update(workspace_agent_binding(refreshed_workspace))
+            execution_broker.bind_agent_session(broker_session)
+            return True
 
         session = active_engineering_session
         session_matches = (
@@ -2323,8 +4158,7 @@ def create_app(
                 active_workspace.get("workspace_id"),
                 str,
             ):
-                broker_session["workspace_id"] = active_workspace["workspace_id"]
-                broker_session["revision_id"] = active_workspace["revision_id"]
+                broker_session.update(workspace_agent_binding(active_workspace))
             execution_broker.bind_agent_session(broker_session)
         else:
             active_engineering_session = None
@@ -2541,6 +4375,14 @@ def create_app(
                 "primaryDevices",
                 plan.target.get("primary_devices"),
             ),
+            "physicalIoCandidates": plan.target.get(
+                "physicalIoCandidates",
+                plan.target.get("physical_io_candidates"),
+            ),
+            "physicalIoBindings": plan.target.get(
+                "physicalIoBindings",
+                plan.target.get("physical_io_bindings"),
+            ),
             "physicalOutputCandidates": plan.target.get(
                 "physicalOutputCandidates",
                 plan.target.get("physical_output_candidates"),
@@ -2553,6 +4395,14 @@ def create_app(
                 "hardwareContextBinding",
                 plan.target.get("hardware_context_binding"),
             ),
+            "runtimeDeploymentReady": plan.target.get(
+                "runtimeDeploymentReady",
+                plan.target.get("runtime_deployment_ready"),
+            ),
+            "runtimeDeploymentBlockingReasons": plan.target.get(
+                "runtimeDeploymentBlockingReasons",
+                plan.target.get("runtime_deployment_blocking_reasons"),
+            ),
             "currentValue": plan.current.get(
                 "value",
                 plan.current.get("operand"),
@@ -2564,6 +4414,12 @@ def create_app(
             "currentSemantics": plan.current.get("semantics"),
             "proposedSemantics": plan.proposed.get("semantics"),
         }
+        # The Agent only receives the public projection of this binding.  Its
+        # raw project hash remains Host-owned and is checked below against the
+        # independently retained analysis and hardware receipts.
+        exact_receipt_fields["hardwareContextBinding"] = scrub_agent_tool_result(
+            exact_receipt_fields["hardwareContextBinding"]
+        )
         mismatched_receipt_fields = [
             field_name
             for field_name, expected in exact_receipt_fields.items()
@@ -2581,6 +4437,28 @@ def create_app(
             raise ChangeExecutionPreconditionError(
                 "change-target analysis still has blocking native evidence gaps"
             )
+        if plan.request_scope == "offline_candidate_revision":
+            runtime_deployment_ready = receipt.get("runtimeDeploymentReady")
+            runtime_deployment_blockers = receipt.get(
+                "runtimeDeploymentBlockingReasons"
+            )
+            if (
+                receipt.get("schema") != "controlstudio-change-target-evidence/v2"
+                or runtime_deployment_ready is not False
+                or not isinstance(runtime_deployment_blockers, list)
+                or not runtime_deployment_blockers
+                or any(
+                    not isinstance(item, str) or not item
+                    for item in runtime_deployment_blockers
+                )
+                or len(set(runtime_deployment_blockers))
+                != len(runtime_deployment_blockers)
+                or "online_runtime_deployment_unsupported"
+                not in runtime_deployment_blockers
+            ):
+                raise ChangeExecutionPreconditionError(
+                    "offline candidate analysis must retain its runtime deployment block"
+                )
         hardware_evidence_ref = plan.target.get(
             "hardwareEvidenceRef",
             plan.target.get("hardware_evidence_ref"),
@@ -2733,16 +4611,22 @@ def create_app(
                 item not in required_hardware_status
                 for item in required_hardware_context
             )
-            or hardware_binding.get("blocking_reasons") != []
-            or any(
-                hardware_binding.get(name) != status
-                for name, status in observed_hardware_status.items()
+            or (
+                plan.request_scope != "offline_candidate_revision"
+                and (
+                    hardware_binding.get("blocking_reasons") != []
+                    or any(
+                        hardware_binding.get(name) != status
+                        for name, status in observed_hardware_status.items()
+                    )
+                    or any(
+                        hardware_binding.get(required_hardware_status[name])
+                        != "observed"
+                        for name in required_hardware_context
+                    )
+                    or bool(relevant_hardware_blockers)
+                )
             )
-            or any(
-                hardware_binding.get(required_hardware_status[name]) != "observed"
-                for name in required_hardware_context
-            )
-            or relevant_hardware_blockers
         ):
             raise ChangeExecutionPreconditionError(
                 "change-target analysis has an unobserved required hardware context"
@@ -3144,6 +5028,8 @@ def create_app(
         conversation_id: str,
         run_id: str,
         mission: dict[str, Any] | None,
+        prior_mission: dict[str, Any] | None,
+        current_outcome_evidence: dict[str, Any] | None,
     ) -> tuple[dict[str, Any] | None, str | None]:
         if artifact_data is None and supplied_digest is None:
             return None, None
@@ -3180,6 +5066,15 @@ def create_app(
             if isinstance(event.payload.get("evidenceId"), str)
             and event.payload["evidenceId"]
         ]
+        if (
+            current_outcome_evidence is not None
+            and all(
+                evidence.get("evidenceId")
+                != current_outcome_evidence["evidenceId"]
+                for evidence in authoritative_evidence
+            )
+        ):
+            authoritative_evidence.insert(0, current_outcome_evidence)
         authoritative_evidence_ids = [
             str(evidence["evidenceId"]) for evidence in authoritative_evidence
         ]
@@ -3188,11 +5083,12 @@ def create_app(
                 "Agent engineering analysis evidenceRefs do not exactly match "
                 "the Host evidence for this run"
             )
-        referenced_ids = {
+        structured_referenced_ids = {
             evidence_ref
             for observation in artifact.observations
             for evidence_ref in observation.evidence_refs
         }
+        referenced_ids = set(structured_referenced_ids)
         referenced_ids.update(
             evidence_ref
             for inference in artifact.inferences
@@ -3217,29 +5113,58 @@ def create_app(
         relations = artifact.relations or []
         coverage_items = artifact.coverage or []
         project_structure_items = artifact.project_structure or []
-        referenced_ids.update(location.evidence_ref for location in locations)
-        referenced_ids.update(relation.evidence_ref for relation in relations)
-        referenced_ids.update(
+        structured_referenced_ids.update(
+            location.evidence_ref for location in locations
+        )
+        structured_referenced_ids.update(
+            relation.evidence_ref for relation in relations
+        )
+        structured_referenced_ids.update(
             location.evidence_ref
             for relation in relations
             for location in relation.locations
         )
-        referenced_ids.update(
+        structured_referenced_ids.update(
             evidence_ref
             for coverage in coverage_items
             for evidence_ref in coverage.evidence_refs
         )
-        referenced_ids.update(
+        structured_referenced_ids.update(
             item.evidence_ref for item in project_structure_items
         )
-        if not referenced_ids.issubset(set(authoritative_evidence_ids)):
+        referenced_ids.update(structured_referenced_ids)
+        historical_evidence_ids = (
+            _engineering_mission_evidence_refs(prior_mission)
+            if prior_mission is not None
+            else set()
+        )
+        current_evidence_ids = set(authoritative_evidence_ids)
+        if not referenced_ids.issubset(
+            current_evidence_ids | historical_evidence_ids
+        ):
             raise AgentOutputContractError(
                 "Agent engineering analysis item evidenceRefs are not Host-authored"
             )
         if artifact.schema_version in {"2", "3", "4"}:
+            historical_structural_ids = structured_referenced_ids.difference(
+                current_evidence_ids
+            )
+            try:
+                historical_structural_evidence = [
+                    event.payload
+                    for event in store.resolve_conversation_evidence(
+                        conversation_id=conversation_id,
+                        evidence_ids=historical_structural_ids,
+                    ).values()
+                ]
+            except EngineeringMissionConflict as exc:
+                raise AgentOutputContractError(str(exc)) from exc
             structural_receipts: dict[str, dict[str, Any]] = {}
             structural_ids_by_area: dict[str, list[str]] = {}
-            for evidence in authoritative_evidence:
+            for evidence in [
+                *authoritative_evidence,
+                *historical_structural_evidence,
+            ]:
                 tool_name = evidence.get("toolName")
                 if not isinstance(tool_name, str) or (
                     tool_name not in STRUCTURAL_ANALYSIS_TOOL_COVERAGE
@@ -3739,6 +5664,15 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        repaired_mission_digests = (
+            store.repair_buggy_reverified_engineering_mission_digests()
+        )
+        if repaired_mission_digests:
+            logger.warning(
+                "Repaired %d canonical engineering mission digest(s) from the "
+                "bounded blocked-step recovery defect",
+                repaired_mission_digests,
+            )
         store.mark_previous_instance_target_leases_stale()
         store.reconcile_interrupted_runs()
         store.reconcile_interrupted_change_transactions()
@@ -3774,6 +5708,38 @@ def create_app(
             active_workspace = restored.model_dump(mode="json")
             store.set_host_state("active_workspace", active_workspace)
             bind_agent_workspace_target(restored)
+            for transaction in store.list_change_transactions(limit=100):
+                if (
+                    transaction.receipt_acknowledged_at is None
+                    or transaction.state
+                    not in {
+                        ChangeTransactionState.COMPLETED,
+                        ChangeTransactionState.ROLLED_BACK,
+                    }
+                    or transaction.target.workspace_id != restored.workspace_id
+                    or transaction.target.revision_id != restored.revision_id
+                ):
+                    continue
+                try:
+                    if os.path.normcase(
+                        str(Path(transaction.target.project_path).resolve())
+                    ) != os.path.normcase(str(Path(restored.working_copy.path).resolve())):
+                        continue
+                except (OSError, RuntimeError, ValueError):
+                    continue
+                try:
+                    await refresh_terminal_change_identity(
+                        transaction,
+                        retain_engineering_session=False,
+                    )
+                except (MCPToolError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                    logger.warning(
+                        "acknowledged terminal change could not be rebound at startup "
+                        "(transaction=%s, kind=%s)",
+                        transaction.id,
+                        type(exc).__name__,
+                    )
+                break
 
         mcp_start_task = asyncio.create_task(
             start_mcp(),
@@ -3869,6 +5835,7 @@ def create_app(
     )
     app.state.config = config
     app.state.store = store
+    app.state.ssh_interactive_handoff_journal = ssh_interactive_handoff_journal
     app.state.knowledge_store = knowledge_store
     app.state.mcp = mcp
     app.state.agent_supervisor = agent_supervisor
@@ -3879,9 +5846,12 @@ def create_app(
     app.state.native_project_service = native_project_service
     app.state.active_change_executions = active_change_executions
     app.state.request_shutdown = None
+    app.state.request_restart = None
     app.state.shutdown_event = shutdown_event
     app.state.browser_handoff_tickets = browser_handoff_tickets
     app.state.browser_sessions = browser_sessions
+    app.state.browser_readiness_receipts = browser_readiness_receipts
+    app.state.restart_receipts = restart_receipts
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(config.allowed_hosts))
 
     @app.middleware("http")
@@ -3898,6 +5868,7 @@ def create_app(
             "/api/health",
             "/api/launcher/challenge",
             "/api/launcher/handoff",
+            "/api/launcher/readiness",
             "/api/session",
             "/api/session/refresh",
         }
@@ -3979,24 +5950,86 @@ def create_app(
                 detail="invalid ControlStudio launcher credential",
             )
         now = datetime.now(timezone.utc)
-        for ticket, expires_at in tuple(browser_handoff_tickets.items()):
-            if expires_at <= now:
+        for ticket, record in tuple(browser_handoff_tickets.items()):
+            if record.expires_at <= now:
                 browser_handoff_tickets.pop(ticket, None)
+        for receipt, record in tuple(browser_readiness_receipts.items()):
+            if record.expires_at <= now:
+                browser_readiness_receipts.pop(receipt, None)
+        for session_token, expires_at in tuple(browser_sessions.items()):
+            if expires_at <= now:
+                browser_sessions.pop(session_token, None)
+                browser_session_readiness.pop(session_token, None)
         handoff_ticket = secrets.token_urlsafe(48)
+        readiness_receipt = secrets.token_urlsafe(48)
         expires_at = now + BROWSER_HANDOFF_TTL
-        browser_handoff_tickets[handoff_ticket] = expires_at
+        browser_handoff_tickets[handoff_ticket] = _BrowserHandoffTicket(
+            expires_at=expires_at,
+            readiness_receipt=readiness_receipt,
+        )
+        browser_readiness_receipts[readiness_receipt] = _BrowserReadinessReceipt(
+            expires_at=now + BROWSER_READINESS_TTL,
+        )
         return LauncherHandoffV1(
             handoff_ticket=handoff_ticket,
+            readiness_receipt=readiness_receipt,
             expires_at=expires_at,
         )
+
+    @app.get(
+        "/api/launcher/readiness",
+        response_model=LauncherReadinessV1,
+    )
+    async def browser_handoff_readiness(
+        request: Request,
+        response: Response,
+        receipt: str = Query(min_length=32, max_length=512, pattern=r"^[A-Za-z0-9_-]+$"),
+    ) -> LauncherReadinessV1:
+        """Consume a launcher-held receipt only after browser bootstrap succeeds.
+
+        The opaque receipt never enters the browser URL. The browser can only
+        advance it by consuming the separate one-time ticket and then making a
+        session-authenticated bootstrap request. This intentionally observes
+        protocol state, never a Chromium title, pixels, or accessibility tree.
+        """
+
+        bearer = request.headers.get("authorization", "")
+        supplied_token = bearer[7:] if bearer.startswith("Bearer ") else ""
+        if not supplied_token or not hmac.compare_digest(
+            supplied_token,
+            config.launch_token,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="invalid ControlStudio launcher credential",
+            )
+        now = datetime.now(timezone.utc)
+        record = browser_readiness_receipts.get(receipt)
+        if record is None or record.expires_at <= now:
+            browser_readiness_receipts.pop(receipt, None)
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="invalid, expired, or already consumed browser readiness receipt",
+            )
+        if not record.session_established or not record.bootstrap_completed:
+            response.status_code = status.HTTP_202_ACCEPTED
+            return LauncherReadinessV1(status="pending", expires_at=record.expires_at)
+
+        # The launcher polls this endpoint while the browser bootstraps.  Keep
+        # a ready receipt available for its short TTL so a late or duplicated
+        # poll observes the same completed bootstrap instead of a misleading
+        # 404 after an earlier poll won the race.  The receipt remains opaque,
+        # launcher-token protected, and strictly in-memory; the browser never
+        # receives it.
+        return LauncherReadinessV1(status="ready", expires_at=record.expires_at)
 
     @app.post("/api/session", response_model=BrowserSessionV1)
     async def establish_browser_session(request: Request) -> BrowserSessionV1:
         bearer = request.headers.get("authorization", "")
         supplied_ticket = bearer[7:] if bearer.startswith("Bearer ") else ""
-        ticket_expires_at = browser_handoff_tickets.pop(supplied_ticket, None)
+        ticket = browser_handoff_tickets.pop(supplied_ticket, None)
         now = datetime.now(timezone.utc)
-        if ticket_expires_at is None or ticket_expires_at <= now:
+        if ticket is None or ticket.expires_at <= now:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="invalid, expired, or already consumed browser handoff ticket",
@@ -4007,6 +6040,15 @@ def create_app(
         session_token = secrets.token_urlsafe(48)
         expires_at = now + BROWSER_SESSION_TTL
         browser_sessions[session_token] = expires_at
+        readiness = browser_readiness_receipts.get(ticket.readiness_receipt)
+        if readiness is None or readiness.expires_at <= now:
+            browser_sessions.pop(session_token, None)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="browser handoff readiness receipt expired before session establishment",
+            )
+        readiness.session_established = True
+        browser_session_readiness[session_token] = ticket.readiness_receipt
         return BrowserSessionV1(
             session_token=session_token,
             expires_at=expires_at,
@@ -4030,9 +6072,12 @@ def create_app(
                 detail="invalid or irrecoverably expired ControlStudio browser session",
             )
         browser_sessions.pop(supplied_token, None)
+        readiness_receipt = browser_session_readiness.pop(supplied_token, None)
         session_token = secrets.token_urlsafe(48)
         expires_at = now + BROWSER_SESSION_TTL
         browser_sessions[session_token] = expires_at
+        if readiness_receipt is not None:
+            browser_session_readiness[session_token] = readiness_receipt
         return BrowserSessionV1(
             session_token=session_token,
             expires_at=expires_at,
@@ -4338,6 +6383,12 @@ def create_app(
                     if active_session and active_session.get("pid")
                     else None
                 ),
+                window_handle=(
+                    int(active_session["hwnd"])
+                    if active_session and active_session.get("hwnd")
+                    else None
+                ),
+                process_create_time=_engineering_session_process_create_time(active_session),
                 session_id=(
                     str(active_session["session_id"])
                     if active_session and active_session.get("session_id")
@@ -4352,6 +6403,16 @@ def create_app(
                     engineering_target[1] if engineering_target is not None else None
                 ),
                 identity_assurance=identity_assurance,
+                project_path=(
+                    str(active_session["project_path"])
+                    if active_session and active_session.get("project_path")
+                    else None
+                ),
+                project_hash=(
+                    str(active_session["project_hash"]).casefold()
+                    if active_session and active_session.get("project_hash")
+                    else None
+                ),
             ),
             controller=LSControllerConnectionStatusV1(
                 state=(
@@ -5074,14 +7135,131 @@ def create_app(
         )
         return {"status": "shutting_down"}
 
+    def _restart_is_safe() -> None:
+        active_run_ids = [run_id for run_id, task in run_tasks.items() if not task.done()]
+        if active_run_ids:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="ControlStudio cannot restart while an agent run is active",
+            )
+        if active_change_executions:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="ControlStudio cannot restart while a change transaction is active",
+            )
+        recovery_authority = store.selected_target_recovery_authority()
+        native_operation = native_project_repository.blocking_operation(
+            str(recovery_authority["operation_id"])
+            if recovery_authority is not None
+            and recovery_authority.get("owner_kind") == "native_project_create"
+            else None
+        )
+        if native_operation is not None and native_operation.state == "EXECUTING":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="ControlStudio cannot restart while native XG5000 project creation is executing",
+            )
+        target_operation = store.active_target_operation_lease()
+        if target_operation is not None and target_operation.get("state") == "ACTIVE":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="ControlStudio cannot restart while an XG5000 target operation is active",
+            )
+
+    @app.post(
+        "/api/v1/host/restart",
+        response_model=HostRestartResponseV1,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def request_host_restart(
+        request: Request,
+        _csrf: None = Depends(require_browser_csrf),
+    ) -> HostRestartResponseV1:
+        """Replace this Host after the response, without re-running UAC.
+
+        The process command and environment are owned by ``__main__``.  The
+        browser contributes no executable, path, command, or environment data.
+        """
+
+        async with run_submission_lock:
+            _restart_is_safe()
+            restart_callback = app.state.request_restart
+            if not callable(restart_callback):
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Host restart is not available in this runtime",
+                )
+            bearer = request.headers.get("authorization", "")
+            session_token = bearer[7:] if bearer.startswith("Bearer ") else ""
+            expires_at = browser_sessions.get(session_token)
+            if expires_at is None or expires_at <= datetime.now(timezone.utc):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="a valid ControlStudio launch session is required",
+                )
+            shutdown_callback = app.state.request_shutdown
+            if not callable(shutdown_callback):
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Host shutdown is not available in this runtime",
+                )
+            receipt = secrets.token_urlsafe(32)
+            handoff = RestartHandoff(receipt, session_token, expires_at)
+            try:
+                restart_callback(handoff)
+            except RestartBootstrapError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Host restart bootstrap is unavailable",
+                ) from exc
+            restart_receipts[receipt] = "scheduled"
+            shutdown_event.set()
+
+        async def restart_after_response() -> None:
+            await asyncio.sleep(0.05)
+            shutdown_callback()
+
+        asyncio.create_task(
+            restart_after_response(),
+            name="controlstudio-requested-restart",
+        )
+        return HostRestartResponseV1(status="scheduled", restart_receipt=receipt)
+
+    @app.get(
+        "/api/v1/host/restart/{restart_receipt}",
+        response_model=HostRestartResponseV1,
+    )
+    async def host_restart_status(restart_receipt: str) -> HostRestartResponseV1:
+        if not 32 <= len(restart_receipt) <= 512:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="restart receipt not found")
+        state = restart_receipts.get(restart_receipt)
+        if state is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="restart receipt not found")
+        return HostRestartResponseV1(status=state, restart_receipt=restart_receipt)
+
     @app.get("/api/v1/bootstrap", response_model=BootstrapV1)
     async def bootstrap_v1(request: Request) -> BootstrapV1:
-        return BootstrapV1(
+        bootstrap = BootstrapV1(
             status=current_status_v1(),
             csrf_token=browser_csrf_token(request),
             client_session_id=str(uuid.uuid4()),
             last_event_sequence=store.latest_event_sequence(),
         )
+        bearer = request.headers.get("authorization", "")
+        session_token = bearer[7:] if bearer.startswith("Bearer ") else ""
+        readiness_receipt = browser_session_readiness.get(session_token)
+        readiness = (
+            browser_readiness_receipts.get(readiness_receipt)
+            if readiness_receipt is not None
+            else None
+        )
+        if (
+            readiness is not None
+            and readiness.expires_at > datetime.now(timezone.utc)
+            and readiness.session_established
+        ):
+            readiness.bootstrap_completed = True
+        return bootstrap
 
     @app.post(
         "/api/v1/conversations",
@@ -5120,8 +7298,14 @@ def create_app(
                 provenance = EngineeringConversationHandoffV1.model_validate(
                     raw_provenance
                 ).model_dump(mode="json", by_alias=True)
-                conversation, created = (
-                    store.create_engineering_handoff_conversation(
+                conversation, created = await _record_native_handoff_after_freshness(
+                    revalidate_native_handoff_freshness(
+                        engineering_target,
+                        native_project_id=body.native_project_id,
+                        trial_id=str(raw_provenance["simulationTrialId"]),
+                        receipt_digest=str(raw_provenance["simulationReceiptDigest"]),
+                    ),
+                    lambda: store.create_engineering_handoff_conversation(
                         title=body.title,
                         native_project_id=body.native_project_id,
                         planning_conversation_id=planning_conversation_id,
@@ -5129,7 +7313,7 @@ def create_app(
                         revision_id=engineering_target[1],
                         engineering_session_id=engineering_target[2],
                         provenance=provenance,
-                    )
+                    ),
                 )
             except (NativeProjectConflict, ProjectPlanReviewConflict, ValueError) as exc:
                 raise HTTPException(
@@ -5258,6 +7442,10 @@ def create_app(
     ) -> None:
         settings: StoredModelConnection | None = None
         workflow = "engineering"
+        # This is assigned only by the current run's Host proposal callback.
+        # It lets the sanitized failure response distinguish a rejected final
+        # artifact from a case where the durable approval contract already exists.
+        proposed_change_authority: tuple[str, str] | None = None
         try:
             detail = store.get_conversation(conversation_id)
             if detail is None:
@@ -5293,6 +7481,20 @@ def create_app(
                 raise AgentRunPreconditionError(
                     "the engineering run has no verified target binding"
                 )
+            native_engineering_status_snapshot: dict[str, Any] | None = None
+            if workflow == "engineering" and detail.engineering_handoff is not None:
+                assert expected_engineering_target is not None
+                try:
+                    native_engineering_status_snapshot = (
+                        native_engineering_status_for_conversation(
+                            detail,
+                            expected_engineering_target,
+                        )
+                    )
+                except (NativeProjectConflict, ProjectPlanReviewConflict, ValueError) as exc:
+                    raise AgentRunPreconditionError(
+                        "accepted native-project mission handoff is no longer exact"
+                    ) from exc
             settings = model_repository.get()
             if settings is None:
                 raise AgentRunPreconditionError("먼저 OpenAI 호환 모델 연결을 설정해 주세요.")
@@ -5349,6 +7551,25 @@ def create_app(
                 in {"offline_native_reopen", "offline_native_reopen_xgsim"}
                 else "offline_native_reopen"
             )
+            offline_operand_mission: dict[str, Any] | None = None
+            if request_message is not None and isinstance(
+                request_message.metadata.get("offline_operand_mission"), dict
+            ):
+                try:
+                    offline_operand_mission = OfflineOperandMissionV1.model_validate(
+                        request_message.metadata["offline_operand_mission"]
+                    ).model_dump(mode="json", by_alias=True)
+                except (TypeError, ValueError) as exc:
+                    raise AgentRunPreconditionError(
+                        "Host-owned offline operand mission is invalid"
+                    ) from exc
+                if (
+                    change_request_scope != "offline_candidate_revision"
+                    or verification_scope != "offline_native_reopen"
+                ):
+                    raise AgentRunPreconditionError(
+                        "offline operand mission scope is not executable"
+                    )
             planning_brief: dict[str, Any] | None = None
             planning_project_brief_digest: str | None = None
             planning_attachment_revision_digest: str | None = None
@@ -5401,6 +7622,12 @@ def create_app(
             )
             engineering_mission_snapshot: dict[str, Any] | None = None
             engineering_agent_checkpoint: dict[str, Any] | None = None
+            historical_evidence_bundle: dict[str, Any] | None = None
+            mission_change_transaction_id: str | None = None
+            linked_change: ChangeTransaction | None = None
+            linked_terminal_change_state: ChangeTransactionState | None = None
+            current_change_outcome: dict[str, Any] | None = None
+            current_change_outcome_evidence: dict[str, Any] | None = None
             if stored_engineering_mission is not None:
                 if (
                     stored_engineering_mission.workspace_id != detail.workspace_id
@@ -5436,6 +7663,8 @@ def create_app(
                     if (
                         stored_agent_checkpoint.workspace_id != detail.workspace_id
                         or stored_agent_checkpoint.revision_id != detail.revision_id
+                        or stored_agent_checkpoint.updated_by_run_id
+                        != stored_engineering_mission.updated_by_run_id
                         or stored_agent_checkpoint.mission_digest
                         != stored_engineering_mission.digest
                         or not hmac.compare_digest(
@@ -5447,6 +7676,93 @@ def create_app(
                             "stored Agent checkpoint does not match the durable mission"
                         )
                     engineering_agent_checkpoint = stored_agent_checkpoint.checkpoint
+                try:
+                    historical_evidence_bundle = (
+                        _historical_evidence_bundle_for_mission(
+                            store,
+                            conversation_id=conversation_id,
+                            mission=engineering_mission_snapshot,
+                            mission_digest=stored_mission_digest,
+                        )
+                    )
+                except (AgentProtocolError, EngineeringMissionConflict) as exc:
+                    raise AgentRunPreconditionError(str(exc)) from exc
+                mission_change_transaction_id = (
+                    stored_engineering_mission.change_transaction_id
+                )
+                linked_change = (
+                    store.get_change_transaction(mission_change_transaction_id)
+                    if mission_change_transaction_id is not None
+                    else None
+                )
+                if mission_change_transaction_id is None:
+                    recovered_link = _acknowledged_terminal_source_run_change(
+                        stored_engineering_mission,
+                        store.list_change_transactions(
+                            conversation_id=conversation_id,
+                            limit=100,
+                        ),
+                    )
+                    if recovered_link is not None:
+                        mission_change_transaction_id = recovered_link.id
+                        linked_change = recovered_link
+                if linked_change is not None and (
+                    linked_change.conversation_id != conversation_id
+                ):
+                    raise AgentRunPreconditionError(
+                        "stored mission change link belongs to another conversation"
+                    )
+                if engineering_mission_snapshot.get("status") == "waiting_for_approval":
+                    if (
+                        linked_change is None
+                    ):
+                        raise AgentRunPreconditionError(
+                            "approval-waiting mission has no exact durable change link"
+                        )
+                    if linked_change.state not in (
+                        ChangeTransactionState.PENDING_APPROVAL,
+                        *TERMINAL_CHANGE_OUTCOME_DISPOSITIONS,
+                    ):
+                        raise AgentRunPreconditionError(
+                            "linked change still requires execution, simulation, or recovery"
+                        )
+                elif linked_change is not None and (
+                    linked_change.state not in TERMINAL_CHANGE_OUTCOME_DISPOSITIONS
+                ):
+                    raise AgentRunPreconditionError(
+                        "non-waiting mission retains a non-terminal change"
+                    )
+                if (
+                    linked_change is not None
+                    and linked_change.state in TERMINAL_CHANGE_OUTCOME_DISPOSITIONS
+                ):
+                    linked_terminal_change_state = linked_change.state
+                    linked_outcome = change_outcome_projection(linked_change)
+                    if linked_outcome["evidenceId"] not in (
+                        _engineering_mission_evidence_refs(
+                            engineering_mission_snapshot
+                        )
+                    ):
+                        current_change_outcome = linked_outcome
+                        current_change_outcome_evidence = change_outcome_evidence(
+                            current_change_outcome
+                        )
+                requested_outcome_transaction_id = (
+                    request_message.metadata.get("change_outcome_transaction_id")
+                    if request_message is not None
+                    else None
+                )
+                if (
+                    engineering_mission_continue
+                    and requested_outcome_transaction_id is not None
+                    and requested_outcome_transaction_id
+                    != (
+                        mission_change_transaction_id
+                    )
+                ):
+                    raise AgentRunPreconditionError(
+                        "mission continuation change outcome binding changed"
+                    )
             if engineering_mission_continue and engineering_mission_snapshot is None:
                 raise AgentRunPreconditionError(
                     "engineering mission continuation has no durable checkpoint"
@@ -5475,6 +7791,20 @@ def create_app(
                 is ChangeTransactionState.PENDING_APPROVAL
                 else None
             )
+            if (
+                engineering_mission_snapshot is not None
+                and engineering_mission_snapshot.get("status")
+                == "waiting_for_approval"
+                and current_change_outcome is None
+                and (
+                    pending_change_transaction is None
+                    or pending_change_transaction.id
+                    != mission_change_transaction_id
+                )
+            ):
+                raise AgentRunPreconditionError(
+                    "approval-waiting mission no longer matches its pending change"
+                )
             target_live_change_transaction = (
                 store.live_change_approval_transaction(
                     mutation_scope=f"workspace:{detail.workspace_id}",
@@ -5493,6 +7823,29 @@ def create_app(
                 if pending_change_transaction is not None
                 else None
             )
+            initial_pending_change_authority = (
+                (
+                    pending_change_transaction.id,
+                    pending_change_transaction.plan_digest,
+                )
+                if pending_change_transaction is not None
+                else None
+            )
+            rejected_change_reauthorized = (
+                _rejected_exact_operand_reauthorization_permitted(
+                    request_message=request_message,
+                    linked_change=linked_change,
+                    change_outcome=current_change_outcome,
+                    offline_operand_mission=offline_operand_mission,
+                )
+            )
+            exact_operand_reproposal_permitted = (
+                _expired_exact_operand_reproposal_callback_permitted(
+                    engineering_mission_snapshot,
+                    current_change_outcome,
+                    rejected_reauthorized=rejected_change_reauthorized,
+                )
+            )
 
             latest_mission_checkpoint: tuple[
                 dict[str, Any],
@@ -5501,6 +7854,7 @@ def create_app(
                 str,
                 dict[str, Any],
                 str,
+                str | None,
             ] | None = None
 
             async def publish_token(delta: str) -> None:
@@ -5522,7 +7876,7 @@ def create_app(
                     },
                 )
 
-            async def persist_mission_checkpoint(
+            async def _persist_mission_checkpoint_impl(
                 snapshot: dict[str, Any],
                 digest: str,
                 cycle: int,
@@ -5594,13 +7948,28 @@ def create_app(
                     if latest_mission_checkpoint is not None
                     else engineering_mission_snapshot
                 )
+                current_run_evidence = store.list_run_evidence(
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                )
                 current_run_evidence_refs = {
                     evidence_id
-                    for event in store.list_run_evidence(
-                        conversation_id=conversation_id,
-                        run_id=run_id,
-                    )
+                    for event in current_run_evidence
                     if isinstance(
+                        evidence_id := event.payload.get("evidenceId"),
+                        str,
+                    )
+                    and evidence_id
+                }
+                if current_change_outcome_evidence is not None:
+                    current_run_evidence_refs.add(
+                        str(current_change_outcome_evidence["evidenceId"])
+                    )
+                current_run_target_evidence_refs = {
+                    evidence_id
+                    for event in current_run_evidence
+                    if event.payload.get("toolName") != "host.change_outcome"
+                    and isinstance(
                         evidence_id := event.payload.get("evidenceId"),
                         str,
                     )
@@ -5608,12 +7977,58 @@ def create_app(
                 }
                 if progression_base is not None:
                     try:
+                        prior_evidence_events = store.resolve_conversation_evidence(
+                            conversation_id=conversation_id,
+                            evidence_ids=_engineering_mission_evidence_refs(
+                                progression_base
+                            ),
+                        )
+                        allowed_removed_evidence_refs = (
+                            _authorized_exact_operand_retry_evidence_compaction(
+                                progression_base,
+                                canonical_snapshot,
+                                retry_permitted=exact_operand_reproposal_permitted,
+                                prior_evidence={
+                                    evidence_id: event.payload
+                                    for evidence_id, event in prior_evidence_events.items()
+                                },
+                                current_run_evidence={
+                                    str(event.payload["evidenceId"]): event.payload
+                                    for event in current_run_evidence
+                                    if isinstance(
+                                        event.payload.get("evidenceId"), str
+                                    )
+                                },
+                            )
+                        )
+                        (
+                            route_refresh_removed_evidence_refs,
+                            route_refresh_reopened_step_ids,
+                        ) = _authorized_exact_operand_retry_route_refresh(
+                            progression_base,
+                            canonical_snapshot,
+                            retry_permitted=exact_operand_reproposal_permitted,
+                            prior_evidence={
+                                evidence_id: event.payload
+                                for evidence_id, event in prior_evidence_events.items()
+                            },
+                            current_run_evidence={
+                                str(event.payload["evidenceId"]): event.payload
+                                for event in current_run_evidence
+                                if isinstance(event.payload.get("evidenceId"), str)
+                            },
+                        )
                         _validate_engineering_mission_progression(
                             progression_base,
                             canonical_snapshot,
                             current_run_evidence_refs=current_run_evidence_refs,
+                            allowed_removed_evidence_refs=(
+                                allowed_removed_evidence_refs
+                                | route_refresh_removed_evidence_refs
+                            ),
+                            allowed_reopened_step_ids=route_refresh_reopened_step_ids,
                         )
-                    except ValueError as exc:
+                    except (EngineeringMissionConflict, ValueError) as exc:
                         raise AgentOutputContractError(str(exc)) from exc
                 mission_status = canonical_snapshot["status"]
                 stop_reason = canonical_snapshot["stopReason"]
@@ -5643,21 +8058,80 @@ def create_app(
                         raise AgentOutputContractError(
                             "completed engineering mission has no Host-bound evidence"
                         )
-                if mission_status == "waiting_for_approval":
-                    approval_now = datetime.now(timezone.utc)
-                    has_live_approval = any(
-                        transaction.state is ChangeTransactionState.PENDING_APPROVAL
-                        and transaction.approval_expires_at is not None
-                        and transaction.approval_expires_at > approval_now
-                        for transaction in store.list_change_transactions(
-                            conversation_id=conversation_id,
-                            limit=100,
+                    if (
+                        linked_terminal_change_state
+                        in {
+                            ChangeTransactionState.COMPLETED,
+                            ChangeTransactionState.ROLLED_BACK,
+                        }
+                        and not completed_evidence_refs.intersection(
+                            current_run_target_evidence_refs
                         )
+                    ):
+                        raise AgentOutputContractError(
+                            "an applied or rolled-back change requires fresh target "
+                            "evidence before mission completion"
+                        )
+                try:
+                    _historical_evidence_bundle_for_mission(
+                        store,
+                        conversation_id=conversation_id,
+                        mission=canonical_snapshot,
+                        mission_digest=digest,
+                        supplemental_evidence=(
+                            (run_id, current_change_outcome_evidence)
+                            if current_change_outcome_evidence is not None
+                            else None
+                        ),
                     )
-                    if not has_live_approval:
+                except (AgentProtocolError, EngineeringMissionConflict) as exc:
+                    raise AgentOutputContractError(
+                        "engineering mission evidence cannot be durably resumed"
+                    ) from exc
+                approval_now = datetime.now(timezone.utc)
+                live_pending_changes = [
+                    transaction
+                    for transaction in store.list_change_transactions(
+                        conversation_id=conversation_id,
+                        limit=100,
+                    )
+                    if transaction.state is ChangeTransactionState.PENDING_APPROVAL
+                    and transaction.approval_expires_at is not None
+                    and transaction.approval_expires_at > approval_now
+                ]
+                if len(live_pending_changes) > 1:
+                    raise AgentOutputContractError(
+                        "engineering mission has multiple live change approvals"
+                    )
+                checkpoint_change_transaction_id = mission_change_transaction_id
+                if mission_status == "waiting_for_approval":
+                    if len(live_pending_changes) != 1:
                         raise AgentOutputContractError(
                             "approval-waiting mission has no live approval authority"
                         )
+                    authorized_change = (
+                        proposed_change_authority
+                        if proposed_change_authority is not None
+                        else initial_pending_change_authority
+                    )
+                    live_change = live_pending_changes[0]
+                    if authorized_change != (
+                        live_change.id,
+                        live_change.plan_digest,
+                    ):
+                        raise AgentOutputContractError(
+                            "approval-waiting mission differs from the exact Host "
+                            "change authority for this run"
+                        )
+                    checkpoint_change_transaction_id = live_change.id
+                elif live_pending_changes:
+                    raise AgentOutputContractError(
+                        "a live change approval requires an approval-waiting mission"
+                    )
+                elif current_change_outcome is not None:
+                    checkpoint_change_transaction_id = str(
+                        current_change_outcome["transactionId"]
+                    )
                 if cycle_disposition == "continue" and (
                     mission_status != "active" or stop_reason != "continuing"
                 ):
@@ -5687,6 +8161,13 @@ def create_app(
                             digest=digest,
                             agent_checkpoint=agent_checkpoint,
                             agent_checkpoint_digest=agent_checkpoint_digest,
+                            change_transaction_id=checkpoint_change_transaction_id,
+                            supplemental_evidence=(
+                                _matching_change_outcome_supplemental_evidence(
+                                    checkpoint_change_transaction_id,
+                                    current_change_outcome_evidence,
+                                )
+                            ),
                         )
                     except EngineeringMissionConflict as exc:
                         raise AgentOutputContractError(str(exc)) from exc
@@ -5697,7 +8178,80 @@ def create_app(
                     cycle_disposition,
                     agent_checkpoint,
                     agent_checkpoint_digest,
+                    checkpoint_change_transaction_id,
                 )
+
+            async def persist_mission_checkpoint(
+                snapshot: dict[str, Any],
+                digest: str,
+                cycle: int,
+                cycle_disposition: str,
+                agent_checkpoint: dict[str, Any],
+                agent_checkpoint_digest: str,
+            ) -> None:
+                """Attach a safe Host rejection category at the callback boundary."""
+
+                try:
+                    await _persist_mission_checkpoint_impl(
+                        snapshot,
+                        digest,
+                        cycle,
+                        cycle_disposition,
+                        agent_checkpoint,
+                        agent_checkpoint_digest,
+                    )
+                except AgentOutputContractError as exc:
+                    if exc.diagnostic is not None:
+                        raise
+                    # Never persist the exception text: it can originate in a
+                    # model-authored checkpoint or a lower-level validation error.
+                    # This fixed Host-owned mapping distinguishes a checkpoint
+                    # rejection from a sidecar output-schema rejection without
+                    # putting checkpoint data or tool arguments in the receipt.
+                    validator_code = {
+                        "engineering mission step lost evidence": "evidence_removed",
+                        "completed engineering mission step was reopened": (
+                            "completed_step_reopened"
+                        ),
+                        "completed engineering mission step history changed": (
+                            "completed_step_history_changed"
+                        ),
+                        "engineering mission objective changed autonomously": (
+                            "objective_changed"
+                        ),
+                        "engineering mission completionCriteria changed autonomously": (
+                            "completion_criteria_changed"
+                        ),
+                        "engineering mission step was removed autonomously": "step_removed",
+                        "engineering mission stepId was reused with a new title": (
+                            "step_identity_changed"
+                        ),
+                        "engineering mission step reused historical evidence without a current observation": (
+                            "historical_evidence_reused"
+                        ),
+                        "approval-waiting mission has no live approval authority": (
+                            "approval_state"
+                        ),
+                        "approval-waiting mission differs from the exact Host change authority for this run": (
+                            "approval_authority_mismatch"
+                        ),
+                        "a live change approval requires an approval-waiting mission": (
+                            "approval_state"
+                        ),
+                        "engineering mission has multiple live change approvals": (
+                            "multiple_live_approvals"
+                        ),
+                    }.get(str(exc), "mission_checkpoint_contract")
+                    raise AgentOutputContractError(
+                        str(exc),
+                        diagnostic=AgentOutputContractDiagnostic(
+                            stage="mission_checkpoint",
+                            exception_kind="host_validation",
+                            reason_code="progression_rejected",
+                            validator_code=validator_code,
+                            validation_errors=(),
+                        ),
+                    ) from exc
 
             async def publish_tool_event(
                 event_type: str,
@@ -5729,12 +8283,21 @@ def create_app(
                     "transport",
                 }:
                     safe_payload["failure_kind"] = failure_kind
+                failure_reason = payload.get("failure_reason")
+                if isinstance(failure_reason, str) and failure_reason:
+                    safe_payload["failure_reason"] = failure_reason[:1_000]
                 evidence_contract = payload.get("evidence_contract")
                 if evidence_contract is not None and not isinstance(
                     evidence_contract,
                     dict,
                 ):
                     raise ValueError("agent tool evidence contract must be an object")
+                evidence_context = payload.get("evidence_context")
+                if evidence_context is not None and not isinstance(
+                    evidence_context,
+                    dict,
+                ):
+                    raise ValueError("agent tool evidence context must be an object")
                 store.append_event(
                     event_type=event_type,
                     conversation_id=conversation_id,
@@ -5750,6 +8313,7 @@ def create_app(
                             tool_call_id if isinstance(tool_call_id, str) and tool_call_id else None
                         ),
                         evidence_contract=evidence_contract,
+                        evidence_context=evidence_context,
                     )
                     if evidence is not None:
                         store.append_event(
@@ -5760,6 +8324,28 @@ def create_app(
                         )
                         return evidence
                 return None
+
+            if workflow == "engineering" and historical_evidence_bundle is not None:
+                # Historical evidence passed to the model is deliberately
+                # projected/scrubbed and may omit Host-only binding fields.
+                # The rebind guard must instead consume the exact journaled
+                # receipts selected by this durable mission.
+                assert engineering_mission_snapshot is not None
+                try:
+                    retained_hardware_evidence = (
+                        _journaled_hardware_context_evidence_for_mission(
+                            store,
+                            conversation_id=conversation_id,
+                            mission=engineering_mission_snapshot,
+                        )
+                    )
+                except EngineeringMissionConflict as exc:
+                    raise AgentRunPreconditionError(str(exc)) from exc
+                execution_broker.bind_retained_hardware_context_evidence(
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    evidence=retained_hardware_evidence,
+                )
 
             runtime = runtime_factory(settings, execution_broker)
             bind_knowledge_snapshot = getattr(runtime, "bind_knowledge_snapshot", None)
@@ -5777,16 +8363,27 @@ def create_app(
             if (
                 callable(bind_change_planner)
                 and workflow == "engineering"
+                and (
+                    current_change_outcome is None
+                    or _expired_exact_operand_reproposal_callback_permitted(
+                        engineering_mission_snapshot,
+                        current_change_outcome,
+                        rejected_reauthorized=rejected_change_reauthorized,
+                    )
+                )
                 and change_request_scope != "analysis_only"
                 and isinstance(knowledge_workspace_snapshot, dict)
                 and _engineering_session_identity_verified(engineering_session_snapshot)
                 and target_live_change_transaction is None
             ):
-                mne_change_planner_available = (
-                    offline_mutation_ready() and mcp.mne_capability_status() == "valid"
-                )
+                # Candidate compilation and the approval-only contract are safe
+                # offline planning operations.  Keep them available when the
+                # developer-certified execution bundle is absent; execute still
+                # performs the independent valid-bundle preflight below.
+                mne_change_planner_available = offline_mutation_ready()
 
                 async def propose_change(**values: Any) -> dict[str, Any]:
+                    nonlocal proposed_change_authority
                     if not engineering_conversation_matches_current_target(detail):
                         raise AgentRunPreconditionError(
                             "변경 계약을 만들기 전에 대상이 바뀌었습니다. "
@@ -5805,7 +8402,7 @@ def create_app(
                         if (
                             plan_kind not in MNE_STRUCTURAL_PLAN_KINDS
                             and values.get("verification_scope")
-                            != "offline_native_check_only"
+                            != "offline_native_reopen"
                         ):
                             raise ValueError(
                                 "legacy operand proposal verification scope is fixed"
@@ -5817,12 +8414,9 @@ def create_app(
                             raise ValueError(
                                 "XG-SIM verification is only supported for V6 MNE rung patches"
                             )
-                        if plan_kind in MNE_STRUCTURAL_PLAN_KINDS and (
-                            not offline_mutation_ready()
-                            or mcp.mne_capability_status() != "valid"
-                        ):
+                        if plan_kind in MNE_STRUCTURAL_PLAN_KINDS and not offline_mutation_ready():
                             raise AgentRunPreconditionError(
-                                "MNE structural change capability is not currently available"
+                                "MNE structural change planning is not currently available"
                             )
                         if plan_kind == "mne_full_program_replacement":
                             expected_fields = {
@@ -5912,6 +8506,10 @@ def create_app(
                                 rollback=values["rollback"],
                             )
                         elif plan_kind is None:
+                            if offline_operand_mission is not None:
+                                _require_offline_operand_mission_plan(
+                                    offline_operand_mission, values
+                                )
                             plan = ChangePlanV1(
                                 change_mode=values["change_mode"],
                                 request_scope=change_request_scope,
@@ -5961,6 +8559,15 @@ def create_app(
                         raise AgentRunPreconditionError(
                             f"변경 계약을 만들 수 없습니다: {exc}"
                         ) from exc
+                    returned_authority = (transaction.id, transaction.plan_digest)
+                    if (
+                        proposed_change_authority is not None
+                        and proposed_change_authority != returned_authority
+                    ):
+                        raise AgentRunPreconditionError(
+                            "변경 계약 callback이 같은 run에서 다른 권한을 반환했습니다."
+                        )
+                    proposed_change_authority = returned_authority
                     response = {
                         "transaction_id": transaction.id,
                         "state": transaction.state.value,
@@ -6028,13 +8635,37 @@ def create_app(
                         "mne_change_planner_available": mne_change_planner_available,
                         "verification_scope": verification_scope,
                         **(
+                            {"offline_operand_mission": offline_operand_mission}
+                            if offline_operand_mission is not None
+                            else {}
+                        ),
+                        **(
                             {"engineering_mission": engineering_mission_snapshot}
                             if engineering_mission_snapshot is not None
                             else {}
                         ),
                         **(
+                            {"historical_evidence": historical_evidence_bundle}
+                            if historical_evidence_bundle is not None
+                            else {}
+                        ),
+                        **(
+                            {
+                                "native_engineering_status": (
+                                    native_engineering_status_snapshot
+                                )
+                            }
+                            if native_engineering_status_snapshot is not None
+                            else {}
+                        ),
+                        **(
                             {"pending_change": pending_change_summary}
                             if pending_change_summary is not None
+                            else {}
+                        ),
+                        **(
+                            {"change_outcome": current_change_outcome}
+                            if current_change_outcome is not None
                             else {}
                         ),
                     }
@@ -6153,6 +8784,8 @@ def create_app(
                     conversation_id=conversation_id,
                     run_id=run_id,
                     mission=final_mission,
+                    prior_mission=engineering_mission_snapshot,
+                    current_outcome_evidence=current_change_outcome_evidence,
                 )
             )
             assistant_message_metadata = {
@@ -6227,6 +8860,13 @@ def create_app(
                             digest=output.digest,
                             agent_checkpoint=latest_mission_checkpoint[4],
                             agent_checkpoint_digest=latest_mission_checkpoint[5],
+                            change_transaction_id=latest_mission_checkpoint[6],
+                            supplemental_evidence=(
+                                _matching_change_outcome_supplemental_evidence(
+                                    latest_mission_checkpoint[6],
+                                    current_change_outcome_evidence,
+                                )
+                            ),
                             final_message_content=output.content,
                             final_message_metadata=assistant_message_metadata,
                         )
@@ -6262,12 +8902,23 @@ def create_app(
                 error_detail = str(exc)
             elif isinstance(exc, AgentOutputContractError):
                 diagnostic = exc.diagnostic
+                retained_current_run_change_contract = (
+                    proposed_change_authority is not None
+                )
                 if diagnostic is None:
-                    logger.warning(
-                        "agent run %s failed the structured output contract; "
-                        "no model-authored plan was accepted",
-                        run_id,
-                    )
+                    if retained_current_run_change_contract:
+                        logger.warning(
+                            "agent run %s failed final structured output processing; "
+                            "a Host approval-pending change contract from this run "
+                            "was retained",
+                            run_id,
+                        )
+                    else:
+                        logger.warning(
+                            "agent run %s failed the structured output contract; "
+                            "no model-authored plan was accepted",
+                            run_id,
+                        )
                 else:
                     validation_codes = ",".join(
                         (
@@ -6277,28 +8928,56 @@ def create_app(
                         + issue.error_type
                         for issue in diagnostic.validation_errors
                     )
-                    logger.warning(
-                        "agent run %s failed the structured output contract "
-                        "(stage=%s, exception_kind=%s, reason_code=%s, "
-                        "validator_code=%s, validation_errors=%s); "
-                        "no model-authored plan was accepted",
-                        run_id,
-                        diagnostic.stage,
-                        diagnostic.exception_kind,
-                        diagnostic.reason_code,
-                        diagnostic.validator_code,
-                        validation_codes or "none",
+                    if retained_current_run_change_contract:
+                        logger.warning(
+                            "agent run %s failed final structured output processing "
+                            "after a Host approval-pending change contract from this run "
+                            "was retained (stage=%s, exception_kind=%s, reason_code=%s, "
+                            "validator_code=%s, validation_errors=%s)",
+                            run_id,
+                            diagnostic.stage,
+                            diagnostic.exception_kind,
+                            diagnostic.reason_code,
+                            diagnostic.validator_code,
+                            validation_codes or "none",
+                        )
+                    else:
+                        logger.warning(
+                            "agent run %s failed the structured output contract "
+                            "(stage=%s, exception_kind=%s, reason_code=%s, "
+                            "validator_code=%s, validation_errors=%s); "
+                            "no model-authored plan was accepted",
+                            run_id,
+                            diagnostic.stage,
+                            diagnostic.exception_kind,
+                            diagnostic.reason_code,
+                            diagnostic.validator_code,
+                            validation_codes or "none",
+                        )
+                if retained_current_run_change_contract:
+                    user_message = (
+                        "Host가 이 실행에서 만든 승인 대기 변경 계약은 유지됩니다. "
+                        "다만 최종 응답의 근거·안전 출력 계약 처리에는 실패했습니다. "
+                        "이 상태는 실제 변경이 실행되었거나 성공했음을 뜻하지 않습니다."
                     )
-                user_message = (
-                    "모델 응답이 ControlStudio의 근거·안전 출력 계약을 충족하지 "
-                    "못해 계획을 저장하지 않았습니다. 실제 변경은 수행되지 "
-                    "않았습니다. 요구사항을 더 구체화하거나 다른 모델로 다시 "
-                    "시도해 주세요."
-                )
+                else:
+                    user_message = (
+                        "모델 응답이 ControlStudio의 근거·안전 출력 계약을 충족하지 "
+                        "못해 계획을 저장하지 않았습니다. 실제 변경은 수행되지 "
+                        "않았습니다. 요구사항을 더 구체화하거나 다른 모델로 다시 "
+                        "시도해 주세요."
+                    )
                 error_code = "agent_output_contract"
                 error_detail = (
-                    "Model output failed the structured evidence/safety contract; "
-                    "no model-authored plan or mutation was accepted."
+                    "Final response processing failed the structured evidence/safety "
+                    "contract after the Host created an approval-pending change contract "
+                    "for this run; the retained contract was not invalidated. No execution "
+                    "or mutation outcome is implied."
+                    if retained_current_run_change_contract
+                    else (
+                        "Model output failed the structured evidence/safety contract; "
+                        "no model-authored plan or mutation was accepted."
+                    )
                 )
                 if diagnostic is not None:
                     validation_codes = ",".join(
@@ -6316,6 +8995,46 @@ def create_app(
                         f"reasonCode={diagnostic.reason_code}; "
                         f"validatorCode={diagnostic.validator_code}; "
                         f"validationErrors={validation_codes or 'none'}."
+                    )
+            elif isinstance(exc, AgentRuntimeError):
+                diagnostic = exc.diagnostic
+                if diagnostic is None:
+                    logger.error(
+                        "agent run %s failed in the private runtime; diagnostic missing",
+                        run_id,
+                    )
+                    user_message = "에이전트 내부 실행이 완료되지 않았습니다."
+                    error_code = "agent_runtime"
+                    error_detail = "Agent runtime failed without an accepted diagnostic."
+                else:
+                    logger.error(
+                        "agent run %s failed in the private runtime "
+                        "(stage=%s, exception_kind=%s, reason_code=%s)",
+                        run_id,
+                        diagnostic.stage,
+                        diagnostic.exception_kind,
+                        diagnostic.reason_code,
+                    )
+                    if diagnostic.reason_code == "tool_call_budget":
+                        user_message = (
+                            "모델이 분석 도구 호출 예산을 소진해 결과를 저장하지 "
+                            "않았습니다. 실제 변경은 수행되지 않았습니다."
+                        )
+                    elif diagnostic.exception_kind in {
+                        "model_transport",
+                        "model_api_error",
+                    }:
+                        user_message = (
+                            "모델 연결이 완료되지 않아 에이전트 실행을 종료했습니다."
+                        )
+                    else:
+                        user_message = "에이전트 내부 실행이 완료되지 않았습니다."
+                    error_code = f"agent_runtime_{diagnostic.reason_code}"
+                    error_detail = (
+                        "Agent runtime failed with a safe diagnostic: "
+                        f"stage={diagnostic.stage}; "
+                        f"exceptionKind={diagnostic.exception_kind}; "
+                        f"reasonCode={diagnostic.reason_code}."
                     )
             else:
                 raw_detail = str(exc)
@@ -6393,6 +9112,11 @@ def create_app(
             if body.workflow == "engineering":
                 effective_change_request_scope = body.change_request_scope or "analysis_only"
                 effective_verification_scope = body.verification_scope
+            offline_operand_mission = (
+                body.offline_operand_mission.model_dump(mode="json", by_alias=True)
+                if body.offline_operand_mission is not None
+                else None
+            )
             project_brief = (
                 body.project_brief.model_dump() if body.project_brief is not None else None
             )
@@ -6532,6 +9256,11 @@ def create_app(
                         {
                             "change_request_scope": effective_change_request_scope,
                             "verification_scope": effective_verification_scope,
+                            **(
+                                {"offline_operand_mission": offline_operand_mission}
+                                if offline_operand_mission is not None
+                                else {}
+                            ),
                         }
                         if effective_change_request_scope is not None
                         else None
@@ -6549,6 +9278,11 @@ def create_app(
                         **(
                             {"verification_scope": effective_verification_scope}
                             if body.workflow == "engineering"
+                            else {}
+                        ),
+                        **(
+                            {"offline_operand_mission": offline_operand_mission}
+                            if offline_operand_mission is not None
                             else {}
                         ),
                     },
@@ -6594,6 +9328,80 @@ def create_app(
                 operation_id=body.operation_id,
                 state=run.state.value.casefold(),
             )
+
+    @app.post(
+        "/api/v1/conversations/{conversation_id}/engineering-mission/reverify-blocked-step",
+        response_model=EngineeringMissionV1,
+    )
+    async def reverify_blocked_engineering_mission_step_v1(
+        conversation_id: str,
+        body: EngineeringMissionBlockedStepReverifyRequestV1,
+        request: Request,
+        _csrf: None = Depends(require_browser_csrf),
+    ) -> EngineeringMissionV1:
+        """User-only recovery for a false-negative blocked read step.
+
+        This changes no PLC/XG5000 state and deliberately creates no Agent run.
+        A later explicit user action remains necessary to continue the mission.
+        """
+
+        idempotency_key = request.headers.get("idempotency-key")
+        if idempotency_key is not None and idempotency_key != body.operation_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Idempotency-Key must match operationId",
+            )
+        async with run_submission_lock:
+            if shutdown_event.is_set():
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="ControlStudio Host is shutting down",
+                )
+            if any(not task.done() for task in run_tasks.values()):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="blocked mission step cannot be reverified while an agent run is active",
+                )
+            detail = store.get_conversation(conversation_id)
+            if detail is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="conversation not found")
+            if detail.workflow != "engineering":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="blocked mission reverify requires an engineering conversation",
+                )
+            current_target = current_engineering_conversation_target()
+            if current_target is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="engineering target is not read-ready",
+                )
+            mission = store.get_engineering_mission(conversation_id)
+            if mission is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="conversation has no durable engineering mission",
+                )
+            if current_target[:2] != (mission.workspace_id, mission.revision_id):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="current engineering target differs from the mission target",
+                )
+            try:
+                store.rebind_engineering_conversation_session(
+                    conversation_id=conversation_id,
+                    workspace_id=mission.workspace_id,
+                    revision_id=mission.revision_id,
+                    engineering_session_id=current_target[2],
+                )
+                recovered, _created = store.reverify_blocked_engineering_mission_step(
+                    conversation_id=conversation_id,
+                    operation_id=body.operation_id,
+                    completed_report=body.completed_report,
+                )
+            except EngineeringMissionConflict as exc:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+            return _engineering_mission_v1(recovered)
 
     @app.post(
         "/api/v1/conversations/{conversation_id}/engineering-mission/resume",
@@ -6675,7 +9483,29 @@ def create_app(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="stored engineering mission digest does not match",
                 )
-            if mission_snapshot["status"] != "active":
+            mission_status = mission_snapshot["status"]
+            change_outcome_transaction_id: str | None = None
+            if mission_status == "waiting_for_approval":
+                linked_change = (
+                    store.get_change_transaction(mission.change_transaction_id)
+                    if mission.change_transaction_id is not None
+                    else None
+                )
+                if (
+                    linked_change is None
+                    or linked_change.conversation_id != conversation_id
+                    or linked_change.state
+                    not in TERMINAL_CHANGE_OUTCOME_DISPOSITIONS
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            "approval-waiting mission can resume only after its "
+                            "exact change reaches a terminal outcome"
+                        ),
+                    )
+                change_outcome_transaction_id = linked_change.id
+            elif mission_status != "active":
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="only an active engineering mission can be resumed",
@@ -6756,9 +9586,16 @@ def create_app(
 
             continuation_prompt = (
                 "Continue the current durable engineering mission from its saved "
-                "checkpoint. Execute the next justified read-only investigation "
-                "steps, retain evidence, and stop only at an explicit mission "
-                "condition."
+                "checkpoint. Inspect the Host-bound terminal change outcome, bind "
+                "it to the affected mission step, and continue verification or "
+                "close the objective without proposing the same change again."
+                if change_outcome_transaction_id is not None
+                else (
+                    "Continue the current durable engineering mission from its saved "
+                    "checkpoint. Execute the next justified read-only investigation "
+                    "steps, retain evidence, and stop only at an explicit mission "
+                    "condition."
+                )
             )
             try:
                 request_message, run, created = store.create_user_message_and_run(
@@ -6771,6 +9608,15 @@ def create_app(
                         "engineering_mission_continue": True,
                         "change_request_scope": continuation_scope,
                         "verification_scope": verification_scope,
+                        **(
+                            {
+                                "change_outcome_transaction_id": (
+                                    change_outcome_transaction_id
+                                )
+                            }
+                            if change_outcome_transaction_id is not None
+                            else {}
+                        ),
                     },
                     message_metadata={
                         "operation_id": body.operation_id,
@@ -6779,6 +9625,15 @@ def create_app(
                         "change_request_scope": continuation_scope,
                         "verification_scope": verification_scope,
                         "engineering_mission_continue": True,
+                        **(
+                            {
+                                "change_outcome_transaction_id": (
+                                    change_outcome_transaction_id
+                                )
+                            }
+                            if change_outcome_transaction_id is not None
+                            else {}
+                        ),
                     },
                 )
             except (ConversationActiveRunConflict, ConversationWorkflowConflict) as exc:
@@ -6975,13 +9830,20 @@ def create_app(
         if isinstance(plan, ChangePlanV1):
             target = plan.target
             program_id = str(target.get("programId", target.get("program_id")) or "")
+            program_name = str(
+                target.get("programName", target.get("program_name")) or ""
+            )
             token_offset = target.get("tokenOffset", target.get("token_offset"))
             visual_row = target.get("visualRow", target.get("visual_row"))
             current_value = str(plan.current.get("value", plan.current.get("operand")) or "")
             try:
                 raw_readback = await mcp.call_read_tool(
                     "program.read_ld",
-                    {"program_id": program_id, "use_cache": False},
+                    {
+                        "program_id": program_id,
+                        "program_name": program_name,
+                        "use_cache": False,
+                    },
                 )
             except MCPToolError as exc:
                 raise engineering_gateway_error(exc) from exc
@@ -7039,6 +9901,7 @@ def create_app(
             focused = await focus_exact_native_location(
                 location=location,
                 program_id=program_id,
+                program_name=program_name,
                 expected_payload_sha256=payload_sha256,
             )
             return ChangeTargetFocusV1(
@@ -7430,7 +10293,7 @@ def create_app(
                 error_detail=verification.error_detail,
             )
             assert finished is not None
-            refresh_terminal_change_identity(
+            await refresh_terminal_change_identity(
                 finished,
                 retain_engineering_session=True,
             )
@@ -7515,7 +10378,10 @@ def create_app(
                 decision=body.decision,
             )
             assert finalized is not None
-            refresh_terminal_change_identity(finalized, retain_engineering_session=True)
+            await refresh_terminal_change_identity(
+                finalized,
+                retain_engineering_session=True,
+            )
             publish_change_event("change.transaction.updated", finalized)
             store.append_event(
                 event_type="host.status",
@@ -7582,6 +10448,21 @@ def create_app(
                 for field_name in stable_workspace_fields
             ):
                 raise ChangeExecutionPreconditionError("active recovery workspace identity changed")
+            recovery_target = ChangeRecoveryTarget(pid=body.pid, hwnd=body.hwnd)
+            if body.relaunch_if_unavailable:
+                try:
+                    recovery_workspace = _local_workspace_v1(active_workspace)
+                except (TypeError, ValueError) as exc:
+                    raise ChangeExecutionPreconditionError(
+                        "active recovery workspace is invalid"
+                    ) from exc
+                recovery_target = await _relaunch_unavailable_change_recovery_target(
+                    mcp,
+                    transaction,
+                    recovery_workspace,
+                    requested_pid=body.pid,
+                    requested_hwnd=body.hwnd,
+                )
         except ChangeExecutionPreconditionError as exc:
             store.park_target_operation_lease(
                 operation_id=transaction_id,
@@ -7595,7 +10476,7 @@ def create_app(
             try:
                 outcome = await change_executor.reconcile(
                     transaction,
-                    ChangeRecoveryTarget(pid=body.pid, hwnd=body.hwnd),
+                    recovery_target,
                 )
             except (Exception, asyncio.CancelledError) as exc:
                 if isinstance(exc, asyncio.CancelledError):
@@ -7632,7 +10513,7 @@ def create_app(
             )
             assert resolved is not None
             if resolved.state is not ChangeTransactionState.QUARANTINED:
-                refresh_terminal_change_identity(
+                await refresh_terminal_change_identity(
                     resolved,
                     retain_engineering_session=False,
                 )
@@ -8169,8 +11050,7 @@ def create_app(
         if _engineering_session_read_ready(active_engineering_session):
             broker_session = dict(active_engineering_session)
             if bound_workspace_id is not None:
-                broker_session["workspace_id"] = bound_workspace_id
-                broker_session["revision_id"] = workspace["revision_id"]
+                broker_session.update(workspace_agent_binding(workspace))
             execution_broker.bind_agent_session(broker_session)
         elif bound_workspace_id is not None:
             bind_agent_workspace_target(workspace)
@@ -8237,6 +11117,7 @@ def create_app(
         *,
         location: EngineeringLocationV2,
         program_id: str,
+        program_name: str,
         expected_payload_sha256: str,
     ) -> EngineeringLocationFocusV1:
         if location.visual_row is None or location.token_offset is None:
@@ -8246,6 +11127,7 @@ def create_app(
             )
         arguments: dict[str, Any] = {
             "program_id": program_id,
+            "program_name": program_name,
             "value_token_offset": location.token_offset,
             "visual_row": location.visual_row,
             "expected_payload_sha256": expected_payload_sha256,
@@ -8525,6 +11407,7 @@ def create_app(
         return await focus_exact_native_location(
             location=body.location,
             program_id=str(binding["programId"]),
+            program_name=body.location.program,
             expected_payload_sha256=str(binding["payloadSha256"]),
         )
 
@@ -8551,11 +11434,18 @@ def create_app(
                 "XG5000 could not open the verified workspace working copy: %s",
                 exc,
             )
+            reconciled = await _reconcile_late_workspace_open(
+                mcp,
+                workspace,
+                bind_session=bind_engineering_session,
+            )
+            if reconciled is not None:
+                return reconciled
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "working copy는 준비됐지만 XG5000에서 열지 못했습니다. "
-                    "XG5000 설치와 파일 연결을 확인해 주세요."
+                    "working copy는 보존되어 있습니다. XG5000 열기를 완료하지 못했습니다. "
+                    f"진단: {type(exc).__name__}: {exc}"
                 ),
             ) from exc
         if not isinstance(raw_launch, dict):
@@ -8581,20 +11471,38 @@ def create_app(
         instance = launch.instance
         if launch.window_detected and isinstance(instance, dict):
             try:
+                requested_pid = int(instance["pid"])
+                requested_hwnd = int(instance["hwnd"])
                 attached = await mcp.call_read_tool(
                     "xg5000.attach",
                     {
-                        "pid": int(instance["pid"]),
-                        "hwnd": int(instance["hwnd"]),
+                        "pid": requested_pid,
+                        "hwnd": requested_hwnd,
                         "project_path": workspace.working_copy.path,
                         "project_hash": workspace.working_copy.current_sha256,
                         "workspace_id": workspace.workspace_id,
                     },
                 )
-            except (KeyError, TypeError, ValueError, MCPToolError):
+            except (KeyError, TypeError, ValueError, MCPToolError) as exc:
+                logger.warning("verified workspace launch attach failed: %s", exc)
                 session = None
             else:
-                session = bind_engineering_session(attached)
+                validated = _validated_engineering_session_result(
+                    attached,
+                    pid=requested_pid,
+                    hwnd=requested_hwnd,
+                    project_path=workspace.working_copy.path,
+                    project_hash=workspace.working_copy.current_sha256,
+                )
+                if validated is None:
+                    logger.warning(
+                        "verified workspace launch attach returned a mismatched or "
+                        "non-read-ready session for pid=%s hwnd=%s",
+                        requested_pid,
+                        requested_hwnd,
+                    )
+                else:
+                    session = bind_engineering_session(validated)
         return launch, session
 
     @app.post(
@@ -8720,9 +11628,13 @@ def create_app(
 
         # A resume never trusts a session from an earlier target operation. The
         # persisted workspace and current on-disk artifacts must be reverified
-        # before a new XG5000 binding can be exposed to the agent.
-        active_engineering_session = None
-        execution_broker.clear_agent_session()
+        # first; an existing session is reusable only after an exact fresh read
+        # from the same MCP process proves its identity and process lifetime.
+        cached_session = (
+            dict(active_engineering_session)
+            if isinstance(active_engineering_session, dict)
+            else None
+        )
         try:
             persisted_workspace = _local_workspace_v1(persisted)
         except Exception as exc:
@@ -8775,10 +11687,36 @@ def create_app(
         store.set_host_state("active_workspace", active_workspace)
         clear_ls_controller_target()
         bind_agent_workspace_target(workspace)
-        launch, session = await open_workspace_in_xg5000(
-            workspace,
-            timeout_seconds=body.timeout_seconds,
-        )
+        reused_session: dict[str, Any] | None = None
+        if isinstance(cached_session, dict):
+            raw_session_id = cached_session.get("session_id")
+            raw_pid = cached_session.get("pid")
+            raw_hwnd = cached_session.get("hwnd")
+            if (
+                isinstance(raw_session_id, str)
+                and isinstance(raw_pid, int)
+                and not isinstance(raw_pid, bool)
+                and isinstance(raw_hwnd, int)
+                and not isinstance(raw_hwnd, bool)
+            ):
+                reused_session = await _revalidate_exact_engineering_session(
+                    mcp,
+                    session_id=raw_session_id,
+                    pid=raw_pid,
+                    hwnd=raw_hwnd,
+                    project_path=workspace.working_copy.path,
+                    project_hash=workspace.working_copy.current_sha256,
+                )
+        if reused_session is not None:
+            session = bind_engineering_session(reused_session)
+            launch = None
+        else:
+            active_engineering_session = None
+            execution_broker.clear_agent_session()
+            launch, session = await open_workspace_in_xg5000(
+                workspace,
+                timeout_seconds=body.timeout_seconds,
+            )
         if session is None:
             raise HTTPException(
                 status_code=409,
@@ -8793,7 +11731,7 @@ def create_app(
                 "workspace_id": workspace.workspace_id,
                 "revision_id": workspace.revision_id,
                 "working_hash": workspace.working_copy.current_sha256,
-                "xg5000_window_detected": launch.window_detected,
+                "xg5000_window_detected": bool(launch and launch.window_detected),
                 "engineering_session_attached": True,
             },
         )
@@ -9663,6 +12601,15 @@ def create_app(
                 return False
             expected_working = candidate_workspace.get("working_copy")
             active_working = active_workspace.get("working_copy")
+            expected_provenance = validated_new_build_workspace_provenance(
+                candidate,
+                candidate_workspace,
+                require_capture_verification=True,
+            )
+            active_provenance = validated_new_build_workspace_provenance(
+                candidate,
+                active_workspace,
+            )
             active_metadata = active_engineering_session.get("metadata")
             active_trial_resume = (
                 active_metadata.get("native_trial_resume")
@@ -9672,15 +12619,21 @@ def create_app(
             if (
                 not isinstance(expected_working, dict)
                 or not isinstance(active_working, dict)
+                or expected_provenance is None
+                or active_provenance != expected_provenance
                 or not isinstance(active_trial_resume, dict)
             ):
                 return False
             try:
+                parsed_active_workspace = _local_workspace_v1(active_workspace)
+                parsed_provenance = parsed_active_workspace.provenance
                 return (
                     active_workspace.get("workspace_id")
                     == candidate_workspace.get("workspace_id")
                     and active_workspace.get("revision_id")
                     == candidate_workspace.get("revision_id")
+                    and expected_provenance["receipt_digest"]
+                    == active_trial_resume.get("provenance_receipt_digest")
                     and Path(str(active_working["path"])).resolve()
                     == Path(str(expected_working["path"])).resolve()
                     and str(active_working["current_sha256"]).casefold()
@@ -9694,15 +12647,43 @@ def create_app(
                     == candidate_trial.get("trialId")
                     and active_trial_resume.get("receipt_digest")
                     == candidate_trial.get("receiptDigest")
+                    and active_trial_resume.get("source_kind") == "new_build"
                     and active_trial_resume.get("workspace_id")
                     == candidate_workspace.get("workspace_id")
                     and active_trial_resume.get("revision_id")
                     == candidate_workspace.get("revision_id")
+                    and isinstance(parsed_provenance, NewBuildWorkspaceProvenanceV1)
+                    and native_trial_session_identity(
+                        active_engineering_session,
+                        parsed_active_workspace,
+                    )
+                    is not None
                 )
             except (KeyError, TypeError, ValueError, OSError):
                 return False
 
         accepted_trial_already_bound = accepted_trial_binding_is_current()
+        if body.decision == "accept" and accepted_trial_already_bound:
+            engineering_target = current_engineering_conversation_target()
+            if engineering_target is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="accepted XG-SIM target is no longer current",
+                )
+            try:
+                reopened_workspace, refreshed_session = (
+                    await revalidate_native_handoff_freshness(
+                        engineering_target,
+                        native_project_id=candidate.id,
+                        trial_id=str(candidate_trial.get("trialId") or ""),
+                        receipt_digest=str(candidate_trial.get("receiptDigest") or ""),
+                    )
+                )
+            except NativeProjectConflict as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="accepted XG-SIM target identity changed before reuse",
+                ) from exc
         needs_acceptance_preflight = (
             body.decision == "accept"
             and isinstance(candidate_trial, dict)
@@ -9750,6 +12731,16 @@ def create_app(
                     detail="protected workspace could not be revalidated before acceptance",
                 ) from exc
             try:
+                stored_build_provenance = validated_new_build_workspace_provenance(
+                    candidate,
+                    workspace,
+                    require_capture_verification=True,
+                )
+                reopened_build_provenance = validated_new_build_workspace_provenance(
+                    candidate,
+                    raw_workspace,
+                    require_capture_verification=True,
+                )
                 stored_workspace = _local_workspace_v1(workspace)
                 reopened_workspace = _local_workspace_v1(raw_workspace)
             except (TypeError, ValueError) as exc:
@@ -9765,8 +12756,18 @@ def create_app(
                 if isinstance(simulation_receipt, dict)
                 else None
             )
+            reopened_provenance = reopened_workspace.provenance
+            stored_provenance = stored_workspace.provenance
             workspace_matches = (
-                reopened_workspace.workspace_id == stored_workspace.workspace_id
+                stored_build_provenance is not None
+                and reopened_build_provenance == stored_build_provenance
+                and reopened_workspace.source_kind == "new_build"
+                and stored_workspace.source_kind == "new_build"
+                and isinstance(reopened_provenance, NewBuildWorkspaceProvenanceV1)
+                and isinstance(stored_provenance, NewBuildWorkspaceProvenanceV1)
+                and reopened_provenance == stored_provenance
+                and reopened_provenance.saved_project_sha256 == reopened_workspace.source.sha256
+                and reopened_workspace.workspace_id == stored_workspace.workspace_id
                 and reopened_workspace.revision_id == stored_workspace.revision_id
                 and reopened_workspace.source.sha256 == stored_workspace.source.sha256
                 and reopened_workspace.source.original_state == "unchanged"
@@ -9836,12 +12837,13 @@ def create_app(
                 issued_at = datetime.now(timezone.utc)
                 return mcp.sign_mutation_authorization(
                     {
-                        "schema": "controlstudio-native-session-resume-authorization/v1",
+                        "schema": "controlstudio-native-session-resume-authorization/v2",
                         "authorization_id": str(uuid.uuid4()),
                         "actor_id": _request_actor_id(request),
                         "native_project_id": candidate.id,
                         "trial_id": str(candidate_trial.get("trialId") or ""),
                         "receipt_digest": stored_receipt_digest,
+                        "workspace_provenance_receipt_digest": (reopened_provenance.receipt_digest),
                         "workspace_id": reopened_workspace.workspace_id,
                         "revision_id": reopened_workspace.revision_id,
                         "pid": pid,
@@ -9966,10 +12968,7 @@ def create_app(
                 except MCPToolError as exc:
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,
-                        detail=(
-                            "the verified workspace could not be reopened in XG5000 "
-                            "before acceptance"
-                        ),
+                        detail=_workspace_cli_failure_detail(exc),
                     ) from exc
                 fresh_instance = (
                     raw_launch.get("instance") if isinstance(raw_launch, dict) else None
@@ -10071,58 +13070,42 @@ def create_app(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="XG5000 session identity is unavailable before acceptance",
                 )
+            refreshed_identity = native_trial_session_identity(
+                refreshed,
+                reopened_workspace,
+            )
+            expected_resume = {
+                "native_project_id": candidate.id,
+                "trial_id": candidate_trial.get("trialId"),
+                "receipt_digest": stored_receipt_digest,
+                "source_kind": "new_build",
+                "provenance_receipt_digest": reopened_provenance.receipt_digest,
+                "workspace_id": reopened_workspace.workspace_id,
+                "revision_id": reopened_workspace.revision_id,
+                "pid": expected_pid,
+                "main_hwnd": expected_hwnd,
+                "project_path": str(Path(reopened_workspace.working_copy.path).resolve()),
+                "project_hash": reopened_workspace.working_copy.current_sha256.casefold(),
+                "process_create_time": expected_process_create_time,
+                "authorization_id": resume_authorization["authorization_id"],
+            }
+            identity_matches = bool(
+                refreshed_identity is not None
+                and refreshed_identity["title"] == expected_title
+                and refreshed_identity["native_trial_resume"] == expected_resume
+            )
             try:
-                refreshed_metadata = refreshed.get("metadata")
-                refreshed_workspace_identity = (
-                    refreshed_metadata.get("workspace_identity")
-                    if isinstance(refreshed_metadata, dict)
-                    else None
-                )
-                refreshed_trial_resume = (
-                    refreshed_metadata.get("native_trial_resume")
-                    if isinstance(refreshed_metadata, dict)
-                    else None
-                )
-                identity_matches = (
-                    int(refreshed["pid"]) == expected_pid
-                    and int(refreshed["hwnd"]) == expected_hwnd
-                    and Path(str(refreshed["project_path"])).resolve()
-                    == Path(reopened_workspace.working_copy.path).resolve()
-                    and str(refreshed["project_hash"]).casefold()
+                stored_hash_matches = (
+                    str(stored_session["project_hash"]).casefold()
                     == reopened_workspace.working_copy.current_sha256.casefold()
-                    and str(stored_session["project_hash"]).casefold()
-                    == reopened_workspace.working_copy.current_sha256.casefold()
-                    and isinstance(refreshed_workspace_identity, dict)
-                    and refreshed_workspace_identity.get("workspace_id")
-                    == reopened_workspace.workspace_id
-                    and Path(str(refreshed_workspace_identity.get("project_path"))).resolve()
-                    == Path(reopened_workspace.working_copy.path).resolve()
-                    and str(refreshed_workspace_identity.get("project_hash") or "").casefold()
-                    == reopened_workspace.working_copy.current_sha256.casefold()
-                    and refreshed_metadata.get("project_identity_source")
-                    == "host_authorized_native_trial_resume"
-                    and refreshed_metadata.get(
-                        "project_identity_read_only_bound_to_selected_pid"
-                    )
-                    is True
-                    and refreshed_metadata.get("project_identity_assurance")
-                    == "controlled_launch_read_only"
-                    and refreshed_metadata.get("title") == expected_title
-                    and isinstance(refreshed_trial_resume, dict)
-                    and refreshed_trial_resume
-                    == {
-                        "native_project_id": candidate.id,
-                        "trial_id": candidate_trial.get("trialId"),
-                        "receipt_digest": stored_receipt_digest,
-                        "workspace_id": reopened_workspace.workspace_id,
-                        "revision_id": reopened_workspace.revision_id,
-                        "process_create_time": expected_process_create_time,
-                        "authorization_id": resume_authorization["authorization_id"],
-                    }
                 )
-            except (KeyError, TypeError, ValueError, OSError):
-                identity_matches = False
-            if not identity_matches or not _engineering_session_read_ready(refreshed):
+            except (KeyError, TypeError, ValueError):
+                stored_hash_matches = False
+            if (
+                not identity_matches
+                or not stored_hash_matches
+                or not _engineering_session_read_ready(refreshed)
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=("independently reopened XG5000 target changed before trial acceptance"),
@@ -10144,9 +13127,9 @@ def create_app(
 
         if body.decision == "accept" and refreshed_session is not None:
             assert reopened_workspace is not None
-            bind_engineering_session(refreshed_session)
             active_workspace = reopened_workspace.model_dump(mode="json")
             store.set_host_state("active_workspace", active_workspace)
+            bind_engineering_session(refreshed_session)
         elif body.decision == "revert":
             project_path = str(operation.result.get("projectPath") or "")
             active_path = (
@@ -10224,6 +13207,11 @@ def create_app(
                     hwnd=body.hwnd,
                     expected_project_path=Path(body.expected_project_path),
                     expected_project_sha256=body.expected_project_sha256,
+                    observed_project_path=(
+                        Path(body.observed_project_path)
+                        if body.observed_project_path is not None
+                        else None
+                    ),
                 ),
             )
         except NativeProjectConflict as exc:
@@ -10288,11 +13276,19 @@ def create_app(
         }
         if body.project_path:
             arguments["project_path"] = body.project_path
-        elif working_copy and isinstance(working_copy.get("path"), str):
+        elif (
+            not body.allow_unbound_existing_target
+            and working_copy
+            and isinstance(working_copy.get("path"), str)
+        ):
             arguments["project_path"] = working_copy["path"]
         if body.project_hash:
             arguments["project_hash"] = body.project_hash
-        elif working_copy and isinstance(working_copy.get("current_sha256"), str):
+        elif (
+            not body.allow_unbound_existing_target
+            and working_copy
+            and isinstance(working_copy.get("current_sha256"), str)
+        ):
             arguments["project_hash"] = working_copy["current_sha256"]
         try:
             result = await mcp.call_read_tool("xg5000.attach", arguments)
@@ -10304,8 +13300,23 @@ def create_app(
                     "프로젝트 정체성을 다시 확인해 주세요."
                 ),
             ) from exc
+        validated = _validated_engineering_session_result(
+            result,
+            pid=body.pid,
+            hwnd=body.hwnd,
+            project_path=(str(arguments["project_path"]) if "project_path" in arguments else None),
+            project_hash=(str(arguments["project_hash"]) if "project_hash" in arguments else None),
+        )
+        if validated is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "XG5000 창은 찾았지만 요청한 PID/HWND, 프로젝트, 프로세스 "
+                    "수명에 묶인 읽기 세션을 확인하지 못했습니다."
+                ),
+            )
         clear_ls_controller_target()
-        session = bind_engineering_session(result)
+        session = bind_engineering_session(validated)
         store.append_event(
             event_type="host.status",
             payload=current_status_v1().model_dump(
@@ -10314,6 +13325,118 @@ def create_app(
             ),
         )
         return AttachXG5000ResponseV1(session=session)
+
+    @app.post(
+        "/api/v1/xg5000/reviewed-no-save-close",
+        response_model=ReviewedNoSaveCloseResponseV1,
+    )
+    async def reviewed_no_save_close_v1(
+        body: ReviewedNoSaveCloseRequestV1,
+        request: Request,
+        _csrf: None = Depends(require_browser_csrf),
+        _target_lease: None = Depends(target_switch_lease),
+    ) -> ReviewedNoSaveCloseResponseV1:
+        """Explicitly close one displayed target; opening another remains separate."""
+
+        nonlocal active_engineering_session
+        session = active_engineering_session
+        if not _engineering_session_read_ready(session):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="no read-ready XG5000 session is available for reviewed close",
+            )
+        assert isinstance(session, dict)
+        try:
+            same_path = Path(str(session["project_path"])).resolve() == Path(body.project_path).resolve()
+            same_identity = (
+                body.session_id == str(session["session_id"])
+                and body.pid == int(session["pid"])
+                and body.hwnd == int(session["hwnd"])
+                and body.project_hash == str(session["project_hash"]).casefold()
+                and same_path
+            )
+        except (KeyError, TypeError, ValueError, OSError):
+            same_identity = False
+        if not same_identity:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="reviewed close identity no longer matches the active XG5000 session",
+            )
+        metadata = session.get("metadata") if isinstance(session.get("metadata"), dict) else {}
+        proofs = [
+            metadata.get("project_identity_proof"),
+            metadata.get("controlled_open_read_proof"),
+        ]
+        proof_times = [
+            float(proof["process_create_time"])
+            for proof in proofs
+            if isinstance(proof, dict)
+            and isinstance(proof.get("process_create_time"), (int, float))
+            and not isinstance(proof.get("process_create_time"), bool)
+        ]
+        if not proof_times or not any(abs(value - body.process_create_time) < 0.001 for value in proof_times):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="reviewed close requires the active session process-lifetime proof",
+            )
+        arguments = {
+            "session_id": body.session_id,
+            "pid": body.pid,
+            "hwnd": body.hwnd,
+            "process_create_time": body.process_create_time,
+            "project_path": str(Path(body.project_path).resolve()),
+            "project_hash": body.project_hash,
+            "confirm_no_save": True,
+            "timeout_seconds": body.timeout_seconds,
+        }
+        try:
+            raw = await mcp.call_workspace_tool("xg5000.reviewed_no_save_close", arguments)
+            receipt_digest = _canonical_json_digest(raw)
+            completed = _reviewed_no_save_close_response(
+                raw,
+                receipt_digest=receipt_digest,
+            )
+        except MCPToolError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_reviewed_no_save_close_failure_detail(exc),
+            ) from exc
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="MCP returned an invalid reviewed no-save close receipt",
+            ) from exc
+        binding = completed.reviewed_binding
+        if (
+            binding.get("session_id") != body.session_id
+            or binding.get("pid") != body.pid
+            or binding.get("hwnd") != body.hwnd
+            or binding.get("project_path") != arguments["project_path"]
+            or binding.get("project_hash") != body.project_hash
+            or not isinstance(binding.get("process_create_time"), (int, float))
+            or abs(float(binding["process_create_time"]) - body.process_create_time) >= 0.001
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="MCP reviewed close receipt binding does not match the confirmed target",
+            )
+        store.append_event(
+            event_type="xg5000.reviewed_no_save_closed",
+            payload={
+                "actorId": _request_actor_id(request),
+                "binding": dict(binding),
+                "receiptDigest": receipt_digest,
+                "automaticWorkspaceOpen": False,
+                "processTerminated": False,
+            },
+        )
+        active_engineering_session = None
+        execution_broker.clear_agent_session()
+        store.append_event(
+            event_type="host.status",
+            payload=current_status_v1().model_dump(mode="json", by_alias=True),
+        )
+        return completed
 
     @app.get("/service-worker.js", include_in_schema=False)
     @app.get("/sw.js", include_in_schema=False)

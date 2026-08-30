@@ -18,14 +18,14 @@ from .models import (
     ChangeTransactionState,
 )
 
-VERIFICATION_SCOPE = "offline_native_check_only"
+VERIFICATION_SCOPE = "offline_native_reopen"
 OFFLINE_NATIVE_VALIDATION_STEPS = (
     "structural_diff",
     "xg5000_program_check",
     "project_save",
+    "project_reopen",
 )
 NOT_EXECUTED_VALIDATION_TIERS = (
-    "project_reopen",
     "xg_sim",
     "runtime_or_online_validation",
 )
@@ -176,6 +176,7 @@ class MCPChangeExecutionService:
         await self.preflight(transaction)
         target = transaction.target
         session_scope = self._session_scope(transaction)
+        mcp_transaction_id: str | None = None
         try:
             snapshot = self._require_object(
                 await self._gateway.call_change_tool(
@@ -326,6 +327,23 @@ class MCPChangeExecutionService:
             ValueError,
             TypeError,
         ) as exc:
+            if mcp_transaction_id is not None:
+                try:
+                    await self._abort_failed_preapply_transaction(
+                        transaction=transaction,
+                        session_scope=session_scope,
+                        mcp_transaction_id=mcp_transaction_id,
+                    )
+                except (MCPToolError, ValueError, TypeError) as abort_error:
+                    raise ChangeExecutionOutcomeUncertain(
+                        "Pre-apply execution failed and the no-mutation native "
+                        "transaction could not be proven aborted",
+                        evidence={
+                            "mcp_transaction_id": mcp_transaction_id,
+                            "preapply_error": str(exc),
+                            "abort_error": str(abort_error),
+                        },
+                    ) from exc
             raise ChangeExecutionFailedSafely(str(exc)) from exc
 
         apply_arguments = {
@@ -352,7 +370,12 @@ class MCPChangeExecutionService:
                 ),
                 "program.apply_ld_patch",
             )
-        except (MCPToolError, ValueError, TypeError) as exc:
+        except (
+            MCPToolError,
+            ChangeExecutionPreconditionError,
+            ValueError,
+            TypeError,
+        ) as exc:
             raise ChangeExecutionOutcomeUncertain(
                 "MCP apply result is uncertain and requires transaction reconciliation",
                 evidence={
@@ -372,6 +395,7 @@ class MCPChangeExecutionService:
                 "mcp_transaction_id": mcp_transaction_id,
                 "mcp_plan_id": mcp_plan_id,
                 "mcp_plan_digest": mcp_plan_digest,
+                "mcp_plan": plan_contract,
                 "project_identity_digest": project_identity_digest,
                 "snapshot": snapshot,
                 "backup": backup,
@@ -395,8 +419,23 @@ class MCPChangeExecutionService:
             "mcp_plan_id",
             "apply evidence",
         )
+        mcp_plan_digest = self._required_sha256(
+            evidence,
+            "mcp_plan_digest",
+            "apply evidence",
+        )
+        mcp_plan = self._require_object(evidence.get("mcp_plan"), "apply MCP plan")
+        expected_ld_payload_sha256 = self._required_sha256(
+            mcp_plan,
+            "payload_sha256_planned",
+            "apply MCP plan",
+        )
         session_scope = self._session_scope(transaction)
         verification = self._verification_contract_evidence(transaction)
+        # The direct-LD reopen command closes the source editor before it can
+        # attach the independently opened target.  Once invoked, the original
+        # HWND is not a valid rollback target; any failure is uncertain.
+        fresh_reopen_attempted = False
         try:
             diff_result = self._require_object(
                 await self._gateway.call_change_tool(
@@ -455,10 +494,68 @@ class MCPChangeExecutionService:
             session_scope, saved_status = await self._authoritative_scope_after_save(
                 transaction=transaction,
                 mcp_transaction_id=mcp_transaction_id,
+                mcp_plan_id=mcp_plan_id,
+                mcp_plan_digest=mcp_plan_digest,
                 fallback=session_scope,
-                save_result=save_result,
             )
             verification["saved_transaction_status"] = saved_status
+            fresh_reopen_result_digest = self._ld_fresh_reopen_result_digest(
+                transaction=transaction,
+                mcp_transaction_id=mcp_transaction_id,
+                mcp_plan_id=mcp_plan_id,
+                mcp_plan_digest=mcp_plan_digest,
+                saved_project_hash=session_scope["project_hash"],
+                apply_evidence=evidence.get("apply"),
+            )
+            fresh_reopen_attempted = True
+            fresh_reopen = self._require_object(
+                await self._gateway.call_change_tool(
+                    "project.verify_ld_operand_reopen",
+                    {
+                        **session_scope,
+                        "transaction_id": mcp_transaction_id,
+                        "plan_id": mcp_plan_id,
+                        "approval_id": transaction.id,
+                        "approval_plan_digest": transaction.plan_digest,
+                        "result_digest": fresh_reopen_result_digest,
+                        "timeout_seconds": 120.0,
+                    },
+                ),
+                "project.verify_ld_operand_reopen",
+            )
+            fresh_scope = self._validate_ld_fresh_reopen_result(
+                transaction=transaction,
+                result=fresh_reopen,
+                mcp_transaction_id=mcp_transaction_id,
+                mcp_plan_id=mcp_plan_id,
+                mcp_plan_digest=mcp_plan_digest,
+                saved_project_hash=session_scope["project_hash"],
+                result_digest=fresh_reopen_result_digest,
+                expected_ld_payload_sha256=expected_ld_payload_sha256,
+            )
+            verification["fresh_reopen"] = fresh_reopen
+            attached = self._require_object(
+                await self._gateway.call_read_tool(
+                    "xg5000.attach",
+                    {
+                        "pid": fresh_scope["pid"],
+                        "hwnd": fresh_scope["hwnd"],
+                        "access_profile": "analysis",
+                        "project_path": fresh_scope["project_path"],
+                        "project_hash": fresh_scope["project_hash"],
+                        "workspace_id": transaction.target.workspace_id,
+                        "reopen_from_session_id": session_scope["session_id"],
+                    },
+                ),
+                "xg5000.attach fresh LD reopen",
+            )
+            session_scope = self._validate_ld_fresh_reopen_attach(
+                transaction=transaction,
+                attached=attached,
+                fresh_scope=fresh_scope,
+            )
+            self._gateway.bind_agent_session(session_scope)
+            verification["fresh_reopen_attach"] = dict(attached)
             commit_result = self._require_object(
                 await self._gateway.call_change_tool(
                     "change.commit",
@@ -474,6 +571,7 @@ class MCPChangeExecutionService:
                 result=commit_result,
                 mcp_transaction_id=mcp_transaction_id,
                 expected_project_hash=session_scope["project_hash"],
+                expected_session_scope=session_scope,
             )
             verification["commit"] = commit_result
         except (
@@ -482,13 +580,28 @@ class MCPChangeExecutionService:
             ValueError,
             TypeError,
         ) as verification_error:
+            if fresh_reopen_attempted:
+                return ChangeVerificationResult(
+                    state=ChangeTransactionState.QUARANTINED,
+                    evidence={
+                        **verification,
+                        "verification_error": str(verification_error),
+                        "fresh_reopen_attempted": True,
+                    },
+                    error_code="fresh_reopen_outcome_uncertain",
+                    error_detail=(
+                        "The source editor may be closed after save, but the "
+                        "fresh LD reopen receipt could not be proven."
+                    ),
+                )
             try:
                 recovery_scope, recovery_status = (
-                    await self._authoritative_scope_after_save(
+                    await self._authoritative_scope_for_rollback(
                         transaction=transaction,
                         mcp_transaction_id=mcp_transaction_id,
+                        mcp_plan_id=mcp_plan_id,
+                        mcp_plan_digest=mcp_plan_digest,
                         fallback=session_scope,
-                        save_result=None,
                     )
                 )
                 verification["recovery_transaction_status"] = recovery_status
@@ -560,7 +673,7 @@ class MCPChangeExecutionService:
             evidence={
                 **verification,
                 "completion_claim": (
-                    "offline_project_saved_with_limited_native_verification"
+                    "offline_project_saved_and_independently_reopened"
                 ),
             },
         )
@@ -664,35 +777,64 @@ class MCPChangeExecutionService:
                 error_code="recovery_project_unavailable",
                 error_detail="The recovery working-copy file cannot be verified.",
             )
-        expected_native_plan_digest = checkpoint.get("plan_digest")
-        attach_arguments: dict[str, Any] = {
-            "pid": recovery_target.pid,
-            "hwnd": recovery_target.hwnd,
-            "project_path": target.project_path,
-            "project_hash": current_project_hash,
-            "workspace_id": target.workspace_id,
-            "recover_transaction_id": mcp_transaction_id,
-            "access_profile": "analysis",
-        }
-        if isinstance(expected_native_plan_digest, str) and expected_native_plan_digest:
-            attach_arguments["recover_expected_plan_digest"] = (
-                expected_native_plan_digest
-            )
         try:
-            attached = self._require_object(
-                await self._gateway.call_recovery_tool(
-                    "xg5000.attach",
-                    attach_arguments,
-                ),
-                "xg5000.attach recovery",
-            )
-            recovery_session_id = self._validate_recovery_attach(
-                transaction=transaction,
-                recovery_target=recovery_target,
-                expected_project_hash=current_project_hash,
-                expected_transaction_id=mcp_transaction_id,
-                attached=attached,
-            )
+            if checkpoint.get("lease_status") == "live":
+                # A live native lease belongs to the already-bound MCP session.
+                # Reattaching it is both unnecessary and rejected by the MCP because
+                # it could create a second recovery authority for the same editor.
+                recovery_session_id = self._required_text(
+                    checkpoint,
+                    "active_session_id",
+                    "live native recovery checkpoint",
+                )
+                if (
+                    checkpoint.get("pid") != recovery_target.pid
+                    or checkpoint.get("hwnd") != recovery_target.hwnd
+                    or checkpoint.get("current_project_hash") != current_project_hash
+                ):
+                    raise ChangeExecutionPreconditionError(
+                        "live native recovery target differs from its durable checkpoint"
+                    )
+                attached = {
+                    "mode": "existing_bound_session",
+                    "session_id": recovery_session_id,
+                    "pid": recovery_target.pid,
+                    "hwnd": recovery_target.hwnd,
+                    "project_path": target.project_path,
+                    "project_hash": current_project_hash,
+                }
+            else:
+                expected_native_plan_digest = checkpoint.get("plan_digest")
+                attach_arguments: dict[str, Any] = {
+                    "pid": recovery_target.pid,
+                    "hwnd": recovery_target.hwnd,
+                    "project_path": target.project_path,
+                    "project_hash": current_project_hash,
+                    "workspace_id": target.workspace_id,
+                    "recover_transaction_id": mcp_transaction_id,
+                    "access_profile": "analysis",
+                }
+                if (
+                    isinstance(expected_native_plan_digest, str)
+                    and expected_native_plan_digest
+                ):
+                    attach_arguments["recover_expected_plan_digest"] = (
+                        expected_native_plan_digest
+                    )
+                attached = self._require_object(
+                    await self._gateway.call_recovery_tool(
+                        "xg5000.attach",
+                        attach_arguments,
+                    ),
+                    "xg5000.attach recovery",
+                )
+                recovery_session_id = self._validate_recovery_attach(
+                    transaction=transaction,
+                    recovery_target=recovery_target,
+                    expected_project_hash=current_project_hash,
+                    expected_transaction_id=mcp_transaction_id,
+                    attached=attached,
+                )
             status_result = self._require_object(
                 await self._gateway.call_change_tool(
                     "change.transaction_status",
@@ -717,7 +859,12 @@ class MCPChangeExecutionService:
                 expected_hwnd=recovery_target.hwnd,
                 expected_project_hash=current_project_hash,
             )
-        except (MCPToolError, ValueError, TypeError) as exc:
+        except (
+            MCPToolError,
+            ChangeExecutionPreconditionError,
+            ValueError,
+            TypeError,
+        ) as exc:
             return ChangeVerificationResult(
                 state=ChangeTransactionState.QUARANTINED,
                 evidence={"recovery_attach_or_status_error": str(exc)},
@@ -818,6 +965,185 @@ class MCPChangeExecutionService:
             "plan_id",
             "change.transaction_status",
         )
+        mcp_plan_digest = self._required_sha256(
+            checkpoint,
+            "plan_digest",
+            "change.transaction_status",
+        )
+        # A legacy LD plan may have reviewed P0021 while XG5000 correctly
+        # persisted its measured native form P00021.  Let MCP promote only an
+        # exact, single-token, canonical native-contract match out of
+        # quarantine; every other uncertain outcome continues to rollback.
+        native_contract_promoted = False
+        reconciliation_fresh_reopen_attempted = False
+        try:
+            reconciled_diff = self._require_object(
+                await self._gateway.call_change_tool(
+                    "project.diff",
+                    {
+                        **recovery_scope,
+                        "transaction_id": mcp_transaction_id,
+                        "plan_id": mcp_plan_id,
+                    },
+                ),
+                "project.diff native-contract reconciliation",
+            )
+            self._validate_diff_result(
+                transaction=transaction,
+                result=reconciled_diff,
+                mcp_transaction_id=mcp_transaction_id,
+                mcp_plan_id=mcp_plan_id,
+            )
+            if reconciled_diff.get("native_contract_reconciliation") is not True:
+                raise ValueError(
+                    "project.diff did not identify a quarantined native-contract match"
+                )
+            native_contract_promoted = True
+            evidence["native_contract_reconciliation"] = reconciled_diff
+            validation_result = self._require_object(
+                await self._gateway.call_change_tool(
+                    "project.validate_change",
+                    {
+                        **recovery_scope,
+                        "transaction_id": mcp_transaction_id,
+                        "plan_id": mcp_plan_id,
+                        "rollback_after_validation": False,
+                    },
+                ),
+                "project.validate_change after native-contract reconciliation",
+            )
+            self._validate_validation_result(
+                transaction=transaction,
+                result=validation_result,
+                mcp_transaction_id=mcp_transaction_id,
+                mcp_plan_id=mcp_plan_id,
+            )
+            evidence["validation"] = validation_result
+            save_result = self._require_object(
+                await self._gateway.call_change_tool(
+                    "project.commit_save",
+                    {
+                        **recovery_scope,
+                        "transaction_id": mcp_transaction_id,
+                    },
+                ),
+                "project.commit_save after native-contract reconciliation",
+            )
+            self._validate_save_result(
+                transaction=transaction,
+                result=save_result,
+                mcp_transaction_id=mcp_transaction_id,
+                expected_state="SAVED",
+            )
+            evidence["save"] = save_result
+            saved_scope, saved_status = await self._authoritative_scope_after_save(
+                transaction=transaction,
+                mcp_transaction_id=mcp_transaction_id,
+                mcp_plan_id=mcp_plan_id,
+                mcp_plan_digest=mcp_plan_digest,
+                fallback=recovery_scope,
+            )
+            evidence["saved_transaction_status"] = saved_status
+            result_digest = self._ld_fresh_reopen_result_digest(
+                transaction=transaction,
+                mcp_transaction_id=mcp_transaction_id,
+                mcp_plan_id=mcp_plan_id,
+                mcp_plan_digest=mcp_plan_digest,
+                saved_project_hash=saved_scope["project_hash"],
+                apply_evidence={"native_contract_reconciliation": reconciled_diff},
+            )
+            reconciliation_fresh_reopen_attempted = True
+            fresh_reopen = self._require_object(
+                await self._gateway.call_change_tool(
+                    "project.verify_ld_operand_reopen",
+                    {
+                        **saved_scope,
+                        "transaction_id": mcp_transaction_id,
+                        "plan_id": mcp_plan_id,
+                        "approval_id": transaction.id,
+                        "approval_plan_digest": transaction.plan_digest,
+                        "result_digest": result_digest,
+                        "timeout_seconds": 120.0,
+                    },
+                ),
+                "project.verify_ld_operand_reopen after reconciliation",
+            )
+            expected_payload_sha256 = self._required_sha256(
+                self._require_object(reconciled_diff.get("diff"), "reconciled diff"),
+                "payload_sha256_after",
+                "reconciled diff",
+            )
+            fresh_scope = self._validate_ld_fresh_reopen_result(
+                transaction=transaction,
+                result=fresh_reopen,
+                mcp_transaction_id=mcp_transaction_id,
+                mcp_plan_id=mcp_plan_id,
+                mcp_plan_digest=mcp_plan_digest,
+                saved_project_hash=saved_scope["project_hash"],
+                result_digest=result_digest,
+                expected_ld_payload_sha256=expected_payload_sha256,
+            )
+            evidence["fresh_reopen"] = fresh_reopen
+            fresh_attach = self._require_object(
+                await self._gateway.call_read_tool(
+                    "xg5000.attach",
+                    {
+                        "pid": fresh_scope["pid"],
+                        "hwnd": fresh_scope["hwnd"],
+                        "access_profile": "analysis",
+                        "project_path": fresh_scope["project_path"],
+                        "project_hash": fresh_scope["project_hash"],
+                        "workspace_id": transaction.target.workspace_id,
+                        "reopen_from_session_id": saved_scope["session_id"],
+                    },
+                ),
+                "xg5000.attach fresh reconciled LD reopen",
+            )
+            fresh_session_scope = self._validate_ld_fresh_reopen_attach(
+                transaction=transaction,
+                attached=fresh_attach,
+                fresh_scope=fresh_scope,
+            )
+            self._gateway.bind_agent_session(fresh_session_scope)
+            evidence["fresh_reopen_attach"] = fresh_attach
+            commit_result = self._require_object(
+                await self._gateway.call_change_tool(
+                    "change.commit",
+                    {
+                        **fresh_session_scope,
+                        "transaction_id": mcp_transaction_id,
+                    },
+                ),
+                "change.commit after native-contract reconciliation",
+            )
+            self._validate_commit_result(
+                transaction=transaction,
+                result=commit_result,
+                mcp_transaction_id=mcp_transaction_id,
+                expected_project_hash=fresh_session_scope["project_hash"],
+                expected_session_scope=fresh_session_scope,
+            )
+            evidence["commit"] = commit_result
+            return ChangeVerificationResult(
+                state=ChangeTransactionState.COMPLETED,
+                evidence=evidence,
+            )
+        except (MCPToolError, ValueError, TypeError) as reconcile_error:
+            evidence["native_contract_reconciliation_error"] = str(reconcile_error)
+            if native_contract_promoted:
+                return ChangeVerificationResult(
+                    state=ChangeTransactionState.QUARANTINED,
+                    evidence=evidence,
+                    error_code=(
+                        "fresh_reopen_outcome_uncertain"
+                        if reconciliation_fresh_reopen_attempted
+                        else "native_contract_continuation_unproven"
+                    ),
+                    error_detail=(
+                        "The native-contract match was proven, but its remaining "
+                        "validation lifecycle did not complete."
+                    ),
+                )
         try:
             evidence["rollback"] = self._require_object(
                 await self._gateway.call_change_tool(
@@ -886,6 +1212,145 @@ class MCPChangeExecutionService:
             error_code="explicit_recovery_rolled_back",
             error_detail="The quarantined native transaction was explicitly rolled back.",
         )
+
+    @staticmethod
+    def _ld_fresh_reopen_result_digest(
+        *,
+        transaction: ChangeTransaction,
+        mcp_transaction_id: str,
+        mcp_plan_id: str,
+        mcp_plan_digest: str,
+        saved_project_hash: str,
+        apply_evidence: object,
+    ) -> str:
+        """Bind the fresh-process receipt to the approved saved LD result."""
+        payload = {
+            "schema": "controlstudio-ld-fresh-reopen-result/v1",
+            "host_transaction_id": transaction.id,
+            "host_plan_digest": transaction.plan_digest,
+            "mcp_transaction_id": mcp_transaction_id,
+            "mcp_plan_id": mcp_plan_id,
+            "mcp_plan_digest": mcp_plan_digest,
+            "saved_project_hash": saved_project_hash,
+            "apply_evidence": apply_evidence,
+        }
+        return hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+
+    @classmethod
+    def _validate_ld_fresh_reopen_result(
+        cls,
+        *,
+        transaction: ChangeTransaction,
+        result: dict[str, Any],
+        mcp_transaction_id: str,
+        mcp_plan_id: str,
+        mcp_plan_digest: str,
+        saved_project_hash: str,
+        result_digest: str,
+        expected_ld_payload_sha256: str,
+    ) -> dict[str, Any]:
+        fresh = result.get("fresh_reopen")
+        readback = result.get("program_readback")
+        approval = result.get("approval_binding")
+        program_id = transaction.plan.get("target", {}).get(
+            "program_id", transaction.plan.get("target", {}).get("programId")
+        )
+        program_name = transaction.plan.get("target", {}).get(
+            "program_name", transaction.plan.get("target", {}).get("programName")
+        )
+        apply = result.get("program_check")
+        if (
+            result.get("ok") is not True
+            or result.get("verified") is not True
+            or result.get("operation") != "project.verify_ld_operand_reopen"
+            or result.get("transaction_id") != mcp_transaction_id
+            or result.get("project_unchanged") is not True
+            or not isinstance(fresh, dict)
+            or fresh.get("source_pid") != transaction.target.engineering_process_id
+            or fresh.get("source_hwnd") != transaction.target.engineering_window_handle
+            or fresh.get("source_closed") is not True
+            or not isinstance(fresh.get("pid"), int)
+            or not isinstance(fresh.get("hwnd"), int)
+            or fresh["pid"] <= 0
+            or fresh["hwnd"] <= 0
+            or fresh["pid"] == transaction.target.engineering_process_id
+            or fresh["hwnd"] == transaction.target.engineering_window_handle
+            or not isinstance(fresh.get("process_create_time"), (int, float))
+            or isinstance(fresh.get("process_create_time"), bool)
+            or float(fresh["process_create_time"]) <= 0
+            or fresh.get("workspace_id") != transaction.target.workspace_id
+            or fresh.get("project_path") != transaction.target.project_path
+            or fresh.get("project_sha256") != saved_project_hash
+            or not isinstance(readback, dict)
+            or readback.get("program_id") != program_id
+            or readback.get("program_name") != program_name
+            or readback.get("ld_payload_sha256") != expected_ld_payload_sha256
+            or readback.get("stable_repeat") is not True
+            or readback.get("final_view") != "LD"
+            or not isinstance(approval, dict)
+            or approval.get("approval_id") != transaction.id
+            or approval.get("approval_plan_digest") != transaction.plan_digest
+            or approval.get("result_digest") != result_digest
+            or not isinstance(apply, dict)
+            or apply.get("ok") is not True
+            or apply.get("verified") is not True
+            or mcp_plan_id == ""
+            or cls._normalize_sha256(mcp_plan_digest, "mcp_plan_digest") != mcp_plan_digest
+        ):
+            raise ChangeExecutionPreconditionError(
+                "fresh LD reopen receipt differs from the approved saved transaction"
+            )
+        payload_after = cls._required_sha256(
+            readback,
+            "ld_payload_sha256",
+            "fresh LD reopen readback",
+        )
+        return {
+            "session_id": "",
+            "pid": fresh["pid"],
+            "hwnd": fresh["hwnd"],
+            "project_path": fresh["project_path"],
+            "project_hash": fresh["project_sha256"],
+            "ld_payload_sha256": payload_after,
+        }
+
+    @staticmethod
+    def _validate_ld_fresh_reopen_attach(
+        *,
+        transaction: ChangeTransaction,
+        attached: dict[str, Any],
+        fresh_scope: dict[str, Any],
+    ) -> dict[str, Any]:
+        session = attached.get("session") if isinstance(attached.get("session"), dict) else attached
+        if (
+            not isinstance(session, dict)
+            or not isinstance(session.get("session_id"), str)
+            or not session["session_id"]
+            or session.get("pid") != fresh_scope["pid"]
+            or session.get("hwnd") != fresh_scope["hwnd"]
+            or session.get("project_path") != fresh_scope["project_path"]
+            or session.get("project_hash") != fresh_scope["project_hash"]
+            or session.get("stage") != "SAVED_REOPENED_UNVERIFIED"
+            or not isinstance(session.get("metadata"), dict)
+            or session["metadata"].get("active_change_transaction_id") is None
+        ):
+            raise ChangeExecutionPreconditionError(
+                "fresh LD reopen attach did not bind the new exact engineering session"
+            )
+        return {
+            "session_id": session["session_id"],
+            "pid": session["pid"],
+            "hwnd": session["hwnd"],
+            "project_path": session["project_path"],
+            "project_hash": session["project_hash"],
+        }
 
     def _authorization(
         self,
@@ -1055,8 +1520,8 @@ class MCPChangeExecutionService:
             or tuple(validation) != OFFLINE_NATIVE_VALIDATION_STEPS
         ):
             raise ChangeExecutionPreconditionError(
-                "offline_native_check_only requires exactly structural_diff, "
-                "xg5000_program_check, and project_save"
+                "offline_native_reopen requires structural_diff, XG5000 Program Check, "
+                "project_save, and project_reopen"
             )
         if not isinstance(manual_follow_up, list) or any(
             not isinstance(item, str) or not item.strip()
@@ -1674,9 +2139,117 @@ class MCPChangeExecutionService:
         *,
         transaction: ChangeTransaction,
         mcp_transaction_id: str,
+        mcp_plan_id: str,
+        mcp_plan_digest: str,
         fallback: dict[str, Any],
-        save_result: dict[str, Any] | None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        scope, status, _native, _checkpoint = (
+            await self._authoritative_transaction_scope(
+                transaction=transaction,
+                mcp_transaction_id=mcp_transaction_id,
+                mcp_plan_id=mcp_plan_id,
+                mcp_plan_digest=mcp_plan_digest,
+                fallback=fallback,
+            )
+        )
+        self._validate_saved_status(
+            transaction=transaction,
+            status=status,
+            mcp_transaction_id=mcp_transaction_id,
+            expected_project_hash=scope["project_hash"],
+        )
+        return scope, status
+
+    async def _abort_failed_preapply_transaction(
+        self,
+        *,
+        transaction: ChangeTransaction,
+        session_scope: dict[str, Any],
+        mcp_transaction_id: str,
+    ) -> None:
+        """Close and release an exact transaction that failed before apply."""
+
+        status = self._require_object(
+            await self._gateway.call_change_tool(
+                "change.transaction_status",
+                {
+                    "session_id": session_scope["session_id"],
+                    "transaction_id": mcp_transaction_id,
+                },
+            ),
+            "change.transaction_status after pre-apply failure",
+        )
+        if (
+            status.get("ok") is not True
+            or status.get("verified") is not True
+            or status.get("operation") != "change.transaction_status"
+        ):
+            raise ValueError("pre-apply transaction status is not verified")
+        checkpoint = self._recovery_checkpoint(
+            status,
+            "transaction_checkpoint",
+            "change.transaction_status after pre-apply failure",
+        )
+        self._validate_recovery_checkpoint(
+            transaction=transaction,
+            checkpoint=checkpoint,
+            expected_transaction_id=mcp_transaction_id,
+            expected_session_id=session_scope["session_id"],
+            expected_pid=session_scope["pid"],
+            expected_hwnd=session_scope["hwnd"],
+            expected_project_hash=session_scope["project_hash"],
+        )
+        state = checkpoint.get("state")
+        if (
+            state not in {"SNAPSHOT_CREATED", "BACKUP_CREATED", "PLANNED"}
+            or checkpoint.get("recovery_action") != "abort_safe"
+            or checkpoint.get("mutation_possible") is not False
+        ):
+            raise ValueError("failed pre-apply transaction is not safely abortable")
+        aborted = self._require_object(
+            await self._gateway.call_change_tool(
+                "change.abort",
+                {
+                    **session_scope,
+                    "transaction_id": mcp_transaction_id,
+                    "expected_transaction_state": state,
+                },
+            ),
+            "change.abort after pre-apply failure",
+        )
+        aborted_checkpoint = self._recovery_checkpoint(
+            aborted,
+            "transaction_checkpoint",
+            "change.abort after pre-apply failure",
+        )
+        self._validate_recovery_checkpoint(
+            transaction=transaction,
+            checkpoint=aborted_checkpoint,
+            expected_transaction_id=mcp_transaction_id,
+            expected_session_id=session_scope["session_id"],
+            expected_pid=session_scope["pid"],
+            expected_hwnd=session_scope["hwnd"],
+            expected_project_hash=session_scope["project_hash"],
+        )
+        if (
+            aborted.get("state_after") != "ABORTED_NO_MUTATION"
+            or aborted.get("native_mutation_performed") is not False
+            or aborted.get("lease_released") is not True
+            or aborted_checkpoint.get("state") != "ABORTED_NO_MUTATION"
+            or aborted_checkpoint.get("terminal") is not True
+            or aborted_checkpoint.get("lease_status") != "released"
+        ):
+            raise ValueError("pre-apply abort did not prove terminal lease release")
+
+    async def _authoritative_transaction_scope(
+        self,
+        *,
+        transaction: ChangeTransaction,
+        mcp_transaction_id: str,
+        mcp_plan_id: str,
+        mcp_plan_digest: str,
+        fallback: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
         status = self._require_object(
             await self._gateway.call_change_tool(
                 "change.transaction_status",
@@ -1687,32 +2260,110 @@ class MCPChangeExecutionService:
             ),
             "change.transaction_status",
         )
+        if (
+            status.get("ok") is not True
+            or status.get("verified") is not True
+            or status.get("operation") != "change.transaction_status"
+        ):
+            raise ValueError("change.transaction_status is not verified")
         native = status.get("transaction")
         if not isinstance(native, dict):
             raise TypeError("change.transaction_status returned no transaction")
-        scope = dict(fallback)
-        project_hash = native.get("current_project_hash")
-        if not isinstance(project_hash, str) or len(project_hash) != 64:
-            project_hash = self._find_project_hash(save_result)
-        if not isinstance(project_hash, str) or len(project_hash) != 64:
-            raise ValueError("authoritative saved project hash is unavailable")
-        scope["project_hash"] = project_hash.casefold()
-        mappings = {
-            "active_session_id": "session_id",
-            "active_pid": "pid",
-            "active_hwnd": "hwnd",
-            "project_path": "project_path",
+        expected_identity = {
+            "transaction_id": mcp_transaction_id,
+            "active_session_id": transaction.target.engineering_session_id,
+            "active_pid": transaction.target.engineering_process_id,
+            "active_hwnd": transaction.target.engineering_window_handle,
         }
-        for source, destination in mappings.items():
-            value = native.get(source)
-            if value is not None and value != "":
-                scope[destination] = value
-        self._validate_saved_status(
-            transaction=transaction,
-            status=status,
-            mcp_transaction_id=mcp_transaction_id,
-            expected_project_hash=scope["project_hash"],
+        for field_name, expected in expected_identity.items():
+            if native.get(field_name) != expected:
+                raise ValueError(
+                    f"change.transaction_status mismatched {field_name}"
+                )
+        native_path = native.get("project_path")
+        if (
+            not isinstance(native_path, str)
+            or os.path.normcase(str(Path(native_path).resolve()))
+            != os.path.normcase(str(Path(transaction.target.project_path).resolve()))
+        ):
+            raise ValueError("change.transaction_status mismatched project_path")
+        project_hash = self._normalize_sha256(
+            native.get("current_project_hash"),
+            "change.transaction_status current_project_hash",
         )
+        checkpoint = self._recovery_checkpoint(
+            status,
+            "transaction_checkpoint",
+            "change.transaction_status",
+        )
+        self._validate_recovery_checkpoint(
+            transaction=transaction,
+            checkpoint=checkpoint,
+            expected_transaction_id=mcp_transaction_id,
+            expected_session_id=transaction.target.engineering_session_id,
+            expected_pid=transaction.target.engineering_process_id,
+            expected_hwnd=transaction.target.engineering_window_handle,
+            expected_project_hash=project_hash,
+        )
+        if (
+            checkpoint.get("plan_id") != mcp_plan_id
+            or checkpoint.get("plan_digest") != mcp_plan_digest
+        ):
+            raise ValueError("native transaction changed its immutable plan identity")
+        if checkpoint.get("state") != native.get("state"):
+            raise ValueError("native transaction and checkpoint states differ")
+        scope = dict(fallback)
+        scope.update(
+            {
+                "session_id": native["active_session_id"],
+                "pid": native["active_pid"],
+                "hwnd": native["active_hwnd"],
+                "project_path": native_path,
+                "project_hash": project_hash,
+            }
+        )
+        return scope, status, native, checkpoint
+
+    async def _authoritative_scope_for_rollback(
+        self,
+        *,
+        transaction: ChangeTransaction,
+        mcp_transaction_id: str,
+        mcp_plan_id: str,
+        mcp_plan_digest: str,
+        fallback: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Bind rollback to the live native journal before or after save.
+
+        Verification may fail while the native transaction is still APPLIED or
+        DIFF_VERIFIED.  Reusing the success-path SAVED validator here prevented
+        the separately journaled rollback from ever running for those states.
+        """
+
+        scope, status, native, checkpoint = (
+            await self._authoritative_transaction_scope(
+                transaction=transaction,
+                mcp_transaction_id=mcp_transaction_id,
+                mcp_plan_id=mcp_plan_id,
+                mcp_plan_digest=mcp_plan_digest,
+                fallback=fallback,
+            )
+        )
+        native_state = native.get("state")
+        rollback_states = {
+            "APPLYING",
+            "APPLIED",
+            "DIFF_VERIFIED",
+            "CHECKED",
+            "SAVED",
+            "QUARANTINED",
+        }
+        if native_state not in rollback_states:
+            raise ValueError(
+                f"native transaction state {native_state!r} is not rollback-capable"
+            )
+        if checkpoint.get("recovery_action") != "rollback_required":
+            raise ValueError("native transaction did not authorize exact rollback")
         return scope, status
 
     @classmethod
@@ -1725,6 +2376,9 @@ class MCPChangeExecutionService:
         mcp_transaction_id: str,
         expected_state: str,
         expected_project_hash: str | None = None,
+        expected_session_id: str | None = None,
+        expected_pid: int | None = None,
+        expected_hwnd: int | None = None,
     ) -> dict[str, Any]:
         if (
             result.get("ok") is not True
@@ -1745,9 +2399,15 @@ class MCPChangeExecutionService:
             transaction=transaction,
             checkpoint=checkpoint,
             expected_transaction_id=mcp_transaction_id,
-            expected_session_id=transaction.target.engineering_session_id,
-            expected_pid=transaction.target.engineering_process_id,
-            expected_hwnd=transaction.target.engineering_window_handle,
+            expected_session_id=(
+                expected_session_id or transaction.target.engineering_session_id
+            ),
+            expected_pid=(
+                expected_pid if expected_pid is not None else transaction.target.engineering_process_id
+            ),
+            expected_hwnd=(
+                expected_hwnd if expected_hwnd is not None else transaction.target.engineering_window_handle
+            ),
             expected_project_hash=expected_project_hash,
         )
         if checkpoint.get("state") != expected_state:
@@ -1912,6 +2572,7 @@ class MCPChangeExecutionService:
         result: dict[str, Any],
         mcp_transaction_id: str,
         expected_project_hash: str,
+        expected_session_scope: dict[str, Any],
     ) -> None:
         checkpoint = cls._validate_verified_operation(
             result=result,
@@ -1920,6 +2581,11 @@ class MCPChangeExecutionService:
             mcp_transaction_id=mcp_transaction_id,
             expected_state="COMMITTED",
             expected_project_hash=expected_project_hash,
+            expected_session_id=cls._required_text(
+                expected_session_scope, "session_id", "fresh commit session"
+            ),
+            expected_pid=int(expected_session_scope["pid"]),
+            expected_hwnd=int(expected_session_scope["hwnd"]),
         )
         if (
             result.get("project_hash") != expected_project_hash
@@ -1954,20 +2620,6 @@ class MCPChangeExecutionService:
         ):
             raise ValueError("project.rollback_change did not prove native restoration")
 
-    @classmethod
-    def _find_project_hash(cls, value: Any) -> str | None:
-        if not isinstance(value, dict):
-            return None
-        for key in ("project_hash", "hash_after", "current_project_hash"):
-            candidate = value.get(key)
-            if isinstance(candidate, str) and len(candidate) == 64:
-                return candidate
-        for candidate in value.values():
-            found = cls._find_project_hash(candidate)
-            if found is not None:
-                return found
-        return None
-
     @staticmethod
     def _require_object(value: Any, operation: str) -> dict[str, Any]:
         if not isinstance(value, dict):
@@ -1980,3 +2632,64 @@ class MCPChangeExecutionService:
         if not isinstance(item, str) or not item:
             raise ValueError(f"{operation} did not return {field}")
         return item
+
+
+def validated_terminal_ld_reopen(transaction: ChangeTransaction) -> dict[str, Any] | None:
+    """Return the attached exact fresh LD session for a completed operand edit."""
+
+    if transaction.state is not ChangeTransactionState.COMPLETED:
+        return None
+    verification = transaction.result.get("verification")
+    if not isinstance(verification, dict):
+        return None
+    receipt = verification.get("fresh_reopen")
+    attached_result = verification.get("fresh_reopen_attach")
+    attached = (
+        attached_result.get("session")
+        if isinstance(attached_result, dict) and isinstance(attached_result.get("session"), dict)
+        else attached_result
+    )
+    if not isinstance(receipt, dict) or not isinstance(attached, dict):
+        return None
+    fresh = receipt.get("fresh_reopen")
+    approval = receipt.get("approval_binding")
+    readback = receipt.get("program_readback")
+    if not isinstance(fresh, dict) or not isinstance(approval, dict) or not isinstance(readback, dict):
+        raise ChangeExecutionPreconditionError("terminal LD reopen evidence is incomplete")
+    target = transaction.target
+    expected_program_id = transaction.plan.get("target", {}).get(
+        "program_id", transaction.plan.get("target", {}).get("programId")
+    )
+    if (
+        receipt.get("ok") is not True
+        or receipt.get("verified") is not True
+        or receipt.get("operation") != "project.verify_ld_operand_reopen"
+        or fresh.get("source_pid") != target.engineering_process_id
+        or fresh.get("source_hwnd") != target.engineering_window_handle
+        or fresh.get("source_closed") is not True
+        or not isinstance(fresh.get("pid"), int)
+        or not isinstance(fresh.get("hwnd"), int)
+        or fresh["pid"] <= 0
+        or fresh["hwnd"] <= 0
+        or fresh["pid"] == target.engineering_process_id
+        or fresh["hwnd"] == target.engineering_window_handle
+        or fresh.get("workspace_id") != target.workspace_id
+        or fresh.get("project_path") != target.project_path
+        or not isinstance(fresh.get("project_sha256"), str)
+        or len(fresh["project_sha256"]) != 64
+        or approval.get("approval_id") != transaction.id
+        or approval.get("approval_plan_digest") != transaction.plan_digest
+        or readback.get("program_id") != expected_program_id
+        or readback.get("final_view") != "LD"
+        or readback.get("stable_repeat") is not True
+        or attached.get("pid") != fresh["pid"]
+        or attached.get("hwnd") != fresh["hwnd"]
+        or attached.get("project_path") != fresh["project_path"]
+        or attached.get("project_hash") != fresh["project_sha256"]
+        or not isinstance(attached.get("session_id"), str)
+        or not attached["session_id"]
+    ):
+        raise ChangeExecutionPreconditionError(
+            "terminal LD reopen evidence differs from the approved change"
+        )
+    return dict(attached)
