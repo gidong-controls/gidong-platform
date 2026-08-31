@@ -416,9 +416,21 @@ class NativeProjectResumeTests(unittest.IsolatedAsyncioTestCase):
                         "project_identity_read_only_bound_to_selected_pid": True,
                         "project_identity_assurance": "controlled_launch_read_only",
                         "saved_build_reopen_resume": {
-                            key: value
-                            for key, value in authorization.items()
-                            if key != "signature"
+                            "purpose": authorization["purpose"],
+                            "native_project_id": authorization["native_project_id"],
+                            "source_kind": "new_build",
+                            "provenance_receipt_digest": authorization[
+                                "workspace_provenance_receipt_digest"
+                            ],
+                            "workspace_id": authorization["workspace_id"],
+                            "revision_id": authorization["revision_id"],
+                            "pid": authorization["pid"],
+                            "main_hwnd": authorization["hwnd"],
+                            "project_path": authorization["project_path"],
+                            "project_hash": authorization["project_hash"],
+                            "process_create_time": authorization["process_create_time"],
+                            "authorization_id": authorization["authorization_id"],
+                            "build_receipt_digest": authorization["build_receipt_digest"],
                         },
                     },
                 }
@@ -453,8 +465,10 @@ class NativeProjectResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen_authorizations[0]["native_project_id"], _OPERATION_ID)
         self.assertNotIn("trial_id", seen_authorizations[0])
         self.assertNotIn("receipt_digest", seen_authorizations[0])
-        self.assertEqual(session["metadata"]["saved_build_reopen_resume"]["schema"], "controlstudio-native-session-resume-authorization/v3")
         self.assertEqual(session["metadata"]["saved_build_reopen_resume"]["purpose"], "saved_build_reopen_readback")
+        self.assertEqual(session["metadata"]["saved_build_reopen_resume"]["source_kind"], "new_build")
+        self.assertNotIn("schema", session["metadata"]["saved_build_reopen_resume"])
+        self.assertNotIn("trial_id", session["metadata"]["saved_build_reopen_resume"])
         self.assertEqual(
             session["metadata"]["saved_build_reopen_resume"]["build_receipt_digest"],
             seen_authorizations[0]["build_receipt_digest"],

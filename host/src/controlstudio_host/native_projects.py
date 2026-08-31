@@ -4006,44 +4006,39 @@ class NativeProjectService:
             return True
         saved_build_resume = metadata.get("saved_build_reopen_resume")
         if saved_build_reopen_authorization is not None:
-            expected_keys = {
-                "schema",
-                "authorization_id",
-                "actor_id",
-                "native_project_id",
-                "build_receipt_digest",
-                "workspace_provenance_receipt_digest",
-                "workspace_id",
-                "revision_id",
-                "pid",
-                "hwnd",
-                "project_path",
-                "project_hash",
-                "process_create_time",
-                "title",
-                "purpose",
-                "capability",
-                "allowed_operation",
-            }
             return bool(
                 metadata.get("project_identity_assurance") == "controlled_launch_read_only"
                 and isinstance(saved_build_resume, dict)
-                and all(
-                    saved_build_resume.get(key) == saved_build_reopen_authorization.get(key)
-                    for key in expected_keys
-                )
+                and saved_build_resume
+                == {
+                    "purpose": saved_build_reopen_authorization["purpose"],
+                    "native_project_id": saved_build_reopen_authorization["native_project_id"],
+                    "source_kind": "new_build",
+                    "provenance_receipt_digest": saved_build_reopen_authorization[
+                        "workspace_provenance_receipt_digest"
+                    ],
+                    "workspace_id": saved_build_reopen_authorization["workspace_id"],
+                    "revision_id": saved_build_reopen_authorization["revision_id"],
+                    "pid": saved_build_reopen_authorization["pid"],
+                    "main_hwnd": saved_build_reopen_authorization["hwnd"],
+                    "project_path": saved_build_reopen_authorization["project_path"],
+                    "project_hash": saved_build_reopen_authorization["project_hash"],
+                    "process_create_time": saved_build_reopen_authorization[
+                        "process_create_time"
+                    ],
+                    "authorization_id": saved_build_reopen_authorization["authorization_id"],
+                    "build_receipt_digest": saved_build_reopen_authorization[
+                        "build_receipt_digest"
+                    ],
+                }
             )
         if isinstance(saved_build_resume, dict):
             return bool(
                 metadata.get("project_identity_assurance") == "controlled_launch_read_only"
-                and saved_build_resume.get("schema")
-                == "controlstudio-native-session-resume-authorization/v3"
                 and saved_build_resume.get("purpose") == "saved_build_reopen_readback"
-                and saved_build_resume.get("capability")
-                == "analysis_saved_build_reopen_resume"
-                and saved_build_resume.get("allowed_operation") == "xg5000.attach"
+                and saved_build_resume.get("source_kind") == "new_build"
                 and saved_build_resume.get("pid") == pid
-                and saved_build_resume.get("hwnd") == hwnd
+                and saved_build_resume.get("main_hwnd") == hwnd
                 and str(saved_build_resume.get("project_hash") or "").casefold()
                 == project_hash
                 and _canonical_path(Path(str(saved_build_resume.get("project_path") or "")))
