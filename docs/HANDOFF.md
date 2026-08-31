@@ -43,6 +43,13 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   `workspaceBound=false`다. 실제 명령 전달 단계는 아직 확인 전이므로 임의 재시도나 DB 격리
   해제를 하지 않는다. 21:59 XimUtil/XGSim 프로세스가 없었다는 조회만으로 과거 무동작을
   단정하지 않는다. 물리 I/O·최종 PWA acceptance는 미실시이고 이 구간 UAC 요청은 없었다.
+- 알려진 제한: 현재 create/resume handler는 independent reopen과 XG-SIM acceptance를 함께
+  요구한 뒤에만 active engineering session/workspace를 bind하므로, reopen이 검증됐어도
+  quarantined SIM 중에는 Agent의 read/analyze 대상도 노출되지 않는다. 저장된 reopen session을
+  그대로 bind하면 controlled-launch proof가 mutation-ready로도 해석될 수 있어 허용할 수 없다.
+  향후에는 새 PID/HWND/lifetime을 다시 확인하는 명시적 analysis-only attach를 read-ready로만
+  bind하고 mutation readiness는 닫는 경로로 분리한다. 이 문서상 quarantine은 해제하지 않으며
+  GET/read 경로가 그 상태를 바꾸어서는 안 된다.
 - runtime/Host worker가 simulator 시작 및 단계별 실패·복구 경로를 조사 중이다. `dd4582a`의 SHA-bound
   ID→exact-name 경로는 유지한다. genuinely unnamed legacy catalog sweep의 semantic 교체 WIP는
   아직 commit되지 않아 알려진 legacy debt다. compact XGK 일반 수정 `476cdb9`/`b4738a8`은
