@@ -22,6 +22,43 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
+## 2026-08-31 오후 제품 경로 재개 — 아래 역사적 UI 장애와 구분
+
+- 정상 Launcher handoff → session → bootstrap API로 실행 중인 Development Host에
+  인증했다. 브라우저 저장소/토큰 추출이나 차단된 페이지 렌더링은 사용하지 않았다.
+  `/api/health`는 ready이며 제품 `/api/v1/xg5000/instances`가 MCP → 독립 CLI를 통해
+  실제 XG5000 PID `7024`, HWND `67344`를 반환했다. Codex Computer Use의 실패는
+  제품 런타임 실패로 취급하지 않는다. 이 관측은 PWA 화면 acceptance를 뜻하지 않는다.
+- 제품 `POST /api/v1/host/restart`를 한 번 실행해 Host `5464`를 `13472`로 교체했고
+  restart receipt `ready`, Host/MCP ready를 확인했다. UAC를 호출하지 않았고 XG5000
+  PID/HWND는 그대로였다. 이 API는 호출한 세션만 승계하므로 다른 브라우저 세션의
+  자동 유지를 주장하지 않는다.
+- working copy SHA `f277c7ce606b7b902053b8fe732555288cc81e6c537ee7dafbc51a6bf68d91c2`와
+  격리 transaction `f6ecf557-316b-4739-adde-247813330a18`는 유지했다.
+  복원/재결속/이전 승인 재사용/PLC 쓰기는 수행하지 않았다.
+- 별도 제품 대화 `6bb8a0a4-cf45-4e18-b402-d4b732216723`에 M0000 START,
+  M0001 STOP_OK, M0002 RUN_CMD의 오프라인 자기유지 LD 개발 요청을 실제 제출했다.
+  run `1ffc9dca-ceda-432e-a7ef-0f7af2fd0a0a`는 narrative 출력 계약 실패;
+  초기 상태를 확정한 run `7692bf2d-1db4-4019-be12-227cd3274439`는 native-design
+  provider 오류; 갱신 후 run `a76d5314-9674-4d27-a5c2-10436560c91d`는 native-design
+  validator 오류였다. 세 실행 모두 실패이며 LD 생성 성공으로 계산하지 않는다.
+- Agent `023ef77` / Platform `a7542e6`은 provider HTTP 4xx/5xx 상태만 안전한 오류 코드로
+  보존한다. 본문·헤더·비밀값은 전달하지 않는다. 기존 두 실패의 버려진 HTTP 상태는
+  복원할 수 없으며 특정 상태였다고 추측하지 않는다. 관련 Agent 4 + Host 2 테스트 통과.
+- Platform `644131f`는 같은 단계의 15초 heartbeat를 Host가 버리던 stage-only 중복
+  제거를 `(stage, elapsed_seconds)`로 고쳤다. fake transport 4건 통과. 긴 침묵이
+  sidecar event-loop 정지라는 초기 가설은 틀렸다. 로컬 fake-model 측정상 native schema는
+  14,106 bytes, 생성 약 19ms, Agent 생성 약 14ms였으며 과도한 schema 준비가 원인이 아니다.
+- MCP `55da905`는 LD source-not-visible의 안전한 숫자 geometry를 전달하고,
+  CLI `30c46e3`는 code-prefixed `str(error)` 대신 구조화된 message를 반환한다.
+  CLI commit은 사용자 지정 원격 `gidong-controls/controlstudio-ls-xg5000-cli`의
+  `main`에 push 완료했다. 세 core 저장소 commit은 local이며 push하지 않았다.
+
+현재 후속 작업은 native 설계 오류를 generic missing-sections로 지워 모델의 수정을
+막는 예외 처리와 UI 경과 시간 표시 개선이다. 기존 LD operand 위치 선택의 scroll 단위는
+아직 실증되지 않았다. Native Find 리소스 ID만으로 중복 피연산자 중 정확한 occurrence를
+선택할 수 있다고 가정하거나 임의 좌표 식으로 바꾸지 않는다.
+
 ## 현재 제품 경계
 
 - 제품은 단발 chatbot이 아니라 Host가 mission, checkpoint, evidence, change transaction을
