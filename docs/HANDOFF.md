@@ -35,12 +35,19 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 - fresh controlled instance PID `16228`/HWND `723394`는 시작됐고, v3 saved-build rebind는
   같은 instance의 native-file proof·경로·hash·process lifetime을 Host 서명 및 MCP attach
   metadata까지 결속해 실제 통과했다. 원래 PID `14284`/HWND `329768`와 source/working hash는
-  계속 보존됐다. 다만 화면이 가린 `MainProgram` opener의 실제 readback은 아직 실패 상태다.
+  계속 보존됐다. `MainProgram` opener의 실제 readback은 아직 실패 상태다. 20:41 KST
+  진단 (`mcp-sessions/444f4253-9ae9-41a2-a70c-adc6737a61f8/1fa995e5c4bf`)에서는
+  해당 HWND가 disabled이고 프로젝트 속성 대화상자가 존재했다. 검색 Edit에 `MainProgram`이
+  들어간 것만으로 첫 결과 행이 그 프로그램임을 보장할 수 없었다. 첫 행 좌표 추정은 제거하고
+  행의 MSAA name/value 및 위치로 실제 프로그램을 식별하는 수정이 진행 중이다. 이를 새 UAC
+  실패나 사용자가 창을 맨 앞으로 가져와야 하는 문제로 보고하지 않는다.
   따라서 independent fresh reopen 검증은 아직 없고 `engineeredProgramReady`는 `false`다.
 - XG-SIM은 시작하지 않았고 물리 I/O도 시험하지 않았다. PLC write나 최종 PWA acceptance를
   완료로 기록해서는 안 된다.
-- 현재 checkpoint는 Platform `4ab6571`, MCP `0210d57`, 독립 CLI `109a030`이다
-  (`9250719`은 지정 원격 main에 push된 앞선 CLI checkpoint). 독립 CLI 경계는 아직 전환 중이다.
+- 이 관측의 실행 checkpoint는 Platform `97c127d`, MCP `0b8417e`, 독립 CLI `109a030`이다.
+  이후 MCP `70ed7a0`은 opener 진단을, `3022a59`는 MSAA 행의 value 읽기를 보완했으며
+  실제 재열기 성공 증거는 아직 아니다. CLI `109a030`은 지정 원격 main에 push됐다.
+  별도 CLI 회귀 73건도 통과했지만 독립 CLI 경계는 아직 전환 중이다.
   CLI가 MCP source module을 import하므로 완전히 standalone인 source copy나 배포 증거로
   해석하지 않는다.
 
