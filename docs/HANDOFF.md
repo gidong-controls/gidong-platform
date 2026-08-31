@@ -16,7 +16,7 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 - 세 core 저장소 `gidong-platform`, `gidong-agent`, `gidong-plc-mcp`는 `dev`에서 작업한다.
   `6d06754`, `f70d30c`, `9edc7e5`는 이 handoff 작성 당시의 역사적 code checkpoint이며 최신
   `HEAD` 표기가 아니다. 현재 제품 checkpoint와 실행 상태는 아래 2026-09-01 절을 우선한다.
-- 독립 XG5000 CLI는 `main`의 `d695cae`이며 사용자 지정 원격 `origin/main`과 동기화돼 있다.
+- 독립 XG5000 CLI는 `main`의 `64f1f75`이며 사용자 지정 원격 `origin/main`과 동기화돼 있다.
   위 세 core 저장소의 이번 변경은 local commit이며 push하지 않았다.
 
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
@@ -24,6 +24,32 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 ## 2026-09-01 필수 읽기 경로 — 현재 진행
 
+- 최신 완료: MCP `404848a`는 UIA worker의 중복 `native_menu` fallback 순환을 제거했고,
+  CLI `ea18481`은 실제 UIA/MSAA helper child를 CLI-owned vendor namespace로 옮겼다. MCP
+  `1cf37e4`/`ccb2fb2`는 helper 구현을 삭제하고 부모 subprocess transport/public wrapper만
+  유지하며, 직접 MCP read도 configured CLI helper를 사용한다. CLI 전체 89개, MCP 전체 578개가
+  통과했고 CLI helper probe가 PID `14284`/HWND `329768`에서 성공했다. 제품 재시작 후 정확한
+  working-copy PID `16228`/HWND `723394`를 session
+  `c21c301e-ac0b-450f-96ca-0e1d4b760772`로 다시 attach했다.
+- Agent `6c186db`는 확인된 `project.list_programs` 결과에서 정확한 LD 하나를 고른 뒤
+  `read_ladder_program`으로 넘어가는 read-only continuation과, 한 개의 Host-decoded semantic rung에서
+  조건식/출력을 완료하는 경로를 deterministic하게 처리한다. 전체 Agent 102개와 64 subtests가
+  통과했다. 실제 conversation `2ed7ebb5-344c-4a69-944e-7aa3a73b4fec`, run
+  `40e95d4b-7a16-4ef8-acd9-35a179e47ae8`은 목록 evidence
+  `da27787f-2727-5470-a70b-b59a00689923`, LD evidence
+  `8dbea3f9-d4ed-52a6-915d-ca5c6e966caf`을 각각 한 번 생성하고 `COMPLETED`됐다. 답변은
+  `조건식: M00001 AND (M00000 OR M00010), 출력: M00010`이며 프로젝트 SHA는 전후 동일하다.
+  이전 `a49dc6c6`/`4d55d598`/`fae53c6f`의 `continuation_contract` 실패는 이 경로에서 해결됐다.
+- 별도 CLI 문서 commit `6e6694b`/`64f1f75`도 지정 원격 main에 push됐다. 전체 vendor-core 추출은 아직
+  완료가 아니며 남은 menu/resource/toolbar/input/dialog/workflow 구현은 command vertical별로
+  이동한다. 물리 PLC I/O는 장비가 있을 때의 PRD G3/G4 로드맵으로 유지한다. 과거 XG-SIM
+  `QUARANTINED` 상태는 재시도하거나 해제하지 않았다.
+- 실제 PWA 데이터/Agent 경로는 위 run으로 완료됐다. 첫 수동 Launcher 진단의
+  `launch challenge proof did not match`는 격리 Development `LOCALAPPDATA`를 지정하지 않고 기본
+  사용자 루트의 다른 token을 읽은 호출자 오류였다. 정확한 격리 루트의 `--no-open` 검증은 즉시
+  통과했다. 뒤의 UI 호출은 기존 ControlStudio 창을 복원했지만 Windows foreground 전환이 거부돼
+  한 번만 실패했으며 재시도하지 않았다. 오래된 인앱 탭은 여전히 인증 만료 화면이므로 Agent/CLI
+  성공과 구분하고, 이를 이유로 LD read를 반복하거나 UAC를 요청하지 않는다.
 - 정상 Host 재시작은 UAC 없이 완료됐다. 동일 XG5000 PID `16228`/HWND `723394`, working project
   SHA `2d55b348...b48`에 read-only session
   `99b79306-8631-45bf-80d6-5ccd143874cc`이 연결돼 있다.
@@ -66,8 +92,8 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   뒤 `COMPLETED`됐다. 답변은 structure entity ID
   `xg5000:code-unit:1449fa43-e9fb-4799-981c-54a82bcbdb63`와 LD `canonicalProgramId`
   `ld:55e388e7aea7a8ce`를 구분하고 `program.read_ld`에는 canonical ID를 써야 함을 정확히 설명했다.
-- 최신 focused regression은 Agent 80개, Host 4개가 통과했고 MCP 76개, CLI 74개는 앞선 확인을
-  유지한다.
+- 최신 focused regression 수치는 위 최신 완료 절을 우선한다. 이 아래의 Agent 80개, MCP 76개,
+  CLI 74개 기록은 이전 체크포인트다.
 - 물리 PLC를 현재 범위에서 제외한 뒤 CLI vendor-core 추출을 재개했다. CLI `74826a2`는 LD 읽기의
   cross-process OLE clipboard helper를 CLI-owned vendor namespace로 옮겼고 지정 원격 main에
   push했다. MCP `9171433`은 같은 helper 구현과 MCP server의 helper entry를 삭제하고 부모 JSON
@@ -75,13 +101,12 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   실제 conversation `00691471-1de0-43d5-b0f4-d3f3f57679c2`의 run
   `f7bc2d96-235b-4924-b181-73c10930510c`은 새 helper 경로에서 LD 읽기를 성공하고 조건식
   `M00001 AND (M00000 OR M00010)`과 출력 `M00010`을 답해 `COMPLETED`됐다. 전체 vendor-core
-  추출 완료는 아니다. UIA worker는 `native_menu` fallback을 직접 호출하므로 단독 leaf가 아니며,
-  다음 단계에서는 UIA·menu/resource/toolbar/MSAA/input/dialog 의존 폐쇄를 함께 옮겨 중복 구현을
-  남기지 않는다.
-- 별도 conversation `35fdea15-3dc2-4145-889b-063807425b31`의 일반 요청
-  `54a7482d`는 프로그램 목록 읽기 뒤 `continuation_contract`로 실패해 미해결이다. event `2693`의
-  continue checkpoint는 정상 선택이 아니라 예외 뒤 evidence 보존 기록이므로 전환 덮어쓰기의 원인으로
-  단정하지 않는다.
+  추출 완료는 아니다. 이후 UIA/MSAA helper child 추출과 중복 fallback 제거는 위 최신 완료 절에서
+  끝났고, 남은 menu/resource/toolbar/input/dialog/workflow 구현은 계속 transitional이다.
+- 별도 conversation `35fdea15-3dc2-4145-889b-063807425b31`의 일반 요청 `54a7482d`와 뒤의
+  세 실제 run은 프로그램 목록 읽기 뒤 `continuation_contract`로 실패했다. 원인은 compact model
+  continuation에 고정 read-only 다음 단계를 맡긴 것이었고 Agent `6c186db`와 위 실제 완료 run으로
+  해결했다. event `2693`은 과거 실패 뒤 evidence 보존 checkpoint로만 남긴다.
 - 과거 XG-SIM trial은 `QUARANTINED`, engineered readiness는 false로 보존된다. XG-SIM
   acceptance와 전체 CLI vendor-core 독립은 아직 완료되지 않았다. 물리 PLC I/O는 현재 장비가
   없어 현재 완료 범위와 blocker에서 제외하고 PRD G3/G4 로드맵으로 이관했다. 별도 복구 기능은
