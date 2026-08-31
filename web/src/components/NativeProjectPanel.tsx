@@ -1935,6 +1935,54 @@ export function NativeProjectPanel({
     }
   };
 
+  const resumeNativeOperation = async () => {
+    if (
+      !operation ||
+      operation.state !== "quarantined" ||
+      !selectedRecoveryInstance ||
+      !recoveryTargetMatchesStored ||
+      !operation.requestDigest ||
+      busy
+    ) {
+      return;
+    }
+    setBusy(true);
+    setNotice("");
+    try {
+      const next = await hostApi.resumeNativeProject(operation.nativeProjectId, {
+        pid: selectedRecoveryInstance.pid,
+        hwnd: selectedRecoveryInstance.hwnd,
+        expectedRequestDigest: operation.requestDigest,
+      });
+      setOperation(next);
+      if (isVerifiedCompletion(next)) {
+        setNotice(verifiedCompletionNotice(next));
+      } else if (next.state === "quarantined") {
+        setNotice(
+          next.errorDetail ??
+            "입력된 LD의 검사·저장 재개 결과를 확정할 수 없어 격리를 유지합니다.",
+        );
+      } else if (next.state === "completed") {
+        setNotice(
+          next.result?.simulationVerification?.detail ??
+            next.result?.reopenVerification?.detail ??
+            "입력된 LD의 검사·저장은 확인했지만 독립 재열기와 XG-SIM 운전 인수가 완료되지 않았습니다.",
+        );
+      } else {
+        setNotice("입력된 LD의 검사·저장 재개 상태를 확인하고 있습니다.");
+      }
+      try {
+        onStatusChanged(await hostApi.getStatus());
+      } catch {
+        // The durable resume result remains authoritative if status refresh fails.
+      }
+    } catch (error) {
+      setNotice(errorMessage(error, "입력된 LD의 검사·저장을 재개하지 못했습니다."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const rawSimulationReceipt: unknown =
     operation?.result?.simulationVerification?.receipt;
   const simulationReceipt = isSupportedSimulationReceipt(rawSimulationReceipt)
@@ -2711,6 +2759,36 @@ export function NativeProjectPanel({
                   {busy ? "현재 상태 검사 중…" : "현재 상태 다시 검사"}
                 </button>
               </div>
+
+              <section className="native-project-recovery-resume">
+                <p className="eyebrow">EXACT LD RESUME</p>
+                <p>
+                  저장된 PID/HWND와 요청 digest가 일치할 때만 현재 입력된 LD를
+                  다시 읽어 Program Check와 저장만 재개합니다. 새 프로젝트 생성이나
+                  IL 삽입은 실행하지 않으며 자동 재시도도 하지 않습니다.
+                </p>
+                {!recoveryTargetMatchesStored && (
+                  <p className="native-project-recovery-warning">
+                    재개하려면 저장된 원래 PID/HWND를 목록에서 정확히 선택해 주세요.
+                    대체 빈 창은 재개 대상이 아닙니다.
+                  </p>
+                )}
+                <button
+                  className="button primary-button"
+                  type="button"
+                  disabled={
+                    busy ||
+                    instancesLoading ||
+                    !recoveryTargetMatchesStored ||
+                    !operation.requestDigest
+                  }
+                  onClick={() => void resumeNativeOperation()}
+                >
+                  {busy
+                    ? "입력된 LD 검사·저장 재개 중…"
+                    : "입력된 LD에서 검사·저장 재개"}
+                </button>
+              </section>
             </section>
           )}
         </section>

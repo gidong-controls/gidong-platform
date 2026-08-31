@@ -47,6 +47,7 @@ import type {
   NativeProjectCreatedResponse,
   NativeProjectOperation,
   NativeProjectReconciliationResponse,
+  NativeProjectResumedResponse,
   NativeSimulationTrialDecisionRequest,
   NativeSimulationTrialDecisionResponse,
   OpenLocalWorkspaceRequest,
@@ -58,6 +59,7 @@ import type {
   TraceLSControllerRequest,
   ReconcileChangeTransactionRequest,
   ReconcileNativeProjectRequest,
+  ResumeNativeProjectRequest,
   ResumeLocalWorkspaceRequest,
   ResumeEngineeringMissionRequest,
   ReverifyBlockedEngineeringMissionStepRequest,
@@ -517,6 +519,19 @@ export class HostApiClient {
   ): Promise<NativeProjectOperation> {
     return this.request<NativeProjectReconciliationResponse>(
       `/api/v1/native-projects/${encodeURIComponent(nativeProjectId)}/reconcile`,
+      {
+        method: "POST",
+        body: request,
+      },
+    ).then((response) => response.operation);
+  }
+
+  resumeNativeProject(
+    nativeProjectId: string,
+    request: ResumeNativeProjectRequest,
+  ): Promise<NativeProjectOperation> {
+    return this.request<NativeProjectResumedResponse>(
+      `/api/v1/native-projects/${encodeURIComponent(nativeProjectId)}/resume`,
       {
         method: "POST",
         body: request,

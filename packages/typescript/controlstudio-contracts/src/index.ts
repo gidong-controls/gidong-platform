@@ -1456,6 +1456,17 @@ export interface NativeProjectReconciliationResponse {
   reconciled: boolean;
 }
 
+export interface ResumeNativeProjectRequest {
+  pid: number;
+  hwnd: number;
+  expectedRequestDigest: string;
+}
+
+export interface NativeProjectResumedResponse {
+  operation: NativeProjectOperation;
+  resumed: boolean;
+}
+
 export interface OpenLocalWorkspaceRequest {
   sourcePath: string;
   expectedSourceHash?: string;
