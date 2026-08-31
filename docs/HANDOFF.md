@@ -417,6 +417,15 @@ PWA acceptance 미검증도, file-restore approval 대기도 이 절차로 해�
   CLI 51건이 통과했다. 지정 원격 main에 `22d44cf`까지 push 완료. 창 열거·입력·UAC 등의
   live 동작은 실행하지 않았으며, CLI의 HWND 처리 수정도 외부 Computer Use 복구 증거가 아니다.
 
+## 제품 실행과 개발 도구의 경계
+
+2026-08-31 사용자 재확인: 제품 Agent가 Host/ExecutionBroker → MCP → 독립 CLI를 통해
+XG5000을 다루는 것이 목표다. Codex Computer Use는 이 실행 경로에 포함되지 않는다.
+앞 절의 Codex 창 활성화·캡처 실패는 개발 도구의 실패 기록일 뿐, 제품 Agent 작업 전체를
+중단하거나 사용자에게 XG5000 전면 클릭을 반복 요구할 근거가 아니다. 정상 제품 실행은
+Host의 run/event/transaction 및 CLI 결과를 기준으로 추적한다. 외부 도구가 거부한 동일
+UI 동작을 우회하지 않으며, 그 제한과 별개로 가능한 제품 구현·검증은 계속한다.
+
 ## 반복하지 말아야 할 것
 
 - 기능마다 Host/Agent/MCP/Web에 서로 다른 상태 규칙을 복제하지 않는다. 권위가 있는
