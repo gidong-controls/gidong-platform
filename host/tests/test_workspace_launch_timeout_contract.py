@@ -142,6 +142,17 @@ class _ReviewedCloseSuccessMCP:
         }
 
 
+class _InvalidReadAttachMCP(_ReviewedCloseSuccessMCP):
+    async def call_read_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        if name != "xg5000.attach":
+            raise AssertionError(f"unexpected read tool: {name}")
+        return {"session": {"pid": arguments.get("pid")}}
+
+
 class _IdleLaunchMCP:
     def __init__(self) -> None:
         self.status = MCPStatus(status="ready")
@@ -632,6 +643,137 @@ class WorkspaceLaunchTimeoutContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(
                 any(event.event_type == "xg5000.reviewed_no_save_closed" for event in events)
             )
+
+    def test_parked_native_project_lease_allows_only_verified_read_attach(self) -> None:
+        with TemporaryDirectory(prefix="controlstudio-stale-native-attach-") as raw_directory:
+            root = Path(raw_directory)
+            project_path = str((root / "working" / "machine.xgwx").resolve())
+            project_hash = "a" * 64
+            config = HostConfig(
+                database_path=root / "host.sqlite3",
+                knowledge_database_path=root / "knowledge.sqlite3",
+                static_dir=root / "missing-web-dist",
+                launch_token="stale-native-attach-test-token-0123456789",
+                release_channel="production",
+            )
+            store = HostStore(config.database_path)
+            store.acquire_target_operation_lease(
+                operation_id="native-project-stale",
+                owner_kind="native_project_create",
+                holder_token="native-project-holder",
+                target_identity={"operationId": "native-project-stale"},
+            )
+            store.park_target_operation_lease(
+                operation_id="native-project-stale",
+                holder_token="native-project-holder",
+                reason="native_simulation_trial_requires_decision_or_recovery",
+            )
+            mcp = _ReviewedCloseSuccessMCP(
+                project_path=project_path,
+                project_hash=project_hash,
+            )
+            app = create_app(config, store=store, mcp=cast(Any, mcp))
+
+            with TestClient(app, base_url="http://localhost:8767") as client:
+                handoff = client.post(
+                    "/api/launcher/handoff",
+                    headers={"Authorization": f"Bearer {config.launch_token}"},
+                )
+                self.assertEqual(handoff.status_code, 201, handoff.text)
+                browser_session = client.post(
+                    "/api/session",
+                    headers={"Authorization": f"Bearer {handoff.json()['handoffTicket']}"},
+                )
+                self.assertEqual(browser_session.status_code, 200, browser_session.text)
+                client.headers.update(
+                    {"Authorization": f"Bearer {browser_session.json()['sessionToken']}"}
+                )
+                bootstrap = client.get("/api/v1/bootstrap")
+                self.assertEqual(bootstrap.status_code, 200, bootstrap.text)
+
+                attached = client.post(
+                    "/api/v1/xg5000/attach",
+                    json={"pid": 101, "hwnd": 202},
+                )
+                self.assertEqual(attached.status_code, 200, attached.text)
+                self.assertEqual(mcp.agent_session["session_id"], "reviewed-close-session")
+
+                blocked_close = client.post(
+                    "/api/v1/xg5000/reviewed-no-save-close",
+                    headers={"X-ControlStudio-CSRF": bootstrap.json()["csrfToken"]},
+                    json={
+                        "sessionId": "reviewed-close-session",
+                        "pid": 101,
+                        "hwnd": 202,
+                        "processCreateTime": 123.0,
+                        "projectPath": project_path,
+                        "projectHash": project_hash,
+                        "confirmNoSave": True,
+                    },
+                )
+                self.assertEqual(blocked_close.status_code, 409, blocked_close.text)
+                self.assertIn("requires explicit recovery", blocked_close.text)
+                self.assertEqual(mcp.workspace_calls, [])
+
+            lease = store.active_target_operation_lease()
+            self.assertIsNotNone(lease)
+            assert lease is not None
+            self.assertEqual(lease["operation_id"], "native-project-stale")
+            self.assertEqual(lease["state"], "STALE_BLOCKED")
+
+    def test_parked_native_project_lease_does_not_hide_invalid_read_attach(self) -> None:
+        with TemporaryDirectory(prefix="controlstudio-stale-native-invalid-attach-") as raw_directory:
+            root = Path(raw_directory)
+            config = HostConfig(
+                database_path=root / "host.sqlite3",
+                knowledge_database_path=root / "knowledge.sqlite3",
+                static_dir=root / "missing-web-dist",
+                launch_token="stale-native-invalid-attach-test-token-0123456789",
+                release_channel="production",
+            )
+            store = HostStore(config.database_path)
+            store.acquire_target_operation_lease(
+                operation_id="native-project-stale",
+                owner_kind="native_project_create",
+                holder_token="native-project-holder",
+                target_identity={"operationId": "native-project-stale"},
+            )
+            store.park_target_operation_lease(
+                operation_id="native-project-stale",
+                holder_token="native-project-holder",
+                reason="native_simulation_trial_requires_decision_or_recovery",
+            )
+            mcp = _InvalidReadAttachMCP(
+                project_path=str((root / "working" / "machine.xgwx").resolve()),
+                project_hash="a" * 64,
+            )
+            app = create_app(config, store=store, mcp=cast(Any, mcp))
+
+            with TestClient(app, base_url="http://localhost:8767") as client:
+                handoff = client.post(
+                    "/api/launcher/handoff",
+                    headers={"Authorization": f"Bearer {config.launch_token}"},
+                )
+                browser_session = client.post(
+                    "/api/session",
+                    headers={"Authorization": f"Bearer {handoff.json()['handoffTicket']}"},
+                )
+                client.headers.update(
+                    {"Authorization": f"Bearer {browser_session.json()['sessionToken']}"}
+                )
+
+                attached = client.post(
+                    "/api/v1/xg5000/attach",
+                    json={"pid": 101, "hwnd": 202},
+                )
+                self.assertEqual(attached.status_code, 409, attached.text)
+                self.assertIn("읽기 세션을 확인하지 못했습니다", attached.text)
+                self.assertIsNone(mcp.agent_session)
+
+            lease = store.active_target_operation_lease()
+            self.assertIsNotNone(lease)
+            assert lease is not None
+            self.assertEqual(lease["state"], "STALE_BLOCKED")
 
     def test_unbound_existing_target_does_not_inherit_active_workspace_identity(self) -> None:
         request = AttachXG5000RequestV1(

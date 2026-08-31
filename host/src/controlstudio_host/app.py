@@ -550,6 +550,12 @@ _AGENT_TOOL_EVIDENCE: dict[str, tuple[str, str, str, str]] = {
         "현재 Host에 결합된 XG5000 읽기 세션 상태를 확인했습니다.",
         "confirmed",
     ),
+    "sim.target_status": (
+        "validation",
+        "XG-SIM 대상 상태",
+        "선택된 XG5000 상태 표시줄을 읽기 전용으로 확인했습니다.",
+        "confirmed",
+    ),
     "project.list_programs": (
         "program_location",
         "프로그램 목록",
@@ -4429,6 +4435,7 @@ def create_app(
                     ),
                 )
             )
+        lease_acquired = False
         try:
             store.acquire_target_operation_lease(
                 operation_id=operation_id,
@@ -4436,31 +4443,43 @@ def create_app(
                 holder_token=holder_token,
                 target_identity=request_identity,
             )
+            lease_acquired = True
         except TargetOperationLeaseConflict as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            parked_lease = store.active_target_operation_lease()
+            if not (
+                request.url.path == "/api/v1/xg5000/attach"
+                and exc.stale
+                and exc.owner_kind == "native_project_create"
+                and isinstance(parked_lease, dict)
+                and parked_lease.get("operation_id") == exc.operation_id
+                and parked_lease.get("owner_kind") == "native_project_create"
+                and parked_lease.get("state") == "STALE_BLOCKED"
+            ):
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         try:
             yield
         finally:
-            current_native_operation = (
-                native_project_repository.get(native_trial_operation.operation_id)
-                if native_trial_operation is not None
-                else None
-            )
-            if (
-                current_native_operation is not None
-                and _native_project_target_lease_must_remain(current_native_operation)
-            ):
-                store.park_target_operation_lease(
-                    operation_id=operation_id,
-                    holder_token=holder_token,
-                    reason="native_simulation_trial_requires_decision_or_recovery",
+            if lease_acquired:
+                current_native_operation = (
+                    native_project_repository.get(native_trial_operation.operation_id)
+                    if native_trial_operation is not None
+                    else None
                 )
-            else:
-                store.release_target_operation_lease(
-                    operation_id=operation_id,
-                    holder_token=holder_token,
-                    reason=f"{owner_kind}_request_finished",
-                )
+                if (
+                    current_native_operation is not None
+                    and _native_project_target_lease_must_remain(current_native_operation)
+                ):
+                    store.park_target_operation_lease(
+                        operation_id=operation_id,
+                        holder_token=holder_token,
+                        reason="native_simulation_trial_requires_decision_or_recovery",
+                    )
+                else:
+                    store.release_target_operation_lease(
+                        operation_id=operation_id,
+                        holder_token=holder_token,
+                        reason=f"{owner_kind}_request_finished",
+                    )
 
     def publish_change_event(
         event_type: str,
