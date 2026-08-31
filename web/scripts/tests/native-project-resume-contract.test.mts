@@ -18,3 +18,31 @@ test("native project resume is explicit and bound to the stored request target",
   assert.match(client, /resumeNativeProject\(/);
   assert.match(client, /\/api\/v1\/native-projects\/\$\{encodeURIComponent\(nativeProjectId\)\}\/resume/);
 });
+
+test("completed saved native projects explicitly bind a distinct fresh reopen target", () => {
+  const panel = readFileSync(
+    new URL("../../src/components/NativeProjectPanel.tsx", import.meta.url),
+    "utf8",
+  );
+  const contracts = readFileSync(
+    new URL(
+      "../../../packages/typescript/controlstudio-contracts/src/index.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+
+  assert.match(panel, /const completedVerificationContinuation =/);
+  assert.match(panel, /const continueCompletedVerification = async/);
+  assert.match(panel, /pid: sourcePid,/);
+  assert.match(panel, /hwnd: sourceHwnd,/);
+  assert.match(panel, /reopenedPid: selectedReopenedInstance\.pid,/);
+  assert.match(panel, /reopenedHwnd: selectedReopenedInstance\.hwnd,/);
+  assert.match(panel, /instance\.pid !== operation\.request\.xg5000Pid/);
+  assert.match(panel, /새 프로젝트 생성, IL 삽입, 창 종료, 자동 재시도는 하지/);
+  assert.match(panel, /명시적 채택 전에는 엔지니어링 준비 완료가 아닙니다/);
+  assert.match(
+    contracts,
+    /interface ResumeNativeProjectRequest \{[\s\S]*reopenedPid\?: number;[\s\S]*reopenedHwnd\?: number;/,
+  );
+});

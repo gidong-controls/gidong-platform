@@ -1460,6 +1460,8 @@ export interface ResumeNativeProjectRequest {
   pid: number;
   hwnd: number;
   expectedRequestDigest: string;
+  reopenedPid?: number;
+  reopenedHwnd?: number;
 }
 
 export interface NativeProjectResumedResponse {
