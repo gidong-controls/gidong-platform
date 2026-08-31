@@ -7,14 +7,14 @@
       "id": "agent-mission-resume-and-approval",
       "ca_ids": ["CA-03", "CA-04", "CA-11"],
       "cwd": "gidong-agent",
-      "command": [".venv/Scripts/python.exe", "-m", "unittest", "tests.test_engineering_agent_resume", "tests.test_sidecar_host_tool_results"],
+      "command": [".venv/Scripts/python.exe", "-m", "unittest", "tests.test_engineering_agent_resume", "tests.test_offline_operand_mission", "tests.test_sidecar_host_tool_results"],
       "timeout_seconds": 300
     },
     {
       "id": "host-change-execution-and-field-io",
       "ca_ids": ["CA-03", "CA-04", "CA-05", "CA-06", "CA-08", "CA-09", "CA-10"],
       "cwd": "gidong-platform/host",
-      "command": [".venv/Scripts/python.exe", "-m", "unittest", "tests.test_agent_resume_transport", "tests.test_engineering_change_mission_vertical", "tests.test_change_execution_vertical", "tests.test_field_io_evidence_projection", "tests.test_change_recovery_relaunch", "tests.test_recovered_change_session_rebind", "tests.test_host_restart"],
+      "command": [".venv/Scripts/python.exe", "-m", "unittest", "tests.test_agent_resume_transport", "tests.test_engineering_change_mission_vertical", "tests.test_offline_operand_mission", "tests.test_change_execution_vertical", "tests.test_field_io_evidence_projection", "tests.test_change_recovery_relaunch", "tests.test_recovered_change_session_rebind", "tests.test_host_restart"],
       "timeout_seconds": 360
     },
     {

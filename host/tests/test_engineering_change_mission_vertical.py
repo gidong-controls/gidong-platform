@@ -192,59 +192,55 @@ def _ready_change_target_evidence_contract(
 
 
 def _ready_internal_m_change_target_evidence_contract() -> dict[str, Any]:
-    unsigned: dict[str, Any] = {
-        "schema": "xg5000.program.change-target-analysis/1.1",
-        "target": {
-            "program_id": "program-1",
-            "program_name": "MainProgram",
-            "value_token_offset": 1,
-            "value": "M0010",
-            "record_kind": "CONTACT_NO",
-            "visual_row": 0,
-            "column": 0,
-            "network_id": "network-1",
-            "network_digest": "d" * 64,
-            "network_index": 0,
-            "network_semantic_status": "structural",
-            "rung_id": "rung-1",
-            "rung_role": "condition",
-            "rung_semantic_status": "structural",
-        },
-        "current_semantics": {
+    project_binding = {
+        "session_id": "mission-fixture-xg5000-session",
+        "pid": _XG5000_PID,
+        "hwnd": _XG5000_HWND,
+        "project_hash": _WORKING_HASH,
+    }
+    contract: dict[str, Any] = {
+        "schema": "controlstudio-change-target-evidence/v2",
+        "analysisDigest": "a" * 64,
+        "projectBindingDigest": _canonical_digest(project_binding),
+        "programId": "program-1",
+        "programName": "MainProgram",
+        "valueTokenOffset": 1,
+        "currentValue": "M0010",
+        "proposedValue": "M0011",
+        "recordKind": "CONTACT_NO",
+        "visualRow": 0,
+        "column": 0,
+        "networkId": "network-1",
+        "networkDigest": "d" * 64,
+        "networkIndex": 0,
+        "networkSemanticStatus": "structural",
+        "rungId": "rung-1",
+        "rungRole": "condition",
+        "rungSemanticStatus": "structural",
+        "currentSemantics": {
             "status": "confirmed",
             "kind": "contact_operand",
             "device": "M0010",
         },
-        "proposed_semantics": {
+        "proposedSemantics": {
             "status": "confirmed",
             "kind": "contact_operand",
             "device": "M0011",
         },
-        "proposed_value": "M0011",
-        "project_binding": {
-            "session_id": "mission-fixture-xg5000-session",
-            "pid": _XG5000_PID,
-            "hwnd": _XG5000_HWND,
-            "project_hash": _WORKING_HASH,
-        },
-        "hardware_context_binding": None,
-        "impact": {
-            "primary_devices": ["M0010", "M0011"],
-            "physical_io_candidates": [],
-            "physical_output_candidates": [],
-            "multiple_writer_devices": [],
-            "physical_io_hardware_bindings": [],
-        },
-        "blocking_reasons": [],
-        "offline_candidate_ready": True,
-        "runtime_deployment_ready": False,
-        "runtime_deployment_blocking_reasons": [
+        "primaryDevices": ["M0010", "M0011"],
+        "physicalIoCandidates": [],
+        "physicalIoBindings": [],
+        "physicalOutputCandidates": [],
+        "multipleWriterDevices": [],
+        "hardwareContextBinding": None,
+        "offlineCandidateReady": True,
+        "blockingReasons": [],
+        "runtimeDeploymentReady": False,
+        "runtimeDeploymentBlockingReasons": [
             "online_runtime_deployment_unsupported"
         ],
     }
-    return MCPExecutionBroker._change_target_evidence_contract(
-        {"analysis": {**unsigned, "analysis_digest": _canonical_digest(unsigned)}}
-    )
+    return {**contract, "receiptDigest": _canonical_digest(contract)}
 
 
 def _workspace(root: Path) -> dict[str, Any]:

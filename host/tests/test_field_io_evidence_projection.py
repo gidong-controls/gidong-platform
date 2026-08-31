@@ -97,7 +97,81 @@ def _runtime_warning_analysis() -> dict[str, object]:
     return {**analysis, "analysis_digest": _canonical_digest(analysis)}
 
 
+def _internal_m_analysis(*, record_kind: str = "OUTPUT") -> dict[str, object]:
+    analysis = _analysis(include_binding=False)
+    analysis.pop("analysis_digest")
+    target = analysis["target"]
+    assert isinstance(target, dict)
+    target.update(
+        value="M0010", record_kind=record_kind,
+        rung_role="output" if record_kind == "OUTPUT" else "condition",
+    )
+    semantic_kind = "coil_operand" if record_kind == "OUTPUT" else "contact_operand"
+    analysis["current_semantics"] = {
+        "kind": semantic_kind, "status": "confirmed", "device": "M0010",
+    }
+    analysis["proposed_semantics"] = {
+        "kind": semantic_kind, "status": "confirmed", "device": "M0011",
+    }
+    analysis["proposed_value"] = "M0011"
+    analysis["hardware_context_binding"] = None
+    analysis["impact"] = {
+        "primary_devices": ["M0010", "M0011"],
+        "physical_io_candidates": [], "physical_output_candidates": [],
+        "multiple_writer_devices": [], "physical_io_hardware_bindings": [],
+    }
+    return {**analysis, "analysis_digest": _canonical_digest(analysis)}
+
+
 class FieldIoEvidenceProjectionTests(unittest.TestCase):
+    def test_projects_internal_m_contact_and_coil_without_hardware(self) -> None:
+        for record_kind in ("CONTACT_NO", "OUTPUT"):
+            with self.subTest(record_kind=record_kind):
+                receipt = MCPExecutionBroker._change_target_evidence_contract(
+                    {"analysis": _internal_m_analysis(record_kind=record_kind)}
+                )
+                self.assertEqual(receipt["schema"], "controlstudio-change-target-evidence/v2")
+                self.assertTrue(receipt["offlineCandidateReady"])
+                self.assertIsNone(receipt["hardwareContextBinding"])
+                self.assertEqual(receipt["physicalIoCandidates"], [])
+                self.assertEqual(receipt["currentValue"], "M0010")
+                self.assertEqual(receipt["proposedValue"], "M0011")
+                self.assertFalse(receipt["runtimeDeploymentReady"])
+
+    def test_internal_m_projection_still_accepts_existing_hardware_binding(self) -> None:
+        analysis = _internal_m_analysis()
+        analysis.pop("analysis_digest")
+        analysis["hardware_context_binding"] = _analysis(include_binding=True)[
+            "hardware_context_binding"
+        ]
+        analysis["analysis_digest"] = _canonical_digest(analysis)
+        receipt = MCPExecutionBroker._change_target_evidence_contract({"analysis": analysis})
+        self.assertEqual(receipt["hardwareContextBinding"]["context_digest"], "c" * 64)
+
+    def test_hardware_free_m_exception_does_not_accept_unknown_or_timer_semantics(self) -> None:
+        for semantics in ({}, {"kind": "timer_instruction", "status": "confirmed", "device": "M0010"}):
+            with self.subTest(semantics=semantics):
+                analysis = _internal_m_analysis()
+                analysis.pop("analysis_digest")
+                analysis["current_semantics"] = semantics
+                analysis["analysis_digest"] = _canonical_digest(analysis)
+                with self.assertRaisesRegex(MCPToolError, "required hardware context"):
+                    MCPExecutionBroker._change_target_evidence_contract({"analysis": analysis})
+
+    def test_physical_target_or_internal_target_with_physical_impact_still_needs_hardware(self) -> None:
+        for internal_target in (False, True):
+            with self.subTest(internal_target=internal_target):
+                analysis = _analysis(include_binding=True)
+                analysis.pop("analysis_digest")
+                analysis["hardware_context_binding"] = None
+                if internal_target:
+                    internal = _internal_m_analysis()
+                    for field in ("target", "current_semantics", "proposed_semantics", "proposed_value"):
+                        analysis[field] = internal[field]
+                analysis["analysis_digest"] = _canonical_digest(analysis)
+                with self.assertRaisesRegex(MCPToolError, "required hardware context"):
+                    MCPExecutionBroker._change_target_evidence_contract({"analysis": analysis})
+
     def test_projects_exact_typed_terminal_binding(self) -> None:
         receipt = MCPExecutionBroker._change_target_evidence_contract(
             {"analysis": _analysis(include_binding=True)}

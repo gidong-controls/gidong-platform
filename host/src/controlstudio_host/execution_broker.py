@@ -31,6 +31,7 @@ from .api_models import (
     MneInstructionPatchCandidateV4,
     MneRungPatchCandidateV6,
     MneSeriesGuardCandidateV3,
+    is_hardware_free_m_operand_target,
 )
 from .mcp_client import (
     AGENT_CONTROLLER_MCP_TOOLS,
@@ -1381,7 +1382,11 @@ class MCPExecutionBroker:
                 or len(hardware_digest) != 64
             ):
                 raise MCPToolError("change target evidence has an invalid hardware binding")
-        elif (
+        elif not is_hardware_free_m_operand_target(
+            contract,
+            {"value": contract["currentValue"], "semantics": contract["currentSemantics"]},
+            {"value": contract["proposedValue"], "semantics": contract["proposedSemantics"]},
+        ) and (
             contract["offlineCandidateReady"] is True
             or "hardware_context_unobserved" not in blockers
         ):
