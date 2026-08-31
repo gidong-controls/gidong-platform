@@ -380,7 +380,7 @@ PLC 연결·쓰기, 현재 controller runtime과 XG-SIM 시나리오는 이 재�
 - **reviewed plan 기반 XGK/XGB 시퀀스·타이머·알람·복구 프로그램 계약:** 구현·runtime 검증
 - **일반 신규 구축과 실제 XG5000 적용:** 미완료
 - **production 배포:** 미완료
-- **실제 PLC online 기능:** 미검증
+- **실제 PLC online 기능:** 현재 장비가 없어 현 개발·릴리스 범위에서 제외; G3/G4 장비 확보 후 로드맵
 
 ## 10. 남은 제품 로드맵과 승격 게이트
 
@@ -400,8 +400,7 @@ PLC 연결·쓰기, 현재 controller runtime과 XG-SIM 시나리오는 이 재�
 - 지원 XG5000·XG-SIM·Windows·CPU 조합을 명시
 - 안전한 실제 XG5000 working copy에서 packaged product read 경로 재검증
 - 실제 XGWX timer-area·I/O inventory readback을 대표 프로젝트로 확대하고
-  다른 CPU family의 module/point address profile·외부 배선·module health·현재 PLC runtime 근거를 보강
-- 컨트롤러 strong identity와 restore/compare 구현·실기 검증
+  다른 CPU family의 프로젝트 선언 module/point address profile을 보강
 - 프로그램 구조·cross-reference·logic graph·근거 탐색의 대표 프로젝트 acceptance 통과
 
 ### G2 — LS 신규 구축과 일반 오프라인 편집
@@ -412,12 +411,17 @@ PLC 연결·쓰기, 현재 controller runtime과 XG-SIM 시나리오는 이 재�
 
 ### G3 — 실제 online observe
 
+- 물리 PLC 장비와 안전한 시험 환경이 확보된 뒤에만 착수한다. 장비가 없는 현재 단계의
+  완료 조건, blocker 또는 acceptance 미통과 항목으로 계산하지 않는다.
+- 컨트롤러 strong identity와 restore/compare 구현·실기 검증
+- 외부 배선·module health·현재 PLC runtime 근거 수집
 - 실제 장비 identity와 권한을 결속한 device value, trace, alarm read
 - disconnect·stale target·project mismatch·통신 오류 fail-closed 검증
 - 관측 evidence와 진단 가설을 UI·audit에서 구분
 
 ### G4 — 승인된 실제 변경
 
+- G3 장비·시험 환경과 관측 acceptance가 확보된 이후에만 활성화한다.
 - 실제 PLC write, download, mode change, run edit와 force를 capability별로 별도 승인
 - 현장 안전 절차, 백업·readback·reopen·rollback·crash recovery 실기 gate 통과
 - 지원 vendor/CPU/firmware 조합별 enablement; 미검증 조합은 계속 비활성
@@ -455,6 +459,10 @@ pilot 전에 대표 LS 프로젝트와 실제 사용자 작업 집합을 고정�
 ## 12. 릴리스 완료 기준
 
 어떤 capability든 다음 증거가 모두 있어야 지원 완료로 표시할 수 있다.
+
+현재 릴리스의 완료 범위는 XG5000 프로젝트 read/analysis, 오프라인 LD 작업과 XG-SIM까지다.
+물리 PLC online observe/write는 장비 확보 후 G3/G4에서 별도 capability로 승격하며, 현재
+릴리스나 현재 개발 작업의 완료를 막지 않는다.
 
 1. 지원 vendor·제품·버전·환경과 비지원 범위가 명시돼 있다.
 2. 공개 계약과 production 구현이 일치하고 각 component가 실제 runtime으로 로드된다.

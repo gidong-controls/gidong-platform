@@ -72,9 +72,10 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   `54a7482d`는 프로그램 목록 읽기 뒤 `continuation_contract`로 실패해 미해결이다. event `2693`의
   continue checkpoint는 정상 선택이 아니라 예외 뒤 evidence 보존 기록이므로 전환 덮어쓰기의 원인으로
   단정하지 않는다.
-- 과거 XG-SIM trial은 `QUARANTINED`, engineered readiness는 false로 보존된다. 물리 PLC I/O와
-  XG-SIM acceptance는 실시하지 않았고, 전체 CLI vendor-core 독립도 아직 완료되지 않았다. 별도
-  복구 기능은 사용자 지시로 제외한다.
+- 과거 XG-SIM trial은 `QUARANTINED`, engineered readiness는 false로 보존된다. XG-SIM
+  acceptance와 전체 CLI vendor-core 독립은 아직 완료되지 않았다. 물리 PLC I/O는 현재 장비가
+  없어 현재 완료 범위와 blocker에서 제외하고 PRD G3/G4 로드맵으로 이관했다. 별도 복구 기능은
+  사용자 지시로 제외한다.
 
 ## 2026-08-31 21:57 KST native resume: 독립 재열기 검증 완료, XG-SIM 실패 기록
 

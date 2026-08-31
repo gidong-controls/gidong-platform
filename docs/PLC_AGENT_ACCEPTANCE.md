@@ -41,6 +41,11 @@ connects over SSH.
 
 ## External live gates
 
+현재 manifest의 live gate는 XG5000 프로젝트·오프라인 LD와 remote handoff 범위다. 물리 PLC
+장비가 필요한 online observe/write acceptance는 현재 gate가 아니며, 장비 확보 후 PRD G3/G4용
+별도 manifest로 추가한다. 따라서 물리 PLC가 없다는 사실은 이 harness의 `NOT_RUN`이나 현재
+작업의 blocker 사유가 아니다.
+
 CA-01, CA-02, the CA-04--CA-07 approved-mutation/fresh-reopen vertical, and
 CA-12 need a separately captured live receipt. They remain `NOT_RUN`, and the
 overall result remains `FAIL_CLOSED`, until each gate receives a JSON file via:
