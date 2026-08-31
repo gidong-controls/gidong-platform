@@ -1846,6 +1846,138 @@ class EngineeringChangeMissionVerticalTests(unittest.TestCase):
                 self.assertEqual(scenario.mne_planner_available, [True])
                 self.assertEqual(mcp.mne_capability_status(), "missing")
 
+    def test_completed_analysis_mission_accepts_a_new_analysis_objective(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="controlstudio-fresh-analysis-") as temporary:
+            root = Path(temporary)
+            config = self._config(root)
+            workspace = _workspace(root)
+            store = HostStore(config.database_path)
+            store.set_host_state("active_workspace", workspace)
+            scenario = _MissionScenario(capture_mne_planner_only=True)
+            app, mcp = self._app(
+                config=config,
+                store=store,
+                workspace=workspace,
+                scenario=scenario,
+            )
+
+            with TestClient(app, base_url="http://localhost:8765") as client:
+                _authenticate(client, config)
+                _wait_for_workspace_binding(mcp)
+                _attach_workspace(client, workspace)
+                conversation_id = self._create_conversation(client)
+                _message, terminal_run, created = store.create_user_message_and_run(
+                    conversation_id=conversation_id,
+                    content="Read MainProgram.",
+                    operation_id="completed-terminal-read",
+                    workflow="engineering",
+                    message_metadata={
+                        "workflow": "engineering",
+                        "change_request_scope": "analysis_only",
+                    },
+                    run_metadata={
+                        "workflow": "engineering",
+                        "change_request_scope": "analysis_only",
+                    },
+                )
+                self.assertTrue(created)
+                self.assertIsNotNone(terminal_run)
+                assert terminal_run is not None
+                terminal_mission = _canonical_mission(
+                    {
+                        "schemaVersion": "1",
+                        "objective": "Read MainProgram.",
+                        "status": "completed",
+                        "completionCriteria": ["Return the program read."],
+                        "steps": [
+                            {
+                                "stepId": "read-main-program",
+                                "title": "Read MainProgram",
+                                "status": "completed",
+                                "outcome": "The program was read.",
+                                "evidenceRefs": [],
+                            }
+                        ],
+                        "activeStepId": None,
+                        "blockingQuestions": [],
+                        "nextAction": None,
+                        "stopReason": "objective_achieved",
+                    }
+                )
+                terminal_digest = _canonical_digest(terminal_mission)
+                terminal_checkpoint = {
+                    "schemaVersion": "1",
+                    "cycle": 1,
+                    "missionDigest": terminal_digest,
+                    "messages": [],
+                }
+                store.checkpoint_engineering_mission(
+                    conversation_id=conversation_id,
+                    run_id=terminal_run.id,
+                    cycle=1,
+                    cycle_disposition="respond",
+                    engineering_mission=terminal_mission,
+                    digest=terminal_digest,
+                    agent_checkpoint=terminal_checkpoint,
+                    agent_checkpoint_digest=_canonical_digest(terminal_checkpoint),
+                    final_message_content="Initial read complete.",
+                    final_message_metadata={
+                        "workflow": "engineering",
+                        "engineering_mission_digest": terminal_digest,
+                    },
+                )
+                store.update_run_state(run_id=terminal_run.id, state=RunState.COMPLETED)
+
+                mutation = client.post(
+                    f"/api/v1/conversations/{conversation_id}/messages",
+                    headers={"Idempotency-Key": "completed-mission-mutation"},
+                    json={
+                        "content": "Change one reviewed operand.",
+                        "operationId": "completed-mission-mutation",
+                        "workflow": "engineering",
+                        "changeRequestScope": "offline_candidate_revision",
+                    },
+                )
+                self.assertEqual(mutation.status_code, 409, mutation.text)
+                self.assertIsNone(store.get_run_by_operation_id("completed-mission-mutation"))
+
+                response = client.post(
+                    f"/api/v1/conversations/{conversation_id}/messages",
+                    headers={"Idempotency-Key": "fresh-analysis-objective"},
+                    json={
+                        "content": "Read the current program structure.",
+                        "operationId": "fresh-analysis-objective",
+                        "workflow": "engineering",
+                        "changeRequestScope": "analysis_only",
+                    },
+                )
+                self.assertEqual(response.status_code, 202, response.text)
+                completed = _wait_for_run(store, str(response.json()["runId"]))
+
+                self.assertEqual(completed.state, RunState.COMPLETED)
+                self.assertEqual(scenario.runtime_calls, 1)
+                durable = store.get_engineering_mission(conversation_id)
+                self.assertIsNotNone(durable)
+                assert durable is not None
+                self.assertNotEqual(durable.digest, terminal_digest)
+                self.assertEqual(
+                    durable.engineering_mission["objective"],
+                    "Read the current program structure.",
+                )
+                events = store.list_events(conversation_id=conversation_id, limit=100)
+                self.assertTrue(
+                    any(
+                        event.run_id == terminal_run.id
+                        and event.event_type == "mission.checkpointed"
+                        and event.payload["digest"] == terminal_digest
+                        for event in events
+                    )
+                )
+                self.assertEqual(
+                    store.get_engineering_agent_checkpoint(conversation_id).updated_by_run_id,
+                    completed.id,
+                )
+
     def test_same_run_proposal_rejects_a_non_approval_wait_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory(prefix="controlstudio-mission-invariant-") as temporary:
             root = Path(temporary)

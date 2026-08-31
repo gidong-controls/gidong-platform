@@ -7932,6 +7932,7 @@ def create_app(
             linked_terminal_change_state: ChangeTransactionState | None = None
             current_change_outcome: dict[str, Any] | None = None
             current_change_outcome_evidence: dict[str, Any] | None = None
+            fresh_completed_analysis_objective = False
             if stored_engineering_mission is not None:
                 if (
                     stored_engineering_mission.workspace_id != detail.workspace_id
@@ -8067,6 +8068,11 @@ def create_app(
                     raise AgentRunPreconditionError(
                         "mission continuation change outcome binding changed"
                     )
+                fresh_completed_analysis_objective = (
+                    not engineering_mission_continue
+                    and change_request_scope == "analysis_only"
+                    and engineering_mission_snapshot.get("status") == "completed"
+                )
             if engineering_mission_continue and engineering_mission_snapshot is None:
                 raise AgentRunPreconditionError(
                     "engineering mission continuation has no durable checkpoint"
@@ -8109,6 +8115,19 @@ def create_app(
                 raise AgentRunPreconditionError(
                     "approval-waiting mission no longer matches its pending change"
                 )
+            if fresh_completed_analysis_objective:
+                # A completed analysis-only mission may be followed by a new
+                # analysis objective in the same conversation.  The previous
+                # mission/checkpoint and its evidence remain journaled; this
+                # run starts a normal new durable mission instead of resuming it.
+                engineering_mission_snapshot = None
+                engineering_agent_checkpoint = None
+                historical_evidence_bundle = None
+                mission_change_transaction_id = None
+                linked_change = None
+                linked_terminal_change_state = None
+                current_change_outcome = None
+                current_change_outcome_evidence = None
             target_live_change_transaction = (
                 store.live_change_approval_transaction(
                     mutation_scope=f"workspace:{detail.workspace_id}",
@@ -9475,7 +9494,15 @@ def create_app(
                             status_code=status.HTTP_409_CONFLICT,
                             detail="stored engineering mission digest does not match",
                         )
-                    if terminal_snapshot["status"] in {"completed", "blocked"}:
+                    allows_fresh_completed_analysis = (
+                        body.workflow == "engineering"
+                        and effective_change_request_scope == "analysis_only"
+                        and terminal_snapshot["status"] == "completed"
+                    )
+                    if (
+                        terminal_snapshot["status"] in {"completed", "blocked"}
+                        and not allows_fresh_completed_analysis
+                    ):
                         raise HTTPException(
                             status_code=status.HTTP_409_CONFLICT,
                             detail=(
