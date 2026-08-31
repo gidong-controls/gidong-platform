@@ -14014,16 +14014,12 @@ def create_app(
             if not isinstance(reopen, dict) or reopen.get("state") != "verified":
                 return None
             session = reopen.get("session")
-            receipt = reopen.get("receipt")
             workspace = registration.get("workspace") if isinstance(registration, dict) else None
             working = workspace.get("working_copy") if isinstance(workspace, dict) else None
             if not (
                 isinstance(session, dict)
                 and session.get("pid") == body.pid
                 and session.get("hwnd") == body.hwnd
-                and isinstance(receipt, dict)
-                and receipt.get("reopenedProcess")
-                == {"pid": body.pid, "hwnd": body.hwnd, "independent": True}
                 and isinstance(working, dict)
                 and isinstance(working.get("path"), str)
                 and isinstance(working.get("current_sha256"), str)
@@ -14031,26 +14027,16 @@ def create_app(
                 return None
             project_path = working["path"]
             project_hash = working["current_sha256"]
-            project_readback = receipt.get("projectReadback")
             try:
-                exact_path = (
-                    _normalized_workspace_path(str(session.get("project_path") or ""))
-                    == _normalized_workspace_path(project_path)
-                    and isinstance(project_readback, dict)
-                    and _normalized_workspace_path(
-                        str(project_readback.get("projectPath") or "")
-                    )
-                    == _normalized_workspace_path(project_path)
-                )
+                exact_path = _normalized_workspace_path(
+                    str(session.get("project_path") or "")
+                ) == _normalized_workspace_path(project_path)
             except (OSError, RuntimeError, ValueError):
                 return None
             if not (
                 exact_path
                 and str(session.get("project_hash") or "").casefold()
                 == project_hash.casefold()
-                and project_readback.get("projectSha256") == project_hash
-                and project_readback.get("projectUnchanged") is True
-                and project_readback.get("identityAssurance") == "controlled_launch_read_only"
             ):
                 return None
             return {"project_path": project_path, "project_hash": project_hash}

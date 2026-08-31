@@ -838,19 +838,6 @@ class WorkspaceLaunchTimeoutContractTests(unittest.IsolatedAsyncioTestCase):
                             "project_path": project_path,
                             "project_hash": project_hash,
                         },
-                        "receipt": {
-                            "reopenedProcess": {
-                                "pid": 101,
-                                "hwnd": 202,
-                                "independent": True,
-                            },
-                            "projectReadback": {
-                                "projectPath": project_path,
-                                "projectSha256": project_hash,
-                                "projectUnchanged": True,
-                                "identityAssurance": "controlled_launch_read_only",
-                            },
-                        },
                     },
                 }
             )
@@ -887,6 +874,31 @@ class WorkspaceLaunchTimeoutContractTests(unittest.IsolatedAsyncioTestCase):
                             "access_profile": "analysis",
                             "project_path": project_path,
                             "project_hash": project_hash,
+                        },
+                    ),
+                )
+
+                explicit_path = str((root / "explicit.xgwx").resolve())
+                explicit = client.post(
+                    "/api/v1/xg5000/attach",
+                    json={
+                        "pid": 101,
+                        "hwnd": 202,
+                        "projectPath": explicit_path,
+                        "projectHash": "b" * 64,
+                    },
+                )
+                self.assertEqual(explicit.status_code, 409, explicit.text)
+                self.assertEqual(
+                    mcp.read_calls[-1],
+                    (
+                        "xg5000.attach",
+                        {
+                            "pid": 101,
+                            "hwnd": 202,
+                            "access_profile": "analysis",
+                            "project_path": explicit_path,
+                            "project_hash": "b" * 64,
                         },
                     ),
                 )
