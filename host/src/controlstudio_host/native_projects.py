@@ -981,6 +981,21 @@ def _xgb_64h_builtin_io_direction_mismatch(
     )
 
 
+def _canonical_native_io_address(address: str, plc_series: str) -> str | None:
+    """Expand XGK's compact reviewed P/M spelling to its native operand width."""
+
+    if plc_series == "XGK":
+        match = re.fullmatch(r"([PM])(\d{3,4})([0-9A-F])", address)
+        if match is None:
+            return None
+        return f"{match.group(1)}{match.group(2).zfill(4)}{match.group(3)}"
+    return (
+        address
+        if plc_series == "XGB" and re.fullmatch(r"[PM]\d{3}[0-9A-F]", address)
+        else None
+    )
+
+
 def _compile_native_program(
     artifact: dict[str, Any],
     *,
@@ -1033,9 +1048,6 @@ def _compile_native_program(
     )
 
     normalized_series = plc_series.strip().upper()
-    io_address_pattern = (
-        r"[PM]\d{4}[0-9A-F]" if normalized_series == "XGK" else r"[PM]\d{3}[0-9A-F]"
-    )
     io_by_id: dict[str, dict[str, Any]] = {}
     symbols: set[str] = set()
     addresses: set[str] = set()
@@ -1046,13 +1058,17 @@ def _compile_native_program(
         symbol = point.get("symbol")
         address = point.get("address")
         kind = point.get("kind")
+        canonical_address = (
+            _canonical_native_io_address(address, normalized_series)
+            if isinstance(address, str)
+            else None
+        )
         if (
             not isinstance(signal_id, str)
             or re.fullmatch(r"[a-z][a-z0-9_]*", signal_id) is None
             or not isinstance(symbol, str)
             or re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", symbol) is None
-            or not isinstance(address, str)
-            or re.fullmatch(io_address_pattern, address) is None
+            or canonical_address is None
             or kind not in {"digital_input", "digital_output", "internal_bit"}
             or point.get("normalState") not in {"on", "off", "unknown"}
             or point.get("safeState") not in {"on", "off", "not_applicable"}
@@ -1060,6 +1076,7 @@ def _compile_native_program(
             raise NativeProjectPreconditionError(
                 "native I/O point has an unsupported identifier, address, or state"
             )
+        address = canonical_address
         if _xgb_64h_builtin_io_direction_mismatch(
             cpu_model=cpu_model,
             address=address,
@@ -1073,7 +1090,7 @@ def _compile_native_program(
             raise NativeProjectPreconditionError(
                 "native I/O signal, symbol, and address values must be unique"
             )
-        io_by_id[signal_id] = point
+        io_by_id[signal_id] = {**point, "address": address}
         symbols.add(symbol.casefold())
         addresses.add(address.casefold())
 
