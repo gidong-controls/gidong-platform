@@ -4767,12 +4767,7 @@ class NativeProjectService:
             or not isinstance(program_check_data, dict)
             or program_check_data.get("status") != "passed"
             or program_check_data.get("error_count") != 0
-            or program_check != {
-                "status": program_check_data.get("status"),
-                "error_count": program_check_data.get("error_count"),
-                "program_id": program_check_data.get("program_id"),
-                "program_name": program_check_data.get("program_name"),
-            }
+            or program_check != program_check_data
             or not isinstance(save, dict)
             or save.get("hash_after") != actual_hash
             or program_apply.get("saved_project_sha256") != actual_hash

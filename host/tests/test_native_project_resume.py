@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 import unittest
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
 from controlstudio_host.native_projects import (
     NativeProjectConflict,
     NativeProjectOperation,
     NativeProjectService,
+    NativeProjectSpec,
 )
 
 
@@ -230,6 +233,138 @@ class NativeProjectResumeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(operation.state, "QUARANTINED")
         self.assertEqual(gateway.workspace_calls, ["project.resume_native"])
+
+    def test_resume_accepts_the_full_program_check_data_mapping(self) -> None:
+        with TemporaryDirectory() as temporary:
+            destination = Path(temporary).resolve()
+            project = destination / "ResumeProject.xgwx"
+            project.write_bytes(b"verified native project")
+            project_hash = hashlib.sha256(project.read_bytes()).hexdigest()
+            source = "LD M0000\nEND"
+            plan_digest = "b" * 64
+            bundle = {
+                "bundleId": "bundle-1",
+                "reviewedPlan": {"planDigest": "c" * 64},
+                "compiledProgram": {
+                    "source": source,
+                    "sourceSha256": hashlib.sha256(source.encode()).hexdigest(),
+                    "rungIds": ["rung-1"],
+                    "ladderIrSha256": "d" * 64,
+                },
+            }
+            spec = NativeProjectSpec(
+                operation_id=_OPERATION_ID,
+                project_name="ResumeProject",
+                workspace_parent=destination.parent,
+                plc_series="XGK",
+                cpu_model="XGK-CPUH",
+                program_name="MainProgram",
+                language="LD",
+                description="reviewed",
+                xg5000_pid=101,
+                xg5000_hwnd=202,
+            )
+            authorization = {
+                "authorization_id": "auth-1",
+                "nonce": "nonce-1",
+                "actor_id": "browser:current",
+                "plan_digest": plan_digest,
+                "build_bundle_id": "bundle-1",
+            }
+            check_data = {
+                "status": "passed",
+                "error_count": 0,
+                "program_id": "program-id",
+                "program_name": "MainProgram",
+                "command": {"profile_id": "real-native-command"},
+                "fresh_transition": {"fresh": True, "kind": "pane"},
+            }
+            receipt = {
+                "schemaVersion": "controlstudio-native-build-receipt/v3",
+                "bundleId": "bundle-1",
+                "phase": "engineered_control_program",
+                "status": "APPLIED_VERIFIED",
+                "reviewedPlanDigest": "c" * 64,
+                "nativeReadback": {
+                    "projectName": "ResumeProject",
+                    "projectPath": str(project.resolve()),
+                    "projectSha256": project_hash,
+                    "projectSize": project.stat().st_size,
+                    "destinationDirectory": str(destination.resolve()),
+                    "plcSeries": "XGK",
+                    "cpuModel": "XGK-CPUH",
+                    "programName": "MainProgram",
+                    "language": "LD",
+                    "description": "reviewed",
+                    "identityVerified": True,
+                },
+                "programReadback": {
+                    "rungCount": 1,
+                    "rungIds": ["rung-1"],
+                    "ladderIrSha256": "d" * 64,
+                    "sourceSha256": bundle["compiledProgram"]["sourceSha256"],
+                    "exactInstructionReadback": source.splitlines(),
+                    "finalView": "LD",
+                    "programCheckPassed": True,
+                    "savedProjectSha256": project_hash,
+                },
+            }
+            raw = {
+                "ok": True,
+                "verified": True,
+                "operation": "project.resume_native",
+                "pid": 101,
+                "hwnd": 202,
+                "plan_digest": plan_digest,
+                "controller_connected": False,
+                "plc_write_performed": False,
+                "resume_provenance": {
+                    "mode": "observed_existing_project",
+                    "lifecycle_mode": "resume_existing_verified_source",
+                    "no_new_dialog": True,
+                    "no_il_insert": True,
+                    "observed_program_id": "program-id",
+                    "observed_program_name": "MainProgram",
+                },
+                "authorization": {**authorization, "signature_verified": True, "consumed": True},
+                "project_path": str(project),
+                "project_sha256": project_hash,
+                "project_size": project.stat().st_size,
+                "program_apply": {
+                    "status": "APPLIED_VERIFIED",
+                    "source_sha256": bundle["compiledProgram"]["sourceSha256"],
+                    "rung_ids": ["rung-1"],
+                    "ladder_ir_sha256": "d" * 64,
+                    "exact_instruction_readback": source.splitlines(),
+                    "ld_roundtrip": {"roundtrip_il": source.splitlines(), "final_view": "LD"},
+                    "program_check": check_data,
+                    "save": {"hash_after": project_hash},
+                    "saved_project_sha256": project_hash,
+                },
+                "program_check_receipt": {
+                    "ok": True,
+                    "verified": True,
+                    "operation": "program.check_ld",
+                    "pid": 101,
+                    "hwnd": 202,
+                    "data": check_data,
+                },
+                "build_bundle_receipt": receipt,
+            }
+            with patch("controlstudio_host.native_projects._native_bundle_description", return_value="reviewed"):
+                result = NativeProjectService._validate_resume_result(
+                    raw,
+                    spec=spec,
+                    destination=destination,
+                    expected_path=project,
+                    plan_digest=plan_digest,
+                    authorization=authorization,
+                    build_bundle=bundle,
+                    prior_result={},
+                )
+
+            self.assertEqual(result["resumeProvenance"]["mcp"]["observed_program_name"], "MainProgram")
+            self.assertEqual(raw["program_apply"]["program_check"], check_data)
 
 
 if __name__ == "__main__":
