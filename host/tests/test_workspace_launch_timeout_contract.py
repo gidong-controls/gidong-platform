@@ -157,6 +157,16 @@ class _InvalidReadAttachMCP(_ReviewedCloseSuccessMCP):
 
 
 class _ParkedReopenExpectationMCP(_ReviewedCloseSuccessMCP):
+    def __init__(
+        self,
+        *,
+        project_path: str,
+        project_hash: str,
+        workspace_status: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(project_path=project_path, project_hash=project_hash)
+        self.workspace_status = workspace_status
+
     async def call_read_tool(
         self,
         name: str,
@@ -166,6 +176,19 @@ class _ParkedReopenExpectationMCP(_ReviewedCloseSuccessMCP):
             return await super().call_read_tool(name, arguments)
         self.read_calls.append((name, dict(arguments)))
         return {"session": {"pid": arguments.get("pid")}}
+
+    async def call_workspace_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        if (
+            name == "workspace.status"
+            and isinstance(self.workspace_status, dict)
+            and arguments == {"workspace_id": self.workspace_status["workspace_id"]}
+        ):
+            return dict(self.workspace_status)
+        return await super().call_workspace_tool(name, arguments)
 
 
 class _IdleLaunchMCP:
@@ -814,9 +837,33 @@ class WorkspaceLaunchTimeoutContractTests(unittest.IsolatedAsyncioTestCase):
                 holder_token="native-project-holder",
                 reason="native_simulation_trial_requires_decision_or_recovery",
             )
+            old_workspace = {
+                "workspace_id": "old-workspace",
+                "revision_id": "old-revision",
+                "source_kind": "local_file",
+                "vendor": "ls",
+                "engineering_system": "XG5000",
+                "created_at": "2026-08-31T00:00:00+00:00",
+                "source": {
+                    "original_path": str((root / "old-source.xgwx").resolve()),
+                    "captured_path": str((root / "old-captured.xgwx").resolve()),
+                    "sha256": "c" * 64,
+                    "original_state": "unchanged",
+                    "original_current_sha256": "c" * 64,
+                },
+                "working_copy": {
+                    "path": str((root / "old-working.xgwx").resolve()),
+                    "baseline_sha256": "c" * 64,
+                    "current_sha256": "c" * 64,
+                    "state": "clean",
+                },
+                "provenance": None,
+            }
+            store.set_host_state("active_workspace", old_workspace)
             mcp = _ParkedReopenExpectationMCP(
                 project_path=project_path,
                 project_hash=project_hash,
+                workspace_status=old_workspace,
             )
             app = create_app(config, store=store, mcp=cast(Any, mcp))
             operation = SimpleNamespace(
@@ -912,7 +959,13 @@ class WorkspaceLaunchTimeoutContractTests(unittest.IsolatedAsyncioTestCase):
                     mcp.read_calls[-1],
                     (
                         "xg5000.attach",
-                        {"pid": 14284, "hwnd": 329768, "access_profile": "analysis"},
+                        {
+                            "pid": 14284,
+                            "hwnd": 329768,
+                            "access_profile": "analysis",
+                            "project_path": old_workspace["working_copy"]["path"],
+                            "project_hash": old_workspace["working_copy"]["current_sha256"],
+                        },
                     ),
                 )
 

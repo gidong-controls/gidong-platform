@@ -14046,8 +14046,19 @@ def create_app(
             "hwnd": body.hwnd,
             "access_profile": "analysis",
         }
+        expectation = (
+            parked_native_reopen_expectation()
+            if (
+                not body.allow_unbound_existing_target
+                and body.project_path is None
+                and body.project_hash is None
+            )
+            else None
+        )
         if body.project_path:
             arguments["project_path"] = body.project_path
+        elif expectation is not None:
+            arguments["project_path"] = expectation["project_path"]
         elif (
             not body.allow_unbound_existing_target
             and working_copy
@@ -14056,21 +14067,14 @@ def create_app(
             arguments["project_path"] = working_copy["path"]
         if body.project_hash:
             arguments["project_hash"] = body.project_hash
+        elif expectation is not None:
+            arguments["project_hash"] = expectation["project_hash"]
         elif (
             not body.allow_unbound_existing_target
             and working_copy
             and isinstance(working_copy.get("current_sha256"), str)
         ):
             arguments["project_hash"] = working_copy["current_sha256"]
-        if (
-            not body.allow_unbound_existing_target
-            and working_copy is None
-            and body.project_path is None
-            and body.project_hash is None
-        ):
-            expectation = parked_native_reopen_expectation()
-            if expectation is not None:
-                arguments.update(expectation)
         try:
             result = await mcp.call_read_tool("xg5000.attach", arguments)
         except MCPToolError as exc:
