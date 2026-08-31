@@ -553,6 +553,92 @@ class NativeProjectResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.operation.state, "COMPLETED")
         self.assertEqual(gateway.workspace_calls, [])
 
+    async def test_completed_unbound_resume_rebinds_the_failed_observed_target(self) -> None:
+        repository = _Repository()
+        project_path = "C:/work/ResumeProject.xgwx"
+        project_hash = "d" * 64
+        session = {"session_id": "failed-readback", "pid": 303, "hwnd": 404}
+        registration = {
+            "state": "captured_not_bound",
+            "workspace": {
+                "workspace_id": "workspace-1",
+                "working_copy": {"path": project_path, "current_sha256": project_hash},
+            },
+        }
+        repository.operation = replace(
+            repository.operation,
+            state="COMPLETED",
+            result={
+                "identityVerified": True,
+                "projectPath": "C:/work/ResumeProject-000000000000/ResumeProject.xgwx",
+                "projectSha256": "d" * 64,
+                "buildBundleReceipt": {"receipt": True},
+                "engineeredProgramReady": False,
+                "workspaceBound": False,
+                "workspaceRegistration": registration,
+                "reopenVerification": {
+                    "state": "not_verified",
+                    "reopenTarget": {
+                        "pid": 303,
+                        "hwnd": 404,
+                        "processCreateTime": 123.0,
+                        "projectPath": project_path,
+                        "projectSha256": project_hash,
+                        "session": session,
+                    },
+                },
+                "simulationVerification": {"state": "not_verified"},
+            },
+        )
+        gateway = _Gateway()
+        service = NativeProjectService(repository, gateway)  # type: ignore[arg-type]
+        reopened = {"state": "not_verified", "workspace": registration["workspace"]}
+        simulation = {"state": "not_verified"}
+        rebound = {"session_id": "fresh-rebind", "pid": 303, "hwnd": 404}
+        with (
+            patch("controlstudio_host.native_projects._native_project_plan_digest", return_value=_PLAN_DIGEST),
+            patch("controlstudio_host.native_projects._native_bundle_description", return_value="reviewed"),
+            patch("controlstudio_host.native_projects._stored_creation_receipt_matches_reviewed_build", return_value=True),
+            patch.object(service, "_rebind_completed_reopen_target", new=AsyncMock(return_value=rebound)) as rebind,
+            patch.object(service, "_verify_fresh_process_reopen", new=AsyncMock(return_value=reopened)),
+            patch.object(service, "_verify_native_simulation", new=AsyncMock(return_value=simulation)),
+        ):
+            await service.resume(
+                _OPERATION_ID,
+                actor_id="actor-1",
+                pid=101,
+                hwnd=202,
+                expected_request_digest=_REQUEST_DIGEST,
+            )
+
+        self.assertEqual(rebind.await_args.kwargs["reopened_pid"], 303)
+        self.assertEqual(rebind.await_args.kwargs["reopened_hwnd"], 404)
+        self.assertEqual(rebind.await_args.kwargs["expected_process_create_time"], 123.0)
+
+    def test_failed_reopen_target_evidence_is_not_reopen_verification(self) -> None:
+        session = {
+            "session_id": "failed-readback",
+            "pid": 303,
+            "hwnd": 404,
+            "project_path": "C:/work/ResumeProject.xgwx",
+            "project_hash": "d" * 64,
+            "metadata": {
+                "saved_build_reopen_resume": {"process_create_time": 123.0},
+            },
+        }
+        target = NativeProjectService._failed_reopen_target_evidence(
+            session,
+            pid=303,
+            hwnd=404,
+            project_path="C:/work/ResumeProject.xgwx",
+            project_hash="d" * 64,
+            launch={"reused_existing_controlled_process": True},
+        )
+
+        self.assertEqual(target["processCreateTime"], 123.0)  # type: ignore[index]
+        self.assertEqual(target["session"], session)  # type: ignore[index]
+        self.assertNotIn("state", target)  # type: ignore[arg-type]
+
     async def test_completed_resume_reuses_verified_reopen_and_pending_trial(self) -> None:
         repository = _Repository()
         session = {"session_id": "fresh-session", "pid": 303, "hwnd": 404}

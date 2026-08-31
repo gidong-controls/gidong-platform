@@ -3730,10 +3730,18 @@ class NativeProjectService:
                     "reopened PID/HWND differs from the stored verified reopen session"
                 )
         else:
+            expected_reopened_process_create_time: float | None = None
             if reopened_pid is None or reopened_hwnd is None:
-                raise NativeProjectConflict(
-                    "unbound completed native project resume requires the existing reopened PID/HWND"
+                working = registration["workspace"].get("working_copy")
+                failed_target = self._failed_reopen_target_matches_workspace(
+                    reopen.get("reopenTarget"),
+                    working=working,
                 )
+                if failed_target is None:
+                    raise NativeProjectConflict(
+                        "unbound completed native project resume requires the existing reopened PID/HWND"
+                    )
+                reopened_pid, reopened_hwnd, expected_reopened_process_create_time = failed_target
             existing_session = await self._rebind_completed_reopen_target(
                 operation=operation,
                 actor_id=actor_id,
@@ -3741,6 +3749,7 @@ class NativeProjectService:
                 reopened_pid=reopened_pid,
                 reopened_hwnd=reopened_hwnd,
                 registration=registration,
+                expected_process_create_time=expected_reopened_process_create_time,
             )
         assert isinstance(existing_session, dict)
         resolved_reopened_pid = int(existing_session["pid"])
@@ -3784,6 +3793,7 @@ class NativeProjectService:
         reopened_pid: int,
         reopened_hwnd: int,
         registration: dict[str, Any],
+        expected_process_create_time: float | None = None,
     ) -> dict[str, Any]:
         """Rebind one persisted controlled workspace process without launching another."""
 
@@ -3868,6 +3878,13 @@ class NativeProjectService:
         observed_metadata = observed_session.get("metadata")
         assert isinstance(observed_metadata, dict)
         target_process_create_time = float(observed_identity["process_create_time"])
+        if (
+            expected_process_create_time is not None
+            and target_process_create_time != expected_process_create_time
+        ):
+            raise NativeProjectConflict(
+                "the requested reopened XG5000 process lifetime differs from failed reopen evidence"
+            )
         title = str(observed_metadata["title"])
         issued_at = _utc_now()
         authorization = self._gateway.sign_mutation_authorization(
@@ -3926,6 +3943,42 @@ class NativeProjectService:
                 "the requested reopened XG5000 process rejected the saved-build read-only binding"
             )
         return session
+
+    @staticmethod
+    def _failed_reopen_target_matches_workspace(
+        target: object,
+        *,
+        working: object,
+    ) -> tuple[int, int, float] | None:
+        """Recover only a previously observed target; the next attach must revalidate it."""
+
+        if not isinstance(target, dict) or not isinstance(working, dict):
+            return None
+        try:
+            pid = int(target["pid"])
+            hwnd = int(target["hwnd"])
+            process_create_time = float(target["processCreateTime"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if (
+            pid <= 0
+            or hwnd <= 0
+            or process_create_time <= 0
+            or isinstance(target.get("processCreateTime"), bool)
+            or _canonical_path(Path(str(target.get("projectPath") or "")))
+            != _canonical_path(Path(str(working.get("path") or "")))
+            or str(target.get("projectSha256") or "").casefold()
+            != str(working.get("current_sha256") or "").casefold()
+        ):
+            return None
+        session = target.get("session")
+        return (
+            (pid, hwnd, process_create_time)
+            if isinstance(session, dict)
+            and session.get("pid") == pid
+            and session.get("hwnd") == hwnd
+            else None
+        )
 
     @staticmethod
     def _selected_native_file_identity_matches(
@@ -5408,6 +5461,10 @@ class NativeProjectService:
         bundle_id = str(build_bundle.get("bundleId") or "").casefold()
         reviewed_plan_digest = str(reviewed.get("planDigest") or "").casefold()
         program_name = str(compiled.get("programName") or "")
+        launch: dict[str, Any] | None = None
+        session: dict[str, Any] | None = None
+        reopened_pid = 0
+        reopened_hwnd = 0
         try:
             if existing_session is None:
                 launch = await self._gateway.call_workspace_tool(
@@ -5455,6 +5512,10 @@ class NativeProjectService:
                     if isinstance(attached, dict) and isinstance(attached.get("session"), dict)
                     else attached
                 )
+                if not isinstance(session, dict):
+                    raise NativeProjectEvidenceError(
+                        "fresh-process XG5000 attach result has no session"
+                    )
             else:
                 launch = {"reused_existing_controlled_process": True}
                 session = existing_session
@@ -5558,11 +5619,75 @@ class NativeProjectService:
             }
         except (RuntimeError, KeyError, TypeError, ValueError, OSError) as exc:
             self._gateway.clear_agent_session()
-            return {
+            failed = {
                 "state": "not_verified",
                 "detail": str(exc),
                 "workspace": workspace,
             }
+            target = self._failed_reopen_target_evidence(
+                session,
+                pid=reopened_pid,
+                hwnd=reopened_hwnd,
+                project_path=project_path,
+                project_hash=project_hash,
+                launch=launch,
+            )
+            if target is not None:
+                failed["reopenTarget"] = target
+            return failed
+
+    @staticmethod
+    def _failed_reopen_target_evidence(
+        session: object,
+        *,
+        pid: int,
+        hwnd: int,
+        project_path: str,
+        project_hash: str,
+        launch: object,
+    ) -> dict[str, Any] | None:
+        """Persist an observed independent target without claiming reopen verification."""
+
+        if not isinstance(session, dict) or pid <= 0 or hwnd <= 0:
+            return None
+        metadata = session.get("metadata")
+        if not isinstance(metadata, dict):
+            return None
+        process_create_time: object | None = None
+        for proof_name in (
+            "saved_build_reopen_resume",
+            "controlled_open_read_proof",
+            "project_identity_proof",
+        ):
+            proof = metadata.get(proof_name)
+            if isinstance(proof, dict):
+                process_create_time = proof.get("process_create_time")
+                if isinstance(process_create_time, (int, float)) and not isinstance(
+                    process_create_time, bool
+                ) and float(process_create_time) > 0:
+                    break
+        if (
+            not isinstance(process_create_time, (int, float))
+            or isinstance(process_create_time, bool)
+            or float(process_create_time) <= 0
+            or session.get("pid") != pid
+            or session.get("hwnd") != hwnd
+            or _canonical_path(Path(str(session.get("project_path") or "")))
+            != _canonical_path(Path(project_path))
+            or str(session.get("project_hash") or "").casefold() != project_hash
+        ):
+            return None
+        target = {
+            "pid": pid,
+            "hwnd": hwnd,
+            "processCreateTime": float(process_create_time),
+            "projectPath": project_path,
+            "projectSha256": project_hash,
+            "session": session,
+        }
+        if isinstance(launch, dict):
+            target["launch"] = launch
+        return target
 
     async def _verify_native_simulation(
         self,
