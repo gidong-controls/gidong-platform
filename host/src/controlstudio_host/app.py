@@ -62,6 +62,8 @@ from .api_models import (
     ChangeTargetIdentityV1,
     ChangeTransactionCreatedV1,
     ChangeTransactionV1,
+    CloseIdleXG5000InstanceRequestV1,
+    CloseIdleXG5000InstanceResponseV1,
     ConfirmKnowledgeMemoryRequestV1,
     ConnectLSControllerRequestV1,
     ControllerRestoreBeginRequestV1,
@@ -377,6 +379,33 @@ def _reviewed_no_save_close_response(
                 "reviewed_binding",
                 "close",
                 "next_step",
+            )
+        }
+        | {"receipt_digest": receipt_digest}
+    )
+
+
+def _close_idle_xg5000_instance_response(
+    raw: dict[str, Any],
+    *,
+    receipt_digest: str,
+) -> CloseIdleXG5000InstanceResponseV1:
+    """Project the exact normal-close receipt; save-prompt outcomes are not success."""
+
+    return CloseIdleXG5000InstanceResponseV1.model_validate(
+        {
+            field: raw.get(field)
+            for field in (
+                "operation",
+                "verified",
+                "status",
+                "idle_binding",
+                "close_action",
+                "prompt_observed",
+                "modal_observed",
+                "no_save_prompt_clicked",
+                "process_exited",
+                "process_terminated",
             )
         }
         | {"receipt_digest": receipt_digest}
@@ -10495,6 +10524,102 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         finally:
             active_change_executions.discard(transaction_id)
+
+    @app.post(
+        "/api/v1/change-transactions/{transaction_id}/close-idle-instance",
+        response_model=CloseIdleXG5000InstanceResponseV1,
+    )
+    async def close_idle_xg5000_instance_v1(
+        transaction_id: str,
+        body: CloseIdleXG5000InstanceRequestV1,
+        request: Request,
+        _csrf: None = Depends(require_browser_csrf),
+        _run_guard: None = Depends(engineering_target_run_guard),
+    ) -> CloseIdleXG5000InstanceResponseV1:
+        """Close one exact blank XG5000 instance without changing the recovery target."""
+
+        transaction = store.get_change_transaction(transaction_id)
+        if transaction is None:
+            raise HTTPException(status_code=404, detail="change transaction not found")
+        if transaction.plan_digest != body.expected_plan_digest:
+            raise HTTPException(status_code=409, detail="plan digest does not match")
+        if transaction.state is not ChangeTransactionState.QUARANTINED:
+            raise HTTPException(
+                status_code=409,
+                detail="only a quarantined change transaction can close an idle XG5000 instance",
+            )
+
+        holder_token = str(uuid.uuid4())
+        try:
+            store.acquire_target_operation_lease(
+                operation_id=transaction_id,
+                owner_kind="offline_change",
+                holder_token=holder_token,
+                target_identity=transaction.target.model_dump(mode="json"),
+                allowed_change_transaction_id=transaction_id,
+            )
+        except TargetOperationLeaseConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        arguments = {
+            "pid": body.pid,
+            "hwnd": body.hwnd,
+            "process_create_time": body.process_create_time,
+            "confirm_idle_close": True,
+            "timeout_seconds": body.timeout_seconds,
+        }
+        try:
+            raw = await mcp.call_workspace_tool("xg5000.close_idle_instance", arguments)
+            if not isinstance(raw, dict):
+                raise TypeError("MCP idle-instance close receipt is not an object")
+            completed = _close_idle_xg5000_instance_response(
+                raw,
+                receipt_digest=_canonical_json_digest(raw),
+            )
+            binding = completed.idle_binding
+            if (
+                binding.get("pid") != body.pid
+                or binding.get("hwnd") != body.hwnd
+                or not isinstance(binding.get("process_create_time"), (int, float))
+                or isinstance(binding.get("process_create_time"), bool)
+                or abs(float(binding["process_create_time"]) - body.process_create_time)
+                >= 0.001
+                or not isinstance(binding.get("executable"), str)
+                or not binding["executable"]
+            ):
+                raise ValueError("MCP idle-instance close receipt binding does not match")
+            store.append_event(
+                event_type="xg5000.idle_instance_closed",
+                conversation_id=transaction.conversation_id,
+                run_id=transaction.run_id,
+                payload={
+                    "actorId": _request_actor_id(request),
+                    "transactionId": transaction.id,
+                    "planDigest": transaction.plan_digest,
+                    "idleBinding": dict(binding),
+                    "receiptDigest": completed.receipt_digest,
+                    "closeAction": "wm_close",
+                    "noSavePromptClicked": False,
+                    "processTerminated": False,
+                },
+            )
+            return completed
+        except MCPToolError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="the idle XG5000 instance could not be verified closed",
+            ) from exc
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="MCP returned an invalid idle XG5000 close receipt",
+            ) from exc
+        finally:
+            store.release_target_operation_lease(
+                operation_id=transaction_id,
+                holder_token=holder_token,
+                reason="idle_instance_close_request_finished",
+            )
 
     @app.post(
         "/api/v1/change-transactions/{transaction_id}/reconcile",

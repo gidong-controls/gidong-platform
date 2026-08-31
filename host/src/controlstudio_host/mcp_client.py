@@ -103,6 +103,7 @@ HOST_WORKSPACE_MCP_TOOLS = frozenset(
         "xg5000.open_project",
         "xg5000.resume_terminal_change_session",
         "xg5000.reviewed_no_save_close",
+        "xg5000.close_idle_instance",
     }
 )
 HOST_CHANGE_MCP_TOOLS = frozenset(
@@ -228,6 +229,7 @@ MUTATING_MCP_TOOLS = frozenset(
         "sim.run",
         "sim.runtime_proof",
         "sim.stop",
+        "xg5000.close_idle_instance",
     }
 )
 

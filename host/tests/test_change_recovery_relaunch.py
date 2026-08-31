@@ -10,6 +10,7 @@ from typing import Any, cast
 from fastapi.testclient import TestClient
 
 from controlstudio_host.api_models import (
+    CloseIdleXG5000InstanceRequestV1,
     LocalWorkspaceV1,
     ReconcileChangeTransactionRequestV1,
 )
@@ -205,6 +206,58 @@ class _RestoreThenRelaunchFailureMCP:
         raise MCPToolError("forced relaunch failure after durable restore")
 
 
+class _IdleCloseMCP:
+    def __init__(self) -> None:
+        self.status = MCPStatus(status="ready")
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def start(self) -> MCPStatus:
+        return self.status
+
+    async def stop(self) -> None:
+        return None
+
+    def mne_capability_status(self) -> str:
+        return "missing"
+
+    def bind_agent_workspace(self, _workspace: dict[str, Any]) -> None:
+        return None
+
+    def clear_agent_session(self) -> None:
+        return None
+
+    def clear_controller_endpoint(self) -> None:
+        return None
+
+    @property
+    def agent_session_identity_snapshot(self) -> None:
+        return None
+
+    async def call_workspace_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((name, dict(arguments)))
+        if name != "xg5000.close_idle_instance":
+            raise AssertionError(f"unexpected workspace tool: {name}")
+        return {
+            "schema": "controlstudio-idle-xg5000-close-cli/v1",
+            "operation": "xg5000.close_idle_instance",
+            "ok": True,
+            "verified": True,
+            "status": "closed",
+            "idle_binding": {
+                "pid": 7024,
+                "hwnd": 67344,
+                "process_create_time": 123.0,
+                "executable": "C:/XG5000/XG5000.exe",
+            },
+            "close_action": "wm_close",
+            "prompt_observed": False,
+            "modal_observed": False,
+            "no_save_prompt_clicked": False,
+            "process_exited": True,
+            "process_terminated": False,
+        }
+
+
 def _route_plan() -> dict[str, Any]:
     return {
         "target": {"programId": "program:MAIN", "tokenOffset": 14},
@@ -215,6 +268,131 @@ def _route_plan() -> dict[str, Any]:
 
 
 class ChangeRecoveryRelaunchTests(unittest.IsolatedAsyncioTestCase):
+    def test_idle_close_request_uses_exact_camel_case_recovery_binding(self) -> None:
+        request = CloseIdleXG5000InstanceRequestV1.model_validate(
+            {
+                "expectedPlanDigest": "c" * 64,
+                "pid": 7024,
+                "hwnd": 67344,
+                "processCreateTime": 123.0,
+                "confirmIdleClose": True,
+            }
+        )
+        self.assertEqual(request.model_dump(mode="json", by_alias=True)["confirmIdleClose"], True)
+        with self.assertRaises(ValueError):
+            CloseIdleXG5000InstanceRequestV1.model_validate(
+                {
+                    "expectedPlanDigest": "c" * 64,
+                    "pid": 7024,
+                    "hwnd": 67344,
+                    "processCreateTime": 123.0,
+                    "confirmIdleClose": False,
+                }
+            )
+
+    def test_quarantined_transaction_can_close_only_the_bound_idle_instance(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="controlstudio-idle-close-route-") as raw:
+            root = Path(raw)
+            workspace = _workspace(root)
+            config = HostConfig(
+                database_path=root / "host.sqlite3",
+                knowledge_database_path=root / "knowledge.sqlite3",
+                static_dir=root / "missing-web-dist",
+                launch_token="idle-close-route-test-token-0123456789",
+                release_channel="production",
+            )
+            store = HostStore(config.database_path)
+            transaction, _created = store.create_change_transaction(
+                operation_id="idle-close-route-test",
+                target=ChangeTargetIdentity(
+                    workspace_id=workspace.workspace_id,
+                    revision_id=workspace.revision_id,
+                    artifact_hash=workspace.working_copy.current_sha256,
+                    source_artifact_hash=workspace.source.sha256,
+                    project_path=workspace.working_copy.path,
+                    vendor="ls",
+                    engineering_system="XG5000",
+                ),
+                mutation_scope=f"workspace:{workspace.workspace_id}",
+                risk_level=ChangeRiskLevel.HIGH,
+                intent="Recover an interrupted offline change",
+                plan=_route_plan(),
+                plan_digest="c" * 64,
+                requested_by_actor_id="test",
+                approval_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            )
+            store.decide_change_transaction(
+                transaction_id=transaction.id,
+                decision=ApprovalDecision.APPROVE,
+                expected_plan_digest=transaction.plan_digest,
+                actor_id="test",
+            )
+            store.begin_change_execution(
+                transaction_id=transaction.id,
+                expected_plan_digest=transaction.plan_digest,
+            )
+            store.finish_change_execution(
+                transaction_id=transaction.id,
+                state=ChangeTransactionState.QUARANTINED,
+                verification_evidence={"fixture": "quarantined"},
+            )
+            mcp = _IdleCloseMCP()
+            app = create_app(config, store=store, mcp=cast(Any, mcp))
+
+            with TestClient(app, base_url="http://localhost:8765") as client:
+                handoff = client.post(
+                    "/api/launcher/handoff",
+                    headers={"Authorization": f"Bearer {config.launch_token}"},
+                )
+                self.assertEqual(handoff.status_code, 201, handoff.text)
+                session = client.post(
+                    "/api/session",
+                    headers={"Authorization": f"Bearer {handoff.json()['handoffTicket']}"},
+                )
+                self.assertEqual(session.status_code, 200, session.text)
+                client.headers.update(
+                    {"Authorization": f"Bearer {session.json()['sessionToken']}"}
+                )
+                bootstrap = client.get("/api/v1/bootstrap")
+                self.assertEqual(bootstrap.status_code, 200, bootstrap.text)
+                response = client.post(
+                    f"/api/v1/change-transactions/{transaction.id}/close-idle-instance",
+                    headers={"X-ControlStudio-CSRF": bootstrap.json()["csrfToken"]},
+                    json={
+                        "expectedPlanDigest": transaction.plan_digest,
+                        "pid": 7024,
+                        "hwnd": 67344,
+                        "processCreateTime": 123.0,
+                        "confirmIdleClose": True,
+                    },
+                )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["status"], "closed")
+            self.assertEqual(
+                mcp.calls,
+                [
+                    (
+                        "xg5000.close_idle_instance",
+                        {
+                            "pid": 7024,
+                            "hwnd": 67344,
+                            "process_create_time": 123.0,
+                            "confirm_idle_close": True,
+                            "timeout_seconds": 12,
+                        },
+                    )
+                ],
+            )
+            self.assertEqual(
+                store.get_change_transaction(transaction.id).state,
+                ChangeTransactionState.QUARANTINED,
+            )
+            self.assertIsNone(store.active_target_operation_lease())
+            events = store.list_events(limit=100)
+            self.assertTrue(
+                any(event.event_type == "xg5000.idle_instance_closed" for event in events)
+            )
+
     def test_relaunch_contract_defaults_to_disabled(self) -> None:
         default = ReconcileChangeTransactionRequestV1(
             expected_plan_digest="c" * 64,

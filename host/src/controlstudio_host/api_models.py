@@ -4559,6 +4559,30 @@ class ReviewedNoSaveCloseResponseV1(ApiModel):
     next_step: Literal["explicit_user_confirmed_workspace_open_required"]
 
 
+class CloseIdleXG5000InstanceRequestV1(ExecuteChangeTransactionRequestV1):
+    """Recovery-scoped request to close one proven blank XG5000 instance."""
+
+    pid: int = Field(gt=0)
+    hwnd: int = Field(gt=0)
+    process_create_time: float = Field(gt=0)
+    confirm_idle_close: Literal[True]
+    timeout_seconds: float = Field(default=12, ge=0.1, le=15)
+
+
+class CloseIdleXG5000InstanceResponseV1(ApiModel):
+    operation: Literal["xg5000.close_idle_instance"]
+    verified: Literal[True]
+    status: Literal["closed"]
+    idle_binding: dict[str, Any]
+    close_action: Literal["wm_close"]
+    prompt_observed: Literal[False]
+    modal_observed: Literal[False]
+    no_save_prompt_clicked: Literal[False]
+    process_exited: Literal[True]
+    process_terminated: Literal[False]
+    receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class KnowledgeSourceV1(ApiModel):
     source_id: str
     kind: KnowledgeKindV1

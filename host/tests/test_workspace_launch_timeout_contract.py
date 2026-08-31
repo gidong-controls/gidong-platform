@@ -18,12 +18,14 @@ from controlstudio_host.api_models import (
 from controlstudio_host.app import create_app
 from controlstudio_host.config import HostConfig
 from controlstudio_host.mcp_client import (
+    HOST_WORKSPACE_MCP_TOOLS,
     HOST_WORKSPACE_LAUNCH_TRANSPORT_TIMEOUT_SECONDS,
     MCP_WORKSPACE_LAUNCH_OPERATION_TIMEOUT_SECONDS,
     MCPGateway,
     MCPStatus,
     MCPToolError,
     MCPTransportError,
+    MUTATING_MCP_TOOLS,
 )
 from controlstudio_host.store import HostStore
 
@@ -212,6 +214,27 @@ class WorkspaceLaunchTimeoutContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             client.calls,
             [("xg5000.reviewed_no_save_close", arguments, {})],
+        )
+
+    async def test_idle_close_is_host_workspace_only_and_uses_normal_transport(self) -> None:
+        self.assertIn("xg5000.close_idle_instance", HOST_WORKSPACE_MCP_TOOLS)
+        self.assertIn("xg5000.close_idle_instance", MUTATING_MCP_TOOLS)
+        client = _RecordingClient()
+        gateway = MCPGateway(command="unused")
+        gateway._client = cast(Any, client)
+        gateway._status = MCPStatus(status="ready")
+        arguments = {
+            "pid": 7024,
+            "hwnd": 67344,
+            "process_create_time": 123.0,
+            "confirm_idle_close": True,
+            "timeout_seconds": 12,
+        }
+        with patch.object(MCPGateway, "_decode_tool_result", return_value={"ok": True}):
+            await gateway.call_workspace_tool("xg5000.close_idle_instance", arguments)
+        self.assertEqual(
+            client.calls,
+            [("xg5000.close_idle_instance", arguments, {})],
         )
 
     def test_transport_timeout_routes_only_to_late_attach_reconciliation(self) -> None:
