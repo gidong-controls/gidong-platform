@@ -341,7 +341,16 @@ PWA acceptance 미검증도, file-restore approval 대기도 이 절차로 해�
   열리지 않았다. 이는 live LD focus 성공 증거가 아니다.
 - `C:\XG5000\XG5000.exe`의 single `sky.launch_app`만 consent PID `12916`을 만들었다.
   prompt는 뒤에 사라졌고 XG5000 process/window도 없었으며 원인은 아직 모른다. launch를
-  다시 시도하려면 새 사용자 `다시` 요청이 필요하고, 이 관측을 approval 거부라고 쓰지 않는다.
+  이 관측만으로 반복하지 않으며, 이 관측을 approval 거부라고 쓰지 않는다.
+- 이후 사용자 `다시`에 따라 한 번 실행한 XG5000은 PID `7024`, HWND `67344`로 실제
+  열렸다(2026-08-31 10:05 KST 시작). 빈 XG5000 화면을 Computer Use로 확인했고 프로세스는
+  응답 중이었다. 첫 launch의 `targetable window` 오류는 시작 중 관측 지연이었으므로 같은
+  프로세스를 다시 관측해 창을 찾았으며 재실행하지 않았다. 이 PID/HWND는 다음 행동 전에
+  현재 프로세스/창 목록으로 재확인한다.
+- 새 프로젝트 `Ctrl+N` 입력은 `failed to activate captured window`로 실패했다. 현재 창을
+  다시 선택한 뒤 활성화를 한 번 재시도해 같은 오류를 확인했다. 사용자에게 기존 XG5000
+  창을 전면에 놓아 달라고 요청했다. 새 프로젝트 생성·LD 입력·저장·PLC 작업은 하지 않았고,
+  창 활성화 실패를 UAC 실패로 바꾸어 부르거나 XG5000/Host를 재시작하지 않는다.
 - PWA Browser URL policy block은 계속 남아 있으며 우회하지 않는다. working-copy restore
   approval은 아직 받지 못했고 quarantine도 유지한다.
 - native geometry는 아직 고치지 않았다. payload `739c...` snapshot `bd2300fece86`, token 18 /
