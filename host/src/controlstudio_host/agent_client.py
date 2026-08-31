@@ -1845,7 +1845,10 @@ def _runtime_diagnostic_from_payload(value: Any) -> AgentRuntimeDiagnostic | Non
         or not isinstance(exception_kind, str)
         or exception_kind not in _RUNTIME_EXCEPTION_KINDS
         or not isinstance(reason_code, str)
-        or reason_code not in _RUNTIME_REASON_CODES
+        or (
+            reason_code not in _RUNTIME_REASON_CODES
+            and re.fullmatch(r"provider_http_[45][0-9]{2}", reason_code) is None
+        )
     ):
         return None
     return AgentRuntimeDiagnostic(

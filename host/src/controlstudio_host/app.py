@@ -9116,6 +9116,11 @@ def create_app(
                             "모델이 분석 도구 호출 예산을 소진해 결과를 저장하지 "
                             "않았습니다. 실제 변경은 수행되지 않았습니다."
                         )
+                    elif diagnostic.reason_code.startswith("provider_http_"):
+                        user_message = (
+                            f"모델 서버가 HTTP {diagnostic.reason_code.removeprefix('provider_http_')} "
+                            "오류를 반환해 실행을 완료하지 못했습니다. 실제 변경은 수행되지 않았습니다."
+                        )
                     elif diagnostic.exception_kind in {
                         "model_transport",
                         "model_api_error",
