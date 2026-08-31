@@ -115,10 +115,10 @@ reconciliation의 기준이다.
 
 공식 Platform/Agent/MCP는 세 core service artifact로 각각 빌드한다. 별도 vendor CLI
 repository는 이관된 명령에 독립 executable/process 경계를 제공하지만, 아직 모든 native
-backend의 독립 artifact·release lifecycle을 의미하지는 않는다. BOM은 적용되는 core
-artifact와 CLI artifact의 version, SHA-256, contract version, signature metadata를
-정확히 결속하며 Launcher는 이 값이 맞는 artifact만 시작한다. unsigned/development
-HMAC artifact는 production 배포물이 아니다.
+backend의 독립 artifact·release lifecycle을 의미하지는 않는다. 현재 BOM은 세 core
+artifact의 version, SHA-256, 여섯 contract version, signature metadata를 정확히
+결속한다. 별도 CLI artifact를 BOM·Launcher release verification에 포함하는 통합은
+아직 pending이다. unsigned/development HMAC artifact는 production 배포물이 아니다.
 
 실제 XG5000·XG-SIM·controller 작업은 현재 target identity, capability, operation
 journal과 native readback이 모두 갖춰진 경로만 연다. PLC write, force, mode change,
