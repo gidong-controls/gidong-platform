@@ -23,7 +23,25 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-08-31 17:55 KST 실제 복구 성공 — 아래 기록보다 우선
+## 2026-08-31 18:14 KST 새 LD 입력 완료·검사 재개 구현 중 — 현재 상태
+
+- 새 operation `1dc48ccb-a0d8-44d1-9665-bb101dc7c64c`는 실제 프로젝트 생성,
+  compiled IL 입력 대조, LD 변환·roundtrip을 지난 뒤 Program Check 창 닫기에서 실패했다.
+  현재 `quarantined`/`NATIVE_PROJECT_MCP_REJECTED`이며 전체 생성 완료가 아니다.
+- PID `14284`/HWND `329768`에 `LD 오프라인 자기유지 개발 검증 20260831`이 그대로 열려
+  있다. 입력된 LD를 닫거나 다시 만들지 않는다. 컴파일된 source SHA-256은
+  `74ff83178d6aa0319631874eed5ffd1d973fa326d8e4c656172ecf6ec9f534d0`이다.
+- 실패 원인은 `PROGRAM_CHECK_DOCK_CLOSE_LAYOUT_UNVERIFIED`였다. MCP `847a0e7`은
+  close 영역의 고정 좌표 폭 대신 실제 native `HTCLOSE` 영역을 사용한다. 단위 테스트는
+  통과했으며 이 수정의 새 프로젝트 실기 성공은 아직 확인하지 않았다.
+- 기존 reconcile은 결과 확인만 할 뿐 중단된 검사·저장을 재개하지 못한다. 따라서
+  Host → MCP → CLI `resume-native`를 연결 중이다. 기존 계획과 현재 프로그램을 대조한
+  뒤 검사·저장·workspace capture·독립 재열기·XG-SIM을 잇고, 새 프로젝트 dialog나 IL
+  재입력은 하지 않는다. 최초 생성 증거를 만들어 붙이지 않고 실제 resume provenance를 쓴다.
+- 이 시점에 최종 저장·독립 재열기·실 XG-SIM·PWA 화면 acceptance·실 PLC I/O는 미완료다.
+  이번 재개 작업에서 UAC를 새로 요청하지 않았다. 아래 복구 성공은 이전 프로젝트 기록이다.
+
+## 2026-08-31 17:55 KST 이전 프로젝트 복구 성공
 
 - 사용자의 계속 진행 지시에 따라 검증된 backup 복원 뒤 durable recovery를 정상 완료했다.
   같은 PID `14448`/HWND `329110`에서 reconcile은 `true`, 결과는
@@ -48,8 +66,7 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   (receipt digest `1ec1dcd2…`). 이어 정상 Host → MCP → CLI idle launch는 PID 14284/HWND
   329768, lifetime `1788166678.7651005`, digest `a85e6a6ec72000b7b529ddde956fd1e8689c3b10cd51434efda324b97d4283c1`으로 성공했다.
   reviewed native create는 operation `1dc48ccb-a0d8-44d1-9665-bb101dc7c64c`, plan `62af347d…`,
-  folder `artifacts/ld-native`로 제출되어 실행 중이며 결과는 아직 없다. 따라서 새 native
-  project create/build/save/reopen, XG-SIM 또는 PLC write 성공은 아직 주장하지 않는다.
+  folder `artifacts/ld-native`로 제출됐다. 이후 실패와 현재 재개 상태는 위 18:14 절을 따른다.
 
 ## 2026-08-31 오후 제품 경로 재개 — 이전 관측 기록
 
