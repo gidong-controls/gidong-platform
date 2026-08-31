@@ -53,6 +53,7 @@ _LOCATION_FACT_BYTE_LIMIT = 80_000
 _RELATION_FACT_BYTE_LIMIT = 120_000
 _STRUCTURE_FACT_BYTE_LIMIT = 48_000
 _PROJECT_STRUCTURE_RAW_BYTE_LIMIT = 32 * 1024 * 1024
+_CANONICAL_LD_PROGRAM_ID = re.compile(r"^ld:[0-9a-f]{16}$")
 _DEVICE_TOKEN = re.compile(r"(?<![A-Z0-9.])([A-Z][A-Z0-9]*[0-9][A-Z0-9.]*)")
 _EXACT_DEVICE = re.compile(r"^[A-Z][A-Z0-9]*[0-9][A-Z0-9.]*$")
 _DIRECT_DATA_REGISTER = re.compile(r"^D(?P<index>[0-9]+)$")
@@ -2192,30 +2193,50 @@ def _validate_structure_item(
             },
         )
     if section == "code_units":
+        code_unit_fields = {
+            "code_unit_id",
+            "configuration_id",
+            "order",
+            "task_program_order",
+            "order_basis",
+            "name",
+            "code_unit_type",
+            "kind_code",
+            "language",
+            "language_status",
+            "routine_tags",
+            "vendor_object_id",
+            "version",
+            "instance_name",
+            "comment",
+            "task_assignment",
+            "source_path",
+            "body",
+        }
+        has_canonical_program_id = "canonical_program_id" in item
         item = _exact_raw_mapping(
             item,
             "project structure code unit",
-            {
-                "code_unit_id",
-                "configuration_id",
-                "order",
-                "task_program_order",
-                "order_basis",
-                "name",
-                "code_unit_type",
-                "kind_code",
-                "language",
-                "language_status",
-                "routine_tags",
-                "vendor_object_id",
-                "version",
-                "instance_name",
-                "comment",
-                "task_assignment",
-                "source_path",
-                "body",
-            },
+            code_unit_fields | ({"canonical_program_id"} if has_canonical_program_id else set()),
         )
+        canonical_program_id = (
+            _raw_text(
+                item["canonical_program_id"],
+                "code-unit canonical LD program id",
+                maximum=19,
+                allow_empty=False,
+            )
+            if has_canonical_program_id
+            else None
+        )
+        if canonical_program_id is not None and _CANONICAL_LD_PROGRAM_ID.fullmatch(
+            canonical_program_id
+        ) is None:
+            raise MCPToolError("code-unit canonical LD program id is invalid")
+        if canonical_program_id is not None and (
+            item["language"] != "LD" or item["code_unit_type"] != "Program"
+        ):
+            raise MCPToolError("code-unit canonical LD program id is not an LD Program")
         assignment = _exact_raw_mapping(
             item["task_assignment"],
             "project structure task assignment",
@@ -2314,6 +2335,7 @@ def _validate_structure_item(
                 "markerStringCount": _raw_integer(body["marker_string_count"], "code-unit marker count", minimum=0),
                 "applicationTokenCount": _raw_integer(body["application_token_count"], "code-unit application count", minimum=0),
                 "deviceReferenceCount": _raw_integer(body["device_reference_count"], "code-unit device-reference count", minimum=0),
+                "canonicalProgramId": canonical_program_id,
             },
         )
     if section == "symbols":
@@ -4102,6 +4124,46 @@ def logic_graph_context(result: Any) -> dict[str, Any] | None:
     }
 
 
+def project_structure_context(receipt: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Expose exact LD handles already bound into a structure receipt."""
+
+    programs: list[dict[str, str]] = []
+    for fact_value in _items(receipt.get("structureFacts"), "structure facts"):
+        fact = _mapping(fact_value, "structure fact")
+        if fact.get("kind") != "code_unit":
+            continue
+        attributes = _items(fact.get("attributes"), "code-unit structure attributes")
+        values: dict[str, Any] = {}
+        for attribute_value in attributes:
+            attribute = _mapping(attribute_value, "code-unit structure attribute")
+            name = attribute.get("name")
+            if isinstance(name, str):
+                values[name] = attribute.get("value")
+        canonical_program_id = values.get("canonicalProgramId")
+        if canonical_program_id is None:
+            continue
+        program_id = _text(
+            canonical_program_id,
+            "code-unit canonical LD program id",
+            maximum=19,
+        )
+        if _CANONICAL_LD_PROGRAM_ID.fullmatch(program_id) is None:
+            raise MCPToolError("code-unit canonical LD program id is invalid")
+        programs.append(
+            {
+                "entityId": _text(fact.get("entityId"), "code-unit entity id", maximum=500),
+                "programId": program_id,
+                "programName": _text(fact.get("name"), "code-unit program name", maximum=4_096),
+            }
+        )
+    if not programs:
+        return None
+    programs.sort(key=lambda item: (item["programId"], item["entityId"]))
+    if len({item["programId"] for item in programs}) != len(programs):
+        raise MCPToolError("code-unit canonical LD program ids are not unique")
+    return {"programs": programs[:_MODEL_CONTEXT_ITEM_LIMIT], "truncated": len(programs) > _MODEL_CONTEXT_ITEM_LIMIT}
+
+
 def _validate_location_fact(value: Any) -> dict[str, Any]:
     fact = _mapping(value, "structural location fact")
     allowed = {
@@ -4850,6 +4912,7 @@ __all__ = [
     "canonical_digest",
     "location_membership_value",
     "logic_graph_context",
+    "project_structure_context",
     "project_search_context",
     "relation_membership_value",
     "state_model_context",

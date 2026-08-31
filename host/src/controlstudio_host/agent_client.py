@@ -61,6 +61,7 @@ from .structural_evidence import (
     canonical_digest,
     logic_graph_context,
     project_search_context,
+    project_structure_context,
     state_model_context,
     structural_observation_statement,
     structural_receipt_tool_name,
@@ -1718,6 +1719,8 @@ def _structural_tool_result_payload(
         model_context = logic_graph_context(raw_result)
     elif expected_tool_name == "program.state_model":
         model_context = state_model_context(raw_result)
+    elif expected_tool_name == "project.structure_index":
+        model_context = project_structure_context(validated_receipt)
     elif expected_tool_name == "project.search":
         model_context = validate_project_search_context(
             project_search_context(raw_result),
