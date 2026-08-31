@@ -69,16 +69,24 @@ API에서도 HTTP 504 표시를 확인했다. 제품 모델은 `nemotron-3-ultra
 401이었다. 이는 인증 필요 응답이며 저장된 자격 증명이 틀렸다는 증거가 아니다. 모델 생성
 성공도 아니므로 504 이후 같은 모델 요청을 반복하지 않았다.
 
-Agent `0d0999f`는 ready-only native 단계가 수락할 수 없는 `needs_clarification` 응답을
-재시도 안내에서 제거했다. 관련 3건과 Ruff가 통과했지만 위 run 시작 후의 변경이므로
-실제 모델 검증은 아직이다. 추가 Host 회귀는 resume transport 4/4, native-handoff lineage
-3/4였고 lineage 1건은 attach 409/read-binding proof 실패다. baseline 재현은 확인하지 않아
-기존 실패라고 단정하지 않으며 이번 변경에서 Host attach를 수정하지 않았다.
+그 뒤 run `2930f0d8-24a9-438f-88d3-eaddab60e453`은 event 2306–2320의
+`native_design` elapsed 0–150초 뒤 `FAILED/agent_output_contract`로 끝났다. safe 진단은
+`planning_native_design/unexpected_model_behavior/schema_validation/<root>:json_invalid`이며,
+앞선 provider HTTP 504와 다른 실패다. `/settings/model/test`의 저장하지 않는 15초
+ephemeral timeout은 generic `all=false`을 돌려도 예외 시 aggregate false일 수 있으므로 모든
+capability가 지원되지 않는다는 뜻이 아니며, sidecar protocol 오류 증거도 없다.
 
-native plan/LD 생성 성공은 아직 아니다. 다음 실제 실행에는 모델 서버 점검 또는 연결 선택이
-필요하다. 기존 LD operand 위치 선택의 scroll 단위도 아직 실증되지 않았으므로 Native Find
-리소스 ID만으로 중복 피연산자 중 정확한 occurrence를 선택한다고 가정하거나 임의 좌표 식으로
-바꾸지 않는다. 보호된 기존 working copy/격리 transaction은 변경하지 않았다.
+Agent `0d0999f`는 ready-only native 단계가 수락할 수 없는 `needs_clarification` 응답을
+재시도 안내에서 제거했다. 관련 3건과 Ruff가 통과했지만 현재 live 모델 실행으로 검증되지는
+않았다. `3167fc3`은 native-handoff fake attach에 PID/HWND/path/hash-bound
+`process_create_time` proof를 보완해 lineage 4/4를 통과시켰다. 이 변경은 production
+read-binding 검사를 약화하지 않는다. CLI runtime Agent/Host 주소 수정은 별도 진행 중이며
+완료 또는 실제 검증을 주장하지 않는다.
+
+native plan/LD 생성 성공은 아직 아니다. SSH 정보나 UAC 재요청은 하지 않았고 기존 LD operand
+위치 선택의 scroll 단위도 아직 실증되지 않았다. Native Find 리소스 ID만으로 중복 피연산자 중
+정확한 occurrence를 선택한다고 가정하거나 임의 좌표 식으로 바꾸지 않는다. 보호된 기존
+working copy/격리 transaction과 file quarantine은 변경하지 않았다.
 
 ## 현재 제품 경계
 
