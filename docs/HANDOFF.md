@@ -23,21 +23,23 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-08-31 native resume Program Check 경로 교체 대기 — 현재 상태
+## 2026-08-31 native resume: Program Check·저장 실기 검증 — 현재 상태
 
-- 같은 native operation `1dc48ccb-a0d8-44d1-9665-bb101dc7c64c`와 PID `14284`/HWND
-  `329768`에서 CPU identity, complete MNE, LD roundtrip까지 실제 재개가 통과했다. 마지막
-  실행은 10:27:23Z에 이전 Program Check dock close에서 멈췄으며, check/save는 아직 실행
-  완료가 아니다.
-- 정적 resource 조사에서 기존 `XGPMRes` command 4957은 별도 XG-PM position-control 도구의
-  리소스였고, XG5000 MainRes command 876이 올바른 Program Check 경로임을 확인했다. 제품
-  매뉴얼의 View → Program Check modal 설명도 이 구분을 뒷받침한다:
-  [XG5000 IEC Manual V3.7 (Korean PDF)](https://ssq.ls-electric.com/uploads/document/16400491191210/XG5000IEC_Manual_V3.7_202005_KR.pdf).
-- 현재 checkpoint는 CPU catalog Platform `f1ef932`, CLI row-count `a8f83ec`(지정 원격 main
-  push), MCP row-count `482838c`, MainRes semantic modal proof `3886c7c`이다. runtime worker의
-  MainRes 실제 check 실행 commit은 아직 대기 중이며 성공으로 기록하지 않는다.
-- 물리 I/O와 새 UAC 요청은 없었다. Program Check, save, independent fresh reopen, XG-SIM
-  acceptance는 모두 미완료다.
+- 원래 native operation `1dc48ccb-a0d8-44d1-9665-bb101dc7c64c`는 기존 PID `14284`/HWND
+  `329768`에서 `APPLIED_VERIFIED`에 도달했다. 새 프로젝트 생성이나 IL 재입력 없이, 실제
+  XG5000 MainRes command `876` Program Check가 통과하고 저장까지 완료됐다. exact MNE
+  instruction 6개와 LD roundtrip도 같은 재개 흐름에서 확인됐다.
+- workspace `9674be8c-cbea-4dd1-8d4d-a603280d3569`의 source/working hash와 저장된 프로젝트
+  hash는 모두 `2d55b3489f0f1a97666e79d00bd4ef6962d2e2e71fa44839193be04240308b48`로 일치한다.
+  이는 검사·저장 재개 checkpoint 증거이며 전체 제품 acceptance의 완료 선언은 아니다.
+- fresh controlled instance PID `16228`/HWND `723394`는 시작됐지만, `MainProgram` opener가
+  실패했다. 원래 PID `14284`/HWND `329768`는 그대로 남아 있다. 따라서 independent fresh
+  reopen 검증은 아직 없고 `engineeredProgramReady`는 `false`다.
+- XG-SIM은 시작하지 않았고 물리 I/O도 시험하지 않았다. PLC write나 최종 PWA acceptance를
+  완료로 기록해서는 안 된다.
+- CLI `9250719`은 지정 원격에 push됐고 MCP `9f425c6`은 local checkpoint다. 독립 CLI 경계는
+  아직 전환 중이다. CLI가 MCP source module을 import하므로 완전히 standalone인 source copy나
+  배포 증거로 해석하지 않는다.
 
 ## 2026-08-31 18:39 KST 재개 경로 구현·실행 중 — 이전 관측
 
