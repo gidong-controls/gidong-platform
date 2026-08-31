@@ -23,7 +23,36 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-08-31 오후 제품 경로 재개 — 아래 역사적 UI 장애와 구분
+## 2026-08-31 17:33 KST 실제 복구 진행 — 아래 기록보다 우선
+
+- 사용자의 계속 진행 지시에 따라, 앞서 제안한 현재 파일 보존 → 검증된 백업 복원 →
+  새 오프라인 LD 시험을 이어갔다. 실제 PLC 연결·쓰기는 수행하지 않는다.
+- 저장된 자기유지 계획 `63277186-378f-40ca-96a1-e97542a78261` / digest `62af347d…`
+  의 23개 section·61개 item을 검토하고 정상 프로젝트 계획 review API에 기록했다.
+  사용자가 PWA에서 각 항목을 직접 클릭했다는 뜻은 아니다. 모델을 다시 실행하지 않는다.
+- CLI `e5a9642`(지정 원격 main push), MCP `0c02361`, Host `41a439b`/`dc5f34c`로
+  빈 XG5000 정상 종료를 연결했다. 실제 Host → MCP → CLI 호출에서 PID 7024/HWND 67344가
+  WM_CLOSE로 종료됐고 prompt/modal/forced termination은 모두 없었다. receipt digest는
+  `70577be0dadabe6402b2046919e880005c9bc33e24318b3f918e190a73fb71cc`이다.
+- 첫 복원은 227자 작업 파일 이름에 접미사를 붙인 277자 임시 경로 생성에서 실패했다.
+  원본 f277…는 변경되지 않았고 transaction-private `quarantined-current-project.xgwx`에
+  같은 6,686 bytes/hash가 보존됐다. MCP `ceb3b46`은 짧은 같은 폴더 임시 이름으로
+  바꾸며 원자적 교체와 전후 hash 검사를 유지한다. focused restore tests 5건 통과.
+- 수정 반영 후 정상 reconcile API 한 번으로 f277… 보존과 b929… 복원이 성공했고,
+  `change.working_copy_restored` 증거가 저장됐다. 정상 controlled relaunch는
+  PID 14448/HWND 329110, lifetime `1788165132.162351`, 프로젝트 제목
+  `UI 레더 수직검증 20260817 - XG5000`을 반환했다. Host restart에는 UAC가 없었다.
+- **남은 실제 실패:** transaction `f6ecf557-316b-4739-adde-247813330a18`은 여전히
+  QUARANTINED. `result.reconciliation.recovery_attach_or_status_error`의 원인은
+  `XG5000_TOOLBAR_GEOMETRY_CHANGED`: 640×480 창에서 attach가 찾는 도구 모음의 폭이
+  고정 버튼 위치보다 작다. 복원 실패/권한 거부로 오인하거나 복원부터 반복하지 않는다.
+  현재 열린 파일은 일반 PowerShell Get-FileHash에 sharing violation을 반환한다.
+- 새 프로젝트 native create는 아직 실행하지 않았다. 기존 plan compile 성공과 복구 성공을
+  실제 LD 생성·검사·저장·재열기·XG-SIM 인수 완료로 계산하지 않는다. 다음 작업은 제품
+  attach의 좁은 toolbar 의존 수정 및 정상 빈 XG5000 시작 경로이며, 기존 signed native
+  create의 PID/HWND 결속을 제거하지 않는다.
+
+## 2026-08-31 오후 제품 경로 재개 — 이전 관측 기록
 
 - 정상 Launcher handoff → session → bootstrap API로 실행 중인 Development Host에
   인증했다. 브라우저 저장소/토큰 추출이나 차단된 페이지 렌더링은 사용하지 않았다.
