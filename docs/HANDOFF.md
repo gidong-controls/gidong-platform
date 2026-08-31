@@ -25,6 +25,10 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 ## 2026-08-31 21:57 KST native resume: 독립 재열기 검증 완료, XG-SIM 실패 단계 확인 중 — 현재 상태
 
+- 22:29 KST 반영 확인: MCP `189330e`는 raw/wrapped UIA 전달 상태 중 하나라도 `unknown`이면
+  무실행 실패로 분류하지 않는다. 경계 테스트 67개, runtime 관련 103개, Host 관련 28개가
+  통과했다. 정상 Host restart 한 번이 UAC 없이 `ready`로 끝났고, 이후 GET에서 아래 reopen
+  성공·SIM 격리·미완료 상태와 기존 두 XG5000 PID가 그대로 유지됨을 확인했다. 새 SIM 실행은 없다.
 - 원래 native operation `1dc48ccb-a0d8-44d1-9665-bb101dc7c64c`의 LD 입력, MainRes command
   `876` Program Check(0 errors), 저장은 이미 `APPLIED_VERIFIED`로 완료됐다. 새 프로젝트 생성,
   IL 재입력, 원래 검사·저장을 반복하지 않는다. workspace
