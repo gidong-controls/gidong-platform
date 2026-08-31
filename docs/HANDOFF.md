@@ -14,9 +14,8 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 ## 저장소와 브랜치
 
 - 세 core 저장소 `gidong-platform`, `gidong-agent`, `gidong-plc-mcp`는 `dev`에서 작업한다.
-  코드 checkpoint는 각각 `6d06754`, `f70d30c`, `9edc7e5`이다. 이 SHA는 이 handoff의 코드
-  증거 기준일 뿐, 이후 문서 commit을 포함한 영구적인 최신 `HEAD` 표시는 아니다.
-  2026-08-31 오후의 현재 제품 checkpoint는 아래 재개 절의 별도 기록을 우선한다.
+  `6d06754`, `f70d30c`, `9edc7e5`는 이 handoff 작성 당시의 역사적 code checkpoint이며 최신
+  `HEAD` 표기가 아니다. 현재 제품 checkpoint와 실행 상태는 아래 2026-09-01 절을 우선한다.
 - 독립 XG5000 CLI는 `main`의 `fa0ed95`이며 사용자 지정 원격에 게시된 checkpoint다. 위 세 core
   저장소는 해당 코드 checkpoint 시점에 local 상태였고 push하지 않았다.
 
@@ -27,18 +26,49 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 - 정상 Host 재시작은 UAC 없이 완료됐다. 동일 XG5000 PID `16228`/HWND `723394`, working project
   SHA `2d55b348...b48`에 read-only session
-  `69e65c35-8b7c-4aa6-8b4b-c8d9457186d9`이 연결돼 있다.
+  `99b79306-8631-45bf-80d6-5ccd143874cc`이 연결돼 있다.
 - 실제 conversation `fbfd967e-c5ef-4c71-a5f1-645e21eb4259`의 run
   `8b0b7c95-c991-4271-9fa1-d9803a131b48`은 `build_program_logic_graph`와 evidence
   `4a88026d-06e2-5a4f-a1db-879d3025c311`을 남기고 `COMPLETED`됐다. 모델이 답한 논리식은
-  `M00001 AND (M00000 OR M00010)`이며, M0001 OFF일 때 자기유지가 중단되고 M0010 OFF까지의
+  `M00001 AND (M00000 OR M00010)`이며, M00001 OFF일 때 자기유지가 중단되고 M00010 OFF까지의
   동작을 정확히 설명했다. 같은 대화의 자연 후속 질문 run
-  `85fe3b2e-98fa-45ca-94e1-432d0d949234`은 진행 중이며 완료로 쓰지 않는다.
-- 현재 소스 checkpoint: Platform `5f3e019`/`d9bcdee`, Agent
-  `56f25a1`/`b101d30`/`a328b2e`/`eb49186`, MCP `7b8e7e1`/`12fb915`; 독립 CLI는 origin/main과
-  동기화된 `d695cae`다. Agent focused 77개, MCP focused 48개, Host historical-evidence 1개
-  테스트가 통과했다. analysis-only read attach와 완료 미션 뒤 같은 대화의 새 분석 objective는
-  이미 구현됐으며, mutation 권한을 열지 않는다.
+  `85fe3b2e-98fa-45ca-94e1-432d0d949234`은 `tool.program.read_ld`에서 실패했다. 원인은
+  SHA-bound structure가 LD program을 해석하지 못한 것으로, interface가 executable LD ID 대신
+  `code_unit_id`만 제시한 것이었다.
+- canonical ID 수정은 MCP `2ad7b7c`, Host `a153d39`, Agent `83c1f1c`에 반영됐다. MCP는
+  `canonical_program_id`를 내보내고, Host는 receipt-bound `modelContext.programs.programId`를
+  전달하며, Agent는 그 context를 보존한다. Host `7dedf39`는 projected receipt에 없던
+  `receiptDigest` 대신 검증된 original digest를 context에 쓴다; 회귀는 실제 tool-return 변환을
+  호출한다. analysis-only read attach와 완료 미션 뒤 같은 대화의 새 분석 objective는 이미 구현됐으며
+  mutation 권한을 열지 않는다.
+- 자연 후속 검증 conversation `623562a2-3c41-4083-934e-f7ee289c70a3`의 run
+  `06582be7-94e0-4acd-8170-c43f634def62`은 `programlist`와 `read_ladder_program`을 모두
+  자율적으로 성공했다. artifact `7c5a031e.../ca6c24cfb9e8/result.json`의 decoded semantic rung은
+  정확히 `M00001 AND (M00000 OR M00010)`이다. evidence
+  `f2f43294-d19f-5bc8-a849-d810eb1837c0`을 남긴 뒤 `COMPLETED`됐고, 답변은 M00010이 출력이며
+  M00001 ON일 때만 self-hold하고 M00001 OFF이면 M00010 OFF라고 정확히 설명했다. 이 run은
+  `programlist`를 사용했으므로 canonical structure 경로의 실제 검증을 뜻하지는 않는다. session
+  `7c5a031e-8e34-4f80-9b09-888b13c3971d`은 같은 PID/HWND와 project SHA를 사용한다.
+- 같은 대화의 명시적 tool name/ID 없는 동일 질문은 run
+  `a318e924-a1a9-4c7f-aebc-2b85c593e2b4`에서 `search_project_evidence`와
+  `read_ladder_program`을 모두 성공했다. evidence
+  `d8ec0c6e-337f-5540-9e09-4fb5a2471495`를 남긴 뒤 `COMPLETED`됐고, 답변은
+  `M00001 AND (M00000 OR M00010)` 및 M00001 OFF이면 전체 AND가 false여서 M00010 OFF라고
+  정확히 설명했다. artifact `f48e.../0dc77fef613a/result.json`은 `verified=true`,
+  `project_unchanged=true`다.
+- structure-only run `9f983318-fc0b-4ba5-b160-8e642cebabba`는
+  `inspect_project_structure` 성공 뒤 `agent_runtime_runtime_invariant`로 실패했다. 기존 receipt의
+  `structureFacts.canonicalProgramId`는 보존돼 있었지만, 중복 model context projection이 raw digest를
+  projection digest와 비교한 것이 원인이었다. Platform `dc7661a`/Agent `9b0b53b`는 중복 structure
+  modelContext/overlay를 제거하고 기존 receipt `structureFacts[].attributes.canonicalProgramId`만
+  사용한다. graph context는 유지하며, 저장된 `9f983` receipt replay는 `has_model_context=false`로
+  통과했다. structure-only 재시도 run `918fa80b-07ed-471a-90e3-d9d58b574ff8`은
+  `inspect_project_structure`를 성공하고 evidence `8fed4083-1c87-5a13-a840-174ace315fd9`를 남긴
+  뒤 `COMPLETED`됐다. 답변은 structure entity ID
+  `xg5000:code-unit:1449fa43-e9fb-4799-981c-54a82bcbdb63`와 LD `canonicalProgramId`
+  `ld:55e388e7aea7a8ce`를 구분하고 `program.read_ld`에는 canonical ID를 써야 함을 정확히 설명했다.
+- 최신 focused regression은 Agent 80개, Host 4개가 통과했고 MCP 76개, CLI 74개는 앞선 확인을
+  유지한다.
 - 별도 conversation `35fdea15-3dc2-4145-889b-063807425b31`의 일반 요청
   `54a7482d`는 프로그램 목록 읽기 뒤 `continuation_contract`로 실패해 미해결이다. event `2693`의
   continue checkpoint는 정상 선택이 아니라 예외 뒤 evidence 보존 기록이므로 전환 덮어쓰기의 원인으로
