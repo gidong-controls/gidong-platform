@@ -14,7 +14,7 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 ## 저장소와 브랜치
 
 - 세 core 저장소 `gidong-platform`, `gidong-agent`, `gidong-plc-mcp`는 `dev`에서 작업한다.
-  코드 checkpoint는 각각 `c5480c5`, `f5aa1a4`, `9edc7e5`이다. 이 SHA는 이 handoff의 코드
+  코드 checkpoint는 각각 `6d06754`, `f70d30c`, `9edc7e5`이다. 이 SHA는 이 handoff의 코드
   증거 기준일 뿐, 이후 문서 commit을 포함한 영구적인 최신 `HEAD` 표시는 아니다.
 - 독립 XG5000 CLI는 `main`의 `fa0ed95`이며 사용자 지정 원격에 게시된 checkpoint다. 위 세 core
   저장소는 해당 코드 checkpoint 시점에 local 상태였고 push하지 않았다.
@@ -371,22 +371,34 @@ PWA acceptance 미검증도, file-restore approval 대기도 이 절차로 해�
 - 이전에는 M 변경도 P 전용 미션 판별과 무조건적인 하드웨어 요구에 걸렸다. 이제 공통
   target/plan/coverage 조립을 재사용하고 하드웨어 의존 부분만 조건부로 처리한다. M이라도
   downstream P 출력이 있으면 이 예외를 쓰지 않으며, 이미 하드웨어 근거가 있는 M 계획도
-  기존 경로를 유지한다. 하드웨어가 필요한 M 미션의 자동 수집·재분석 전환은 아직 남아 있다.
+  기존 경로를 유지한다.
+- 이후 Host `6d06754`는 하드웨어 미관측으로 차단된 분석도 Agent에 전달하도록 수정했다.
+  Agent `03aabec`는 M 접점이 P 출력에 영향을 주면 기존 대상/제안 단계를 유지하면서 현재
+  실행의 하드웨어 조회 → 동일 대상 재분석으로 이어간다. 이전 실행의 근거는 재사용하지
+  않으며, 새 하드웨어에 결속된 분석이 준비된 뒤에만 공통 승인 제안을 생성한다.
+  exact named M/P 접점의 condition 역할도 지원하며 legacy OUT 경로는 유지한다.
+  `f70d30c`는 중복 target/coverage 조립을 이미 있던 공통 함수로 합쳤다.
 - 보존 payload `739c2be5…`의 메모리 복사본을 M으로 변환해 실제 MCP 분석 JSON을 실제 Host
   broker로 전달했다. `M0010→M0011`, `M00010→M00011` 모두 MainProgram/token 18에서
   offline candidate가 생성됐고 하드웨어 binding은 없었다. 원본 파일은 변경하지 않았다.
   이것은 native 데이터/계층 연결 검증이며 XG5000 입력창의 M 정규화 형식이나 GUI 저장 성공을
   증명하지 않는다.
-- 통합 실행 `artifacts/plc-agent-acceptance/run-bqv0_uij/receipt.json`은 Agent 67, Host 70,
+- 통합 실행 `artifacts/plc-agent-acceptance/run-setz_406/receipt.json`은 Agent 68, Host 71,
   MCP 99, CLI 49 test executions와 Web build가 통과했다. manifest SHA-256은
   `2a6fde46a4ecae84d0bb9f9d4f24afb3c833c815ee492bf7557386369c7e2c80`이며 생성 시각은
-  `2026-08-31T10:42:16+09:00`이다. 실기 네 항목은 `NOT_RUN`, 전체는 `FAIL_CLOSED`다.
+  `2026-08-31T10:56:54+09:00`이다. 실기 네 항목은 `NOT_RUN`, 전체는 `FAIL_CLOSED`다.
+  공통 함수 정리 후 Agent 68건도 다시 통과했다.
   별도 교차 검사에서 실제 MCP 의미 형식의 Agent 생성 M 계획을 Host 실행 계약이 받았고,
   4/5자리 M 피연산자의 native 전달값이 그대로 유지됐다.
 - 기존 XG5000 PID 7024/HWND 67344를 재확인했지만 이번 Computer Use 캡처는 timeout이었다.
   새 창 목록으로 다시 선택한 뒤 한 번 더 캡처해도 같았다. 기존 창·Host를 종료하거나 UAC를
   다시 요청하지 않았다. 실제 LD 생성·편집·검사·저장·재열기와 PWA 실사용 확인은 미완료다.
   Host PID 5464는 유지되어 이번 소스 변경은 아직 실행 중인 PWA에 반영하지 않았다.
+- 다음 continuation의 창 목록 재관측도 Computer Use 도구가 `unacceptable risk`로 거부했다.
+  사유는 반복 캡처 실패 뒤 외부 화면 변화 없는 재시도였다. 다른 자동화 수단으로 우회하지
+  않았고, 사용자에게 기존 XG5000 창을 전면으로 올린 뒤 알려 달라고 요청했다. UAC 거절이나
+  프로그램 종료로 해석하지 않는다. Native Find/Go 구현은 실제 활성 LD 메뉴·대화상자 관측이
+  필요하며, 실패 지점에 추가 guard를 붙이는 변경은 하지 않았다.
 
 ## 반복하지 말아야 할 것
 
