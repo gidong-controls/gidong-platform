@@ -68,6 +68,14 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   `ld:55e388e7aea7a8ce`를 구분하고 `program.read_ld`에는 canonical ID를 써야 함을 정확히 설명했다.
 - 최신 focused regression은 Agent 80개, Host 4개가 통과했고 MCP 76개, CLI 74개는 앞선 확인을
   유지한다.
+- 물리 PLC를 현재 범위에서 제외한 뒤 CLI vendor-core 추출을 재개했다. CLI `74826a2`는 LD 읽기의
+  cross-process OLE clipboard helper를 CLI-owned vendor namespace로 옮겼고 지정 원격 main에
+  push했다. MCP `9171433`은 같은 helper 구현과 MCP server의 helper entry를 삭제하고 부모 JSON
+  프로토콜만 유지한다. CLI 전체 78개와 MCP clipboard/server boundary 88개 테스트가 통과했다.
+  실제 conversation `00691471-1de0-43d5-b0f4-d3f3f57679c2`의 run
+  `f7bc2d96-235b-4924-b181-73c10930510c`은 새 helper 경로에서 LD 읽기를 성공하고 조건식
+  `M00001 AND (M00000 OR M00010)`과 출력 `M00010`을 답해 `COMPLETED`됐다. 전체 vendor-core
+  추출 완료는 아니며 다음 leaf는 UIA worker child boundary다.
 - 별도 conversation `35fdea15-3dc2-4145-889b-063807425b31`의 일반 요청
   `54a7482d`는 프로그램 목록 읽기 뒤 `continuation_contract`로 실패해 미해결이다. event `2693`의
   continue checkpoint는 정상 선택이 아니라 예외 뒤 evidence 보존 기록이므로 전환 덮어쓰기의 원인으로
