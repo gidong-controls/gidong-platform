@@ -73,6 +73,33 @@ def _plan() -> dict:
     }
 
 
+def _hardware_free_m_plan() -> dict:
+    plan = _plan()
+    target = plan["target"]
+    target.pop("hardwareContextDigest")
+    target.update(
+        hardwareContextBinding=None,
+        physicalIoCandidates=[],
+    )
+    plan["current"] = {
+        "value": "M0010",
+        "semantics": {
+            "status": "confirmed",
+            "kind": "contact_operand",
+            "device": "M0010",
+        },
+    }
+    plan["proposed"] = {
+        "value": "M0011",
+        "semantics": {
+            "status": "confirmed",
+            "kind": "contact_operand",
+            "device": "M0011",
+        },
+    }
+    return plan
+
+
 def _transaction() -> ChangeTransaction:
     now = datetime.now(timezone.utc)
     transaction_id = str(uuid.uuid4())
@@ -411,6 +438,38 @@ class _RecordingGateway:
 
 
 class ChangeExecutionVerticalTests(unittest.IsolatedAsyncioTestCase):
+    async def test_confirmed_internal_m_plan_without_hardware_receipt_reaches_native_plan_contract(
+        self,
+    ) -> None:
+        transaction = _transaction().model_copy(update={"plan": _hardware_free_m_plan()})
+        gateway = _RecordingGateway()
+        service = MCPChangeExecutionService(gateway)  # type: ignore[arg-type]
+
+        await service.preflight(transaction)
+        plan_arguments = service._native_plan_arguments(transaction)
+        self.assertNotIn("hardware_context_digest", plan_arguments)
+
+        native_plan = gateway._native_plan()
+        native_plan.pop("hardware_context_digest")
+        native_plan["expected"] = "M0010"
+        native_plan["replacement"] = "M0011"
+        native_plan["plan_digest"] = MCPChangeExecutionService._mcp_plan_digest(native_plan)
+        service._validate_mcp_plan_contract(
+            transaction=transaction,
+            plan_contract=native_plan,
+            plan_arguments={
+                **plan_arguments,
+                "transaction_id": _NATIVE_TRANSACTION_ID,
+                "snapshot_id": "snapshot-1",
+                "backup_id": "backup-1",
+            },
+            snapshot={
+                "programs": [
+                    {"program_id": "program:MAIN", "payload_sha256": "4" * 64}
+                ]
+            },
+        )
+
     async def test_plan_failure_aborts_native_transaction_and_releases_lease(self) -> None:
         transaction = _transaction()
         gateway = _RecordingGateway(fail_plan=True)

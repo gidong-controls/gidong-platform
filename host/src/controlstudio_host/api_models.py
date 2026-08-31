@@ -1812,6 +1812,39 @@ class ChangeCoverageItemV1(ApiModel):
         return normalized
 
 
+def is_hardware_free_m_operand_target(
+    target: dict[str, Any],
+    current: dict[str, Any],
+    proposed: dict[str, Any],
+) -> bool:
+    """Recognize the narrow internal-M route that has no hardware dependency."""
+
+    current_value = current.get("value", current.get("operand"))
+    proposed_value = proposed.get("value", proposed.get("operand"))
+    current_semantics = current.get("semantics")
+    proposed_semantics = proposed.get("semantics")
+    physical_candidates = target.get(
+        "physicalIoCandidates",
+        target.get("physical_io_candidates"),
+    )
+    return (
+        isinstance(physical_candidates, list)
+        and not physical_candidates
+        and isinstance(current_value, str)
+        and isinstance(proposed_value, str)
+        and re.fullmatch(r"M[0-9A-F]{4,5}", current_value.upper()) is not None
+        and re.fullmatch(r"M[0-9A-F]{4,5}", proposed_value.upper()) is not None
+        and isinstance(current_semantics, dict)
+        and isinstance(proposed_semantics, dict)
+        and current_semantics.get("kind") in {"contact_operand", "coil_operand"}
+        and proposed_semantics.get("kind") in {"contact_operand", "coil_operand"}
+        and current_semantics.get("status") == "confirmed"
+        and proposed_semantics.get("status") == "confirmed"
+        and current_semantics.get("device") == current_value.upper()
+        and proposed_semantics.get("device") == proposed_value.upper()
+    )
+
+
 class ChangePlanV1(ApiModel):
     # Defaults preserve read compatibility with transactions created before the
     # coverage contract existed. New transactions must pass
@@ -2017,6 +2050,28 @@ class ChangePlanV1(ApiModel):
                 "runtime-blocked candidate evidence is valid only for "
                 "offline_candidate_revision"
             )
+        current_semantics = self.current.get("semantics")
+        proposed_semantics = self.proposed.get("semantics")
+        if not isinstance(current_semantics, dict) or current_semantics.get("status") != "confirmed":
+            raise ValueError("plan.current.semantics must be the confirmed native receipt")
+        if not isinstance(proposed_semantics, dict) or proposed_semantics.get("status") != "confirmed":
+            raise ValueError("plan.proposed.semantics must be the confirmed native receipt")
+        # A confirmed internal-M operand may omit hardware authority altogether.
+        # If a receipt is supplied, retain the normal binding validation below.
+        hardware_free_m_route = (
+            all(
+                self.target.get(field_name) is None
+                for field_name in (
+                    "hardwareContextBinding",
+                    "hardware_context_binding",
+                )
+            )
+            and is_hardware_free_m_operand_target(
+                self.target,
+                self.current,
+                self.proposed,
+            )
+        )
         try:
             canonical_evidence_ref = str(uuid.UUID(str(analysis_evidence_ref)))
         except ValueError as exc:
@@ -2025,27 +2080,54 @@ class ChangePlanV1(ApiModel):
             ) from exc
         if canonical_evidence_ref != analysis_evidence_ref:
             raise ValueError("plan.target.analysisEvidenceRef must be a canonical UUID")
-        try:
-            canonical_hardware_evidence_ref = str(
-                uuid.UUID(str(hardware_evidence_ref))
-            )
-        except ValueError as exc:
-            raise ValueError(
-                "plan.target.hardwareEvidenceRef must be a canonical UUID"
-            ) from exc
-        if canonical_hardware_evidence_ref != hardware_evidence_ref:
-            raise ValueError("plan.target.hardwareEvidenceRef must be a canonical UUID")
+        if hardware_free_m_route:
+            if any(
+                self.target.get(field_name) is not None
+                for field_name in (
+                    "hardwareEvidenceRef",
+                    "hardware_evidence_ref",
+                    "hardwareContextDigest",
+                    "hardware_context_digest",
+                    "hardwareReceiptDigest",
+                    "hardware_receipt_digest",
+                    "hardwareProjectBindingDigest",
+                    "hardware_project_binding_digest",
+                    "hardwareContext",
+                    "hardware_context",
+                    "hardwareContextBinding",
+                    "hardware_context_binding",
+                )
+            ):
+                raise ValueError("pure M operand plan must not contain hardware authority")
+            hardware_context = {}
+            hardware_context_binding = {}
+        else:
+            try:
+                canonical_hardware_evidence_ref = str(
+                    uuid.UUID(str(hardware_evidence_ref))
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    "plan.target.hardwareEvidenceRef must be a canonical UUID"
+                ) from exc
+            if canonical_hardware_evidence_ref != hardware_evidence_ref:
+                raise ValueError("plan.target.hardwareEvidenceRef must be a canonical UUID")
         for field_name, value in (
             ("analysisDigest", analysis_digest),
             ("analysisReceiptDigest", analysis_receipt_digest),
             ("projectBindingDigest", project_binding_digest),
             ("networkDigest", network_digest),
-            ("hardwareContextDigest", hardware_context_digest),
-            ("hardwareReceiptDigest", hardware_receipt_digest),
-            ("hardwareProjectBindingDigest", hardware_project_binding_digest),
         ):
             if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
                 raise ValueError(f"plan.target.{field_name} must be a SHA-256 digest")
+        if not hardware_free_m_route:
+            for field_name, value in (
+                ("hardwareContextDigest", hardware_context_digest),
+                ("hardwareReceiptDigest", hardware_receipt_digest),
+                ("hardwareProjectBindingDigest", hardware_project_binding_digest),
+            ):
+                if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+                    raise ValueError(f"plan.target.{field_name} must be a SHA-256 digest")
         if not isinstance(network_id, str) or not network_id:
             raise ValueError("plan.target.networkId is required")
         if not isinstance(record_kind, str) or not record_kind:
@@ -2064,15 +2146,9 @@ class ChangePlanV1(ApiModel):
             raise ValueError("plan.target.rungId is required")
         if rung_role not in {"condition", "output"}:
             raise ValueError("plan.target.rungRole must be condition or output")
-        current_semantics = self.current.get("semantics")
-        proposed_semantics = self.proposed.get("semantics")
-        if not isinstance(current_semantics, dict) or current_semantics.get("status") != "confirmed":
-            raise ValueError("plan.current.semantics must be the confirmed native receipt")
-        if not isinstance(proposed_semantics, dict) or proposed_semantics.get("status") != "confirmed":
-            raise ValueError("plan.proposed.semantics must be the confirmed native receipt")
-        if not isinstance(hardware_context, dict):
+        if not hardware_free_m_route and not isinstance(hardware_context, dict):
             raise TypeError("plan.target.hardwareContext must be the exact Host receipt")
-        if not isinstance(hardware_context_binding, dict):
+        if not hardware_free_m_route and not isinstance(hardware_context_binding, dict):
             raise TypeError(
                 "plan.target.hardwareContextBinding must be the exact analysis receipt"
             )
@@ -2092,15 +2168,15 @@ class ChangePlanV1(ApiModel):
             "externalWiringObserved",
             hardware_context.get("external_wiring_observed"),
         )
-        if not isinstance(hardware_context.get("cpu"), dict):
+        if not hardware_free_m_route and not isinstance(hardware_context.get("cpu"), dict):
             raise TypeError("plan.target.hardwareContext.cpu is required")
-        if not isinstance(timer_areas, list):
+        if not hardware_free_m_route and not isinstance(timer_areas, list):
             raise TypeError("plan.target.hardwareContext.timerAreas is required")
-        if not isinstance(io_modules, list):
+        if not hardware_free_m_route and not isinstance(io_modules, list):
             raise TypeError("plan.target.hardwareContext.ioModules is required")
-        if not isinstance(io_mapping, dict):
+        if not hardware_free_m_route and not isinstance(io_mapping, dict):
             raise TypeError("plan.target.hardwareContext.ioMapping is required")
-        if not isinstance(external_wiring_observed, bool):
+        if not hardware_free_m_route and not isinstance(external_wiring_observed, bool):
             raise TypeError(
                 "plan.target.hardwareContext.externalWiringObserved is required"
             )
@@ -2109,7 +2185,7 @@ class ChangePlanV1(ApiModel):
             "offlineCandidateReady",
             hardware_context.get("offline_candidate_ready"),
         )
-        if (
+        if not hardware_free_m_route and (
             not isinstance(hardware_blockers, list)
             or any(
                 not isinstance(item, str) or not item
@@ -2128,8 +2204,13 @@ class ChangePlanV1(ApiModel):
             "io_mapping",
             "external_wiring",
         }
+        cpu_context = hardware_context.get("cpu")
         observed_hardware_status = {
-            "cpu_status": hardware_context["cpu"].get("status"),
+            "cpu_status": (
+                cpu_context.get("status")
+                if isinstance(cpu_context, dict)
+                else "unobserved"
+            ),
             "timer_area_status": (
                 "observed"
                 if timer_areas
@@ -2139,7 +2220,11 @@ class ChangePlanV1(ApiModel):
                 )
                 else "unobserved"
             ),
-            "io_mapping_status": io_mapping.get("status"),
+            "io_mapping_status": (
+                io_mapping.get("status")
+                if isinstance(io_mapping, dict)
+                else "unobserved"
+            ),
             "external_wiring_observed": external_wiring_observed,
             "external_wiring_status": (
                 "observed" if external_wiring_observed else "unobserved"
@@ -2165,7 +2250,7 @@ class ChangePlanV1(ApiModel):
             if isinstance(required_hardware_context, list)
             else []
         )
-        if (
+        if not hardware_free_m_route and (
             hardware_context_binding.get("schema")
             != "xg5000.project.hardware-context/1.0"
             or hardware_context_binding.get("context_digest")

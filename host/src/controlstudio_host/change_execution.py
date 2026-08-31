@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from .api_models import is_hardware_free_m_operand_target
 from .mcp_client import MCPGateway, MCPToolError
 from .models import (
     ChangeRiskLevel,
@@ -161,12 +162,14 @@ class MCPChangeExecutionService:
                 "a verified engineering session is required before offline mutation"
             )
         native_plan = self._native_plan_arguments(transaction)
-        if not {
+        required_native_fields = {
             "analysis_digest",
-            "hardware_context_digest",
             "network_id",
             "network_digest",
-        }.issubset(native_plan):
+        }
+        if not self._hardware_free_m_plan(transaction):
+            required_native_fields.add("hardware_context_digest")
+        if not required_native_fields.issubset(native_plan):
             raise ChangeExecutionPreconditionError(
                 "offline execution requires a native change-target analysis receipt"
             )
@@ -1411,6 +1414,27 @@ class MCPChangeExecutionService:
         )
 
     @staticmethod
+    def _hardware_free_m_plan(transaction: ChangeTransaction) -> bool:
+        plan = transaction.plan
+        target = plan.get("target")
+        current = plan.get("current")
+        proposed = plan.get("proposed")
+        if not all(isinstance(value, dict) for value in (target, current, proposed)):
+            return False
+        assert isinstance(target, dict)
+        assert isinstance(current, dict)
+        assert isinstance(proposed, dict)
+        return (
+            target.get("hardware_context_binding") is None
+            and target.get("hardwareContextBinding") is None
+            and is_hardware_free_m_operand_target(
+                target,
+                current,
+                proposed,
+            )
+        )
+
+    @staticmethod
     def _native_plan_arguments(transaction: ChangeTransaction) -> dict[str, Any]:
         plan = transaction.plan
         target = plan.get("target")
@@ -1564,13 +1588,20 @@ class MCPChangeExecutionService:
             "program_id": plan_arguments["program_id"],
             "token_offset": plan_arguments["token_offset"],
             "analysis_digest": plan_arguments["analysis_digest"],
-            "hardware_context_digest": plan_arguments["hardware_context_digest"],
             "network_id": plan_arguments["network_id"],
             "network_digest": plan_arguments["network_digest"],
             "expected": plan_arguments["expected"],
             "replacement": plan_arguments["replacement"],
             "project_hash": target.artifact_hash,
         }
+        if "hardware_context_digest" in plan_arguments:
+            expected_fields["hardware_context_digest"] = plan_arguments[
+                "hardware_context_digest"
+            ]
+        elif plan_contract.get("hardware_context_digest") not in {None, ""}:
+            raise ChangeExecutionPreconditionError(
+                "program.plan_change unexpectedly returned hardware context authority"
+            )
         for field_name, expected in expected_fields.items():
             if plan_contract.get(field_name) != expected:
                 raise ChangeExecutionPreconditionError(

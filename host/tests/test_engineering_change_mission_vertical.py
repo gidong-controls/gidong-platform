@@ -191,6 +191,62 @@ def _ready_change_target_evidence_contract(
     )
 
 
+def _ready_internal_m_change_target_evidence_contract() -> dict[str, Any]:
+    unsigned: dict[str, Any] = {
+        "schema": "xg5000.program.change-target-analysis/1.1",
+        "target": {
+            "program_id": "program-1",
+            "program_name": "MainProgram",
+            "value_token_offset": 1,
+            "value": "M0010",
+            "record_kind": "CONTACT_NO",
+            "visual_row": 0,
+            "column": 0,
+            "network_id": "network-1",
+            "network_digest": "d" * 64,
+            "network_index": 0,
+            "network_semantic_status": "structural",
+            "rung_id": "rung-1",
+            "rung_role": "condition",
+            "rung_semantic_status": "structural",
+        },
+        "current_semantics": {
+            "status": "confirmed",
+            "kind": "contact_operand",
+            "device": "M0010",
+        },
+        "proposed_semantics": {
+            "status": "confirmed",
+            "kind": "contact_operand",
+            "device": "M0011",
+        },
+        "proposed_value": "M0011",
+        "project_binding": {
+            "session_id": "mission-fixture-xg5000-session",
+            "pid": _XG5000_PID,
+            "hwnd": _XG5000_HWND,
+            "project_hash": _WORKING_HASH,
+        },
+        "hardware_context_binding": None,
+        "impact": {
+            "primary_devices": ["M0010", "M0011"],
+            "physical_io_candidates": [],
+            "physical_output_candidates": [],
+            "multiple_writer_devices": [],
+            "physical_io_hardware_bindings": [],
+        },
+        "blocking_reasons": [],
+        "offline_candidate_ready": True,
+        "runtime_deployment_ready": False,
+        "runtime_deployment_blocking_reasons": [
+            "online_runtime_deployment_unsupported"
+        ],
+    }
+    return MCPExecutionBroker._change_target_evidence_contract(
+        {"analysis": {**unsigned, "analysis_digest": _canonical_digest(unsigned)}}
+    )
+
+
 def _workspace(root: Path) -> dict[str, Any]:
     source = root / "source" / "machine.xgwx"
     captured = root / "workspaces" / "source" / "machine.xgwx"
@@ -640,10 +696,12 @@ class _ReadyLdProposalScenario(_MissionScenario):
         *,
         mismatched_host_owned_hash: bool = False,
         reject_final_artifact: bool = False,
+        internal_m_without_hardware: bool = False,
     ) -> None:
         super().__init__()
         self.mismatched_host_owned_hash = mismatched_host_owned_hash
         self.reject_final_artifact = reject_final_artifact
+        self.internal_m_without_hardware = internal_m_without_hardware
         self.proposal: dict[str, Any] | None = None
 
     def runtime_factory(
@@ -688,6 +746,134 @@ class _ReadyLdProposalRuntime:
             raise AssertionError("ready LD proposal runtime was replayed")
         if not callable(self.planner):
             raise TypeError("Host did not bind the offline change planner")
+
+        if self.scenario.internal_m_without_hardware:
+            analysis = _ready_internal_m_change_target_evidence_contract()
+            analysis_evidence = await self._publish(
+                kwargs["on_tool_event"],
+                "program.change_target_analysis",
+                "ready-internal-m-target-analysis",
+                contract=analysis,
+            )
+            snapshot_evidence = await self._publish(
+                kwargs["on_tool_event"],
+                "project.snapshot",
+                "ready-internal-m-snapshot",
+            )
+            analysis_id = str(analysis_evidence["evidenceId"])
+            snapshot_id = str(snapshot_evidence["evidenceId"])
+            target = {
+                "analysisEvidenceRef": analysis_id,
+                "analysisDigest": analysis["analysisDigest"],
+                "analysisReceiptDigest": analysis["receiptDigest"],
+                "projectBindingDigest": analysis["projectBindingDigest"],
+                "programId": analysis["programId"],
+                "tokenOffset": analysis["valueTokenOffset"],
+                "recordKind": analysis["recordKind"],
+                "visualRow": analysis["visualRow"],
+                "column": analysis["column"],
+                "networkId": analysis["networkId"],
+                "networkDigest": analysis["networkDigest"],
+                "networkIndex": analysis["networkIndex"],
+                "rungId": analysis["rungId"],
+                "rungRole": analysis["rungRole"],
+                "primaryDevices": analysis["primaryDevices"],
+                "physicalIoCandidates": [],
+                "physicalIoBindings": [],
+                "physicalOutputCandidates": [],
+                "multipleWriterDevices": [],
+                "hardwareContextBinding": None,
+                "runtimeDeploymentReady": analysis["runtimeDeploymentReady"],
+                "runtimeDeploymentBlockingReasons": analysis[
+                    "runtimeDeploymentBlockingReasons"
+                ],
+            }
+            coverage = [
+                {
+                    "area": area,
+                    "status": "confirmed",
+                    "summary": f"{area} is bound to the native target receipt.",
+                    "evidence_refs": refs,
+                }
+                for area, refs in (
+                    ("target_identity", [analysis_id]),
+                    ("value_semantics", [analysis_id]),
+                    ("direct_impact", [analysis_id]),
+                    ("indirect_impact", [analysis_id]),
+                    ("safety", [analysis_id]),
+                    ("validation", [snapshot_id]),
+                    ("rollback", [snapshot_id]),
+                )
+            ]
+            coverage.extend(
+                {
+                    "area": area,
+                    "status": "not_applicable_with_reason",
+                    "summary": "This internal-M candidate does not change this area.",
+                    "evidence_refs": [],
+                }
+                for area in ("modes", "runtime", "external_integrations")
+            )
+            self.scenario.proposal = await self.planner(
+                intent="Replace one confirmed internal M contact operand",
+                risk_level="medium",
+                change_mode="offline_working_copy_revision",
+                target=target,
+                current={
+                    "value": analysis["currentValue"],
+                    "semantics": analysis["currentSemantics"],
+                },
+                proposed={
+                    "value": analysis["proposedValue"],
+                    "semantics": analysis["proposedSemantics"],
+                },
+                impact=["One internal memory contact changes in the working copy."],
+                risks=["The replacement must remain within the confirmed network."],
+                assumptions=["No physical I/O candidate is present in the receipt."],
+                blocking_unknowns=[],
+                alternatives=["Retain M0010 and make no offline revision."],
+                acceptance_criteria=["Native structural diff contains only M0010 to M0011."],
+                observation_signals=["M0011 is reviewed after explicit approval."],
+                stop_conditions=["Stop on any native Program Check error."],
+                coverage=coverage,
+                verification_scope="offline_native_reopen",
+                validation=[
+                    "structural_diff",
+                    "xg5000_program_check",
+                    "project_save",
+                    "project_reopen",
+                ],
+                manual_follow_up=["A human must approve before any offline mutation."],
+                rollback=["Discard the working revision and retain the clean baseline."],
+            )
+            self.scenario.transaction_id = str(self.scenario.proposal["transaction_id"])
+            mission = _canonical_mission(
+                _mission(objective=kwargs["prompt"], status="waiting_for_approval")
+            )
+            digest = _canonical_digest(mission)
+            checkpoint = {
+                "schemaVersion": "1",
+                "cycle": 1,
+                "missionDigest": digest,
+                "messages": [],
+            }
+            await kwargs["on_mission_checkpoint"](
+                mission,
+                digest,
+                1,
+                "respond",
+                checkpoint,
+                _canonical_digest(checkpoint),
+            )
+            return AgentRunOutput(
+                content="The exact internal-M proposal is waiting for human approval.",
+                model="deterministic-ready-internal-m-fixture",
+                input_tokens=1,
+                output_tokens=1,
+                engineering_mission=mission,
+                digest=digest,
+                cycle_disposition="respond",
+            )
 
         hardware = _ready_hardware_evidence_contract()
         analysis = _ready_change_target_evidence_contract(
@@ -1452,6 +1638,50 @@ class EngineeringChangeMissionVerticalTests(unittest.TestCase):
                 workspace["working_copy"]["current_sha256"],
                 _WORKING_HASH,
             )
+
+    def test_confirmed_internal_m_receipt_creates_pending_approval_without_hardware(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="controlstudio-ready-internal-m-") as temporary:
+            root = Path(temporary)
+            config = self._config(root)
+            workspace = _workspace(root)
+            store = HostStore(config.database_path)
+            store.set_host_state("active_workspace", workspace)
+            scenario = _ReadyLdProposalScenario(internal_m_without_hardware=True)
+            app, mcp = self._app(
+                config=config,
+                store=store,
+                workspace=workspace,
+                scenario=scenario,
+            )
+
+            with TestClient(app, base_url="http://localhost:8765") as client:
+                _authenticate(client, config)
+                _wait_for_workspace_binding(mcp)
+                _attach_workspace(client, workspace)
+                conversation_id = self._create_conversation(client)
+                run_id = self._start_mission(
+                    client,
+                    conversation_id,
+                    operation_id="ready-internal-m-proposal-only",
+                )
+                completed = _wait_for_run(store, run_id)
+
+            self.assertEqual(
+                completed.state,
+                RunState.COMPLETED,
+                f"{completed.error_code}: {completed.error_detail}",
+            )
+            transactions = store.list_change_transactions(
+                conversation_id=conversation_id
+            )
+            self.assertEqual(len(transactions), 1)
+            self.assertEqual(transactions[0].state, ChangeTransactionState.PENDING_APPROVAL)
+            self.assertEqual(transactions[0].plan["current"]["value"], "M0010")
+            self.assertEqual(transactions[0].plan["proposed"]["value"], "M0011")
+            self.assertIsNone(transactions[0].plan["target"]["hardwareContextBinding"])
+            self.assertNotIn("hardwareEvidenceRef", transactions[0].plan["target"])
 
     def test_rejected_final_artifact_retains_same_run_host_proposal_truthfully(self) -> None:
         with tempfile.TemporaryDirectory(prefix="controlstudio-ready-ld-final-artifact-") as temporary:

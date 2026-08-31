@@ -253,6 +253,16 @@ class OfflineOperandMissionTests(unittest.TestCase):
         self.assertTrue(
             _expired_exact_operand_reproposal_callback_permitted(mission, expired)
         )
+        internal_m_mission = {
+            **mission,
+            "objective": "MainProgram LD M0010 operand becomes M0011.",
+        }
+        self.assertTrue(
+            _expired_exact_operand_reproposal_callback_permitted(
+                internal_m_mission,
+                expired,
+            )
+        )
         clean_expired_wait = {
             **mission,
             "status": "waiting_for_approval",

@@ -157,6 +157,7 @@ from .api_models import (
     XG5000ProjectFileSelectionV1,
     XG5000ProjectLaunchV1,
     canonical_engineering_mission_snapshot,
+    is_hardware_free_m_operand_target,
 )
 from .change_execution import (
     ChangeExecutionFailedSafely,
@@ -1062,9 +1063,10 @@ def _expired_exact_operand_reproposal_callback_permitted(
     """Permit a fresh approval-only retry after one safely terminal authority.
 
     This does not revive the old transaction.  It merely makes the proposal
-    callback available to the Agent's exact P-operand route, which still must
-    supply a new run-local hardware/target/snapshot trio and is limited to one
-    Host transaction by ``proposed_change_authority``. Besides expiration, the
+    callback available to the Agent's exact M/P-operand route, which still must
+    supply new run-local target/snapshot evidence (and hardware evidence when
+    the target requires it) and is limited to one Host transaction by
+    ``proposed_change_authority``. Besides expiration, the
     Host admits only two narrow terminal outcomes: ``native_change_not_applied``
     (which is emitted before native mutation can be accepted as applied), and
     ``explicit_recovery_rolled_back`` with its Host verification digest. The
@@ -1114,7 +1116,7 @@ def _expired_exact_operand_reproposal_callback_permitted(
     operands = list(
         dict.fromkeys(
             re.findall(
-                r"(?<![A-Z0-9])P[0-9A-F]{4,5}(?![A-Z0-9])",
+                r"(?<![A-Z0-9])[MP][0-9A-F]{4,5}(?![A-Z0-9])",
                 mission["objective"].upper(),
             )
         )
@@ -4512,6 +4514,106 @@ def create_app(
                 raise ChangeExecutionPreconditionError(
                     "offline candidate analysis must retain its runtime deployment block"
                 )
+
+        def validate_coverage(hardware_evidence_ref: str | None) -> None:
+            receipt_required_areas = {
+                "target_identity",
+                "value_semantics",
+                "direct_impact",
+                "indirect_impact",
+                "safety",
+            }
+            coverage_by_area = {item.area: item for item in plan.coverage}
+            missing_receipt_bindings = sorted(
+                area
+                for area in receipt_required_areas
+                if coverage_by_area.get(area) is None
+                or analysis_evidence_ref not in coverage_by_area[area].evidence_refs
+            )
+            if missing_receipt_bindings:
+                raise ChangeExecutionPreconditionError(
+                    "change-target receipt must bind the exact native impact coverage: "
+                    + ", ".join(missing_receipt_bindings)
+                )
+            if hardware_evidence_ref is not None:
+                hardware_receipt_required_areas = {
+                    "target_identity",
+                    "value_semantics",
+                    "direct_impact",
+                    "safety",
+                }
+                missing_hardware_bindings = sorted(
+                    area
+                    for area in hardware_receipt_required_areas
+                    if coverage_by_area.get(area) is None
+                    or hardware_evidence_ref not in coverage_by_area[area].evidence_refs
+                )
+                if missing_hardware_bindings:
+                    raise ChangeExecutionPreconditionError(
+                        "hardware-context receipt must bind CPU, timer-area, I/O, and "
+                        "safety coverage: " + ", ".join(missing_hardware_bindings)
+                    )
+            for item in plan.coverage:
+                if (
+                    item.area in _CHANGE_COVERAGE_MUST_BE_CONFIRMED
+                    and item.status != "confirmed"
+                ):
+                    raise ChangeExecutionPreconditionError(
+                        f"change-plan coverage {item.area} must be confirmed with "
+                        "server-authored evidence"
+                    )
+                if item.status != "confirmed":
+                    continue
+                allowed_tools = _CHANGE_COVERAGE_ALLOWED_TOOLS[item.area]
+                observed_tools = {
+                    str(evidence_by_id[evidence_ref].get("toolName") or "")
+                    for evidence_ref in item.evidence_refs
+                    if evidence_ref in evidence_by_id
+                }
+                if observed_tools.intersection(_STATIC_WORKSPACE_EVIDENCE_TOOLS):
+                    raise ChangeExecutionPreconditionError(
+                        "static workspace file evidence cannot satisfy change-plan coverage"
+                    )
+                if not observed_tools.intersection(allowed_tools):
+                    raise ChangeExecutionPreconditionError(
+                        f"change-plan coverage {item.area} has no applicable "
+                        "server-authored evidence; received tools: "
+                        + ", ".join(sorted(tool for tool in observed_tools if tool))
+                    )
+
+        hardware_free_m_route = (
+            receipt.get("hardwareContextBinding") is None
+            and all(
+                plan.target.get(field_name) is None
+                for field_name in (
+                    "hardwareContextBinding",
+                    "hardware_context_binding",
+                )
+            )
+            and is_hardware_free_m_operand_target(
+                plan.target,
+                plan.current,
+                plan.proposed,
+            )
+        )
+        if hardware_free_m_route:
+            hardware_fields = (
+                ("hardwareEvidenceRef", "hardware_evidence_ref"),
+                ("hardwareContextDigest", "hardware_context_digest"),
+                ("hardwareReceiptDigest", "hardware_receipt_digest"),
+                ("hardwareProjectBindingDigest", "hardware_project_binding_digest"),
+                ("hardwareContext", "hardware_context"),
+                ("hardwareContextBinding", "hardware_context_binding"),
+            )
+            if any(
+                plan.target.get(camel) is not None or plan.target.get(snake) is not None
+                for camel, snake in hardware_fields
+            ):
+                raise ChangeExecutionPreconditionError(
+                    "hardware-free M plan must not carry hardware authority"
+                )
+            validate_coverage(None)
+            return
         hardware_evidence_ref = plan.target.get(
             "hardwareEvidenceRef",
             plan.target.get("hardware_evidence_ref"),
@@ -4684,66 +4786,7 @@ def create_app(
             raise ChangeExecutionPreconditionError(
                 "change-target analysis has an unobserved required hardware context"
             )
-        receipt_required_areas = {
-            "target_identity",
-            "value_semantics",
-            "direct_impact",
-            "indirect_impact",
-            "safety",
-        }
-        coverage_by_area = {item.area: item for item in plan.coverage}
-        missing_receipt_bindings = sorted(
-            area
-            for area in receipt_required_areas
-            if coverage_by_area.get(area) is None
-            or analysis_evidence_ref not in coverage_by_area[area].evidence_refs
-        )
-        if missing_receipt_bindings:
-            raise ChangeExecutionPreconditionError(
-                "change-target receipt must bind the exact native impact coverage: "
-                + ", ".join(missing_receipt_bindings)
-            )
-        hardware_receipt_required_areas = {
-            "target_identity",
-            "value_semantics",
-            "direct_impact",
-            "safety",
-        }
-        missing_hardware_bindings = sorted(
-            area
-            for area in hardware_receipt_required_areas
-            if coverage_by_area.get(area) is None
-            or hardware_evidence_ref not in coverage_by_area[area].evidence_refs
-        )
-        if missing_hardware_bindings:
-            raise ChangeExecutionPreconditionError(
-                "hardware-context receipt must bind CPU, timer-area, I/O, and "
-                "safety coverage: " + ", ".join(missing_hardware_bindings)
-            )
-        for item in plan.coverage:
-            if item.area in _CHANGE_COVERAGE_MUST_BE_CONFIRMED and item.status != "confirmed":
-                raise ChangeExecutionPreconditionError(
-                    f"change-plan coverage {item.area} must be confirmed with "
-                    "server-authored evidence"
-                )
-            if item.status != "confirmed":
-                continue
-            allowed_tools = _CHANGE_COVERAGE_ALLOWED_TOOLS[item.area]
-            observed_tools = {
-                str(evidence_by_id[evidence_ref].get("toolName") or "")
-                for evidence_ref in item.evidence_refs
-                if evidence_ref in evidence_by_id
-            }
-            if observed_tools.intersection(_STATIC_WORKSPACE_EVIDENCE_TOOLS):
-                raise ChangeExecutionPreconditionError(
-                    "static workspace file evidence cannot satisfy change-plan coverage"
-                )
-            if not observed_tools.intersection(allowed_tools):
-                raise ChangeExecutionPreconditionError(
-                    f"change-plan coverage {item.area} has no applicable "
-                    "server-authored evidence; received tools: "
-                    + ", ".join(sorted(tool for tool in observed_tools if tool))
-                )
+        validate_coverage(hardware_evidence_ref)
 
     def validate_mne_coverage_evidence(
         plan: ChangePlanV2 | ChangePlanV3 | ChangePlanV4 | ChangePlanV5 | ChangePlanV6,
