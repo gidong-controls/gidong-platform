@@ -95,6 +95,7 @@ HOST_NAVIGATION_MCP_TOOLS = frozenset(
 HOST_WORKSPACE_MCP_TOOLS = frozenset(
     {
         "project.create_native",
+        "project.resume_native",
         "project.verify_native_reopen",
         "project.verify_native_simulation",
         "workspace.open_native",
@@ -203,6 +204,7 @@ CONTROLLER_ENDPOINT_FIELDS = ("host", "port", "timeout_seconds")
 MUTATING_MCP_TOOLS = frozenset(
     {
         "project.create_native",
+        "project.resume_native",
         "controller.begin_restore_handoff",
         "controller.complete_restore_handoff",
         "project.verify_native_reopen",

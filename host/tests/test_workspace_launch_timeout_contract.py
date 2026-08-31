@@ -331,6 +331,42 @@ class WorkspaceLaunchTimeoutContractTests(unittest.IsolatedAsyncioTestCase):
             await gateway.call_workspace_tool("xg5000.launch_idle", arguments)
         self.assertEqual(client.calls, [("xg5000.launch_idle", arguments, {})])
 
+    async def test_native_resume_is_host_workspace_only_and_forwards_its_authorization(self) -> None:
+        self.assertIn("project.resume_native", HOST_WORKSPACE_MCP_TOOLS)
+        self.assertIn("project.resume_native", MUTATING_MCP_TOOLS)
+        client = _RecordingClient()
+        gateway = MCPGateway(command="unused")
+        gateway._client = cast(Any, client)
+        gateway._status = MCPStatus(status="ready")
+        arguments = {
+            "pid": 14284,
+            "hwnd": 329768,
+            "destination_directory": "C:/work/ResumeProject",
+            "project_name": "ResumeProject",
+            "plc_series": "XGK",
+            "cpu_type": "XGK-CPUH",
+            "program_name": "MainProgram",
+            "program_language": "LD",
+            "description": "reviewed",
+            "build_bundle": {"bundleId": "bundle-1"},
+            "authorization": {
+                "schema": "controlstudio-native-project-authorization/v1",
+                "allowed_operation": "project.resume_native",
+                "signature": "test-signature",
+            },
+        }
+        with patch.object(MCPGateway, "_decode_tool_result", return_value={"ok": True}):
+            await gateway.call_workspace_tool("project.resume_native", arguments)
+
+        self.assertEqual(client.calls, [("project.resume_native", arguments, {})])
+        with self.assertRaisesRegex(MCPToolError, "agent attempted a blocked MCP tool"):
+            await gateway.call_agent_tool(
+                "project.resume_native",
+                arguments,
+                call_tool=client.call_tool,
+            )
+        self.assertEqual(client.calls, [("project.resume_native", arguments, {})])
+
     def test_idle_launch_returns_a_fresh_binding_or_safe_attention(self) -> None:
         request = LaunchIdleXG5000RequestV1.model_validate(
             {"confirmIdleLaunch": True}
