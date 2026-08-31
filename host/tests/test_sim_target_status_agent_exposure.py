@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import unittest
-from typing import Any, cast
+from typing import Any
 
 from controlstudio_host.mcp_client import (
     AGENT_READ_ANALYZE_MCP_TOOLS,
     AGENT_TOOL_NAMES,
     AGENT_TOOL_REQUIRED_IDENTITY_FIELDS,
     HOST_CHANGE_MCP_TOOLS,
-    MCPGateway,
     SESSION_IDENTITY_FIELDS,
+    MCPGateway,
+    MCPToolError,
 )
 
 
@@ -45,11 +46,18 @@ class SimulatorTargetStatusAgentExposureTests(unittest.IsolatedAsyncioTestCase):
 
         result = await gateway.call_agent_tool(
             "sim.target_status",
-            {"session_id": "stale", "pid": 999, "hwnd": 888},
+            {},
             call_tool=client.call_tool,
         )
 
         self.assertEqual(result, {"ok": True})
+        self.assertEqual(client.calls, [("sim.target_status", session)])
+        with self.assertRaisesRegex(MCPToolError, "stale or mismatched session identity: hwnd"):
+            await gateway.call_agent_tool(
+                "sim.target_status",
+                {"hwnd": 888},
+                call_tool=client.call_tool,
+            )
         self.assertEqual(client.calls, [("sim.target_status", session)])
 
 
