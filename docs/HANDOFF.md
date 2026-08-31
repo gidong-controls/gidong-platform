@@ -13,12 +13,10 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 
 ## 저장소와 브랜치
 
-- `gidong-platform`: `dev` @ `153f3e14757ba083185382fcfcf9b80e6fd87647` (local checkpoint)
-- `gidong-agent`: `dev` @ `c4bce7f15d67cc936afa3088f88547870d43ad8a` (local checkpoint)
-- `gidong-plc-mcp`: `dev` @ `80b8f70da4dda6f74f679a117c56ace3d54b3807` and
-  `24e1085` (local checkpoints)
-- 독립 XG5000 CLI는 사용자 지정 원격에 `6a78ac8a6e6bb7c41236aa32abef4f93b16bc10d`를
-  게시했다. Platform, Agent, MCP는 이 checkpoint 시점에 push하지 않았다.
+- `gidong-platform`: `dev` @ `b05613c`
+- `gidong-agent`: `dev` @ `5a707b0`
+- `gidong-plc-mcp`: `dev` @ `e3e69f9`
+- 독립 XG5000 CLI: `82ae877`
 - 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
 
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
@@ -48,8 +46,9 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 - 관련 Host transaction은 `f6ecf557-316b-4739-adde-247813330a18`, MCP transaction은
   `077d9ef5-c941-4607-9c1d-f0fc9af74a7d`이며, recovery check의 original-exact match는
   확인됐지만 recovery attach/rollback/save 성공은 확인되지 않았다.
-- 05:59 KST OS 재부팅 후 이전 Host/XG5000은 종료됐고, 06:16에 normal Development launcher로
-  Host PID 5464/port 8767을 확인했다. XG5000은 현재 없다. working copy `f277…`는 이전
+- 역사적 2026-08-31 관측: 05:59 KST OS 재부팅 후 이전 Host/XG5000은 종료됐고, 06:16에
+  normal Development launcher로 Host PID 5464/port 8767을 확인했다. 당시 XG5000 inventory는
+  비어 있었다. 이는 현재 process 상태나 다음 작업 지시가 아니다. working copy `f277…`는 이전
   `b929…`와 static `NetworkModuleName` 하나만 다르고 ProgramData blob은 동일하지만, live
   equivalence나 hash 재결속의 권위는 없다.
 - Browser control은 existing ControlStudio tab을 claim했고, scoped `LOCALAPPDATA`의 one-use
@@ -76,6 +75,12 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   CA-01, CA-02, CA-04--CA-07, CA-12는 모두 `NOT_RUN`이므로 overall은 계속
   `FAIL_CLOSED`; Browser URL policy의 PWA acceptance 미검증과 file-restore approval 대기도
   그대로다.
+- 현재 운영 recovery 정책: 실패나 관측 timeout 뒤에는 live handle이 있으면 보존하고 결과와
+  journal/identity evidence를 진단한다. 결과가 불명확한 non-idempotent side effect와 이미
+  소비된 approval은 replay하지 않는다. 반면 safe inspection과 구현은 이미 승인된 exact
+  plan/file/mutation 범위 안에서 계속할 수 있다. 실제 UAC 거부가 확인된 경우에만 새 explicit
+  user request 전에는 elevation을 다시 요청하지 않는다. timeout, browser policy 거부, 또는
+  과거 관측만으로 UAC 거부를 추정하지 않는다.
 
 ## 마지막 리팩터링
 

@@ -81,11 +81,18 @@ or infer physical I/O behavior from this proof.
 
 1. Start or retain one compatible interactive Host session.  If elevation is
    required, approve it once for that Host lifetime; do not request UAC per
-   operation.
+   operation.  If UAC is actually denied, record that denial and do not request
+   elevation again until a new explicit user request.  A readiness observation
+   failure or timeout is not by itself evidence of denial.
 2. Open the disposable copy as one user-visible attempt and record workspace
    revision, path/hash, PID, HWND, process creation time, selected program ID,
-   and baseline LD payload digest.  If open fails or is ambiguous, stop and
-   wait for a new explicit user request before one new attempt.
+   and baseline LD payload digest.  If the result fails or is ambiguous, retain
+   any live handle and diagnose it against the journal and identity evidence.
+   Do not replay an open or another non-idempotent side effect whose outcome is
+   uncertain, and do not reuse a consumed approval.  Safe inspection and
+   implementation may continue only within the already authorized exact
+   plan/file/mutation scope; an observation failure alone does not require a
+   new user request.
 3. Render a proposal containing the exact token offset, expected `P0020`, and
    replacement `P0021`; obtain Host approval; then apply only that approved
    operand mutation, validate it, save, and record the authoritative hash.
@@ -106,8 +113,12 @@ or infer physical I/O behavior from this proof.
 
 After the source process is closed, any verification, attach, or commit failure
 must leave both the MCP and Host transactions quarantined.  It must not reuse
-the closed source HWND for rollback or retry silently.  Each explicit user
-request permits exactly one attempt.
+the closed source HWND for rollback or retry silently.  Retain and diagnose any
+live replacement handle and the journal result; never replay an uncertain
+non-idempotent side effect or a consumed approval.  Quarantine does not by
+itself stop safe inspection or implementation within the exact existing
+authorization.  Only an actual UAC denial requires a new explicit user request
+before another elevation attempt.
 
 This acceptance is strictly offline LD/project evidence.  It does not write,
 force, download, mode-change, or otherwise control a real PLC I/O point.
