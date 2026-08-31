@@ -460,6 +460,46 @@ class NativeProjectResumeTests(unittest.IsolatedAsyncioTestCase):
             seen_authorizations[0]["build_receipt_digest"],
         )
 
+    async def test_completed_rebind_reports_gateway_stage_without_checkpointing(self) -> None:
+        repository = _Repository()
+        repository.operation = replace(
+            repository.operation,
+            state="COMPLETED",
+            result={"buildBundleReceipt": {"receipt": True}},
+        )
+        gateway = _Gateway()
+
+        async def unavailable(_name: str, _arguments: dict) -> dict:
+            raise RuntimeError("transport unavailable")
+
+        gateway.call_read_tool = unavailable  # type: ignore[attr-defined]
+        service = NativeProjectService(repository, gateway)  # type: ignore[arg-type]
+        with (
+            patch(
+                "controlstudio_host.native_projects.validated_new_build_workspace_provenance",
+                return_value={"receipt_digest": "e" * 64},
+            ),
+            self.assertRaisesRegex(NativeProjectConflict, "instance inventory"),
+        ):
+            await service._rebind_completed_reopen_target(
+                operation=repository.operation,
+                actor_id="actor-1",
+                source_pid=101,
+                reopened_pid=303,
+                reopened_hwnd=404,
+                registration={
+                    "workspace": {
+                        "workspace_id": "22222222-2222-4222-8222-222222222222",
+                        "revision_id": "33333333-3333-4333-8333-333333333333",
+                        "working_copy": {
+                            "path": "C:/work/ResumeProject.xgwx",
+                            "current_sha256": "d" * 64,
+                        },
+                    }
+                },
+            )
+        self.assertEqual(repository.operation.state, "COMPLETED")
+
     async def test_completed_unbound_resume_rejects_before_tail_without_reopened_target(self) -> None:
         repository = _Repository()
         repository.operation = replace(

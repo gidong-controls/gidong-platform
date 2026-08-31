@@ -3806,7 +3806,17 @@ class NativeProjectService:
             raise NativeProjectConflict(
                 "completed native project has no exact saved-build workspace lineage"
             )
-        raw_instances = await self._gateway.call_read_tool("xg5000.instances", {})
+        async def read_rebind_tool(name: str, arguments: dict[str, Any], *, stage: str) -> Any:
+            try:
+                return await self._gateway.call_read_tool(name, arguments)
+            except (MCPToolError, RuntimeError) as exc:
+                raise NativeProjectConflict(
+                    f"completed native project saved-build rebind failed during {stage}"
+                ) from exc
+
+        raw_instances = await read_rebind_tool(
+            "xg5000.instances", {}, stage="instance inventory"
+        )
         instances = raw_instances.get("instances") if isinstance(raw_instances, dict) else None
         if not isinstance(instances, list):
             raise NativeProjectConflict("MCP returned an invalid XG5000 instance list")
@@ -3820,7 +3830,7 @@ class NativeProjectService:
         ]
         if len(matches) != 1:
             raise NativeProjectConflict("the requested reopened XG5000 PID/HWND is unavailable")
-        attached = await self._gateway.call_read_tool(
+        attached = await read_rebind_tool(
             "xg5000.attach",
             {
                 "pid": reopened_pid,
@@ -3830,6 +3840,7 @@ class NativeProjectService:
                 "workspace_id": workspace_id,
                 "access_profile": "analysis",
             },
+            stage="current native-file identity attach",
         )
         observed_session = (
             attached.get("session")
@@ -3885,7 +3896,7 @@ class NativeProjectService:
                 "nonce": str(uuid.uuid4()),
             }
         )
-        rebound = await self._gateway.call_read_tool(
+        rebound = await read_rebind_tool(
             "xg5000.attach",
             {
                 "pid": reopened_pid,
@@ -3896,6 +3907,7 @@ class NativeProjectService:
                 "resume_authorization": authorization,
                 "access_profile": "analysis",
             },
+            stage="signed saved-build read-only attach",
         )
         session = (
             rebound.get("session")
