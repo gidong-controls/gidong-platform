@@ -50,12 +50,14 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   향후에는 새 PID/HWND/lifetime을 다시 확인하는 명시적 analysis-only attach를 read-ready로만
   bind하고 mutation readiness는 닫는 경로로 분리한다. 이 문서상 quarantine은 해제하지 않으며
   GET/read 경로가 그 상태를 바꾸어서는 안 된다.
-- runtime/Host worker가 simulator 시작 및 단계별 실패·복구 경로를 조사 중이다. `dd4582a`의 SHA-bound
-  ID→exact-name 경로는 유지한다. genuinely unnamed legacy catalog sweep의 semantic 교체 WIP는
-  아직 commit되지 않아 알려진 legacy debt다. compact XGK 일반 수정 `476cdb9`/`b4738a8`은
-  완료됐지만 persisted actual plan은 이미 full-width 주소를 사용하므로 이번 blocker가 아니다.
-  root architecture README `d615174`도 반영됐다. CLI `23830c4`까지 지정 원격 main에 push됐고
-  MCP·Platform checkpoint는 local이다. 전체 CLI vendor-core 독립은 아직 완료되지 않았다.
+- MCP `c4ff276`은 XG-SIM 시작 상태 증명을 보완했고, `a16c137`/Platform `614d747`은 단계별
+  native simulation 실패 증거를 분류했다. 해당 focused test는 통과했지만 실제 XG-SIM 재시도는
+  아직 하지 않았다. `dd4582a`의 SHA-bound ID→exact-name 경로는 유지한다. semantic legacy
+  catalog-sweep 교체 WIP는 폐기했으며, genuinely unnamed legacy sweep은 여전히 알려진 debt다.
+  compact XGK 일반 수정 `476cdb9`/`b4738a8`은 완료됐지만 persisted actual plan은 이미
+  full-width 주소를 사용하므로 이번 blocker가 아니다. root architecture README `d615174`도
+  반영됐다. CLI `e735242`까지 지정 원격 main에 게시됐고 MCP·Platform checkpoint는 local이다.
+  전체 CLI vendor-core 독립은 아직 완료되지 않았다.
 
 ## 2026-08-31 18:39 KST 재개 경로 구현·실행 중 — 이전 관측
 
