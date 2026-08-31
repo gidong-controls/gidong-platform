@@ -23,7 +23,35 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-08-31 21:57 KST native resume: 독립 재열기 검증 완료, XG-SIM 실패 단계 확인 중 — 현재 상태
+## 2026-09-01 필수 읽기 경로 — 작업 중
+
+- 별도 복사본 초기화/복구 기능은 사용자 지시로 제외했다. 기존 PWA 연결·프로그램 읽기와
+  CLI/MCP 시뮬레이터 상태 조회만 수정한다. 원본/복사본 창과 과거 SIM 실패 기록은 보존한다.
+- Platform `ae816c6`/`97bc8eb`, MCP `2d4cc6a`: 중단된 native/SIM 작업의 잠금은 유지하면서
+  analysis 읽기를 허용하고, 선택 PID/HWND와 일치하는 verified reopen 기대값을 오래된
+  active workspace보다 우선해 fresh MCP attach에 전달한다. cached session을 bind하지 않는다.
+- 실제 PWA와 같은 `{pid:16228,hwnd:723394}` attach가 성공했다. 새 session
+  `cd254b92-bea4-473d-9611-2b30115ca23e`에서 `/api/v1/engineering/programs`가
+  `MainProgram` / `ld:55e388e7aea7a8ce` / LD를 반환했다. API 경로 실증이며 화면 acceptance는 아니다.
+- `program.focus` 실패 원인은 속성 창이 아니다. MCP `ed025ad`의 실제 제한 진단
+  `4e2d92aa-90f3-4f16-a9f7-9a7fe4484acb/697f525ee7e1/error.json`에서 PID/owner가 일치하는
+  `XG5000 - LSPLC`의 PLC 응답 없음·재연결 Retry/Cancel 창과 뒤의 `쓰기` 창이 확인됐다.
+  추측에 기반했던 `b070ffc` 조건 완화는 되돌렸다. 재연결/확인/쓰기 없이 기존 Cancel 처리로
+  편집기를 복원하는 수정과 이 창을 연 명령 경로 추적을 진행한다. 과거 SIM 복원 성공으로 간주하지 않는다.
+- CLI `d695cae` / MCP `54b3ee1`은 read-only `sim-target-status` / `sim.target_status`를 추가했고,
+  Host `e503bc4`/`3f6cdca`, Agent `61152d6`가 기존 read tool 경로로 노출한다. 별도 REST/복구
+  화면은 없다. CLI는 지정 원격 main에 push했다. 실제 SIM 상태 조회 결과는 아직 미확인이다.
+- Agent `30b2598`은 Host가 노출한 조회 도구 27개가 실제 실행 선택 목록에 누락된 문제를 고쳤다.
+  `3a8bf1e`는 Host가 인수를 주입하는 빈 입력 도구에서 불필요한 모델 인수 생성 호출을 없애고
+  기존 특수 분기 세 곳을 통합했다. 설정 모델은 변경하지 않았다.
+- 분석 run `48446191-0ba4-4c8f-b7dc-a29b1f104279`는 반환되지 않은 evidenceId 인용으로,
+  `11199eb9-8431-4499-b20d-7cf6ebcd9591`은 위 실행 목록 누락으로 실패했다. 저장된 Agent
+  조회 미션을 이은 `5caf995e-b278-43f9-8327-bfda77afd72d`에서는 실제
+  `get_simulator_target_status` → MCP → CLI 호출까지 도달했지만 네이티브 상태 조회가
+  `XG5000_UIA_TIMEOUT`으로 실패했다. SIM 시작·쓰기·RUN·STOP은 실행하지 않았다.
+  프로그램 목록 읽기 성공과 달리 LD focus/현재 SIM 상태 조회는 아직 완료되지 않았다.
+
+## 2026-08-31 21:57 KST native resume: 독립 재열기 검증 완료, XG-SIM 실패 기록
 
 - 22:29 KST 반영 확인: MCP `189330e`는 raw/wrapped UIA 전달 상태 중 하나라도 `unknown`이면
   무실행 실패로 분류하지 않는다. 경계 테스트 67개, runtime 관련 103개, Host 관련 28개가
@@ -54,11 +82,9 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   향후에는 새 PID/HWND/lifetime을 다시 확인하는 명시적 analysis-only attach를 read-ready로만
   bind하고 mutation readiness는 닫는 경로로 분리한다. 이 문서상 quarantine은 해제하지 않으며
   GET/read 경로가 그 상태를 바꾸어서는 안 된다.
-- 복구 경로 점검: reattach 뒤 reviewed-no-save-close는 기존 API로 가능하지만, 원본 PID를
-  보존한 복사본 재시작과 새 trial 연결을 묶는 Host API는 아직 없다. 일반 workspace resume는
-  기존 XG5000을 거부한다. 복사본 초기화 여부를 사용자에게 문의했으며 아직 실행하지 않았다.
-  구현 시 기존 실패 trial/복원 미확인 기록을 보존해야 하며, 창 재열기만으로 과거 복원을
-  성공 처리하거나 ACK/DB 수정으로 격리를 해제해서는 안 된다.
+- 사용자 지시로 별도 복사본 초기화/복구 API는 만들지 않는다. 필수 작업은 기존 Agent의
+  프로젝트 읽기 연결과 CLI/MCP 상태 조회, LD 작성·검사·저장·시뮬레이션이다. 실패 기록을
+  삭제하거나 창 재열기를 과거 시뮬레이션 복원 성공으로 처리하지 않는다.
 - MCP `c4ff276`은 XG-SIM 시작 상태 증명을 보완했고, `a16c137`/Platform `614d747`은 단계별
   native simulation 실패 증거를 분류했다. 해당 focused test는 통과했지만 실제 XG-SIM 재시도는
   아직 하지 않았다. `dd4582a`의 SHA-bound ID→exact-name 경로는 유지한다. semantic legacy
