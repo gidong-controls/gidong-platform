@@ -32,14 +32,17 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 - workspace `9674be8c-cbea-4dd1-8d4d-a603280d3569`의 source/working hash와 저장된 프로젝트
   hash는 모두 `2d55b3489f0f1a97666e79d00bd4ef6962d2e2e71fa44839193be04240308b48`로 일치한다.
   이는 검사·저장 재개 checkpoint 증거이며 전체 제품 acceptance의 완료 선언은 아니다.
-- fresh controlled instance PID `16228`/HWND `723394`는 시작됐지만, `MainProgram` opener가
-  실패했다. 원래 PID `14284`/HWND `329768`는 그대로 남아 있다. 따라서 independent fresh
-  reopen 검증은 아직 없고 `engineeredProgramReady`는 `false`다.
+- fresh controlled instance PID `16228`/HWND `723394`는 시작됐고, v3 saved-build rebind는
+  같은 instance의 native-file proof·경로·hash·process lifetime을 Host 서명 및 MCP attach
+  metadata까지 결속해 실제 통과했다. 원래 PID `14284`/HWND `329768`와 source/working hash는
+  계속 보존됐다. 다만 화면이 가린 `MainProgram` opener의 실제 readback은 아직 실패 상태다.
+  따라서 independent fresh reopen 검증은 아직 없고 `engineeredProgramReady`는 `false`다.
 - XG-SIM은 시작하지 않았고 물리 I/O도 시험하지 않았다. PLC write나 최종 PWA acceptance를
   완료로 기록해서는 안 된다.
-- CLI `9250719`은 지정 원격에 push됐고 MCP `9f425c6`은 local checkpoint다. 독립 CLI 경계는
-  아직 전환 중이다. CLI가 MCP source module을 import하므로 완전히 standalone인 source copy나
-  배포 증거로 해석하지 않는다.
+- 현재 checkpoint는 Platform `4ab6571`, MCP `0210d57`, 독립 CLI `109a030`이다
+  (`9250719`은 지정 원격 main에 push된 앞선 CLI checkpoint). 독립 CLI 경계는 아직 전환 중이다.
+  CLI가 MCP source module을 import하므로 완전히 standalone인 source copy나 배포 증거로
+  해석하지 않는다.
 
 ## 2026-08-31 18:39 KST 재개 경로 구현·실행 중 — 이전 관측
 
