@@ -1,8 +1,9 @@
 # ControlStudio 사용자 GUI 및 실행 아키텍처
 
-최종 갱신: 2026-07-30
+최종 갱신: 2026-08-31
 
-결정 상태: 제품 구현 기준 확정, 읽기·분석과 제한된 오프라인 작업 UI 구현
+결정 상태: 제품 구현 기준 확정. Web/Host 경로와 결정론적 test는 확인됐지만,
+실제 XG5000 UI·restart와 실제 LD edit/save/reopen acceptance는 미증명이다.
 
 이 문서는 [루트 PRD](../PRD.md)의 사용자 제품을 어떤 형태로 제공할지 고정한다.
 기능 범위와 안전 정책은 PRD가 우선하며, 현재 Agent·Platform·MCP 실행 계약은
@@ -21,7 +22,8 @@ ControlStudio의 사용자 GUI는 **React + TypeScript 웹 애플리케이션**�
 - 선택적으로 인증된 원격 브라우저와 모바일에서도 같은 작업을 이어 본다.
 - 첫 제품에 Tauri, Electron, Flutter, Qt 또는 Rust 네이티브 GUI를 넣지 않는다.
 - Windows에 종속되는 것은 GUI가 아니라 XG5000을 제어하는 사용자 세션 Host다.
-- 현재 Tkinter 창은 LS adapter 개발·진단 콘솔로만 유지한다.
+- 현재 Platform 제품 실행 경로에는 Tkinter 창이 없다. 과거 `xg5000_control.gui`
+  콘솔은 Platform source에 없으며 제품 UI 계약에 포함하지 않는다.
 
 ```text
 ControlStudio Windows 아이콘
@@ -30,12 +32,15 @@ ControlStudio Windows 아이콘
       ├─ React 정적 파일과 HTTP API
       ├─ 실시간 이벤트 스트림
       ├─ 서버 권위 대화·작업 저장소
-      ├─ Pydantic AI agent runtime
-      └─ MCP process supervisor
-        → MCP 안전 코어
-          → LS / Mitsubishi / Rockwell adapter
-            → 벤더 IDE·시뮬레이터·PLC
+      ├─ Agent process supervisor → private `gidong-agent` (Pydantic AI)
+      └─ MCP process supervisor → private `gidong-plc-mcp` (안전 코어)
+        → 이관된 LS 명령은 `controlstudio-xg5000-cli` subprocess/JSON 경계
+        → LS XG5000 adapter → 벤더 IDE·시뮬레이터·PLC
 ```
+
+Mitsubishi와 Rockwell은 공통 GUI schema에 남아 있는 후속 adapter 범위이며 현재
+실행 adapter가 아니다. CLI로 이관되지 않은 legacy-native route의 실행·검증 책임은
+계속 MCP에 있다.
 
 React UI는 요청과 서버 상태를 표시하는 클라이언트다. 프로젝트 변경, PLC 제어,
 성공 판정, 권한 승격 또는 복구 판정을 직접 수행하지 않는다.
@@ -65,7 +70,7 @@ ControlStudio가 제공할 핵심 화면은 다음이다.
 않는다. 향후 독립적인 읽기 전용 viewer가 실제 사용자 가치로 입증되면 별도
 capability로 추가한다.
 
-Mitsubishi와 Rockwell을 추가해도 같은 원칙을 유지한다. GUI는 벤더별 좌표,
+향후 Mitsubishi와 Rockwell을 추가해도 같은 원칙을 유지한다. GUI는 벤더별 좌표,
 메뉴 또는 네이티브 payload를 알지 않고 공통 location과 evidence만 사용한다.
 실제 위치 열기와 편집은 각 벤더 adapter가 담당한다.
 
@@ -169,9 +174,12 @@ START
        → ControlStudio GUI 열기
 ```
 
-Pydantic AI는 Host 안에서 사용하는 Python 라이브러리이며 별도 서버로 실행하지
-않는다. MCP 안전 코어는 Host가 고정된 명령과 환경으로 시작·감시하는 별도
-프로세스다.
+Pydantic AI/model/prompt/RAG는 Host가 고정된 명령과 환경으로 시작·감시하는 별도
+`gidong-agent` sidecar에 있다. Host는 Agent Protocol로만 통신하며 Agent는 raw MCP,
+PID/HWND, endpoint나 approval secret을 소유하지 않는다. MCP 안전 코어 역시 Host가
+감시하는 별도 `gidong-plc-mcp` 프로세스다. 이관된 LS 명령은 MCP가 separate
+`controlstudio-xg5000-cli` subprocess로 위임할 수 있지만, 이 경계가 MCP의
+target/precondition/journal 책임을 이전하지는 않는다.
 
 Windows Launcher는 자신이 새로 시작한 Host 프로세스 트리를 Job Object에
 결합한다. readiness·Host challenge·GUI 열기 중 실패하면 해당 Job만 종료해
@@ -235,6 +243,8 @@ http://127.0.0.1:8765
 
 PWA는 사용자 경험상 독립 Windows 앱 창을 제공하지만 실행 권위는 아니다.
 브라우저 또는 PWA가 새로고침·종료돼도 서버 소유 작업을 중복 시작하지 않는다.
+Browser URL policy의 실제 PWA acceptance는 아직 완료되지 않았으므로, URL/handoff
+정책을 실제 보안·복구 성공으로 주장하지 않는다.
 
 ## 5. 원격 접근과 여러 클라이언트
 
@@ -493,7 +503,8 @@ API가 인증됐다는 사실은 MCP capability를 대신하지 않는다. Host�
 - MCP tool 진행을 이름·tool-call ID·상태만 남긴 서버 이벤트로 표시하고
   도구 인자·결과·원시 오류는 사용자 화면에 노출하지 않는 활동 흐름
 - 동일 길이 LD operand 한 개에 한정된 구조화 변경 계약, 승인·거절·실행과
-  `QUARANTINED` transaction의 명시적 PID/HWND 선택 복구 화면
+  `QUARANTINED` transaction의 명시적 PID/HWND 선택 복구 화면. 실제 LD
+  edit/save/reopen acceptance와 사용자의 file-restore approval은 아직 미증명/미해결
 - 정확한 XG5000 PID/HWND를 선택해 LS 네이티브 프로젝트 생성을 요청하고
   서버의 idempotent 작업 상태·identity 검증 결과를 표시하는 화면
 - LS FEnet TCP 2004의 상태·device 단발 읽기와 최대 30초 bounded 값 변화 trace를
@@ -511,6 +522,11 @@ operation 상태, exact native readback과 evidence receipt를 그대로 표시�
 복원, 강한 online identity·controller-native scan trace, 실제 PLC write/run edit/force/mode/download,
 일반 LD 생성과 전체 신규 설비 로직 구축은 아직 없다. 구현되지 않은 기능은
 준비됨으로 표시하지 않는다.
+
+현재 확인된 실행 증거는 Agent·Host·MCP·CLI·Web의 다섯 deterministic command group과
+255 test execution, Web build PASS다. 실제 XG5000 UI/restart 및 LD edit/save/reopen은
+이 기준일에 재실행되지 않았고, Browser URL policy PWA acceptance와 file-restore
+approval도 열려 있다.
 
 기존 `xg5000_control.gui` Tkinter 개발·진단 콘솔은 제품 실행 경로가 아니어서
 제거했다. 제품 UI는 Platform Web과 Host API만 사용하며, 문서가 추가됐다는

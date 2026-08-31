@@ -3,11 +3,11 @@
 | 항목 | 내용 |
 | --- | --- |
 | 문서 상태 | 제품 기준선 v1 · Living PRD |
-| 최종 갱신 | 2026-08-10 |
+| 최종 갱신 | 2026-08-31 |
 | 제품 상태 | 개발 중 · production release 아님 |
 | 제품 브랜드 | 기동 / GIDONG |
 | 제품 형태 | 단일 설치·단일 실행 진입점, 내부적으로 격리된 멀티프로세스 sidecar |
-| 소스 구조 | 공개 `gidong-platform`, 비공개 `gidong-agent`, 비공개 `gidong-plc-mcp` |
+| 소스 구조 | 공개 `gidong-platform`, 비공개 `gidong-agent`·`gidong-plc-mcp`, 별도 vendor repository `controlstudio-xg5000-cli` |
 
 ## 0. 이 문서의 목적과 판정 규칙
 
@@ -28,6 +28,9 @@
 6. 현재 검증된 것과 아직 주장할 수 없는 것은 무엇인가?
 
 이 문서와 세부 문서가 충돌하면 제품 범위와 완료 판정에는 이 문서가 우선한다.
+다만 이 문서의 날짜가 있는 현황 기록은 최신의 명시적 제품 요구를 대체하지 않는다.
+현재 구현·검증 상태는 source와 runtime evidence로 판단하되, 아직 구현되지 않았거나
+검증되지 않은 범위를 제품 요구에서 제외하는 근거로 사용하지 않는다.
 세부 사용자 경험은 [GUI 명세](docs/CONTROLSTUDIO_GUI_HANDOFF.md)와
 [엔지니어링 작업 흐름](docs/ENGINEERING_COLLABORATION_WORKFLOWS.md), 실행 책임은
 [제품 아키텍처](docs/PRODUCT_ARCHITECTURE.md), 배포와 버전 결속은
@@ -237,6 +240,8 @@ flowchart LR
     P -->|"sanitized context / Agent Protocol"| A["gidong-agent (private)<br/>Pydantic AI · prompt · derived RAG"]
     A -->|"analysis / ExternalToolRequest"| P
     P -->|"validated target / approval / MCP contract"| M["gidong-plc-mcp (private)<br/>vendor action · journal · readback · rollback"]
+    M -->|"migrated vendor commands"| C["controlstudio-xg5000-cli (separate vendor repository)<br/>deterministic subprocess · JSON receipt"]
+    C --> V
     M -->|"receipt / evidence"| P
     M <--> V["XG5000 · XG-SIM · PLC"]
 ```
@@ -246,6 +251,7 @@ flowchart LR
 | `gidong-platform` | public | Launcher/UI/Host, 공개 contracts, 사용자 원본·workspace, conversation/run, target binding, approval, `ExecutionBroker`, audit, process supervision, packaging/BOM | private prompt·RAG 정책, vendor native 실행 구현, MCP operation truth |
 | `gidong-agent` | private | 공식 Pydantic AI sidecar, 모델 adapter, prompt, 추론·계획, 파생 RAG index/ranking/eval, Agent checkpoint | raw MCP, PID/HWND/endpoint, approval secret, 원본 문서 authority, 실제 변경 성공 판정 |
 | `gidong-plc-mcp` | private | vendor adapter, target/precondition 재검증, operation lock/journal, apply/check/readback/rollback/reconciliation | 모델·prompt, Platform UI/API, 사용자 전체 대화와 원본 문서 authority |
+| `controlstudio-xg5000-cli` | separate vendor repository | 이관된 XG5000 명령의 deterministic subprocess/JSON request-result 경계와 vendor receipt | Agent/Platform approval·audit 권위, MCP target/precondition 재검증·operation journal, 아직 MCP 소유 `xg5000_control`에 남은 legacy-native backend 전체 |
 
 공개 계약의 source of truth는 Platform의 `schemas/`다. Agent와 MCP는 공개 계약을
 구현하지만 private 구현을 Platform source나 public Git history에 넣지 않는다.
@@ -308,11 +314,13 @@ packaged runtime handshake와 사용자 경로 readback을 다시 검증한다. 
 실행 파일과 package namespace의 최종 GIDONG 전환은 별도 호환성 마이그레이션과
 회귀 검증을 거쳐야 한다.
 
-## 9. 현재 상태 — 2026-08-11
+## 9. 현재 상태 — 2026-08-31
 
-### 9.1 세 저장소와 실행 경계
+### 9.1 저장소와 실행 경계
 
-세 저장소의 물리 경계와 SSH remote 연결은 완료됐다. 이것은 제품 전체나 실제
+Platform·Agent·MCP의 core service 경계와 별도 vendor CLI repository가 존재한다.
+CLI가 이관된 명령의 process/JSON 경계를 제공해도 native backend 전체가 MCP에서
+물리적으로 분리됐다는 뜻은 아니다. 이 경계는 제품 전체나 실제
 PLC online 기능이 완료됐다는 뜻이 아니다.
 
 | 항목 | 상태 | 확인된 내용 |
@@ -321,20 +329,19 @@ PLC online 기능이 완료됐다는 뜻이 아니다.
 | Platform `ExecutionBroker` | 완료·runtime 검증 | tool proposal, allowlist/schema, target binding, approval, MCP relay와 audit 경계를 Platform이 소유함 |
 | Agent의 raw MCP 직접 접근 제거 | 완료·runtime 검증 | Agent는 `ExternalToolRequest`만 제안하고 raw MCP/PID/HWND/approval secret을 갖지 않음 |
 | Pydantic AI Agent sidecar | 완료·runtime 검증 | private Agent가 supervised NDJSON 프로세스로 동작하고 공개 Agent Protocol을 구현함 |
-| MCP 독립 실행 경계 | 완료·runtime 검증 | Product Contract, operation journal, native readback과 quarantine 경계가 private MCP에 있음 |
-| 세 sibling local Git | 완료 | `gidong-platform`, `gidong-agent`, `gidong-plc-mcp`가 독립 Git이고 `gidong-controls` SSH remote에 연결됨 |
-| 저장소 독립 production load/build | 완료·runtime 검증 | Platform Web build와 Agent·Host·MCP production import, 52개 MCP manifest load가 통과함 |
-| 세 packaged artifact 결합 | Beta 검증 완료 | 현재 Platform·Agent·MCP·contracts 조합을 exact BOM으로 조립하고 clean install 및 digest가 다른 이전 Beta에서의 in-place upgrade를 replay함 |
+| MCP 독립 실행 경계 | 완료·runtime 검증 | Product Contract, operation journal, native readback과 quarantine 경계가 private MCP에 있으며, 이관된 명령은 별도 CLI subprocess/JSON 경계로 위임함 |
+| 네 sibling local Git | 부분 완료 | `gidong-platform`, `gidong-agent`, `gidong-plc-mcp`, `controlstudio-xg5000-cli`가 별도 source 경계다. CLI의 legacy-native backend 전체 추출·독립 release는 아직 deferred 상태임 |
+| 저장소 독립 production load/build | 부분 완료·runtime 검증 | Platform Web build와 Agent·Host·MCP·CLI의 결정론적 test/build 경로는 확인됐지만 전체 독립 release 증거는 아님 |
+| packaged artifact 결합 | Beta 검증 완료 | 현재 Platform·Agent·MCP·contracts 조합을 exact BOM으로 조립하고 clean install 및 digest가 다른 이전 Beta에서의 in-place upgrade를 replay함. CLI 경계의 전체 release independence는 별도 gate임 |
 | BOM과 단일 실행 조립 | Beta 검증 완료 | exact version/hash/contracts 조립, 단일 installer, current/previous 전체 조합 hash 및 사용자 SQLite byte 보존을 replay함. production signing은 남음 |
-| 현재 로컬 변경 | 미전송 | 세 저장소의 현재 변경은 아직 commit/push하지 않음 |
+| 현재 로컬 변경 | 미전송 | 각 repository의 현재 변경은 아직 commit/push하지 않음 |
 
-현재 직접 확인한 범위는 Python·JSON·TOML 구문, Agent·Host·MCP production import,
-MCP manifest/schema load, Web production build와 실제 XG5000 V4.81의 네이티브
-프로젝트 생성·저장·별도 PID 재열기·exact mnemonic 재추출·LD 왕복·Program Check다.
-별도의 실제 대동 `.xgwx`에서는 SHA-256에 묶인 프로젝트 XML을 읽어 CPU/main unit,
-timer-area parameter, I/O module inventory와 전역 DI/DO/AI/AO device offset을
-확인했다. PLC 연결·쓰기, 현재 controller runtime과 XG-SIM 시나리오는 이 증거에
-포함되지 않는다.
+현재 재현 가능한 확인 범위는 Agent·Host·MCP·CLI·Web의 다섯 deterministic command
+group, 총 255 test execution과 Web build PASS다. 실제 XG5000 UI/restart acceptance와
+실제 LD edit·save·independent reopen은 이 기준일에 재실행되지 않아 증명되지 않았다.
+Browser URL policy의 PWA acceptance와 사용자의 file-restore approval도 미해결이다.
+과거 현장·IDE 관찰 기록은 참고 evidence일 뿐 현재 완료 판정으로 승격하지 않는다.
+PLC 연결·쓰기, 현재 controller runtime과 XG-SIM 시나리오는 이 증거에 포함되지 않는다.
 
 ### 9.2 제품 기능
 
@@ -343,11 +350,11 @@ timer-area parameter, I/O module inventory와 전역 DI/DO/AI/AO device offset�
 | 단일 Launcher→Host→Web/PWA 사용자 흐름 | 부분 완료·runtime 검증 | planning conversation, workspace 상태와 sidecar lifecycle의 vertical slice |
 | 로컬 프로젝트·불변 원본·working copy | 부분 완료·과거 실제 증거 | 지정 XG5000 working copy 열기, 저장된 workspace 재개와 원본 hash 보존 |
 | 프로그램 목록·LD 추출·제한 분석 | 부분 완료·과거 실제 증거 | 지정 실제 XG5000 프로젝트 복사본의 제한된 read/analysis |
-| 제한된 오프라인 LD 변경·원복 | 구현 확장 완료·구조 변경 실기 수락 미완료 | 지정 복사본의 한 operand 변경과 typed 13-command 전체 교체 외에, 검토 evidence에서 유일한 action/contact를 anchor로 삼은 한 행 insert/replace/delete, 2–16개 batch, 완전 rung 삽입·조건 교체·조건과 shared action 전체 원자 교체·삭제를 구현했다. 완전 rung 경로는 operand 기반 `contact`/`all_of`/`any_of` AST와 private baseline의 stack-validated condition slice 및 연속 shared action 1–16개를 결속하며, shared action 그룹을 쪼개지 않는다. 구조 후보는 MCP가 private baseline에서 컴파일하고 anchor·bounded context/slice·count·digest만 공개하며, 적용 직전 같은 baseline에서 재현되지 않으면 중단한다. 모든 MNE 변경은 project backup·signed capability·사람의 일회성 승인·lease generation과 exact readback·Program Check·저장 hash·독립 XG5000 PID 재열기를 공유한다. PLC write·online edit·controller 검증은 포함하지 않는다. `mne_rung_patch` V6만 사용자가 미리 선택한 `offline_native_reopen_xgsim` 범위에서 compiler가 증명한 단일-program·단일-writer P/M 출력 profile을 XG-SIM에서 정상/deny/restore로 관찰하고, `SIM_STOPPED → OBSERVING → Keep(COMMITTED)/Revert(ROLLED_BACK_SAVED)` 결정을 같은 transaction에 결속한다. 이 구조 변경과 XG-SIM 결정 경로의 실제 production acceptance는 아직 남아 있다. |
+| 제한된 오프라인 LD 변경·원복 | 구현됨·현재 실제 acceptance 미증명 | 지정 복사본의 한 operand 변경과 typed 13-command 전체 교체 외에, 검토 evidence에서 유일한 action/contact를 anchor로 삼은 한 행 insert/replace/delete, 2–16개 batch, 완전 rung 삽입·조건 교체·조건과 shared action 전체 원자 교체·삭제를 구현했다. 완전 rung 경로는 operand 기반 `contact`/`all_of`/`any_of` AST와 private baseline의 stack-validated condition slice 및 연속 shared action 1–16개를 결속하며, shared action 그룹을 쪼개지 않는다. 구조 후보는 MCP가 private baseline에서 컴파일하고 anchor·bounded context/slice·count·digest만 공개하며, 적용 직전 같은 baseline에서 재현되지 않으면 중단한다. 모든 MNE 변경은 project backup·signed capability·사람의 일회성 승인·lease generation과 exact readback·Program Check·저장 hash·독립 XG5000 PID 재열기를 요구한다. 실제 XG5000 UI에서의 edit·save·reopen은 현재 증명되지 않았으며, PLC write·online edit·controller 검증은 포함하지 않는다. `mne_rung_patch` V6의 XG-SIM 결정 경로도 실제 production acceptance가 남아 있다. |
 | XG-SIM 시운전 경로 | 구현 완료·다중 실기 수락 미완료 | 신규 build의 reviewed 전체 network profile과 제한된 기존-project V6 rung patch의 compiler-derived P/M profile을 각각 RUN/STOP·입력 원복 receipt로 검증한다. 기존-project 경로는 PLC 연결·쓰기를 수행하지 않고, STOP·입력 원복이 확인된 뒤에만 사람이 저장 변경 유지 또는 exact baseline 원복을 결정한다. |
 | 계획·지식·RAG | 구현·실제 모델 수락 검증 | 실제 model capability 5종과 sidecar lifecycle을 검증했다. 완전한 신규 요구 브리프에서 narrative/native 계획과 progress event를 거쳐 55초 안에 I/O·mode·network·timer·sequence·alarm·recovery·safety 8개 설계 컬렉션, 미결정 0건의 reviewed-plan 후보를 생성했다. |
-| 신규 XG5000 제어 프로그램 | 부분 완료·실제 XG5000 검증 | 프로젝트 이름·PLC 시리즈·CPU·첫 프로그램·LD 언어·설명을 계획의 사람 검토 항목으로 고정해 기술 설정 화면에 exact 자동 인계하고, reviewed typed I/O·mode·STEP sequence·TON timer·latched alarm·recovery·process interlock을 signed `engineered_control_program` bundle로 컴파일해 실제 XGK-CPUE 프로젝트의 mnemonic readback·LD 변환·Program Check·저장 receipt에 결합함. 단순 control network와 `TON 1개 → timer ON permit → OUT` 지연 출력 설계는 Agent adapter가 canonical TON/OUT rung을 review 전에 materialize하며, 사람에게 표시된 rung만 build authority가 된다. sequence·alarm·recovery, step-bound logic 또는 복수 timer는 scan-order 정책을 임의로 만들지 않고 계속 explicit ordered rung을 요구한다. 다중 named program/task 생성은 vendor program-add primitive가 없어 아직 지원하지 않는다. |
-| 독립 재열기 | 완료·실제 XG5000 검증 | 보호 working copy를 생성 PID와 다른 새 XG5000 PID에서 열고 exact 29개 mnemonic·LD 최종 화면·Program Check 0 error·파일 hash 불변을 `REOPEN_VERIFIED` receipt로 결합함 |
+| 신규 XG5000 제어 프로그램 | 부분 구현·현재 실제 acceptance 미증명 | 프로젝트 이름·PLC 시리즈·CPU·첫 프로그램·LD 언어·설명을 계획의 사람 검토 항목으로 고정하고, reviewed typed I/O·mode·STEP sequence·TON timer·latched alarm·recovery·process interlock을 signed `engineered_control_program` bundle로 컴파일하는 경로가 있다. 실제 XG5000 생성·저장·readback acceptance는 현재 다시 증명해야 한다. 단순 control network와 `TON 1개 → timer ON permit → OUT` 지연 출력 설계는 Agent adapter가 canonical TON/OUT rung을 review 전에 materialize하며, 사람에게 표시된 rung만 build authority가 된다. sequence·alarm·recovery, step-bound logic 또는 복수 timer는 scan-order 정책을 임의로 만들지 않고 계속 explicit ordered rung을 요구한다. 다중 named program/task 생성은 vendor program-add primitive가 없어 아직 지원하지 않는다. |
+| 독립 재열기 | 구현됨·현재 실제 acceptance 미증명 | 보호 working copy를 생성 PID와 다른 새 XG5000 PID에서 열고 mnemonic·LD·Program Check·파일 hash를 결속하는 receipt 계약이 있으나, 이 기준일에 실제 XG5000에서 재실행해 증명하지 않았다. |
 | XG-SIM acceptance | 구현 완료·다중 실기 수락 미완료 | 신규 build의 simulation receipt v4는 reviewed ladder IR의 모든 control network와 출력에 대해 ordered `networkRungs`를 재계산하고, simulator mutation 전에 전체 network·process interlock profile과 보호할 출력 byte를 검증한다. 한 번의 RUN/STOP·baseline 수명주기 안에서 network별 정상·deny·restore와 적용 가능한 mode·sequence·alarm·recovery·interlock 시나리오를 순차 실행하며, 일부 network만 성공한 receipt는 승인하지 않는다. 실제 수락 증거는 XGB `XBC-DN/DP64H` 단일 control network build의 receipt v3 5개 시나리오, exact rung IR/program digest, 공식 program write, vendor STOP 상태 3회 연속 관측, 입력 baseline 원복과 Host SQLite의 digest-bound `OBSERVING → ACCEPTED` 결정까지다. 이 실제 plan의 mode·timer·sequence·alarm·recovery collection은 명시적 N/A였다. 기존 프로젝트에서는 V6 완전-rung patch 한정으로 승인 target·재열기 receipt·compiler profile과 XG-SIM 정상/deny/restore 관찰을 결속하고 사용자가 Keep/Revert를 결정하는 수명주기가 구현됐다. 실제 PLC는 연결하거나 쓰지 않았고, 대표 복수 control network build와 이 제한된 기존-project 경로를 포함한 실제 수락은 아직 남아 있다. |
 | 일반 기존 프로젝트 분석·진단 | 부분 구현·실제 acceptance 미완료 | `Engineering Analysis v4`는 Host evidence에 연결된 exact observation, program·network/rung·visual row·token 위치, relation과 full causal device chain, 영역별 coverage·truncation·limitations를 구조화한다. 진단 가설은 확인 계획뿐 아니라 `open/verified/rejected`, 실제 outcome과 현재 run의 verification evidence를 가지며 open 가설이 남은 mission은 완료할 수 없다. Web은 위치의 프로그램명이 현재 catalog에서 정확히 하나와 일치할 때만 `XG5000에서 열기`를 제공한다. `project.behavior_report`는 bounded write·physical·sequence·timer/counter·multiple-writer·APPLICATION inventory를 반환하며 미지원 `APPLICATION` 의미론은 `partial`로 남긴다. 실제 XGWX에서 관측한 `MOV literal→D`와 `DMOV literal/direct-D→direct-D`는 source read와 1/2-word destination write로 구조화한다. Direct-D `INC/DEC` signed/unsigned 16/32-bit 계열은 in-place read/write로 구조화하고 `P` variant는 rising-edge 실행으로 기록하며 double-word variant는 연속 두 D word를 포함한다. Non-D·간접 형식과 non-D destination `DMOV`는 계속 `partial`이다. 이는 정적 관측 구조이며 현재 PLC runtime, field wiring 또는 프로그램 목적의 증명이 아니다. 다중 LD 프로그램의 exact value token·network/rung digest·multiple writer·물리 P 출력 후보와 `xg5000.project.hardware-context/1.0`의 canonical `context_digest`를 Host 영수증에 결속한다. 실제 대동 XGWX에서 XBC-DN/DP64H, `T0-T499=100ms`·`T500-T999=10ms`·`T1000-T1023=1ms`, 비활성 100us `0..0` sentinel, XBC-DN/DP64H·XBE-DC08A module inventory와 전역 DI/DO/AI/AO offset을 확인했다. 또한 exact XBC-H CPU와 XML slot에만 LS 공식 고정 4-word profile을 적용해 slot 1을 `P00040-P0007F`의 `documented` reservation으로 결속한다. 이는 project-observed point range가 아니며 다른 CPU family, terminal point, 외부 배선·module health·현재 PLC runtime은 미관측이므로 물리 P 입출력 영향 후보는 계속 fail-closed다. 내부/타이머 후보도 해당 `required_context`가 닫힐 때만 가능하고 대표 production 프로젝트의 분석·승인 변경 end-to-end acceptance는 아직 없음 |
 | LS FEnet online observe | 구현·실장비 미검증 | 사용자 지정 사설망 endpoint의 status/device read와 최대 30초 bounded trace가 존재한다. trace는 1~16개 변수의 샘플·전이·최소/최대·변화 횟수와 전후 CPU 상태를 한 receipt로 반환하지만 실제 장비 identity와 online project 일치 증거는 없음 |
@@ -369,7 +376,7 @@ timer-area parameter, I/O module inventory와 전역 DI/DO/AI/AO device offset�
 
 따라서 현재 정확한 판정은 다음과 같다.
 
-- **3-repository 경계와 로컬 개발 환경:** 완료
+- **Platform·Agent·MCP 경계와 separate CLI process/JSON boundary:** 구현·runtime 검증; CLI native backend 전체 추출과 독립 release는 미완료
 - **reviewed plan 기반 XGK/XGB 시퀀스·타이머·알람·복구 프로그램 계약:** 구현·runtime 검증
 - **일반 신규 구축과 실제 XG5000 적용:** 미완료
 - **production 배포:** 미완료
