@@ -23,7 +23,7 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-08-31 21:50 KST native resume: MNE reopen readback 확인, fresh Program Check modal 재개 중 — 현재 상태
+## 2026-08-31 21:57 KST native resume: 독립 재열기 검증 완료, XG-SIM 실패 단계 확인 중 — 현재 상태
 
 - 원래 native operation `1dc48ccb-a0d8-44d1-9665-bb101dc7c64c`의 LD 입력, MainRes command
   `876` Program Check(0 errors), 저장은 이미 `APPLIED_VERIFIED`로 완료됐다. 새 프로젝트 생성,
@@ -34,16 +34,20 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   `8390818`를 열었다. CLI `reopen-readback`은 첫 6개 MNE와 expected source SHA-256
   `74ff83178d6aa0319631874eed5ffd1d973fa326d8e4c656172ecf6ec9f534d0`를 실제 확인했다. 원래
   PID `14284`/HWND `329768`와 작업 복사본은 계속 보존된다.
-- 현재 blocker는 resource `876`이 필요한 fresh Program Check modal을 생성하지 못한
-  `PROGRAM_CHECK_FRESH_MODAL_UNVERIFIED`다. artifact는
-  `d29bb41f-6777-4408-bab2-52a246e3521d/82616fe0a8ca`다. 따라서 reopen은 `not_verified`,
-  `engineeredProgramReady=false`이고 XG-SIM·물리 I/O·최종 PWA acceptance는 아직 시작하지
-  않았다. 두 restart는 ready이며 이 구간 UAC 요청은 없었다.
-- runtime/native worker가 fresh-check 실패를 조사 중이다. `dd4582a`의 SHA-bound
+- CLI `23830c4`가 MNE 읽기 뒤 LD 보기로 복귀하도록 수정된 후 21:57:06에 독립 복사본의
+  MNE·LD·Program Check·파일 해시 검증이 모두 통과했다. reopen은 `verified`이며 성공 artifact는
+  `993f8d91-daa5-4d2c-a77d-112526ac8436/71219768c132`다. 원본을 닫거나 다시 저장하지 않았다.
+- 이어진 첫 XG-SIM 시도는 21:57:45에 `XG5000_UIA_TIMEOUT`으로 실패했다. 같은 session의
+  `b103aec2dba7`가 실패 artifact다. trial `1c0f2380-8e1b-545a-ae01-09ff8a8b6e83`는
+  `QUARANTINED`, `safeRestorationVerified=false`이며 `engineeredProgramReady=false`,
+  `workspaceBound=false`다. 실제 명령 전달 단계는 아직 확인 전이므로 임의 재시도나 DB 격리
+  해제를 하지 않는다. 21:59 XimUtil/XGSim 프로세스가 없었다는 조회만으로 과거 무동작을
+  단정하지 않는다. 물리 I/O·최종 PWA acceptance는 미실시이고 이 구간 UAC 요청은 없었다.
+- runtime/Host worker가 simulator 시작 및 단계별 실패·복구 경로를 조사 중이다. `dd4582a`의 SHA-bound
   ID→exact-name 경로는 유지한다. genuinely unnamed legacy catalog sweep의 semantic 교체 WIP는
   아직 commit되지 않아 알려진 legacy debt다. compact XGK 일반 수정 `476cdb9`/`b4738a8`은
   완료됐지만 persisted actual plan은 이미 full-width 주소를 사용하므로 이번 blocker가 아니다.
-  root architecture README `d615174`도 반영됐다. CLI `109a030`만 지정 원격 main에 push됐고
+  root architecture README `d615174`도 반영됐다. CLI `23830c4`까지 지정 원격 main에 push됐고
   MCP·Platform checkpoint는 local이다. 전체 CLI vendor-core 독립은 아직 완료되지 않았다.
 
 ## 2026-08-31 18:39 KST 재개 경로 구현·실행 중 — 이전 관측
