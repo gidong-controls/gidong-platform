@@ -11,8 +11,13 @@ from unittest.mock import AsyncMock, patch
 from controlstudio_host.native_projects import (
     NativeProjectConflict,
     NativeProjectOperation,
+    NativeProjectPreconditionError,
     NativeProjectService,
     NativeProjectSpec,
+    _NativeProjectRequest,
+    _native_project_plan_digest,
+    _require_empty_native_project_destination,
+    _validate_native_project_request,
 )
 from controlstudio_host.store import HostStore
 
@@ -95,6 +100,42 @@ class _Gateway:
 
 
 class NativeProjectResumeTests(unittest.IsolatedAsyncioTestCase):
+    def test_plan_digest_is_stable_after_the_destination_becomes_populated(self) -> None:
+        with TemporaryDirectory() as temporary:
+            destination = Path(temporary).resolve()
+            request = _NativeProjectRequest(
+                project_name="ResumeProject",
+                destination_directory=destination,
+                plc_series="XGK",
+                cpu_type="XGK-CPUH",
+                program_name="MainProgram",
+                program_language="LD",
+                description="reviewed",
+            )
+            build_bundle = {"bundleId": "bundle-1", "compiledProgram": {"source": "LD"}}
+            before_project_exists = _native_project_plan_digest(
+                request,
+                pid=101,
+                hwnd=202,
+                build_bundle=build_bundle,
+            )
+            (destination / "ResumeProject.xgwx").write_bytes(b"existing project")
+
+            after_project_exists = _native_project_plan_digest(
+                request,
+                pid=101,
+                hwnd=202,
+                build_bundle=build_bundle,
+            )
+
+            self.assertEqual(after_project_exists, before_project_exists)
+            validated = _validate_native_project_request(request)
+            with self.assertRaisesRegex(
+                NativeProjectPreconditionError,
+                "destination_directory must be empty",
+            ):
+                _require_empty_native_project_destination(validated.destination_directory)
+
     def test_resume_reclaims_only_its_parked_native_project_create_lease(self) -> None:
         with TemporaryDirectory() as temporary:
             store = HostStore(Path(temporary) / "host.sqlite3")

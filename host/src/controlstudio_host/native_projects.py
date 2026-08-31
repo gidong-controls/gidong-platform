@@ -166,14 +166,6 @@ def _validate_native_project_request(request: _NativeProjectRequest) -> _NativeP
         raise NativeProjectPreconditionError("destination_directory does not exist") from exc
     if not directory.is_dir() or directory.is_symlink():
         raise NativeProjectPreconditionError("destination_directory must be a real directory")
-    try:
-        contents = tuple(directory.iterdir())
-    except OSError as exc:
-        raise NativeProjectPreconditionError(
-            "destination_directory could not be enumerated"
-        ) from exc
-    if contents:
-        raise NativeProjectPreconditionError("destination_directory must be empty")
     return _NativeProjectRequest(
         project_name=project_name,
         destination_directory=directory,
@@ -183,6 +175,19 @@ def _validate_native_project_request(request: _NativeProjectRequest) -> _NativeP
         program_language=language,
         description=description,
     )
+
+
+def _require_empty_native_project_destination(directory: Path) -> None:
+    """Creation owns an empty directory; plan identity does not."""
+
+    try:
+        contents = tuple(directory.iterdir())
+    except OSError as exc:
+        raise NativeProjectPreconditionError(
+            "destination_directory could not be enumerated"
+        ) from exc
+    if contents:
+        raise NativeProjectPreconditionError("destination_directory must be empty")
 
 
 def _native_project_plan_digest(
@@ -3378,6 +3383,9 @@ class NativeProjectService:
                     program_language=canonical.language,
                     description=effective_description,
                 )
+            )
+            _require_empty_native_project_destination(
+                native_request.destination_directory
             )
             plan_digest = _native_project_plan_digest(
                 native_request,
