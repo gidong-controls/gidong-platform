@@ -411,6 +411,11 @@ PWA acceptance 미검증도, file-restore approval 대기도 이 절차로 해�
   처리한다. 수정 전 layout/focus 회귀 2건 실패, 수정 후 64-bit ctypes callback을 포함한
   5건 통과 및 Ruff 통과. 모두 fake API 검사이며 실제 창에 입력하지 않았다. 이 수정은
   Codex Computer Use 구현을 바꾸지 않고, 캡처/활성화 복구나 LD 실사용 성공 증거도 아니다.
+- CLI `66f8494`/`22d44cf`는 기존 instance discovery의 User32 ctypes fallback 호출에
+  HWND/HMENU/LPARAM 인자·반환 형식을 지정했다. 프로세스 재검증 계층을 새로 만들지 않고
+  원래 발견 절차를 유지한다. 합성 ctypes callback으로 32-bit 초과 핸들을 검사했고 전체
+  CLI 51건이 통과했다. 지정 원격 main에 `22d44cf`까지 push 완료. 창 열거·입력·UAC 등의
+  live 동작은 실행하지 않았으며, CLI의 HWND 처리 수정도 외부 Computer Use 복구 증거가 아니다.
 
 ## 반복하지 말아야 할 것
 
