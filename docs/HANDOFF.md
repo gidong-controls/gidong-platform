@@ -54,6 +54,11 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   향후에는 새 PID/HWND/lifetime을 다시 확인하는 명시적 analysis-only attach를 read-ready로만
   bind하고 mutation readiness는 닫는 경로로 분리한다. 이 문서상 quarantine은 해제하지 않으며
   GET/read 경로가 그 상태를 바꾸어서는 안 된다.
+- 복구 경로 점검: reattach 뒤 reviewed-no-save-close는 기존 API로 가능하지만, 원본 PID를
+  보존한 복사본 재시작과 새 trial 연결을 묶는 Host API는 아직 없다. 일반 workspace resume는
+  기존 XG5000을 거부한다. 복사본 초기화 여부를 사용자에게 문의했으며 아직 실행하지 않았다.
+  구현 시 기존 실패 trial/복원 미확인 기록을 보존해야 하며, 창 재열기만으로 과거 복원을
+  성공 처리하거나 ACK/DB 수정으로 격리를 해제해서는 안 된다.
 - MCP `c4ff276`은 XG-SIM 시작 상태 증명을 보완했고, `a16c137`/Platform `614d747`은 단계별
   native simulation 실패 증거를 분류했다. 해당 focused test는 통과했지만 실제 XG-SIM 재시도는
   아직 하지 않았다. `dd4582a`의 SHA-bound ID→exact-name 경로는 유지한다. semantic legacy
