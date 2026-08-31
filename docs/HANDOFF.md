@@ -16,6 +16,7 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 - 세 core 저장소 `gidong-platform`, `gidong-agent`, `gidong-plc-mcp`는 `dev`에서 작업한다.
   코드 checkpoint는 각각 `6d06754`, `f70d30c`, `9edc7e5`이다. 이 SHA는 이 handoff의 코드
   증거 기준일 뿐, 이후 문서 commit을 포함한 영구적인 최신 `HEAD` 표시는 아니다.
+  2026-08-31 오후의 현재 제품 checkpoint는 아래 재개 절의 별도 기록을 우선한다.
 - 독립 XG5000 CLI는 `main`의 `fa0ed95`이며 사용자 지정 원격에 게시된 checkpoint다. 위 세 core
   저장소는 해당 코드 checkpoint 시점에 local 상태였고 push하지 않았다.
 
@@ -45,19 +46,25 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 - Agent `023ef77` / Platform `a7542e6`은 provider HTTP 4xx/5xx 상태만 안전한 오류 코드로
   보존한다. 본문·헤더·비밀값은 전달하지 않는다. 기존 두 실패의 버려진 HTTP 상태는
   복원할 수 없으며 특정 상태였다고 추측하지 않는다. 관련 Agent 4 + Host 2 테스트 통과.
-- Platform `644131f`는 같은 단계의 15초 heartbeat를 Host가 버리던 stage-only 중복
-  제거를 `(stage, elapsed_seconds)`로 고쳤다. fake transport 4건 통과. 긴 침묵이
-  sidecar event-loop 정지라는 초기 가설은 틀렸다. 로컬 fake-model 측정상 native schema는
-  14,106 bytes, 생성 약 19ms, Agent 생성 약 14ms였으며 과도한 schema 준비가 원인이 아니다.
+- Agent `c8e4ea5`는 native validation의 원인과 모델 feedback을 보존하며 관련 3건 테스트가
+  통과했다. Platform `5fb6a41`은 Web의 경과 시간 표시와 coalescing을 보완했고 Node 테스트
+  2건, typecheck 및 build가 통과했다.
+- Host `644131f`는 같은 단계의 15초 heartbeat를 Host가 버리던 stage-only 중복
+  제거를 `(stage, elapsed_seconds)`로 고쳤다. fake transport 4건 통과 뒤 두 번째 정상
+  Host restart에서 이 코드가 UAC 없이 실제로 load됐다. live SSE event `2290`/`2291`은
+  `native_design`의 elapsed 15/30초를 각각 보냈으므로, 이 수정은 mock만의 결과가 아니다.
+  긴 침묵이 sidecar event-loop 정지라는 초기 가설은 틀렸다. 로컬 fake-model 측정상 native
+  schema는 14,106 bytes, 생성 약 19ms, Agent 생성 약 14ms였으며 과도한 schema 준비가
+  원인이 아니다.
 - MCP `55da905`는 LD source-not-visible의 안전한 숫자 geometry를 전달하고,
   CLI `30c46e3`는 code-prefixed `str(error)` 대신 구조화된 message를 반환한다.
   CLI commit은 사용자 지정 원격 `gidong-controls/controlstudio-ls-xg5000-cli`의
   `main`에 push 완료했다. 세 core 저장소 commit은 local이며 push하지 않았다.
 
-현재 후속 작업은 native 설계 오류를 generic missing-sections로 지워 모델의 수정을
-막는 예외 처리와 UI 경과 시간 표시 개선이다. 기존 LD operand 위치 선택의 scroll 단위는
-아직 실증되지 않았다. Native Find 리소스 ID만으로 중복 피연산자 중 정확한 occurrence를
-선택할 수 있다고 가정하거나 임의 좌표 식으로 바꾸지 않는다.
+제품 run `967941a3`은 위 conversation에서 정상 제품 경로로 현재 active 상태다. 이
+checkpoint는 native plan 또는 LD 생성 성공을 주장하지 않는다. 기존 LD operand 위치 선택의
+scroll 단위도 아직 실증되지 않았으므로 Native Find 리소스 ID만으로 중복 피연산자 중 정확한
+occurrence를 선택한다고 가정하거나 임의 좌표 식으로 바꾸지 않는다.
 
 ## 현재 제품 경계
 
