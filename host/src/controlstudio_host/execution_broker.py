@@ -1292,7 +1292,16 @@ class MCPExecutionBroker:
                     "bindingDigest": binding.get("binding_digest"),
                 }
             )
-        if observed_devices != candidate_devices:
+        # Before hardware is read, MCP can identify affected physical devices
+        # but cannot bind their terminals. Keep that blocked analysis visible
+        # so the Agent can collect the missing context and reanalyze.
+        hardware_not_observed = (
+            hardware_context_binding is None
+            and not offline_candidate_ready
+            and "hardware_context_unobserved" in blockers
+            and not observed_devices
+        )
+        if observed_devices != candidate_devices and not hardware_not_observed:
             raise MCPToolError(
                 "every physical I/O candidate must have one typed binding status"
             )

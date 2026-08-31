@@ -124,6 +124,33 @@ def _internal_m_analysis(*, record_kind: str = "OUTPUT") -> dict[str, object]:
 
 
 class FieldIoEvidenceProjectionTests(unittest.TestCase):
+    def test_preserves_missing_hardware_analysis_for_context_collection(self) -> None:
+        for internal_target in (False, True):
+            with self.subTest(internal_target=internal_target):
+                analysis = (
+                    _internal_m_analysis(record_kind="CONTACT_NO")
+                    if internal_target else _analysis(include_binding=False)
+                )
+                analysis.pop("analysis_digest")
+                analysis["hardware_context_binding"] = None
+                analysis["offline_candidate_ready"] = False
+                analysis["blocking_reasons"] = ["hardware_context_unobserved"]
+                impact = analysis["impact"]
+                assert isinstance(impact, dict)
+                impact["physical_io_candidates"] = ["P0020"]
+                impact["physical_output_candidates"] = ["P0020"]
+                analysis["analysis_digest"] = _canonical_digest(analysis)
+
+                receipt = MCPExecutionBroker._change_target_evidence_contract(
+                    {"analysis": analysis}
+                )
+
+                self.assertFalse(receipt["offlineCandidateReady"])
+                self.assertEqual(receipt["blockingReasons"], ["hardware_context_unobserved"])
+                self.assertEqual(receipt["physicalIoCandidates"], ["P0020"])
+                self.assertEqual(receipt["physicalIoBindings"], [])
+                self.assertIsNone(receipt["hardwareContextBinding"])
+
     def test_projects_internal_m_contact_and_coil_without_hardware(self) -> None:
         for record_kind in ("CONTACT_NO", "OUTPUT"):
             with self.subTest(record_kind=record_kind):
