@@ -6,7 +6,6 @@ from unittest.mock import patch
 from controlstudio_host.agent_client import _structural_tool_result_payload
 from controlstudio_host.structural_evidence import (
     _validate_structure_item,
-    project_structure_context,
 )
 
 
@@ -48,26 +47,13 @@ def _ld_program_code_unit(*, canonical_program_id: str = "ld:55e388e7aea7a8ce") 
 
 
 class ProjectStructureProgramContextTests(unittest.TestCase):
-    def test_exact_ld_program_id_is_bound_to_the_code_unit_and_model_context(self) -> None:
+    def test_exact_ld_program_id_is_bound_to_the_code_unit(self) -> None:
         fact = _validate_structure_item("code_units", _ld_program_code_unit())
 
         assert fact is not None
         self.assertIn(
             {"name": "canonicalProgramId", "value": "ld:55e388e7aea7a8ce"},
             fact["attributes"],
-        )
-        self.assertEqual(
-            project_structure_context({"structureFacts": [fact]}),
-            {
-                "programs": [
-                    {
-                        "entityId": "xg5000:code-unit:fixture",
-                        "programId": "ld:55e388e7aea7a8ce",
-                        "programName": "MainProgram",
-                    }
-                ],
-                "truncated": False,
-            },
         )
 
     def test_rejects_noncanonical_ld_program_id(self) -> None:
@@ -77,10 +63,9 @@ class ProjectStructureProgramContextTests(unittest.TestCase):
                 _ld_program_code_unit(canonical_program_id="MainProgram"),
             )
 
-    def test_agent_tool_return_keeps_the_receipt_bound_program_id(self) -> None:
+    def test_agent_tool_return_preserves_canonical_program_id_in_normal_receipt(self) -> None:
         fact = _validate_structure_item("code_units", _ld_program_code_unit())
         assert fact is not None
-        receipt_digest = "a" * 64
         with patch(
             "controlstudio_host.agent_client._structural_evidence_projection",
             return_value=(
@@ -88,11 +73,12 @@ class ProjectStructureProgramContextTests(unittest.TestCase):
                     "evidenceId": "00000000-0000-4000-8000-000000000701",
                     "toolName": "project.structure_index",
                     "receipt": {
-                        "schema": "controlstudio-project-structure-evidence-projection/v1",
-                        "projectionDigest": "b" * 64,
+                        "schema": "controlstudio-structural-analysis-evidence/v1",
+                        "receiptDigest": "a" * 64,
+                        "structureFacts": [fact],
                     },
                 },
-                {"receiptDigest": receipt_digest, "structureFacts": [fact]},
+                {"receiptDigest": "a" * 64, "structureFacts": [fact]},
             ),
         ):
             payload = _structural_tool_result_payload(
@@ -102,19 +88,10 @@ class ProjectStructureProgramContextTests(unittest.TestCase):
                 raw_result={},
             )
 
-        self.assertEqual(
-            payload["result"]["modelContext"],
-            {
-                "sourceReceiptDigest": receipt_digest,
-                "programs": [
-                    {
-                        "entityId": "xg5000:code-unit:fixture",
-                        "programId": "ld:55e388e7aea7a8ce",
-                        "programName": "MainProgram",
-                    }
-                ],
-                "truncated": False,
-            },
+        self.assertNotIn("modelContext", payload["result"])
+        self.assertIn(
+            {"name": "canonicalProgramId", "value": "ld:55e388e7aea7a8ce"},
+            payload["result"]["_controlstudio_evidence"]["receipt"]["structureFacts"][0]["attributes"],
         )
 
 

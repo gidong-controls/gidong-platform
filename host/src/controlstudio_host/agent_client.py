@@ -61,7 +61,6 @@ from .structural_evidence import (
     canonical_digest,
     logic_graph_context,
     project_search_context,
-    project_structure_context,
     state_model_context,
     structural_observation_statement,
     structural_receipt_tool_name,
@@ -1705,9 +1704,6 @@ def _structural_tool_result_payload(
         evidence_tool_name=evidence_tool_name,
         evidence_ref=evidence_ref,
     )
-    receipt = safe_evidence_ref.get("receipt")
-    source_receipt_digest = validated_receipt["receiptDigest"]
-
     result: dict[str, Any] = {
         "schema": _STRUCTURAL_TOOL_RESULT_PROJECTION_SCHEMA,
         "toolName": expected_tool_name,
@@ -1720,8 +1716,6 @@ def _structural_tool_result_payload(
         model_context = logic_graph_context(raw_result)
     elif expected_tool_name == "program.state_model":
         model_context = state_model_context(raw_result)
-    elif expected_tool_name == "project.structure_index":
-        model_context = project_structure_context(validated_receipt)
     elif expected_tool_name == "project.search":
         model_context = validate_project_search_context(
             project_search_context(raw_result),
@@ -1738,7 +1732,7 @@ def _structural_tool_result_payload(
             model_context
             if expected_tool_name == "project.search"
             else {
-                "sourceReceiptDigest": source_receipt_digest,
+                "sourceReceiptDigest": validated_receipt["receiptDigest"],
                 **model_context,
             }
         )

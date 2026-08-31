@@ -4124,46 +4124,6 @@ def logic_graph_context(result: Any) -> dict[str, Any] | None:
     }
 
 
-def project_structure_context(receipt: Mapping[str, Any]) -> dict[str, Any] | None:
-    """Expose exact LD handles already bound into a structure receipt."""
-
-    programs: list[dict[str, str]] = []
-    for fact_value in _items(receipt.get("structureFacts"), "structure facts"):
-        fact = _mapping(fact_value, "structure fact")
-        if fact.get("kind") != "code_unit":
-            continue
-        attributes = _items(fact.get("attributes"), "code-unit structure attributes")
-        values: dict[str, Any] = {}
-        for attribute_value in attributes:
-            attribute = _mapping(attribute_value, "code-unit structure attribute")
-            name = attribute.get("name")
-            if isinstance(name, str):
-                values[name] = attribute.get("value")
-        canonical_program_id = values.get("canonicalProgramId")
-        if canonical_program_id is None:
-            continue
-        program_id = _text(
-            canonical_program_id,
-            "code-unit canonical LD program id",
-            maximum=19,
-        )
-        if _CANONICAL_LD_PROGRAM_ID.fullmatch(program_id) is None:
-            raise MCPToolError("code-unit canonical LD program id is invalid")
-        programs.append(
-            {
-                "entityId": _text(fact.get("entityId"), "code-unit entity id", maximum=500),
-                "programId": program_id,
-                "programName": _text(fact.get("name"), "code-unit program name", maximum=4_096),
-            }
-        )
-    if not programs:
-        return None
-    programs.sort(key=lambda item: (item["programId"], item["entityId"]))
-    if len({item["programId"] for item in programs}) != len(programs):
-        raise MCPToolError("code-unit canonical LD program ids are not unique")
-    return {"programs": programs[:_MODEL_CONTEXT_ITEM_LIMIT], "truncated": len(programs) > _MODEL_CONTEXT_ITEM_LIMIT}
-
-
 def _validate_location_fact(value: Any) -> dict[str, Any]:
     fact = _mapping(value, "structural location fact")
     allowed = {
@@ -4912,7 +4872,6 @@ __all__ = [
     "canonical_digest",
     "location_membership_value",
     "logic_graph_context",
-    "project_structure_context",
     "project_search_context",
     "relation_membership_value",
     "state_model_context",
