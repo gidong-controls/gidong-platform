@@ -23,7 +23,31 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-08-31 18:14 KST 새 LD 입력 완료·검사 재개 구현 중 — 현재 상태
+## 2026-08-31 18:39 KST 재개 경로 구현·실행 중 — 현재 상태
+
+- 기존 입력 LD/PID `14284`/HWND `329768`와 operation
+  `1dc48ccb-a0d8-44d1-9665-bb101dc7c64c`를 계속 사용한다. 새 프로젝트 생성, IL 재입력,
+  UAC 재요청, 물리 PLC 쓰기는 하지 않았다. 아래 18:14 상태의 최종 저장·재열기·XG-SIM
+  완료는 아직 확인되지 않았다.
+- Host `0ad8c12`/`15bba74`, MCP `f2379d2`, CLI `27c9046`으로 중단된 native build를
+  재개하는 경로를 연결했고, Web `3fbfa84`로 **입력된 LD에서 검사·저장 재개**를 추가했다.
+  API body는 `{pid, hwnd, expectedRequestDigest}`이며 저장된 계획을 사용한다.
+- 실제 API 시도 두 건은 XG5000 명령 전달 전 거부됐다. 첫째는 resume에 다른 잠금 종류를
+  지정한 오류였으며 Host `c26df66`이 기존 `native_project_create` 소유권을 그대로 인계한다.
+  둘째는 plan digest 계산이 create-only 빈 폴더 조건을 재검사한 오류였다. Host `6ce7f7d`는
+  기존 폴더에서도 동일 digest를 계산하며, 새 프로젝트 생성의 빈 폴더 조건은 유지한다.
+  이 거부들을 native 동작 완료나 추가 UAC 실패로 기록하지 않는다.
+- CLI `262445e`/`4f714f7`은 COM ROT가 없는 경우 기존 SHA-bound 창·파일 사용 관계와
+  실제 XML CPU를 읽는다. 실제 `OperationResult` 반환형을 사용하는 pipeline 테스트는
+  `1ff31ea`이며 평탄화한 가짜 검사 결과로 성공을 만들지 않는다.
+- MCP `9422192`는 `LSPLC(XGB-XBCH)` 고정을 제거했다. 현재 파일의 configuration 이름을
+  읽어 check/create/resume/reopen에 동일하게 전달한다. 실제 fixture 이름은 CPU suffix 없는
+  `LSPLC`이며 사용자 변경 이름도 허용한다. CLI 문서 `1a77d01`까지 지정 원격 main에 push했다.
+- 마지막 실행 담당은 `cli_runtime_fix`이며, MCP의 같은 plan-digest 수정 확인 뒤 정상 Host
+  restart와 동일 operation의 resume를 한 번 실행한다. 중복 live 실행을 하지 않는다.
+  결과가 나오면 이 절을 갱신한다. PWA 화면 acceptance는 여전히 수행하지 않았다.
+
+## 2026-08-31 18:14 KST 새 LD 입력 완료·검사 실패 — 이전 관측
 
 - 새 operation `1dc48ccb-a0d8-44d1-9665-bb101dc7c64c`는 실제 프로젝트 생성,
   compiled IL 입력 대조, LD 변환·roundtrip을 지난 뒤 Program Check 창 닫기에서 실패했다.
