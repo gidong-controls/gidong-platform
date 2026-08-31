@@ -33,12 +33,16 @@ test("completed saved native projects explicitly bind a distinct fresh reopen ta
   );
 
   assert.match(panel, /const completedVerificationContinuation =/);
+  assert.match(panel, /const reuseVerifiedReopen =/);
   assert.match(panel, /const continueCompletedVerification = async/);
   assert.match(panel, /pid: sourcePid,/);
   assert.match(panel, /hwnd: sourceHwnd,/);
+  assert.match(panel, /!reuseVerifiedReopen && selectedReopenedInstance/);
   assert.match(panel, /reopenedPid: selectedReopenedInstance\.pid,/);
   assert.match(panel, /reopenedHwnd: selectedReopenedInstance\.hwnd,/);
   assert.match(panel, /instance\.pid !== operation\.request\.xg5000Pid/);
+  assert.match(panel, /operation\.result\?\.simulationVerification\?\.state !== "verified"/);
+  assert.match(panel, /검증된 재열기 session을 그대로 재사용/);
   assert.match(panel, /새 프로젝트 생성, IL 삽입, 창 종료, 자동 재시도는 하지/);
   assert.match(panel, /명시적 채택 전에는 엔지니어링 준비 완료가 아닙니다/);
   assert.match(

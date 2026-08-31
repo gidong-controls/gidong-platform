@@ -1507,7 +1507,10 @@ export function NativeProjectPanel({
     operation.result?.engineeredProgramReady !== true &&
     operation.result?.workspaceBound !== true &&
     operation.result?.workspaceRegistration?.state === "captured_not_bound" &&
-    operation.result?.reopenVerification?.state !== "verified";
+    operation.result?.reopenVerification !== undefined &&
+    operation.result?.simulationVerification?.state !== "verified";
+  const reuseVerifiedReopen =
+    operation?.result?.reopenVerification?.state === "verified";
   const storedResumeSourceIsValid =
     typeof operation?.request.xg5000Pid === "number" &&
     Number.isSafeInteger(operation.request.xg5000Pid) &&
@@ -2019,8 +2022,8 @@ export function NativeProjectPanel({
       !Number.isSafeInteger(sourcePid) ||
       typeof sourceHwnd !== "number" ||
       !Number.isSafeInteger(sourceHwnd) ||
-      !selectedReopenedInstance ||
-      !reopenedTargetIsIndependent ||
+      (!reuseVerifiedReopen &&
+        (!selectedReopenedInstance || !reopenedTargetIsIndependent)) ||
       !operation.requestDigest ||
       busy
     ) {
@@ -2033,8 +2036,12 @@ export function NativeProjectPanel({
         pid: sourcePid,
         hwnd: sourceHwnd,
         expectedRequestDigest: operation.requestDigest,
-        reopenedPid: selectedReopenedInstance.pid,
-        reopenedHwnd: selectedReopenedInstance.hwnd,
+        ...(!reuseVerifiedReopen && selectedReopenedInstance
+          ? {
+              reopenedPid: selectedReopenedInstance.pid,
+              reopenedHwnd: selectedReopenedInstance.hwnd,
+            }
+          : {}),
       });
       setOperation(next);
       if (isVerifiedCompletion(next)) {
@@ -2048,7 +2055,7 @@ export function NativeProjectPanel({
         setNotice(
           next.result?.simulationVerification?.detail ??
             next.result?.reopenVerification?.detail ??
-            "독립 재열기 검증은 진행됐지만 XG-SIM receipt의 명시적 채택 전에는 엔지니어링 준비 완료가 아닙니다.",
+            "XG-SIM receipt의 명시적 채택 전에는 엔지니어링 준비 완료가 아닙니다.",
         );
       } else {
         setNotice("독립 재열기와 XG-SIM 검증 상태를 확인하고 있습니다.");
@@ -2890,14 +2897,17 @@ export function NativeProjectPanel({
               <div>
                 <p className="eyebrow">SAVED PROJECT VERIFICATION</p>
                 <h4 id="native-project-completed-verification-title">
-                  저장된 프로젝트의 독립 재열기 검증 재개
+                  {reuseVerifiedReopen
+                    ? "저장된 프로젝트의 미완료 XG-SIM 검증 재개"
+                    : "저장된 프로젝트의 독립 재열기 검증 재개"}
                 </h4>
                 <p>
-                  검사·저장은 확인됐지만 독립 재열기 증거가 아직 없습니다. 저장된
-                  원본 대상과 request digest는 바꾸지 않고, 이미 시작한 fresh XG5000
-                  창 하나를 직접 선택해 read-only 재열기와 이어지는 XG-SIM 검증만
-                  재개합니다. 새 프로젝트 생성, IL 삽입, 창 종료, 자동 재시도는 하지
-                  않습니다.
+                  검사·저장은 확인됐지만 엔지니어링 준비가 완료되지 않았습니다.
+                  저장된 원본 대상과 request digest는 바꾸지 않습니다.
+                  {reuseVerifiedReopen
+                    ? " 검증된 재열기 session을 그대로 재사용해 미완료 XG-SIM 검증만 재개합니다."
+                    : " 이미 시작한 fresh XG5000 창 하나를 직접 선택해 read-only 재열기와 이어지는 XG-SIM 검증을 재개합니다."}
+                  새 프로젝트 생성, IL 삽입, 창 종료, 자동 재시도는 하지 않습니다.
                 </p>
               </div>
 
@@ -2916,50 +2926,61 @@ export function NativeProjectPanel({
                 </p>
               )}
 
-              <label>
-                <span>독립 재열기 검증에 사용할 fresh XG5000 창</span>
-                <select
-                  value={reopenedHwnd}
-                  disabled={busy || instancesLoading}
-                  onChange={(event) => setReopenedHwnd(event.target.value)}
-                >
-                  <option value="">
-                    새로 시작한 XG5000 PID/HWND를 직접 선택해 주세요
-                  </option>
-                  {instances
-                    .filter(
+              {reuseVerifiedReopen ? (
+                <p>
+                  저장된 검증 재열기 session을 Host가 다시 결속합니다. PID/HWND를
+                  바꾸거나 새 창을 선택하지 않습니다.
+                </p>
+              ) : (
+                <>
+                  <label>
+                    <span>독립 재열기 검증에 사용할 fresh XG5000 창</span>
+                    <select
+                      value={reopenedHwnd}
+                      disabled={busy || instancesLoading}
+                      onChange={(event) => setReopenedHwnd(event.target.value)}
+                    >
+                      <option value="">
+                        새로 시작한 XG5000 PID/HWND를 직접 선택해 주세요
+                      </option>
+                      {instances
+                        .filter(
+                          (instance) =>
+                            instance.pid !== operation.request.xg5000Pid,
+                        )
+                        .map((instance) => (
+                          <option key={instance.hwnd} value={instance.hwnd}>
+                            {displayInstance(instance)}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+
+                  {!instancesLoading && instances.length === 0 && (
+                    <p className="native-project-recovery-warning">
+                      실행 중인 XG5000 창이 없습니다. 검증할 fresh 창을 시작한 뒤
+                      목록을 다시 확인해 주세요.
+                    </p>
+                  )}
+                  {selectedReopenedInstance &&
+                    !reopenedTargetIsIndependent && (
+                      <p className="native-project-recovery-warning">
+                        저장된 원본 PID는 독립 재열기 대상으로 사용할 수 없습니다.
+                        fresh XG5000 창을 선택해 주세요.
+                      </p>
+                    )}
+                  {instances.length > 0 &&
+                    !instances.some(
                       (instance) =>
                         instance.pid !== operation.request.xg5000Pid,
-                    )
-                    .map((instance) => (
-                      <option key={instance.hwnd} value={instance.hwnd}>
-                        {displayInstance(instance)}
-                      </option>
-                    ))}
-                </select>
-              </label>
-
-              {!instancesLoading && instances.length === 0 && (
-                <p className="native-project-recovery-warning">
-                  실행 중인 XG5000 창이 없습니다. 검증할 fresh 창을 시작한 뒤 목록을
-                  다시 확인해 주세요.
-                </p>
+                    ) && (
+                      <p className="native-project-recovery-warning">
+                        저장된 원본과 다른 fresh XG5000 창이 필요합니다. 이 화면은
+                        창을 시작하거나 종료하지 않습니다.
+                      </p>
+                    )}
+                </>
               )}
-              {selectedReopenedInstance && !reopenedTargetIsIndependent && (
-                <p className="native-project-recovery-warning">
-                  저장된 원본 PID는 독립 재열기 대상으로 사용할 수 없습니다. fresh
-                  XG5000 창을 선택해 주세요.
-                </p>
-              )}
-              {instances.length > 0 &&
-                !instances.some(
-                  (instance) => instance.pid !== operation.request.xg5000Pid,
-                ) && (
-                  <p className="native-project-recovery-warning">
-                    저장된 원본과 다른 fresh XG5000 창이 필요합니다. 이 화면은 창을
-                    시작하거나 종료하지 않습니다.
-                  </p>
-                )}
 
               <div className="native-project-recovery-actions">
                 <button
@@ -2975,16 +2996,18 @@ export function NativeProjectPanel({
                   type="button"
                   disabled={
                     busy ||
-                    instancesLoading ||
                     !storedResumeSourceIsValid ||
-                    !reopenedTargetIsIndependent ||
+                    (!reuseVerifiedReopen &&
+                      (instancesLoading || !reopenedTargetIsIndependent)) ||
                     !operation.requestDigest
                   }
                   onClick={() => void continueCompletedVerification()}
                 >
                   {busy
-                    ? "독립 재열기 검증 재개 중…"
-                    : "독립 재열기·XG-SIM 검증 재개"}
+                    ? "저장된 검증 흐름 재개 중…"
+                    : reuseVerifiedReopen
+                      ? "미완료 XG-SIM 검증 재개"
+                      : "독립 재열기·XG-SIM 검증 재개"}
                 </button>
               </div>
             </section>
