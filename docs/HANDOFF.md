@@ -14,9 +14,9 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 ## 저장소와 브랜치
 
 - 세 core 저장소 `gidong-platform`, `gidong-agent`, `gidong-plc-mcp`는 `dev`에서 작업한다.
-  코드 checkpoint는 각각 `b05613c`, `5a707b0`, `e3e69f9`이다. 이 SHA는 이 handoff의 코드
+  코드 checkpoint는 각각 `c5480c5`, `f5aa1a4`, `9edc7e5`이다. 이 SHA는 이 handoff의 코드
   증거 기준일 뿐, 이후 문서 commit을 포함한 영구적인 최신 `HEAD` 표시는 아니다.
-- 독립 XG5000 CLI는 `main`의 `82ae877`이며 사용자 지정 원격에 게시된 checkpoint다. 위 세 core
+- 독립 XG5000 CLI는 `main`의 `fa0ed95`이며 사용자 지정 원격에 게시된 checkpoint다. 위 세 core
   저장소는 해당 코드 checkpoint 시점에 local 상태였고 push하지 않았다.
 
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
@@ -362,6 +362,31 @@ PWA acceptance 미검증도, file-restore approval 대기도 이 절차로 해�
   프로그램 행 이동을 설명한다. `찾아가기 → 스텝`도 PDF 251쪽에 있다. 따라서 과거의
   “LD Find/Go To 기능이 없다”는 조사는 틀렸다. 명령 존재는 확인했지만 자동화 구현 및
   현재 버전의 실제 UI 동작 확인은 아직 하지 않았다.
+
+### 내부 M 비트 변경 연결 — 실기 완료와 구분
+
+- Agent `f5aa1a4`, MCP `9edc7e5`, Host `6cde9e0`/`c5480c5`는 실제 I/O 영향이 없는
+  내부 M 접점·코일의 검색 → 대상 분석 → snapshot → 승인 제안 경로를 연결했다. Host의
+  승인 후 실행도 이 경우에만 하드웨어 digest 없이 native 변경 계획을 전달한다.
+- 이전에는 M 변경도 P 전용 미션 판별과 무조건적인 하드웨어 요구에 걸렸다. 이제 공통
+  target/plan/coverage 조립을 재사용하고 하드웨어 의존 부분만 조건부로 처리한다. M이라도
+  downstream P 출력이 있으면 이 예외를 쓰지 않으며, 이미 하드웨어 근거가 있는 M 계획도
+  기존 경로를 유지한다. 하드웨어가 필요한 M 미션의 자동 수집·재분석 전환은 아직 남아 있다.
+- 보존 payload `739c2be5…`의 메모리 복사본을 M으로 변환해 실제 MCP 분석 JSON을 실제 Host
+  broker로 전달했다. `M0010→M0011`, `M00010→M00011` 모두 MainProgram/token 18에서
+  offline candidate가 생성됐고 하드웨어 binding은 없었다. 원본 파일은 변경하지 않았다.
+  이것은 native 데이터/계층 연결 검증이며 XG5000 입력창의 M 정규화 형식이나 GUI 저장 성공을
+  증명하지 않는다.
+- 통합 실행 `artifacts/plc-agent-acceptance/run-bqv0_uij/receipt.json`은 Agent 67, Host 70,
+  MCP 99, CLI 49 test executions와 Web build가 통과했다. manifest SHA-256은
+  `2a6fde46a4ecae84d0bb9f9d4f24afb3c833c815ee492bf7557386369c7e2c80`이며 생성 시각은
+  `2026-08-31T10:42:16+09:00`이다. 실기 네 항목은 `NOT_RUN`, 전체는 `FAIL_CLOSED`다.
+  별도 교차 검사에서 실제 MCP 의미 형식의 Agent 생성 M 계획을 Host 실행 계약이 받았고,
+  4/5자리 M 피연산자의 native 전달값이 그대로 유지됐다.
+- 기존 XG5000 PID 7024/HWND 67344를 재확인했지만 이번 Computer Use 캡처는 timeout이었다.
+  새 창 목록으로 다시 선택한 뒤 한 번 더 캡처해도 같았다. 기존 창·Host를 종료하거나 UAC를
+  다시 요청하지 않았다. 실제 LD 생성·편집·검사·저장·재열기와 PWA 실사용 확인은 미완료다.
+  Host PID 5464는 유지되어 이번 소스 변경은 아직 실행 중인 PWA에 반영하지 않았다.
 
 ## 반복하지 말아야 할 것
 
