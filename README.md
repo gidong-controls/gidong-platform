@@ -8,11 +8,20 @@ Platform 경계인 Web/PWA, Windows Launcher, FastAPI Host, 공개 계약과 패
 gidong-platform  ← UI, Host, ExecutionBroker, 데이터·감사 권한
 gidong-agent     ← 모델 추론, 계획, 파생 지식
 gidong-plc-mcp   ← XG5000/XG-SIM 실행, readback, journal, rollback
+controlstudio-xg5000-cli ← 별도 실행 파일과 JSON 계약을 가진 LS XG5000 벤더 CLI
 ```
 
-Platform은 private Agent/MCP 소스를 import하지 않는다. 세 컴포넌트는 버전이
-고정된 Agent Protocol과 MCP Product Contract로만 통신하며, Host가 세션·승인·감사
-기록과 외부 도구 실행 경계를 소유한다.
+Platform은 private Agent/MCP 소스를 import하지 않는다. Agent Protocol과 MCP
+Product Contract로 통신하며, Host가 세션·승인·감사 기록과 외부 도구 실행 경계를
+소유한다. 실행 경로는 `Agent → Host/ExecutionBroker → MCP → 벤더 CLI → XG5000`이다.
+CLI로 이관된 경로에서 MCP는 별도 CLI 프로세스의 JSON 계약을 사용한다.
+
+CLI 분리는 벤더별 창·COM·프로젝트 형식의 구현을 Agent와 공통 MCP 계약에서
+분리하고, 다른 브랜드를 추가할 때 해당 벤더 CLI를 독립적으로 개발·시험하기
+위한 것이다. 현재는 저장소·실행 파일·호출 경계가 분리된 단계다. 일부 벤더 코어는
+아직 `gidong-plc-mcp`에 있어 CLI에서 의존하므로, 완전한 소스·배포 독립이나 전체
+실사용 검증이 끝났다는 뜻은 아니다. 상세 이관 상태는
+[CLI README](https://github.com/gidong-controls/controlstudio-ls-xg5000-cli/blob/main/README.md)에 기록한다.
 
 ## 현재 제품 경계
 
@@ -30,14 +39,14 @@ Platform은 private Agent/MCP 소스를 import하지 않는다. 세 컴포넌트
 
 ## 개발과 조립
 
-세 sibling 저장소의 개발 환경이 준비된 Windows에서는 Platform 저장소에서 다음
+위 네 sibling 저장소의 개발 환경이 준비된 Windows에서는 Platform 저장소에서 다음
 명령 하나로 source development 채널을 실행한다.
 
 ```bat
 .\scripts\Start-ControlStudio-Development.cmd
 ```
 
-이 진입점은 세 저장소의 현재 개발 executable을 명시적으로 결속하고
+이 진입점은 Agent·MCP·독립 CLI의 현재 개발 executable을 명시적으로 결속하고
 `ControlStudio Development` 데이터 디렉터리, 8767 포트와 development 전용
 launcher mutex를 사용한다. production 또는 beta의 설정·토큰·DB를 재사용하지 않는다.
 개발 모델 프로필도 이 source-development 진입점만 소유하며 Host가 시작할 때 한 번

@@ -1,6 +1,6 @@
 # 책임과 데이터 소유권
 
-최종 갱신: 2026-08-01
+최종 갱신: 2026-08-31
 
 이 문서는 [제품 아키텍처](../PRODUCT_ARCHITECTURE.md)와
 [제품 배포·버전 정책](PRODUCT_DISTRIBUTION_AND_VERSIONING.md)의 실행 경계를
@@ -9,6 +9,17 @@
 기능·안전 범위를 축소하지 않는다.
 
 ## 책임 분리
+
+실행 경로는 `Agent → Platform/ExecutionBroker → MCP → 벤더 CLI → 벤더 프로그램`이다.
+별도 `controlstudio-xg5000-cli` 저장소는 LS XG5000의 프로세스·프로젝트·LD 조작을
+명령별 JSON 계약으로 제공한다. MCP는 제품 도구 계약, 대상 결속 및 작업 journal을
+소유하고, CLI는 전달받은 대상에서 벤더 작업을 수행한다. 이 분리는 향후 브랜드별
+CLI를 추가해도 Agent가 창 클래스나 COM 구현을 알 필요 없게 하려는 것이다.
+
+현재 CLI 실행 경계는 분리됐지만 벤더 코어 일부는 MCP 저장소에서 가져오는 이행
+단계다. 아래 MCP의 벤더 구현 소유권은 이 남은 코드까지 포함한 현재 상태이며,
+전체 소스 추출 완료를 뜻하지 않는다. CLI 추출이 사용자 승인·workspace 소유권을
+CLI로 옮기거나 새 사용자 승인 단계를 추가하는 것은 아니다.
 
 | 경계 | Platform | Agent | PLC MCP |
 | --- | --- | --- | --- |
