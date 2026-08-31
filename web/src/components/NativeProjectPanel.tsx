@@ -1340,7 +1340,7 @@ function isVerifiedCompletion(
     simulationReceipt.scenarioReceipt.scenarioCount ===
       simulationReceipt.scenarioReceipt.scenarios.length &&
     simulationReceipt.scenarioReceipt.outputBytesWritten === false &&
-    simulationReceipt.inputWriteBoundary.onlyReviewedDigitalInputs === true &&
+    simulationReceipt.inputWriteBoundary.onlyReviewedSimulationStimuli === true &&
     simulationReceipt.inputWriteBoundary.outputBytesWritten === false &&
     simulationReceipt.inputWriteBoundary.baselineRestoredAfterCpuStop === true &&
     simulationReceipt.controllerConnected === false &&

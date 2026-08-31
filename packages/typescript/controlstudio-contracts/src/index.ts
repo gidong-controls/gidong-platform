@@ -1306,7 +1306,7 @@ export interface NativeSimulationReceiptBase {
   };
   baseline: Record<string, unknown>;
   inputWriteBoundary: {
-    onlyReviewedDigitalInputs: true;
+    onlyReviewedSimulationStimuli: true;
     outputBytesWritten: false;
     baselineRestoredAfterCpuStop: true;
     restore: {
