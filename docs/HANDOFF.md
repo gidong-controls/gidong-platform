@@ -26,20 +26,26 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 ## 2026-09-01 필수 읽기 경로 — 현재 진행
 
 - 정상 Host 재시작은 UAC 없이 완료됐다. 동일 XG5000 PID `16228`/HWND `723394`, working project
-  SHA `2d55b348...b48`에 새 read-only session
-  `8cf21b7a-bb56-47ef-a83f-4ea174dd325c`이 연결됐다.
-- 실제 conversation `35fdea15-3dc2-4145-889b-063807425b31`의 run
-  `3c0587d7-c4ad-4bfb-b21f-5c5188191bd2`는 `list_project_programs`를 성공적으로 마친 뒤 LD
-  읽기·답변 단계에 진행 중이다. 이 run의 완료나 회로 설명 성공은 아직 기록하지 않는다.
-- 현재 소스 checkpoint: Agent `567a9be`/`4fad603`은 retained LD facts·citations는 보존하면서
-  final artifact top-level `evidenceRefs`를 current-run receipts로만 제한한다. MCP
-  `6970416`/`01333f6`은 LD decoder topology를 보존한다. Agent focused 77개, MCP focused 48개,
-  Host historical-evidence 1개 테스트가 통과했다.
-- 과거 `ad48d6a1-b66b-4602-9f6a-5dccb03e8a2f`의 답변 후 Host 거절은 retained evidence를
-  current-run receipt로 함께 기록한 계약 불일치였다. 과거 화면 행/coordinate 해석 문제도
-  topology 전달로 분리했으며, 이 기록은 현재 run의 성공 증거가 아니다.
-- 과거 XG-SIM trial은 `QUARANTINED` 상태로 보존된다. 물리 PLC I/O는 실시하지 않았고, 전체
-  CLI vendor-core 독립도 아직 완료되지 않았다. 별도 복구 기능은 사용자 지시로 제외한다.
+  SHA `2d55b348...b48`에 read-only session
+  `69e65c35-8b7c-4aa6-8b4b-c8d9457186d9`이 연결돼 있다.
+- 실제 conversation `fbfd967e-c5ef-4c71-a5f1-645e21eb4259`의 run
+  `8b0b7c95-c991-4271-9fa1-d9803a131b48`은 `build_program_logic_graph`와 evidence
+  `4a88026d-06e2-5a4f-a1db-879d3025c311`을 남기고 `COMPLETED`됐다. 모델이 답한 논리식은
+  `M00001 AND (M00000 OR M00010)`이며, M0001 OFF일 때 자기유지가 중단되고 M0010 OFF까지의
+  동작을 정확히 설명했다. 같은 대화의 자연 후속 질문 run
+  `85fe3b2e-98fa-45ca-94e1-432d0d949234`은 진행 중이며 완료로 쓰지 않는다.
+- 현재 소스 checkpoint: Platform `5f3e019`/`d9bcdee`, Agent
+  `56f25a1`/`b101d30`/`a328b2e`/`eb49186`, MCP `7b8e7e1`/`12fb915`; 독립 CLI는 origin/main과
+  동기화된 `d695cae`다. Agent focused 77개, MCP focused 48개, Host historical-evidence 1개
+  테스트가 통과했다. analysis-only read attach와 완료 미션 뒤 같은 대화의 새 분석 objective는
+  이미 구현됐으며, mutation 권한을 열지 않는다.
+- 별도 conversation `35fdea15-3dc2-4145-889b-063807425b31`의 일반 요청
+  `54a7482d`는 프로그램 목록 읽기 뒤 `continuation_contract`로 실패해 미해결이다. event `2693`의
+  continue checkpoint는 정상 선택이 아니라 예외 뒤 evidence 보존 기록이므로 전환 덮어쓰기의 원인으로
+  단정하지 않는다.
+- 과거 XG-SIM trial은 `QUARANTINED`, engineered readiness는 false로 보존된다. 물리 PLC I/O와
+  XG-SIM acceptance는 실시하지 않았고, 전체 CLI vendor-core 독립도 아직 완료되지 않았다. 별도
+  복구 기능은 사용자 지시로 제외한다.
 
 ## 2026-08-31 21:57 KST native resume: 독립 재열기 검증 완료, XG-SIM 실패 기록
 
