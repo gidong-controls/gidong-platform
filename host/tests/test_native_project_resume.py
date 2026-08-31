@@ -14,6 +14,7 @@ from controlstudio_host.native_projects import (
     NativeProjectService,
     NativeProjectSpec,
 )
+from controlstudio_host.store import HostStore
 
 
 _REQUEST_DIGEST = "a" * 64
@@ -94,6 +95,38 @@ class _Gateway:
 
 
 class NativeProjectResumeTests(unittest.IsolatedAsyncioTestCase):
+    def test_resume_reclaims_only_its_parked_native_project_create_lease(self) -> None:
+        with TemporaryDirectory() as temporary:
+            store = HostStore(Path(temporary) / "host.sqlite3")
+            target_identity = {
+                "operationId": _OPERATION_ID,
+                "xg5000Pid": 101,
+                "xg5000Hwnd": 202,
+            }
+            store.acquire_target_operation_lease(
+                operation_id=_OPERATION_ID,
+                owner_kind="native_project_create",
+                holder_token="original-create-holder",
+                target_identity=target_identity,
+            )
+            store.park_target_operation_lease(
+                operation_id=_OPERATION_ID,
+                holder_token="original-create-holder",
+                reason="native_project_create_requires_recovery",
+            )
+
+            reclaimed = store.acquire_target_operation_lease(
+                operation_id=_OPERATION_ID,
+                owner_kind="native_project_create",
+                holder_token="resume-holder",
+                target_identity=target_identity,
+            )
+
+        self.assertEqual(reclaimed["operation_id"], _OPERATION_ID)
+        self.assertEqual(reclaimed["owner_kind"], "native_project_create")
+        self.assertEqual(reclaimed["holder_token"], "resume-holder")
+        self.assertEqual(reclaimed["state"], "ACTIVE")
+
     async def test_resume_rejection_preserves_quarantine_and_never_recreates(self) -> None:
         repository = _Repository()
         gateway = _Gateway()

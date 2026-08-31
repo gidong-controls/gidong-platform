@@ -13770,7 +13770,10 @@ def create_app(
         try:
             store.acquire_target_operation_lease(
                 operation_id=operation.operation_id,
-                owner_kind="native_project_resume",
+                # Resume continues the original native-project lifecycle.  Keeping
+                # this owner kind lets this exact quarantined operation reclaim its
+                # own parked create lease, while other operations remain blocked.
+                owner_kind="native_project_create",
                 holder_token=holder_token,
                 target_identity=_native_project_target_lease_identity(operation),
             )
