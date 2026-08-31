@@ -23,34 +23,33 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-08-31 17:33 KST 실제 복구 진행 — 아래 기록보다 우선
+## 2026-08-31 17:55 KST 실제 복구 성공 — 아래 기록보다 우선
 
-- 사용자의 계속 진행 지시에 따라, 앞서 제안한 현재 파일 보존 → 검증된 백업 복원 →
-  새 오프라인 LD 시험을 이어갔다. 실제 PLC 연결·쓰기는 수행하지 않는다.
-- 저장된 자기유지 계획 `63277186-378f-40ca-96a1-e97542a78261` / digest `62af347d…`
-  의 23개 section·61개 item을 검토하고 정상 프로젝트 계획 review API에 기록했다.
-  사용자가 PWA에서 각 항목을 직접 클릭했다는 뜻은 아니다. 모델을 다시 실행하지 않는다.
-- CLI `e5a9642`(지정 원격 main push), MCP `0c02361`, Host `41a439b`/`dc5f34c`로
-  빈 XG5000 정상 종료를 연결했다. 실제 Host → MCP → CLI 호출에서 PID 7024/HWND 67344가
-  WM_CLOSE로 종료됐고 prompt/modal/forced termination은 모두 없었다. receipt digest는
-  `70577be0dadabe6402b2046919e880005c9bc33e24318b3f918e190a73fb71cc`이다.
-- 첫 복원은 227자 작업 파일 이름에 접미사를 붙인 277자 임시 경로 생성에서 실패했다.
-  원본 f277…는 변경되지 않았고 transaction-private `quarantined-current-project.xgwx`에
-  같은 6,686 bytes/hash가 보존됐다. MCP `ceb3b46`은 짧은 같은 폴더 임시 이름으로
-  바꾸며 원자적 교체와 전후 hash 검사를 유지한다. focused restore tests 5건 통과.
-- 수정 반영 후 정상 reconcile API 한 번으로 f277… 보존과 b929… 복원이 성공했고,
-  `change.working_copy_restored` 증거가 저장됐다. 정상 controlled relaunch는
-  PID 14448/HWND 329110, lifetime `1788165132.162351`, 프로젝트 제목
-  `UI 레더 수직검증 20260817 - XG5000`을 반환했다. Host restart에는 UAC가 없었다.
-- **남은 실제 실패:** transaction `f6ecf557-316b-4739-adde-247813330a18`은 여전히
-  QUARANTINED. `result.reconciliation.recovery_attach_or_status_error`의 원인은
-  `XG5000_TOOLBAR_GEOMETRY_CHANGED`: 640×480 창에서 attach가 찾는 도구 모음의 폭이
-  고정 버튼 위치보다 작다. 복원 실패/권한 거부로 오인하거나 복원부터 반복하지 않는다.
-  현재 열린 파일은 일반 PowerShell Get-FileHash에 sharing violation을 반환한다.
-- 새 프로젝트 native create는 아직 실행하지 않았다. 기존 plan compile 성공과 복구 성공을
-  실제 LD 생성·검사·저장·재열기·XG-SIM 인수 완료로 계산하지 않는다. 다음 작업은 제품
-  attach의 좁은 toolbar 의존 수정 및 정상 빈 XG5000 시작 경로이며, 기존 signed native
-  create의 PID/HWND 결속을 제거하지 않는다.
+- 사용자의 계속 진행 지시에 따라 검증된 backup 복원 뒤 durable recovery를 정상 완료했다.
+  같은 PID `14448`/HWND `329110`에서 reconcile은 `true`, 결과는
+  `explicit_recovery_rolled_back`이며 final journal은 `ROLLED_BACK_SAVED`/terminal/
+  lease released다. 이는 independent fresh reopen 증거가 아니다.
+- journal의 실제 전이는 authorization 소비 뒤 `PLANNED → APPLYING`(seq 6),
+  `QUARANTINED`(seq 7), `ROLLED_BACK_EDITOR`(seq 8)였다. 따라서 앞선
+  “PLANNED-only/no mutation” 해석은 틀렸고, 안전 abort shortcut을 추가하지 않았다.
+- `structural_diff`, `xg5000_program_check`, `project_save`, `project_reopen` 검사가
+  모두 완료됐고, 현재 파일 SHA-256은
+  `13251e001479190a16b9a88cf42d00b439b65d0c620222872e32bc5ec1ba7568`이다.
+  정상 Host attach도 strong readback session
+  `4a4ec200-62b2-4dee-a2df-c9b191d4010b`으로 성공했다.
+- MCP `022a30e`은 duplicated-selection current envelope의 구조(duplicate selection,
+  separator, 길이 28의 byte-significant intermediate header, decoded row stream)를
+  확인한 경우에만 두 4-byte instance/process field를 canonicalize한다. 같은 decoded
+  program의 raw snapshot 49개가 canonical SHA-256
+  `75a1c0f0fd17273b613e1be0fece25d796d414a02348f57ce5bfc56e3a44bc97` 하나로 수렴했다.
+  이 header 28 bytes는 zero라고 가정하지 않으며, program/row와 나머지 header는 계속
+  byte-significant다.
+- reviewed no-save close는 PID 14448에서 verified true로 끝났고 IDNO click/force kill은 없었다
+  (receipt digest `1ec1dcd2…`). 이어 정상 Host → MCP → CLI idle launch는 PID 14284/HWND
+  329768, lifetime `1788166678.7651005`, digest `a85e6a6ec72000b7b529ddde956fd1e8689c3b10cd51434efda324b97d4283c1`으로 성공했다.
+  reviewed native create는 operation `1dc48ccb-a0d8-44d1-9665-bb101dc7c64c`, plan `62af347d…`,
+  folder `artifacts/ld-native`로 제출되어 실행 중이며 결과는 아직 없다. 따라서 새 native
+  project create/build/save/reopen, XG-SIM 또는 PLC write 성공은 아직 주장하지 않는다.
 
 ## 2026-08-31 오후 제품 경로 재개 — 이전 관측 기록
 
