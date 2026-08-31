@@ -36,8 +36,10 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 - `program.focus` 실패 원인은 속성 창이 아니다. MCP `ed025ad`의 실제 제한 진단
   `4e2d92aa-90f3-4f16-a9f7-9a7fe4484acb/697f525ee7e1/error.json`에서 PID/owner가 일치하는
   `XG5000 - LSPLC`의 PLC 응답 없음·재연결 Retry/Cancel 창과 뒤의 `쓰기` 창이 확인됐다.
-  추측에 기반했던 `b070ffc` 조건 완화는 되돌렸다. 재연결/확인/쓰기 없이 기존 Cancel 처리로
-  편집기를 복원하는 수정과 이 창을 연 명령 경로 추적을 진행한다. 과거 SIM 복원 성공으로 간주하지 않는다.
+  추측에 기반했던 `b070ffc` 조건 완화는 되돌렸다. MCP `3ef5655`는 이 정확한 pair에만
+  Cancel을 적용한다. 00:13 실제 session `fb5815c2-ae0e-4c6f-861e-1cdc8c398264`, artifact
+  `a253d9aa59db`에서 MainProgram focus가 verified/read-only/project-unchanged로 성공했다.
+  재연결·쓰기 확인은 호출하지 않았으며 이 결과를 과거 SIM 복원 성공으로 간주하지 않는다.
 - CLI `d695cae` / MCP `54b3ee1`은 read-only `sim-target-status` / `sim.target_status`를 추가했고,
   Host `e503bc4`/`3f6cdca`, Agent `61152d6`가 기존 read tool 경로로 노출한다. 별도 REST/복구
   화면은 없다. CLI는 지정 원격 main에 push했다. 실제 SIM 상태 조회 결과는 아직 미확인이다.
@@ -49,7 +51,27 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   조회 미션을 이은 `5caf995e-b278-43f9-8327-bfda77afd72d`에서는 실제
   `get_simulator_target_status` → MCP → CLI 호출까지 도달했지만 네이티브 상태 조회가
   `XG5000_UIA_TIMEOUT`으로 실패했다. SIM 시작·쓰기·RUN·STOP은 실행하지 않았다.
-  프로그램 목록 읽기 성공과 달리 LD focus/현재 SIM 상태 조회는 아직 완료되지 않았다.
+  Cancel 후 run `f521faa7-a446-42a0-b253-3549351df6f5`에서도 상태 조회 UIA timeout이 재현됐다.
+  따라서 이 조회 오류를 대화상자만의 문제로 단정하지 않는다. 프로그램 목록과 focus는 성공했으며,
+  Agent LD 읽기 run `fd49a6c7-ceb3-4a24-a09b-b0bf5af3ad5e`를 별도로 실행 중이다.
+- MCP `93614ca`는 시뮬레이터 시작 실패의 Basic toolbar x221 좌표 fallback을 없애고
+  설치된 MainRes RT_MENU의 `도구 → 시뮬레이터 시작/끝`(856)을 현재 메뉴에서 의미적으로
+  찾아 호출한다. UIA dispatch가 unknown인 경우 fallback 금지는 유지한다. 과거 artifact에는
+  호출 단계가 없어 그 좌표 경로가 실제 실행됐는지 알 수 없다. 현재 창만으로 물리 쓰기 실행을
+  추정하지 않는다. 변경 후 새 SIM 시작은 아직 실행하지 않았다.
+- MCP `25f38c5`는 같은 상태 표시줄 HWND에 대해 제한 없는 UIA Button descendants 대신
+  기존 bounded MSAA identity 읽기를 사용한다. 00:18 실제 Agent run
+  `198a1079-2146-4378-9ded-ee3420d3a1ee`에서 `get_simulator_target_status`가 완료되고
+  evidence `a655594b-95a7-5d7e-87de-7bbd8ea89a1d` 및 완료 답변을 반환했다. 당시 evidence는
+  일반적인 '조회 완료' 요약뿐이라 실제 SIMULATOR_TARGET 분류를 사후 증명할 수 없다.
+  tool 완료와 현재 SIM 상태의 검증은 구분한다. 상태값이 답변에 남도록 요약 전달을 수정 중이다.
+- 새 Agent LD 요청 `fd49a6c7-ceb3-4a24-a09b-b0bf5af3ad5e`는 도구 실행 전
+  `answer/mission/cycle_disposition` 누락으로 실패했다. 일반 문장으로 요청한 run
+  `519b7c6d-899a-47c5-95b8-821e1a96e2a1`은 `inspect_project_structure` 실제 호출은 성공했지만
+  그 다음 모델 출력이 `json_invalid`로 실패했다. 아직 Agent의 실제 LD 읽기·설명 성공은 아니다.
+  초기 Nemotron 경로가 도구를 비활성화한 채 전체 답변·미션부터 요구하는 구조를 고친다.
+  현재 문장/programId에 맞춘 정규식 미션 생성 WIP는 폐기했고, Host가 노출한 읽기 도구를
+  일반적으로 먼저 선택·실행한 뒤 기존 근거 기반 분석으로 이어가는 작은 변경만 진행한다.
 
 ## 2026-08-31 21:57 KST native resume: 독립 재열기 검증 완료, XG-SIM 실패 기록
 
