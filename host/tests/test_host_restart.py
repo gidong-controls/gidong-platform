@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,7 @@ from controlstudio_host.restart import (
     RESTART_HANDOFF_ENVIRONMENT_VARIABLE,
     HostRestartController,
     RestartHandoff,
+    _restart_log_path,
     consume_restart_handoff,
 )
 
@@ -186,26 +188,29 @@ class RestartBootstrapTests(unittest.TestCase):
         def spawn(command, **kwargs):
             spawned.append((tuple(command), kwargs))
 
-        executable = Path(__file__).resolve()
-        controller = HostRestartController(
-            executable=executable,
-            cwd=Path.cwd(),
-            environment={
-                "CONTROLSTUDIO_AGENT_COMMAND": "agent --stdio",
-                "CONTROLSTUDIO_MCP_COMMAND": "mcp --stdio",
-                "CONTROLSTUDIO_XG5000_CLI_COMMAND": "xg-cli.exe",
-                "CONTROLSTUDIO_DEVELOPMENT_MODEL_API_KEY": "not-in-response",
-            },
-            port=8767,
-            parent_pid=1234,
-            spawn=spawn,
-        )
-        handoff = RestartHandoff(
-            receipt="r" * 32,
-            session_token="s" * 32,
-            session_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
-        )
-        controller.schedule(handoff)
+        with tempfile.TemporaryDirectory(prefix="controlstudio-host-restart-log-") as raw:
+            restart_log = Path(raw) / "state" / "logs" / "host-restart.log"
+            executable = Path(__file__).resolve()
+            controller = HostRestartController(
+                executable=executable,
+                cwd=Path.cwd(),
+                environment={
+                    "CONTROLSTUDIO_AGENT_COMMAND": "agent --stdio",
+                    "CONTROLSTUDIO_MCP_COMMAND": "mcp --stdio",
+                    "CONTROLSTUDIO_XG5000_CLI_COMMAND": "xg-cli.exe",
+                    "CONTROLSTUDIO_DEVELOPMENT_MODEL_API_KEY": "not-in-response",
+                },
+                port=8767,
+                restart_log_path=restart_log,
+                parent_pid=1234,
+                spawn=spawn,
+            )
+            handoff = RestartHandoff(
+                receipt="r" * 32,
+                session_token="s" * 32,
+                session_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            )
+            controller.schedule(handoff)
         command, kwargs = spawned[0]
         self.assertEqual(command[1:3], ("-m", "controlstudio_host.restart_helper"))
         self.assertNotIn("xg5000", " ".join(command).casefold())
@@ -214,6 +219,17 @@ class RestartBootstrapTests(unittest.TestCase):
         self.assertEqual(kwargs["env"]["CONTROLSTUDIO_MCP_COMMAND"], "mcp --stdio")
         self.assertEqual(kwargs["env"]["CONTROLSTUDIO_XG5000_CLI_COMMAND"], "xg-cli.exe")
         self.assertIn(RESTART_HANDOFF_ENVIRONMENT_VARIABLE, kwargs["env"])
+        self.assertEqual(Path(kwargs["stdout"].name), restart_log.resolve())
+        self.assertIs(kwargs["stderr"], kwargs["stdout"])
+        self.assertTrue(kwargs["stdout"].closed)
+
+    def test_restart_log_uses_the_configured_database_state_root(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="controlstudio-host-restart-path-") as raw:
+            database = Path(raw) / "private" / "host.sqlite3"
+            self.assertEqual(
+                _restart_log_path({"CONTROLSTUDIO_DATABASE": str(database)}),
+                (database.parent / "logs" / "host-restart.log").resolve(),
+            )
 
     def test_restart_handoff_is_one_time_and_restores_only_a_valid_session(self) -> None:
         handoff = RestartHandoff(
@@ -231,6 +247,7 @@ class RestartBootstrapTests(unittest.TestCase):
         with (
             patch.object(restart_helper, "_wait_for_parent_exit", return_value=True),
             patch.object(restart_helper, "_wait_for_port_release", return_value=True),
+            patch.object(restart_helper, "_redirect_replacement_output"),
             patch.object(restart_helper, "_run_replacement_host") as run_host,
         ):
             result = restart_helper.restart_after_parent_exits(1234, 8767)
@@ -254,6 +271,35 @@ class RestartBootstrapTests(unittest.TestCase):
             restart_helper._run_replacement_host()
 
         self.assertEqual(observed_job_names, [None])
+
+    def test_helper_redirects_first_replacement_output_to_state_log(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="controlstudio-host-restart-helper-") as raw:
+            database = Path(raw) / "state" / "controlstudio.sqlite3"
+            original_stdout, original_stderr = sys.stdout, sys.stderr
+            previous_log = restart_helper._RESTART_LOG_FILE
+            try:
+                restart_helper._RESTART_LOG_FILE = None
+                with patch.dict(
+                    os.environ,
+                    {"CONTROLSTUDIO_DATABASE": str(database)},
+                    clear=False,
+                ):
+                    restart_helper._redirect_replacement_output()
+                log_file = restart_helper._RESTART_LOG_FILE
+                self.assertIsNotNone(log_file)
+                assert log_file is not None
+                self.assertEqual(
+                    Path(log_file.name),
+                    (database.parent / "logs" / "host-restart.log").resolve(),
+                )
+                self.assertIs(sys.stdout, log_file)
+                self.assertIs(sys.stderr, log_file)
+            finally:
+                sys.stdout, sys.stderr = original_stdout, original_stderr
+                current_log = restart_helper._RESTART_LOG_FILE
+                if current_log is not None:
+                    current_log.close()
+                restart_helper._RESTART_LOG_FILE = previous_log
 
     def test_helper_does_not_start_replacement_before_parent_exits(self) -> None:
         with (

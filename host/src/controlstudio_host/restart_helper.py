@@ -6,7 +6,10 @@ import argparse
 import ctypes
 import os
 import socket
+import sys
 import time
+
+_RESTART_LOG_FILE = None
 
 
 def _wait_for_parent_exit(parent_pid: int, timeout_seconds: float = 30.0) -> bool:
@@ -71,9 +74,24 @@ def _run_replacement_host() -> None:
     host_main()
 
 
+def _redirect_replacement_output() -> None:
+    """Retain replacement startup diagnostics even when the old Host used DEVNULL."""
+
+    global _RESTART_LOG_FILE
+
+    from .restart import _restart_log_path
+
+    log_path = _restart_log_path(os.environ)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    _RESTART_LOG_FILE = log_path.open("a", encoding="utf-8", buffering=1)
+    sys.stdout = _RESTART_LOG_FILE
+    sys.stderr = _RESTART_LOG_FILE
+
+
 def restart_after_parent_exits(parent_pid: int, port: int) -> int:
     if not _wait_for_parent_exit(parent_pid) or not _wait_for_port_release(port):
         return 1
+    _redirect_replacement_output()
     _run_replacement_host()
     return 0
 

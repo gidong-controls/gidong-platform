@@ -100,6 +100,20 @@ def _validated_environment(values: Mapping[str, str]) -> dict[str, str]:
     return result
 
 
+def _restart_log_path(environment: Mapping[str, str]) -> Path:
+    """Keep replacement stderr in the configured Host state root."""
+
+    from .config import _default_data_dir
+
+    database_value = environment.get("CONTROLSTUDIO_DATABASE")
+    database_path = (
+        Path(database_value)
+        if isinstance(database_value, str) and database_value.strip()
+        else _default_data_dir() / "controlstudio.sqlite3"
+    )
+    return database_path.expanduser().resolve().parent / "logs" / "host-restart.log"
+
+
 class HostRestartController:
     """Starts only the fixed local replacement helper, never a user command."""
 
@@ -110,6 +124,7 @@ class HostRestartController:
         cwd: Path,
         environment: Mapping[str, str],
         port: int,
+        restart_log_path: Path,
         parent_pid: int | None = None,
         spawn: Callable[..., Any] = subprocess.Popen,
     ) -> None:
@@ -126,6 +141,7 @@ class HostRestartController:
         self._cwd = resolved_cwd
         self._environment = _validated_environment(environment)
         self._port = port
+        self._restart_log_path = restart_log_path.expanduser().resolve()
         self._parent_pid = os.getpid() if parent_pid is None else parent_pid
         self._spawn = spawn
 
@@ -141,6 +157,7 @@ class HostRestartController:
             cwd=Path.cwd(),
             environment=environment,
             port=port,
+            restart_log_path=_restart_log_path(environment),
         )
 
     def schedule(self, handoff: RestartHandoff) -> None:
@@ -150,24 +167,26 @@ class HostRestartController:
         if os.name == "nt":
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
         try:
-            self._spawn(
-                (
-                    str(self._executable),
-                    "-m",
-                    _RESTART_MODULE,
-                    "--parent-pid",
-                    str(self._parent_pid),
-                    "--port",
-                    str(self._port),
-                ),
-                cwd=self._cwd,
-                env=environment,
-                shell=False,
-                close_fds=True,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=creationflags,
-            )
+            self._restart_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._restart_log_path.open("a", encoding="utf-8", buffering=1) as log_file:
+                self._spawn(
+                    (
+                        str(self._executable),
+                        "-m",
+                        _RESTART_MODULE,
+                        "--parent-pid",
+                        str(self._parent_pid),
+                        "--port",
+                        str(self._port),
+                    ),
+                    cwd=self._cwd,
+                    env=environment,
+                    shell=False,
+                    close_fds=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_file,
+                    stderr=log_file,
+                    creationflags=creationflags,
+                )
         except OSError as exc:
             raise RestartBootstrapError("the replacement bootstrap could not be started") from exc
