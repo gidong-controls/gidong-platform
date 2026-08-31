@@ -1706,6 +1706,7 @@ def _structural_tool_result_payload(
         evidence_ref=evidence_ref,
     )
     receipt = safe_evidence_ref.get("receipt")
+    source_receipt_digest = validated_receipt["receiptDigest"]
 
     result: dict[str, Any] = {
         "schema": _STRUCTURAL_TOOL_RESULT_PROJECTION_SCHEMA,
@@ -1737,7 +1738,7 @@ def _structural_tool_result_payload(
             model_context
             if expected_tool_name == "project.search"
             else {
-                "sourceReceiptDigest": receipt["receiptDigest"],
+                "sourceReceiptDigest": source_receipt_digest,
                 **model_context,
             }
         )

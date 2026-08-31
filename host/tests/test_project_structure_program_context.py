@@ -87,9 +87,12 @@ class ProjectStructureProgramContextTests(unittest.TestCase):
                 {
                     "evidenceId": "00000000-0000-4000-8000-000000000701",
                     "toolName": "project.structure_index",
-                    "receipt": {"receiptDigest": receipt_digest},
+                    "receipt": {
+                        "schema": "controlstudio-project-structure-evidence-projection/v1",
+                        "projectionDigest": "b" * 64,
+                    },
                 },
-                {"structureFacts": [fact]},
+                {"receiptDigest": receipt_digest, "structureFacts": [fact]},
             ),
         ):
             payload = _structural_tool_result_payload(
