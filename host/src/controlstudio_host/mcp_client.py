@@ -49,9 +49,10 @@ _ALLOWED_CONTROLLER_NETWORKS = tuple(
 
 # The first product increment is deliberately read/analyze-only.  A tool missing
 # from this set cannot be offered to the model even if the MCP server advertises
-# it.  In particular, change, save, simulator, and direct-control tools stay out.
+# it.  In particular, change, save, simulator-control, and direct-control tools stay out.
 AGENT_TOOL_NAMES: dict[str, str] = {
     "get_xg5000_session_status": "xg5000.session_status",
+    "get_simulator_target_status": "sim.target_status",
     "list_project_programs": "project.list_programs",
     "focus_xg5000_program": "program.focus",
     "read_ladder_program": "program.read_ld",
@@ -178,6 +179,7 @@ AGENT_TOOL_REQUIRED_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
     "workspace.structure_index": ("workspace_id", "revision_id"),
     "workspace.search": ("workspace_id", "revision_id"),
     "xg5000.session_status": ("session_id",),
+    "sim.target_status": SESSION_IDENTITY_FIELDS,
     "project.list_programs": SESSION_IDENTITY_FIELDS,
     "program.focus": SESSION_IDENTITY_FIELDS,
     "program.focus_location": SESSION_IDENTITY_FIELDS,
