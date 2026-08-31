@@ -399,6 +399,18 @@ PWA acceptance 미검증도, file-restore approval 대기도 이 절차로 해�
   않았고, 사용자에게 기존 XG5000 창을 전면으로 올린 뒤 알려 달라고 요청했다. UAC 거절이나
   프로그램 종료로 해석하지 않는다. Native Find/Go 구현은 실제 활성 LD 메뉴·대화상자 관측이
   필요하며, 실패 지점에 추가 guard를 붙이는 변경은 하지 않았다.
+- 2026-08-31 12시대(KST) 읽기 전용 process/token 확인: 기존 XG5000 `7024`와 Host `5464`는
+  모두 `high`, Codex 본체 `9452`는 `medium`이었다. executable path와 생성 시각도 확인했다.
+  기존 Host/XG5000 승인이 풀린 상태가 아니므로 이 오류를 근거로 UAC를 재호출하지 않는다.
+  Codex 본체와 별도 Computer Use 실행 주체는 구분하며, 이 관측만으로 UIPI가 최초 활성화
+  실패의 원인이라고 확정하지 않는다. 원본 기록은 10:06 화면 읽기 성공 뒤 활성화 실패,
+  10:11 화면 읽기 성공, 10:15 이후 캡처 timeout 순서이며 오늘 앱 로그 파일은 비어 있었다.
+- MCP `d6f7f26`은 별도 재현된 프로젝트 결함을 수정했다. 활성화마다 `SW_RESTORE`를 호출해
+  최대화된 편집창까지 복원하던 동작을 제거하고 최소화된 창만 복원한다. 이미 전면인 창은
+  건드리지 않으며, `GetForegroundWindow` 반환값과 `IsChild` HWND 인자를 pointer 크기로
+  처리한다. 수정 전 layout/focus 회귀 2건 실패, 수정 후 64-bit ctypes callback을 포함한
+  5건 통과 및 Ruff 통과. 모두 fake API 검사이며 실제 창에 입력하지 않았다. 이 수정은
+  Codex Computer Use 구현을 바꾸지 않고, 캡처/활성화 복구나 LD 실사용 성공 증거도 아니다.
 
 ## 반복하지 말아야 할 것
 
