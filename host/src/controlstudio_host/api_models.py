@@ -4544,6 +4544,7 @@ class LaunchIdleXG5000ResponseV1(ApiModel):
     verified: Literal[True]
     status: Literal["launched"]
     launch_action: Literal["process_start"]
+    launched_identity: dict[str, Any]
     idle_binding: dict[str, Any]
     no_existing_instances: Literal[True]
     blank_window: Literal[True]
@@ -4559,6 +4560,7 @@ class LaunchIdleXG5000AttentionV1(ApiModel):
     verified: Literal[False]
     status: Literal["needs_attention"]
     launch_action: Literal["process_start"]
+    launched_identity: dict[str, Any]
     idle_binding: dict[str, Any] | None
     no_existing_instances: Literal[True]
     blank_window: Literal[False]
@@ -4577,7 +4579,10 @@ class LaunchIdleXG5000AttentionV1(ApiModel):
     def validate_attention_outcome(self) -> LaunchIdleXG5000AttentionV1:
         if self.modal_observed != (self.attention_reason == "owned_modal"):
             raise ValueError("idle-launch attention receipt has an invalid modal outcome")
-        if self.idle_binding is None and self.attention_reason != "launch_timeout":
+        if self.idle_binding is None and self.attention_reason not in {
+            "launch_timeout",
+            "process_exited",
+        }:
             raise ValueError("idle-launch attention receipt lost its required identity")
         return self
 

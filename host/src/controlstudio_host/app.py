@@ -457,6 +457,7 @@ def _launch_idle_xg5000_response(
                 "verified",
                 "status",
                 "launch_action",
+                "launched_identity",
                 "idle_binding",
                 "no_existing_instances",
                 "blank_window",
@@ -483,6 +484,7 @@ def _launch_idle_xg5000_attention(
                 "verified",
                 "status",
                 "launch_action",
+                "launched_identity",
                 "idle_binding",
                 "no_existing_instances",
                 "blank_window",
@@ -511,6 +513,20 @@ def _validate_idle_xg5000_binding(binding: dict[str, Any]) -> None:
         or not binding["executable"]
     ):
         raise ValueError("MCP idle XG5000 receipt has an invalid exact identity binding")
+
+
+def _validate_launched_xg5000_identity(identity: dict[str, Any]) -> None:
+    if (
+        not isinstance(identity.get("pid"), int)
+        or isinstance(identity.get("pid"), bool)
+        or identity["pid"] <= 0
+        or not isinstance(identity.get("process_create_time"), (int, float))
+        or isinstance(identity.get("process_create_time"), bool)
+        or float(identity["process_create_time"]) <= 0
+        or not isinstance(identity.get("executable"), str)
+        or not identity["executable"]
+    ):
+        raise ValueError("MCP idle XG5000 receipt has an invalid launched identity")
 
 
 @dataclass(frozen=True)
@@ -13766,6 +13782,7 @@ def create_app(
                     raw,
                     receipt_digest=receipt_digest,
                 )
+            _validate_launched_xg5000_identity(outcome.launched_identity)
             if outcome.idle_binding is not None:
                 _validate_idle_xg5000_binding(outcome.idle_binding)
             if isinstance(outcome, LaunchIdleXG5000AttentionV1):
@@ -13775,6 +13792,7 @@ def create_app(
                         "actorId": _request_actor_id(request),
                         "receiptDigest": outcome.receipt_digest,
                         "attentionReason": outcome.attention_reason,
+                        "launchedIdentity": outcome.launched_identity,
                         "idleBinding": outcome.idle_binding,
                         "launchAction": outcome.launch_action,
                         "processExited": outcome.process_exited,
@@ -13786,6 +13804,7 @@ def create_app(
                     detail={
                         "code": "idle_xg5000_launch_needs_attention",
                         "attentionReason": outcome.attention_reason,
+                        "launchedIdentity": outcome.launched_identity,
                         "idleBinding": outcome.idle_binding,
                         "launchAction": outcome.launch_action,
                         "processExited": outcome.process_exited,
@@ -13797,6 +13816,7 @@ def create_app(
                 payload={
                     "actorId": _request_actor_id(request),
                     "receiptDigest": outcome.receipt_digest,
+                    "launchedIdentity": outcome.launched_identity,
                     "idleBinding": dict(outcome.idle_binding),
                     "launchAction": outcome.launch_action,
                     "workspaceBound": False,

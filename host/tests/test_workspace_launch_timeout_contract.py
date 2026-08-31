@@ -180,6 +180,10 @@ class _IdleLaunchMCP:
             "process_create_time": 123.0,
             "executable": "C:/XG5000/XG5000.exe",
         }
+        launched_identity = {
+            key: binding[key]
+            for key in ("pid", "process_create_time", "executable")
+        }
         if self.attention_reason is None:
             return {
                 "schema": "controlstudio-idle-xg5000-launch-cli/v1",
@@ -188,6 +192,7 @@ class _IdleLaunchMCP:
                 "verified": True,
                 "status": "launched",
                 "launch_action": "process_start",
+                "launched_identity": launched_identity,
                 "idle_binding": binding,
                 "no_existing_instances": True,
                 "blank_window": True,
@@ -203,7 +208,12 @@ class _IdleLaunchMCP:
             "verified": False,
             "status": "needs_attention",
             "launch_action": "process_start",
-            "idle_binding": None if self.attention_reason == "launch_timeout" else binding,
+            "launched_identity": launched_identity,
+            "idle_binding": (
+                None
+                if self.attention_reason in {"launch_timeout", "process_exited"}
+                else binding
+            ),
             "no_existing_instances": True,
             "blank_window": False,
             "modal_observed": self.attention_reason == "owned_modal",
@@ -375,6 +385,12 @@ class WorkspaceLaunchTimeoutContractTests(unittest.IsolatedAsyncioTestCase):
                     headers=headers,
                     json={"confirmIdleLaunch": True},
                 )
+                mcp.attention_reason = "process_exited"
+                exited = client.post(
+                    "/api/v1/xg5000/launch-idle",
+                    headers=headers,
+                    json={"confirmIdleLaunch": True},
+                )
 
             self.assertEqual(launched.status_code, 200, launched.text)
             self.assertEqual(launched.json()["status"], "launched")
@@ -385,9 +401,15 @@ class WorkspaceLaunchTimeoutContractTests(unittest.IsolatedAsyncioTestCase):
                 "launch_timeout",
             )
             self.assertIsNone(attention.json()["detail"]["idleBinding"])
+            self.assertEqual(attention.json()["detail"]["launchedIdentity"]["pid"], 7024)
+            self.assertEqual(exited.status_code, 409, exited.text)
+            self.assertEqual(exited.json()["detail"]["attentionReason"], "process_exited")
+            self.assertIsNone(exited.json()["detail"]["idleBinding"])
+            self.assertEqual(exited.json()["detail"]["launchedIdentity"]["pid"], 7024)
             self.assertEqual(
                 mcp.calls,
                 [
+                    ("xg5000.launch_idle", {"confirm_idle_launch": True, "timeout_seconds": 20}),
                     ("xg5000.launch_idle", {"confirm_idle_launch": True, "timeout_seconds": 20}),
                     ("xg5000.launch_idle", {"confirm_idle_launch": True, "timeout_seconds": 20}),
                 ],
