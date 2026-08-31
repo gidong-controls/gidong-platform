@@ -16,8 +16,8 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 - 세 core 저장소 `gidong-platform`, `gidong-agent`, `gidong-plc-mcp`는 `dev`에서 작업한다.
   `6d06754`, `f70d30c`, `9edc7e5`는 이 handoff 작성 당시의 역사적 code checkpoint이며 최신
   `HEAD` 표기가 아니다. 현재 제품 checkpoint와 실행 상태는 아래 2026-09-01 절을 우선한다.
-- 독립 XG5000 CLI는 `main`의 `fa0ed95`이며 사용자 지정 원격에 게시된 checkpoint다. 위 세 core
-  저장소는 해당 코드 checkpoint 시점에 local 상태였고 push하지 않았다.
+- 독립 XG5000 CLI는 `main`의 `d695cae`이며 사용자 지정 원격 `origin/main`과 동기화돼 있다.
+  위 세 core 저장소의 이번 변경은 local commit이며 push하지 않았다.
 
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
@@ -35,11 +35,10 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   `85fe3b2e-98fa-45ca-94e1-432d0d949234`은 `tool.program.read_ld`에서 실패했다. 원인은
   SHA-bound structure가 LD program을 해석하지 못한 것으로, interface가 executable LD ID 대신
   `code_unit_id`만 제시한 것이었다.
-- canonical ID 수정은 MCP `2ad7b7c`, Host `a153d39`, Agent `83c1f1c`에 반영됐다. MCP는
-  `canonical_program_id`를 내보내고, Host는 receipt-bound `modelContext.programs.programId`를
-  전달하며, Agent는 그 context를 보존한다. Host `7dedf39`는 projected receipt에 없던
-  `receiptDigest` 대신 검증된 original digest를 context에 쓴다; 회귀는 실제 tool-return 변환을
-  호출한다. analysis-only read attach와 완료 미션 뒤 같은 대화의 새 분석 objective는 이미 구현됐으며
+- 현재 canonical ID 경로는 MCP `2ad7b7c`의 `canonical_program_id` → Host 기존 receipt의
+  `structureFacts[].attributes`에 있는 `{name: canonicalProgramId, value: ld:…}` → Agent다.
+  중간 구현 `a153d39`/`83c1f1c`/`7dedf39`의 별도 structure modelContext 전달은 아래 cleanup에서
+  제거됐다. analysis-only read attach와 완료 미션 뒤 같은 대화의 새 분석 objective는 구현됐으며
   mutation 권한을 열지 않는다.
 - 자연 후속 검증 conversation `623562a2-3c41-4083-934e-f7ee289c70a3`의 run
   `06582be7-94e0-4acd-8170-c43f634def62`은 `programlist`와 `read_ladder_program`을 모두
