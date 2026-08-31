@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 from typing import Any, cast
 from unittest.mock import patch
@@ -51,6 +52,7 @@ class _ReviewedCloseSuccessMCP:
         self.project_hash = project_hash
         self.status = MCPStatus(status="ready")
         self.agent_session: dict[str, Any] | None = None
+        self.read_calls: list[tuple[str, dict[str, Any]]] = []
         self.workspace_calls: list[tuple[str, dict[str, Any]]] = []
 
     async def start(self) -> MCPStatus:
@@ -83,6 +85,7 @@ class _ReviewedCloseSuccessMCP:
         name: str,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
+        self.read_calls.append((name, dict(arguments)))
         if name != "xg5000.attach":
             raise AssertionError(f"unexpected read tool: {name}")
         if arguments.get("pid") != 101 or arguments.get("hwnd") != 202:
@@ -150,6 +153,18 @@ class _InvalidReadAttachMCP(_ReviewedCloseSuccessMCP):
     ) -> dict[str, Any]:
         if name != "xg5000.attach":
             raise AssertionError(f"unexpected read tool: {name}")
+        return {"session": {"pid": arguments.get("pid")}}
+
+
+class _ParkedReopenExpectationMCP(_ReviewedCloseSuccessMCP):
+    async def call_read_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        if arguments.get("pid") == 101 and arguments.get("hwnd") == 202:
+            return await super().call_read_tool(name, arguments)
+        self.read_calls.append((name, dict(arguments)))
         return {"session": {"pid": arguments.get("pid")}}
 
 
@@ -774,6 +789,120 @@ class WorkspaceLaunchTimeoutContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(lease)
             assert lease is not None
             self.assertEqual(lease["state"], "STALE_BLOCKED")
+
+    def test_parked_native_reopen_supplies_only_matching_read_expectation(self) -> None:
+        with TemporaryDirectory(prefix="controlstudio-parked-native-reopen-") as raw_directory:
+            root = Path(raw_directory)
+            project_path = str((root / "working" / "machine.xgwx").resolve())
+            project_hash = "a" * 64
+            config = HostConfig(
+                database_path=root / "host.sqlite3",
+                knowledge_database_path=root / "knowledge.sqlite3",
+                static_dir=root / "missing-web-dist",
+                launch_token="parked-native-reopen-test-token-0123456789",
+                release_channel="production",
+            )
+            store = HostStore(config.database_path)
+            store.acquire_target_operation_lease(
+                operation_id="native-project-stale",
+                owner_kind="native_project_create",
+                holder_token="native-project-holder",
+                target_identity={"operationId": "native-project-stale"},
+            )
+            store.park_target_operation_lease(
+                operation_id="native-project-stale",
+                holder_token="native-project-holder",
+                reason="native_simulation_trial_requires_decision_or_recovery",
+            )
+            mcp = _ParkedReopenExpectationMCP(
+                project_path=project_path,
+                project_hash=project_hash,
+            )
+            app = create_app(config, store=store, mcp=cast(Any, mcp))
+            operation = SimpleNamespace(
+                result={
+                    "workspaceRegistration": {
+                        "workspace": {
+                            "working_copy": {
+                                "path": project_path,
+                                "current_sha256": project_hash,
+                            }
+                        }
+                    },
+                    "reopenVerification": {
+                        "state": "verified",
+                        "session": {
+                            "session_id": "cached-reopen-session",
+                            "pid": 101,
+                            "hwnd": 202,
+                            "project_path": project_path,
+                            "project_hash": project_hash,
+                        },
+                        "receipt": {
+                            "reopenedProcess": {
+                                "pid": 101,
+                                "hwnd": 202,
+                                "independent": True,
+                            },
+                            "projectReadback": {
+                                "projectPath": project_path,
+                                "projectSha256": project_hash,
+                                "projectUnchanged": True,
+                                "identityAssurance": "controlled_launch_read_only",
+                            },
+                        },
+                    },
+                }
+            )
+
+            with patch.object(app.state.native_project_repository, "get", return_value=operation), TestClient(
+                app,
+                base_url="http://localhost:8767",
+            ) as client:
+                handoff = client.post(
+                    "/api/launcher/handoff",
+                    headers={"Authorization": f"Bearer {config.launch_token}"},
+                )
+                browser_session = client.post(
+                    "/api/session",
+                    headers={"Authorization": f"Bearer {handoff.json()['handoffTicket']}"},
+                )
+                client.headers.update(
+                    {"Authorization": f"Bearer {browser_session.json()['sessionToken']}"}
+                )
+
+                attached = client.post(
+                    "/api/v1/xg5000/attach",
+                    json={"pid": 101, "hwnd": 202},
+                )
+                self.assertEqual(attached.status_code, 200, attached.text)
+                self.assertEqual(mcp.agent_session["session_id"], "reviewed-close-session")
+                self.assertEqual(
+                    mcp.read_calls[-1],
+                    (
+                        "xg5000.attach",
+                        {
+                            "pid": 101,
+                            "hwnd": 202,
+                            "access_profile": "analysis",
+                            "project_path": project_path,
+                            "project_hash": project_hash,
+                        },
+                    ),
+                )
+
+                source = client.post(
+                    "/api/v1/xg5000/attach",
+                    json={"pid": 14284, "hwnd": 329768},
+                )
+                self.assertEqual(source.status_code, 409, source.text)
+                self.assertEqual(
+                    mcp.read_calls[-1],
+                    (
+                        "xg5000.attach",
+                        {"pid": 14284, "hwnd": 329768, "access_profile": "analysis"},
+                    ),
+                )
 
     def test_unbound_existing_target_does_not_inherit_active_workspace_identity(self) -> None:
         request = AttachXG5000RequestV1(

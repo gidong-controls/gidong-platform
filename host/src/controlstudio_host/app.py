@@ -13994,6 +13994,67 @@ def create_app(
             and isinstance(active_workspace.get("working_copy"), dict)
             else None
         )
+
+        def parked_native_reopen_expectation() -> dict[str, str] | None:
+            """Return only the durable fresh-reopen identity for a read attach."""
+
+            parked_lease = store.active_target_operation_lease()
+            if not (
+                isinstance(parked_lease, dict)
+                and parked_lease.get("owner_kind") == "native_project_create"
+                and parked_lease.get("state") == "STALE_BLOCKED"
+                and isinstance(parked_lease.get("operation_id"), str)
+            ):
+                return None
+            operation = native_project_repository.get(parked_lease["operation_id"])
+            if operation is None or not isinstance(operation.result, dict):
+                return None
+            reopen = operation.result.get("reopenVerification")
+            registration = operation.result.get("workspaceRegistration")
+            if not isinstance(reopen, dict) or reopen.get("state") != "verified":
+                return None
+            session = reopen.get("session")
+            receipt = reopen.get("receipt")
+            workspace = registration.get("workspace") if isinstance(registration, dict) else None
+            working = workspace.get("working_copy") if isinstance(workspace, dict) else None
+            if not (
+                isinstance(session, dict)
+                and session.get("pid") == body.pid
+                and session.get("hwnd") == body.hwnd
+                and isinstance(receipt, dict)
+                and receipt.get("reopenedProcess")
+                == {"pid": body.pid, "hwnd": body.hwnd, "independent": True}
+                and isinstance(working, dict)
+                and isinstance(working.get("path"), str)
+                and isinstance(working.get("current_sha256"), str)
+            ):
+                return None
+            project_path = working["path"]
+            project_hash = working["current_sha256"]
+            project_readback = receipt.get("projectReadback")
+            try:
+                exact_path = (
+                    _normalized_workspace_path(str(session.get("project_path") or ""))
+                    == _normalized_workspace_path(project_path)
+                    and isinstance(project_readback, dict)
+                    and _normalized_workspace_path(
+                        str(project_readback.get("projectPath") or "")
+                    )
+                    == _normalized_workspace_path(project_path)
+                )
+            except (OSError, RuntimeError, ValueError):
+                return None
+            if not (
+                exact_path
+                and str(session.get("project_hash") or "").casefold()
+                == project_hash.casefold()
+                and project_readback.get("projectSha256") == project_hash
+                and project_readback.get("projectUnchanged") is True
+                and project_readback.get("identityAssurance") == "controlled_launch_read_only"
+            ):
+                return None
+            return {"project_path": project_path, "project_hash": project_hash}
+
         arguments: dict[str, Any] = {
             "pid": body.pid,
             "hwnd": body.hwnd,
@@ -14015,6 +14076,15 @@ def create_app(
             and isinstance(working_copy.get("current_sha256"), str)
         ):
             arguments["project_hash"] = working_copy["current_sha256"]
+        if (
+            not body.allow_unbound_existing_target
+            and working_copy is None
+            and body.project_path is None
+            and body.project_hash is None
+        ):
+            expectation = parked_native_reopen_expectation()
+            if expectation is not None:
+                arguments.update(expectation)
         try:
             result = await mcp.call_read_tool("xg5000.attach", arguments)
         except MCPToolError as exc:
