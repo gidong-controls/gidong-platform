@@ -426,6 +426,25 @@ XG5000을 다루는 것이 목표다. Codex Computer Use는 이 실행 경로에
 Host의 run/event/transaction 및 CLI 결과를 기준으로 추적한다. 외부 도구가 거부한 동일
 UI 동작을 우회하지 않으며, 그 제한과 별개로 가능한 제품 구현·검증은 계속한다.
 
+제품 기록 재확인 결과:
+
+- 마지막 Agent run `50275151-dbec-415c-a2e6-99f81a58eb25`는 승인 제안 생성 후 실패했다.
+  현재 Agent `c4bce7f` 이후의 exact-operand 결정적 전환이 이미 그 경로를 대체했고,
+  관련 fake-runtime 회귀 3건이 통과했다. 이 과거 기록을 새 미수정 장애로 간주하지 않는다.
+- 실제 apply 오류는 보존 artifact `cf83b3a1b673/error.json`의
+  `XG5000_LD_SOURCE_NOT_VISIBLE`이다. 이후 `native_status_unavailable`은 최초 apply
+  원인이 아니라 recovery 단계의 오류다. 현재 코드로 보존 payload를 순수 재비교하면
+  token 18의 `P0020 → P00021` 한 건과 저장된 두 SHA가 일치한다. 파일/격리는 변경하지 않았다.
+- MCP `dd03833`은 `_open_operand_dialog`에서 창 활성화를 viewport 측정보다 먼저 하고,
+  좌표 계산 후의 무조건 `SW_RESTORE`를 제거했다. 회귀가 수정 전 실패/후 통과했고
+  focus/foreground 12건 및 Ruff가 통과했다. 실제 product apply 성공은 아직 미검증이다.
+- 정적 설치 리소스: `C:\XG5000\XGPM\l.kor\PMLDEditorRes.dll`의 RT_MENU 38007,
+  LANGID 1042, offset `0xC7F0`에서 `편집 → 디바이스 찾기` command 4845를 확인했다.
+  `XGPM\l.kor\PMFindRes.dll` dialog 6631은 입력 6620/다음 6626/모두 6600을 갖는다.
+  별도 `l.kor\FindRes.dll` dialog 7767은 입력 7604/현재 창 7753/다음 7626/모두 7600이다.
+  두 variant 중 실제 LD handler가 여는 창은 아직 확인하지 않았으므로 정적 ID 발견을
+  새 Find adapter 구현/실동작 성공으로 해석하지 않는다. 다음 확인도 제품 native 경로에서 한다.
+
 ## 반복하지 말아야 할 것
 
 - 기능마다 Host/Agent/MCP/Web에 서로 다른 상태 규칙을 복제하지 않는다. 권위가 있는
