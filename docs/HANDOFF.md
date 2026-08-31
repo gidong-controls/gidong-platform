@@ -356,6 +356,12 @@ PWA acceptance 미검증도, file-restore approval 대기도 이 절차로 해�
 - native geometry는 아직 고치지 않았다. payload `739c...` snapshot `bd2300fece86`, token 18 /
   row 0 / c94에서 modulo 33은 -1211을 내지만 raw 373은 증명되지 않았다. 1024 row stride만으로
   modulo를 삭제하지 않는다.
+- 다음 UI 확인 경로는 고정 좌표 추정이 아니라 XG5000의 `찾기/바꾸기 → 디바이스 찾기`다.
+  설치된 `C:\XG5000\l.kor\XG5000Help_kor.pdf` 8장(PDF 315–322쪽)은 `현재 창`, 디바이스
+  종류/행 범위 필터, `다음 찾기`의 일치 셀 선택, `모두 찾기` 결과 선택 후 Enter로 해당
+  프로그램 행 이동을 설명한다. `찾아가기 → 스텝`도 PDF 251쪽에 있다. 따라서 과거의
+  “LD Find/Go To 기능이 없다”는 조사는 틀렸다. 명령 존재는 확인했지만 자동화 구현 및
+  현재 버전의 실제 UI 동작 확인은 아직 하지 않았다.
 
 ## 반복하지 말아야 할 것
 
