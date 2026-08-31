@@ -91,16 +91,17 @@ Host `2a4f807`의 canonical compiler와 실제 Agent readiness → artifact 도�
 whole-byte write에서 입력과 출력을 분리하기 위한 test fixture이며 START M0000/STOP_OK M0001과
 사용자의 기존 PLC 주소를 변경한 것이 아니다. `3167fc3`은 native-handoff fake attach에
 PID/HWND/path/hash-bound `process_create_time` proof를 보완해 lineage 4/4를 통과시켰고 production
-read-binding 검사를 약화하지 않는다. CLI runtime의 role-specific internal simulation 수정은 별도
-진행 중이며 완료 또는 실제 검증을 주장하지 않는다.
+read-binding 검사를 약화하지 않는다. role-specific internal simulation의 구현·회귀 결과는
+아래에 구분하며 실제 XG-SIM 성공을 대신하지 않는다.
 
 - 별도 fake-bridge simulation 역할 검증에서 MCP `fa20d0a`와 Host `cb3540d`는 safe contact-only
   internal-M stimulus를 지원했다. sealed feedback은 `OFF → ON → released-held → STOP off`를
   검증했고 stimulus write는 M byte 0만, output M byte 2는 쓰지 않았다. 같은 byte write나 direct
   output forcing은 계속 거부한다. MCP targeted 43건, Host targeted 22건, 추가 Agent 24건과
   F/E9/I lint가 통과했다(`9f5e45d`는 formatting-only). 이는 fake bridge 증거이며 실제 XG-SIM
-  실행이나 사용자 approval 결과가 아니다. `ReviewedSimulationStimuli` wire rename에 따른
-  native_find_resources TypeScript/Web 계약 동기화와 build는 진행 중이므로 완료로 주장하지 않는다.
+  실행이나 사용자 approval 결과가 아니다. Platform `820291e`는
+  `onlyReviewedSimulationStimuli`에 TypeScript 계약과 Web 검사를 일치시켰다. contracts build/typecheck,
+  Web typecheck/production build도 통과했지만 실제 PWA 화면 acceptance는 수행하지 않았다.
 
 정상 Host restart는 ready/UAC 없음으로 끝났다. 기존 conversation
 `6bb8a0a4-cf45-4e18-b402-d4b732216723`의 run
@@ -124,8 +125,8 @@ model → stored product artifact → compiler 경로의 증거다. model source
 START/STOP을 `digital_input`, RUN을 `digital_output`으로 typed 했다. 이는 native XG5000
 create/build/save/reopen/simulation 또는 PLC write/new file write의 성공은 아니다. native create는
 현재 plan의 human review와 global quarantined test transaction의 restore approval을 여전히
-필요로 하며, 후자 async 질문은 사용자 응답을 기다린다. CLI runtime의 role-specific internal
-simulation 수정도 별도 진행 중이다. SSH 정보나 UAC 재요청은 하지 않았고 기존 LD operand 위치
+필요로 하며, 후자 async 질문은 사용자 응답을 기다린다. simulation 지원 수정은 커밋됐으며
+실기 적용 전에는 변경된 Host/MCP 런타임을 함께 반영해야 한다. SSH 정보나 UAC 재요청은 하지 않았고 기존 LD operand 위치
 선택의 scroll 단위도 아직 실증되지 않았다. Native Find 리소스 ID만으로 중복 피연산자 중 정확한
 occurrence를 선택한다고 가정하거나 임의 좌표 식으로 바꾸지 않는다. 보호된 기존 working copy,
 격리 transaction과 file quarantine은 변경하지 않았다.
