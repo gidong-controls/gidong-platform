@@ -1,12 +1,17 @@
 # GIDONG 제품 아키텍처
 
 최종 갱신: 2026-08-31
-결정 상태: three-repository 논리·물리 경계는 로컬에서 완료됐다. production
-release와 실제 PLC online 기능은 별도 evidence gate가 남아 있다.
+결정 상태: Platform·Agent·MCP는 세 core service 경계다. 별도 vendor CLI repository가
+이관된 XG5000 명령의 결정적 process/JSON 경계를 제공한다. 그러나 CLI의 native backend
+source ownership 추출과 release independence는 아직 완료가 아니라 deferred 상태다.
+production release와 실제 PLC online 기능은 별도 evidence gate가 남아 있다.
 
 제품 기능·안전·출시 범위는 [루트 PRD](../PRD.md)가 우선한다. 이 문서는 공개
 Platform과 비공개 Agent/PLC MCP가 결합되는 실행 책임을 고정하며, 실제 PLC
-online 기능을 완료로 선언하지 않는다.
+online 기능을 완료로 선언하지 않는다. 이 문서와 다른 오래된 설계·상태 문서는 작성
+시점의 기록이다. 구현 상태는 현재 source/runtime evidence를 기준으로 확인하되,
+그 evidence가 아직 구현되지 않은 기능을 제품 요구 범위에서 제외하는 근거는 아니다.
+최신 사용자 요구는 오래된 PRD·설계의 요구보다 우선한다.
 
 ## 확정 구조
 
@@ -23,7 +28,7 @@ online 기능을 완료로 선언하지 않는다.
        Pydantic AI / model / RAG       vendor action / operation journal
        proposal only                   precondition / readback / rollback
                                                        │
-                     migrated vendor commands → separate deterministic vendor CLI
+            migrated vendor commands → separate deterministic vendor CLI repository
                                                        │
                                               XG5000 adapter / UI API
 ```
@@ -33,12 +38,15 @@ Platform은 Agent와 MCP child process를 시작·health check·종료하고, �
 Agent prompt/model credential/user conversation을 갖지 않는다.
 
 MCP가 vendor command를 CLI로 위임한 경로의 실행 사슬은
-`Agent → Platform/ExecutionBroker → MCP adapter → separate CLI → XG5000 adapter`다.
+`Agent → Platform Host/ExecutionBroker → MCP adapter → separate CLI → XG5000`다.
 Agent는 CLI를 직접 호출하지 않고 여전히 MCP tool action만 제안한다. separate CLI는
 모델 권한 경계가 아니라 독립적·결정적인 vendor adapter/API transport 경계다. 따라서
 vendor별 process·JSON request/receipt·timeout을 MCP protocol과 분리할 수 있다. 아직
 모든 MCP vendor route가 CLI로 이관된 것은 아니며, 이관되지 않은 route의 책임·검증
-경계도 MCP에 남는다.
+경계도 MCP에 남는다. CLI base package의 `instances` vendor closure는 독립 실행되지만,
+나머지 legacy-native 명령은 현재 선택적 `legacy-core` extra를 통해 MCP가 소유한
+`xg5000_control`을 import한다. 따라서 process/JSON 위임은 구현되어도 native backend
+전체의 물리적 추출 완료를 뜻하지 않는다.
 
 ## 컴포넌트 책임
 
@@ -47,6 +55,7 @@ vendor별 process·JSON request/receipt·timeout을 MCP protocol과 분리할 �
 | `gidong-platform` (public) | Launcher, UI, HTTP/SSE, 사용자 원본·workspace/working copy, conversation/run/approval/audit, Agent/MCP supervision, `ExecutionBroker`, 공개 schemas/SDK | Pydantic AI prompt/retrieval ranking, vendor UI/native payload 구현, MCP operation journal의 execution truth |
 | `gidong-agent` (private) | Pydantic AI sidecar, model adapter, prompt·structured output, analysis/planning, disposable RAG index/ranking/evaluation, `ExternalToolRequest` proposal | MCP 연결/PID/HWND/target raw identity, approval secret, 실제 apply/save/online/rollback, 원본 문서의 authority |
 | `gidong-plc-mcp` (private) | MCP Product Contract 구현, vendor adapter, target/precondition 재검증, operation lock/journal, apply/check/readback/rollback/reconciliation | Agent/model, Platform UI/HTTP, 사용자 전체 대화·원본 문서 authority |
+| `controlstudio-xg5000-cli` (separate vendor repository) | 이관된 명령의 deterministic subprocess/JSON request-result boundary, vendor-specific receipt 반환, base `instances` closure | Agent/Platform approval·audit authority, MCP target/precondition 재검증·operation journal, 아직 MCP 소유 `xg5000_control`에 남은 legacy-native backend 전체 |
 
 세부 ownership과 데이터 흐름은
 [RESPONSIBILITY_AND_DATA_OWNERSHIP.md](refactor/RESPONSIBILITY_AND_DATA_OWNERSHIP.md)를
@@ -104,10 +113,12 @@ reconciliation의 기준이다.
 
 ## 패키징·실기 범위
 
-공식 Platform/Agent/MCP는 각각 독립 artifact로 빌드한다. BOM은 세 artifact의
-version, SHA-256, 여섯 contract version과 signature metadata를 정확히 결속하며,
-Launcher는 이 값이 맞는 artifact만 시작한다. unsigned/development HMAC artifact는
-production 배포물이 아니다.
+공식 Platform/Agent/MCP는 세 core service artifact로 각각 빌드한다. 별도 vendor CLI
+repository는 이관된 명령에 독립 executable/process 경계를 제공하지만, 아직 모든 native
+backend의 독립 artifact·release lifecycle을 의미하지는 않는다. BOM은 적용되는 core
+artifact와 CLI artifact의 version, SHA-256, contract version, signature metadata를
+정확히 결속하며 Launcher는 이 값이 맞는 artifact만 시작한다. unsigned/development
+HMAC artifact는 production 배포물이 아니다.
 
 실제 XG5000·XG-SIM·controller 작업은 현재 target identity, capability, operation
 journal과 native readback이 모두 갖춰진 경로만 연다. PLC write, force, mode change,
