@@ -15,6 +15,8 @@ from fastapi.testclient import TestClient
 
 from controlstudio_host.agent_runtime import (
     MAX_ENGINEERING_AUTONOMOUS_CYCLES,
+    AgentOutputContractDiagnostic,
+    AgentOutputContractError,
     AgentRunOutput,
 )
 from controlstudio_host.api_models import (
@@ -496,10 +498,12 @@ class _MissionScenario:
         invalid_after_proposal: bool = False,
         terminal_failures_before_checkpoint: int = 0,
         capture_mne_planner_only: bool = False,
+        fail_engineering_analysis_output: bool = False,
     ) -> None:
         self.invalid_after_proposal = invalid_after_proposal
         self.terminal_failures_before_checkpoint = terminal_failures_before_checkpoint
         self.capture_mne_planner_only = capture_mne_planner_only
+        self.fail_engineering_analysis_output = fail_engineering_analysis_output
         self.store: HostStore | None = None
         self.workspace: dict[str, Any] | None = None
         self.runtime_calls = 0
@@ -560,6 +564,17 @@ class _ScenarioRuntime:
     async def run(self, **kwargs: Any) -> AgentRunOutput:
         self.scenario.runtime_calls += 1
         call_number = self.scenario.runtime_calls
+        if self.scenario.fail_engineering_analysis_output:
+            raise AgentOutputContractError(
+                "fixture engineering-analysis output rejected",
+                diagnostic=AgentOutputContractDiagnostic(
+                    stage="engineering_analysis",
+                    exception_kind="model_retry",
+                    reason_code="validator_rejected",
+                    validator_code="analysis_contract",
+                    validation_errors=(),
+                ),
+            )
         trusted_context = kwargs["trusted_context"]
         self.scenario.mne_planner_available.append(
             trusted_context.get("mne_change_planner_available") is True
@@ -1725,6 +1740,44 @@ class EngineeringChangeMissionVerticalTests(unittest.TestCase):
             self.assertEqual(
                 transactions[0].state,
                 ChangeTransactionState.PENDING_APPROVAL,
+            )
+
+    def test_engineering_analysis_output_failure_keeps_tool_history_wording(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="controlstudio-engineering-analysis-output-") as temporary:
+            root = Path(temporary)
+            config = self._config(root)
+            workspace = _workspace(root)
+            store = HostStore(config.database_path)
+            store.set_host_state("active_workspace", workspace)
+            scenario = _MissionScenario(fail_engineering_analysis_output=True)
+            app, mcp = self._app(
+                config=config,
+                store=store,
+                workspace=workspace,
+                scenario=scenario,
+            )
+
+            with TestClient(app, base_url="http://localhost:8765") as client:
+                _authenticate(client, config)
+                _wait_for_workspace_binding(mcp)
+                _attach_workspace(client, workspace)
+                conversation_id = self._create_conversation(client)
+                run_id = self._start_mission(
+                    client,
+                    conversation_id,
+                    operation_id="engineering-analysis-output-failure",
+                )
+                failed = _wait_for_run(store, run_id)
+
+            self.assertEqual(failed.state, RunState.FAILED)
+            self.assertEqual(failed.error_code, "agent_output_contract")
+            conversation = store.get_conversation(conversation_id)
+            self.assertIsNotNone(conversation)
+            assert conversation is not None
+            self.assertEqual(
+                conversation.messages[-1].content,
+                "분석 응답을 완료하지 못했습니다. 확인된 도구 실행 결과는 "
+                "실행 기록에 남아 있습니다.",
             )
 
     def test_ready_ld_proposal_rejects_retained_hardware_hash_mismatch(self) -> None:

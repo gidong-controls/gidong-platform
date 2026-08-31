@@ -9270,6 +9270,14 @@ def create_app(
                         "다만 최종 응답의 근거·안전 출력 계약 처리에는 실패했습니다. "
                         "이 상태는 실제 변경이 실행되었거나 성공했음을 뜻하지 않습니다."
                     )
+                elif (
+                    diagnostic is not None
+                    and diagnostic.stage == "engineering_analysis"
+                ):
+                    user_message = (
+                        "분석 응답을 완료하지 못했습니다. 확인된 도구 실행 결과는 "
+                        "실행 기록에 남아 있습니다."
+                    )
                 else:
                     user_message = (
                         "모델 응답이 ControlStudio의 근거·안전 출력 계약을 충족하지 "
