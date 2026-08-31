@@ -5,6 +5,10 @@ import { hostApi, HostApiError } from "./api/client";
 import { isChangeTransaction } from "./api/changeContracts";
 import { ControlStudioEventStream } from "./api/sse";
 import {
+  agentProgressDetail,
+  prependCoalescedActivity,
+} from "./activityProgress";
+import {
   appendStreamingDraft,
   clearStreamingDraftForRun,
   type StreamingDraft,
@@ -269,6 +273,7 @@ interface ActivityItem {
   finishedAt?: string;
   evidenceId?: string;
   diagnostic?: string;
+  coalesceKey?: string;
 }
 
 const TOOL_STATE_COPY = {
@@ -1441,6 +1446,13 @@ function App() {
             : event.eventType === "tool.failed"
               ? "failed"
               : undefined;
+      const progressStage =
+        event.eventType === "agent.progress" && typeof event.payload.stage === "string"
+          ? event.payload.stage
+          : undefined;
+      const coalesceKey = progressStage
+        ? `${event.runId ?? "agent"}\u0000${progressStage}`
+        : undefined;
       setActivities((current) => {
         const existing =
           toolState && correlationId
@@ -1449,6 +1461,8 @@ function App() {
                   item.runId === event.runId &&
                   (item.toolCallId ?? item.requestId) === correlationId,
               )
+            : coalesceKey
+              ? current.find((item) => item.coalesceKey === coalesceKey)
             : undefined;
         const next: ActivityItem = {
           id: existing?.id ?? event.eventId,
@@ -1490,19 +1504,19 @@ function App() {
           ]
             .filter((value): value is string => value !== null)
             .join(" · ") || undefined,
+          coalesceKey,
         };
-        return [
-          next,
-          ...current.filter(
+        return prependCoalescedActivity(
+          current.filter(
             (item) =>
-              item.id !== next.id &&
               !(
                 toolCallId &&
                 item.runId === event.runId &&
                 item.toolCallId === toolCallId
               ),
           ),
-        ].slice(0, 50);
+          next,
+        ).slice(0, 50);
       });
     },
     [],
@@ -1562,7 +1576,11 @@ function App() {
         if (typeof stage === "string") {
           const label = AGENT_PROGRESS_COPY[stage];
           if (label) {
-            addActivity(event, label, event.runId ?? "agent");
+            addActivity(
+              event,
+              label,
+              agentProgressDetail(event.runId ?? "agent", event.payload.elapsedSeconds),
+            );
           }
         }
         return;
