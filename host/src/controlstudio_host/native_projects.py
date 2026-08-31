@@ -2609,6 +2609,21 @@ class NativeProjectRepository:
             )
             return cursor.rowcount == 1
 
+    def begin_resume(self, operation_id: str) -> bool:
+        """Claim one quarantined post-create operation for its verification tail."""
+
+        timestamp = _utc_text(_utc_now())
+        with self._connection() as connection, connection:
+            cursor = connection.execute(
+                """
+                UPDATE native_project_operations
+                SET state = 'EXECUTING', updated_at = ?
+                WHERE id = ? AND state = 'QUARANTINED' AND plan_digest IS NOT NULL
+                """,
+                (timestamp, operation_id),
+            )
+            return cursor.rowcount == 1
+
     def checkpoint_execution(
         self,
         operation_id: str,
@@ -3472,11 +3487,29 @@ class NativeProjectService:
                 raise
             return operation, created
 
+        return await self._complete_verified_native_tail(
+            canonical,
+            build_bundle=build_bundle,
+            result=result,
+            created=created,
+            resume=False,
+        )
+
+    async def _complete_verified_native_tail(
+        self,
+        spec: NativeProjectSpec,
+        *,
+        build_bundle: dict[str, Any],
+        result: dict[str, Any],
+        created: bool,
+        resume: bool,
+    ) -> tuple[NativeProjectOperation, bool]:
         post_create_stage = "workspace_capture"
         try:
-            self._repository.checkpoint_execution(canonical.operation_id, result)
+            post_create_stage = "operation_commit"
+            self._repository.checkpoint_execution(spec.operation_id, result)
             workspace_provenance = _new_build_workspace_provenance(
-                native_project_id=canonical.operation_id,
+                native_project_id=spec.operation_id,
                 build_bundle=build_bundle,
                 build_receipt=result["buildBundleReceipt"],
                 project_sha256=result["projectSha256"],
@@ -3487,17 +3520,17 @@ class NativeProjectService:
                 provenance=workspace_provenance,
             )
             result["workspaceRegistration"] = registration
-            self._repository.checkpoint_execution(canonical.operation_id, result)
+            self._repository.checkpoint_execution(spec.operation_id, result)
             post_create_stage = "independent_reopen"
             reopen_verification = await self._verify_fresh_process_reopen(
-                source_pid=canonical.xg5000_pid,
+                source_pid=spec.xg5000_pid,
                 registration=registration,
                 build_bundle=build_bundle,
             )
             result["reopenVerification"] = reopen_verification
-            self._repository.checkpoint_execution(canonical.operation_id, result)
+            self._repository.checkpoint_execution(spec.operation_id, result)
             simulation_trial_id = _native_simulation_trial_id(
-                canonical.operation_id,
+                spec.operation_id,
                 str(build_bundle["bundleId"]),
             )
             post_create_stage = "simulation_verification"
@@ -3507,7 +3540,7 @@ class NativeProjectService:
                 trial_id=simulation_trial_id,
             )
             result["simulationVerification"] = simulation_verification
-            self._repository.checkpoint_execution(canonical.operation_id, result)
+            self._repository.checkpoint_execution(spec.operation_id, result)
             simulation_trial = simulation_verification.get("trial")
             result["engineeredProgramReady"] = (
                 reopen_verification.get("state") == "verified"
@@ -3541,31 +3574,150 @@ class NativeProjectService:
                 else "The created source artifact was captured, but independent "
                 "fresh-process readback did not complete."
             )
-            post_create_stage = "operation_commit"
-            self._repository.checkpoint_execution(canonical.operation_id, result)
-            operation = self._repository.complete(canonical.operation_id, result)
-            return operation, created
+            self._repository.checkpoint_execution(spec.operation_id, result)
+            return self._repository.complete(spec.operation_id, result), created
         except BaseException as exc:
-            # The native create receipt above already proved that a project may now
-            # exist.  Any later failure is therefore an uncertain post-create
-            # outcome, never an indefinitely EXECUTING operation and never a safe
-            # automatic retry.  Preserve every validated receipt collected so far
-            # so reconciliation can reason from the exact partial result.
             result["engineeredProgramReady"] = False
             result["workspaceBound"] = False
             result["workspaceBindingReason"] = (
-                "Native project creation completed, but post-create verification "
+                "Verified native resume completed, but post-create verification "
+                f"stopped during {post_create_stage}; explicit reconciliation is required."
+                if resume
+                else "Native project creation completed, but post-create verification "
                 f"stopped during {post_create_stage}; explicit reconciliation is required."
             )
             operation = self._repository.quarantine(
-                canonical.operation_id,
-                error_code="NATIVE_PROJECT_POST_CREATE_VERIFICATION_UNCERTAIN",
+                spec.operation_id,
+                error_code=(
+                    "NATIVE_PROJECT_RESUME_POST_CREATE_VERIFICATION_UNCERTAIN"
+                    if resume
+                    else "NATIVE_PROJECT_POST_CREATE_VERIFICATION_UNCERTAIN"
+                ),
                 error_detail=f"{post_create_stage}: {exc}",
                 result=result,
             )
             if not isinstance(exc, Exception):
                 raise
             return operation, created
+
+    async def resume(
+        self,
+        operation_id: str,
+        *,
+        actor_id: str,
+        pid: int,
+        hwnd: int,
+        expected_request_digest: str,
+    ) -> NativeProjectOperation:
+        """Resume only post-dialog verification for one quarantined native create."""
+
+        operation = self._repository.get(operation_id)
+        if operation is None or operation.state != "QUARANTINED":
+            raise NativeProjectConflict("only a quarantined native project can be resumed")
+        if operation.request_digest != expected_request_digest:
+            raise NativeProjectConflict("native project resume request is stale")
+        request = operation.request
+        if pid != request.get("xg5000Pid") or hwnd != request.get("xg5000Hwnd"):
+            raise NativeProjectConflict("native project resume PID/HWND differs from the stored request")
+        build_bundle = request.get("buildBundle")
+        if not isinstance(build_bundle, dict) or not isinstance(operation.plan_digest, str):
+            raise NativeProjectConflict("native project resume has no stored reviewed build binding")
+        try:
+            destination = Path(operation.destination_directory).resolve()
+            spec = NativeProjectSpec(
+                operation_id=operation.operation_id,
+                project_name=str(request["projectName"]),
+                workspace_parent=Path(str(request["workspaceParent"])),
+                plc_series=str(request["plcSeries"]),
+                cpu_model=str(request["cpuModel"]),
+                program_name=str(request["programName"]),
+                language=str(request["language"]),
+                description=str(request["description"]),
+                xg5000_pid=pid,
+                xg5000_hwnd=hwnd,
+            )
+            expected_path = (destination / f"{spec.project_name}.xgwx").resolve()
+            native_request = _NativeProjectRequest(
+                project_name=spec.project_name,
+                destination_directory=destination,
+                plc_series=spec.plc_series,
+                cpu_type=spec.cpu_model,
+                program_name=spec.program_name,
+                program_language=spec.language,
+                description=_native_bundle_description(build_bundle),
+            )
+            recomputed_plan = _native_project_plan_digest(
+                native_request,
+                pid=pid,
+                hwnd=hwnd,
+                build_bundle=build_bundle,
+            )
+        except (KeyError, TypeError, ValueError, OSError) as exc:
+            raise NativeProjectConflict("stored native project resume binding is invalid") from exc
+        if recomputed_plan != operation.plan_digest:
+            raise NativeProjectConflict("stored native project plan digest is stale")
+        await self._verify_exact_instance(spec)
+        if not self._repository.begin_resume(operation_id):
+            raise NativeProjectConflict("native project changed before resume")
+        try:
+            authorization = self._authorization(
+                actor_id=actor_id,
+                plan_digest=operation.plan_digest,
+                build_bundle_id=str(build_bundle.get("bundleId") or ""),
+                allowed_operation="project.resume_native",
+            )
+            raw = await self._gateway.call_workspace_tool(
+                "project.resume_native",
+                {
+                    "pid": pid,
+                    "hwnd": hwnd,
+                    "destination_directory": str(destination),
+                    "project_name": spec.project_name,
+                    "plc_series": spec.plc_series,
+                    "cpu_type": spec.cpu_model,
+                    "program_name": spec.program_name,
+                    "program_language": spec.language,
+                    "description": _native_bundle_description(build_bundle),
+                    "build_bundle": build_bundle,
+                    "authorization": authorization,
+                    "timeout_seconds": 60.0,
+                },
+            )
+            result = self._validate_resume_result(
+                raw,
+                spec=spec,
+                destination=destination,
+                expected_path=expected_path,
+                plan_digest=operation.plan_digest,
+                authorization=authorization,
+                build_bundle=build_bundle,
+                prior_result=operation.result,
+            )
+        except BaseException as exc:
+            preserved = dict(operation.result)
+            preserved["resumeProvenance"] = {
+                "lifecycleMode": "resume_existing_verified_source",
+                "resumeAttempted": True,
+                "noNewDialog": True,
+                "noIlInsert": True,
+            }
+            resumed = self._repository.quarantine(
+                operation_id,
+                error_code="NATIVE_PROJECT_RESUME_REJECTED",
+                error_detail=str(exc) or type(exc).__name__,
+                result=preserved,
+            )
+            if not isinstance(exc, Exception):
+                raise
+            return resumed
+        resumed, _ = await self._complete_verified_native_tail(
+            spec,
+            build_bundle=build_bundle,
+            result=result,
+            created=False,
+            resume=True,
+        )
+        return resumed
 
     async def reconcile(
         self,
@@ -4265,6 +4417,7 @@ class NativeProjectService:
         actor_id: str,
         plan_digest: str,
         build_bundle_id: str,
+        allowed_operation: str = "project.create_native",
     ) -> dict[str, Any]:
         issued_at = _utc_now()
         claims = {
@@ -4274,7 +4427,7 @@ class NativeProjectService:
             "plan_digest": plan_digest,
             "build_bundle_id": build_bundle_id,
             "capability": "workspace_write",
-            "allowed_operation": "project.create_native",
+            "allowed_operation": allowed_operation,
             "issued_at": issued_at.isoformat(timespec="milliseconds"),
             "expires_at": (issued_at + timedelta(minutes=2)).isoformat(timespec="milliseconds"),
             "nonce": str(uuid.uuid4()),
@@ -4513,6 +4666,175 @@ class NativeProjectService:
             "controllerConnected": False,
             "plcWritePerformed": False,
             "identityEvidence": identity,
+        }
+
+    @staticmethod
+    def _validate_resume_result(
+        raw: Any,
+        *,
+        spec: NativeProjectSpec,
+        destination: Path,
+        expected_path: Path,
+        plan_digest: str,
+        authorization: dict[str, Any],
+        build_bundle: dict[str, Any],
+        prior_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Accept only a proof of the already-present reviewed source, never insertion."""
+
+        if not isinstance(raw, dict) or (
+            raw.get("ok") is not True
+            or raw.get("verified") is not True
+            or raw.get("operation") != "project.resume_native"
+            or raw.get("pid") != spec.xg5000_pid
+            or raw.get("hwnd") != spec.xg5000_hwnd
+            or raw.get("plan_digest") != plan_digest
+            or raw.get("controller_connected") is not False
+            or raw.get("plc_write_performed") is not False
+        ):
+            raise NativeProjectEvidenceError("MCP did not verify the exact native resume")
+        provenance = raw.get("resume_provenance")
+        if not isinstance(provenance, dict) or (
+            provenance.get("mode") != "observed_existing_project"
+            or provenance.get("lifecycle_mode") != "resume_existing_verified_source"
+            or provenance.get("no_new_dialog") is not True
+            or provenance.get("no_il_insert") is not True
+            or not isinstance(provenance.get("observed_program_id"), str)
+            or not provenance["observed_program_id"]
+            or provenance.get("observed_program_name") != spec.program_name
+        ):
+            raise NativeProjectEvidenceError("native resume did not prove no dialog or IL insertion")
+        approval = raw.get("authorization")
+        if (
+            not isinstance(approval, dict)
+            or approval.get("authorization_id") != authorization.get("authorization_id")
+            or approval.get("nonce") != authorization.get("nonce")
+            or approval.get("actor_id") != authorization.get("actor_id")
+            or approval.get("plan_digest") != plan_digest
+            or approval.get("build_bundle_id") != build_bundle.get("bundleId")
+            or approval.get("signature_verified") is not True
+            or approval.get("consumed") is not True
+        ):
+            raise NativeProjectEvidenceError("native resume authorization was not exactly consumed")
+        try:
+            project_path = Path(str(raw.get("project_path") or "")).resolve()
+            actual_hash = _sha256_file(project_path)
+            actual_size = project_path.stat().st_size
+        except OSError as exc:
+            raise NativeProjectEvidenceError("native resume project artifact is unreadable") from exc
+        if (
+            _canonical_path(project_path) != _canonical_path(expected_path)
+            or not project_path.is_file()
+            or project_path.is_symlink()
+            or raw.get("project_sha256") != actual_hash
+            or raw.get("project_size") != actual_size
+            or actual_size <= 0
+        ):
+            raise NativeProjectEvidenceError("native resume project artifact differs from the stored path")
+        compiled = build_bundle.get("compiledProgram")
+        reviewed = build_bundle.get("reviewedPlan")
+        program_apply = raw.get("program_apply")
+        expected_lines = compiled.get("source", "").splitlines() if isinstance(compiled, dict) else []
+        if not isinstance(compiled, dict) or not isinstance(reviewed, dict) or not isinstance(program_apply, dict):
+            raise NativeProjectEvidenceError("native resume has no reviewed build or program proof")
+        ld_roundtrip = program_apply.get("ld_roundtrip")
+        program_check = program_apply.get("program_check")
+        program_check_receipt = raw.get("program_check_receipt")
+        program_check_data = (
+            program_check_receipt.get("data")
+            if isinstance(program_check_receipt, dict)
+            else None
+        )
+        save = program_apply.get("save")
+        if (
+            program_apply.get("status") != "APPLIED_VERIFIED"
+            or program_apply.get("source_sha256") != compiled.get("sourceSha256")
+            or program_apply.get("rung_ids") != compiled.get("rungIds")
+            or program_apply.get("ladder_ir_sha256") != compiled.get("ladderIrSha256")
+            or program_apply.get("exact_instruction_readback") != expected_lines
+            or not isinstance(ld_roundtrip, dict)
+            or ld_roundtrip.get("roundtrip_il") != expected_lines
+            or ld_roundtrip.get("final_view") != "LD"
+            or not isinstance(program_check, dict)
+            or program_check.get("status") != "passed"
+            or program_check.get("error_count") != 0
+            or not isinstance(program_check_receipt, dict)
+            or program_check_receipt.get("ok") is not True
+            or program_check_receipt.get("verified") is not True
+            or program_check_receipt.get("operation") != "program.check_ld"
+            or program_check_receipt.get("pid") != spec.xg5000_pid
+            or program_check_receipt.get("hwnd") != spec.xg5000_hwnd
+            or not isinstance(program_check_data, dict)
+            or program_check_data.get("status") != "passed"
+            or program_check_data.get("error_count") != 0
+            or program_check != {
+                "status": program_check_data.get("status"),
+                "error_count": program_check_data.get("error_count"),
+                "program_id": program_check_data.get("program_id"),
+                "program_name": program_check_data.get("program_name"),
+            }
+            or not isinstance(save, dict)
+            or save.get("hash_after") != actual_hash
+            or program_apply.get("saved_project_sha256") != actual_hash
+        ):
+            raise NativeProjectEvidenceError("native resume did not prove complete LD, Program Check, and save")
+        receipt = raw.get("build_bundle_receipt")
+        expected_receipt = {
+            "schemaVersion": NATIVE_BUILD_BUNDLE_RECEIPT_SCHEMA,
+            "bundleId": build_bundle.get("bundleId"),
+            "phase": NATIVE_BUILD_BUNDLE_PHASE,
+            "status": "APPLIED_VERIFIED",
+            "reviewedPlanDigest": reviewed.get("planDigest"),
+            "nativeReadback": {
+                "projectName": spec.project_name,
+                "projectPath": str(project_path),
+                "projectSha256": actual_hash,
+                "projectSize": actual_size,
+                "destinationDirectory": str(destination),
+                "plcSeries": spec.plc_series,
+                "cpuModel": spec.cpu_model,
+                "programName": spec.program_name,
+                "language": spec.language,
+                "description": _native_bundle_description(build_bundle),
+                "identityVerified": True,
+            },
+            "programReadback": {
+                "rungCount": len(compiled.get("rungIds", [])),
+                "rungIds": compiled.get("rungIds"),
+                "ladderIrSha256": compiled.get("ladderIrSha256"),
+                "sourceSha256": compiled.get("sourceSha256"),
+                "exactInstructionReadback": expected_lines,
+                "finalView": "LD",
+                "programCheckPassed": True,
+                "savedProjectSha256": actual_hash,
+            },
+        }
+        if receipt != expected_receipt:
+            raise NativeProjectEvidenceError("native resume receipt does not match the reviewed build")
+        return {
+            **dict(prior_result),
+            "identityVerified": True,
+            "operation": "project.resume_native",
+            "xg5000Pid": spec.xg5000_pid,
+            "xg5000Hwnd": spec.xg5000_hwnd,
+            "projectPath": str(project_path),
+            "projectSha256": actual_hash,
+            "projectSize": actual_size,
+            "destinationDirectory": str(destination),
+            "planDigest": plan_digest,
+            "buildBundleId": build_bundle.get("bundleId"),
+            "reviewedPlanDigest": reviewed.get("planDigest"),
+            "buildBundleReceipt": receipt,
+            "controllerConnected": False,
+            "plcWritePerformed": False,
+            "resumeProvenance": {
+                "lifecycleMode": "resume_existing_verified_source",
+                "mode": "observed_existing_project",
+                "resumeAttempted": True,
+                "noNewDialog": True,
+                "noIlInsert": True,
+                "mcp": provenance,
+            },
         }
 
     async def _capture_workspace(

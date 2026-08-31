@@ -133,6 +133,7 @@ from .api_models import (
     NativeProjectCreatedV1,
     NativeProjectOperationV1,
     NativeProjectReconciliationV1,
+    NativeProjectResumedV1,
     NativeSimulationTrialDecisionRequestV1,
     NativeSimulationTrialDecisionV1,
     NewBuildWorkspaceProvenanceV1,
@@ -149,6 +150,7 @@ from .api_models import (
     ReadLSControllerRequestV1,
     ReconcileChangeTransactionRequestV1,
     ReconcileNativeProjectRequestV1,
+    ResumeNativeProjectRequestV1,
     ResumeLocalWorkspaceRequestV1,
     ReviewedNoSaveCloseRequestV1,
     ReviewedNoSaveCloseResponseV1,
@@ -13745,6 +13747,125 @@ def create_app(
         return NativeProjectReconciliationV1(
             operation=_native_project_operation_v1(resolved),
             reconciled=resolved.state != "QUARANTINED",
+        )
+
+    @app.post(
+        "/api/v1/native-projects/{native_project_id}/resume",
+        response_model=NativeProjectResumedV1,
+    )
+    async def resume_native_project_v1(
+        native_project_id: str,
+        body: ResumeNativeProjectRequestV1,
+        request: Request,
+        _csrf: None = Depends(require_browser_csrf),
+        _run_guard: None = Depends(engineering_target_run_guard),
+    ) -> NativeProjectResumedV1:
+        nonlocal active_engineering_session, active_workspace
+        operation = native_project_repository.get(native_project_id)
+        if operation is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="native project operation not found")
+        if operation.state != "QUARANTINED":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="only a quarantined native project can be resumed")
+        holder_token = str(uuid.uuid4())
+        try:
+            store.acquire_target_operation_lease(
+                operation_id=operation.operation_id,
+                owner_kind="native_project_resume",
+                holder_token=holder_token,
+                target_identity=_native_project_target_lease_identity(operation),
+            )
+            resumed = await native_project_service.resume(
+                operation.operation_id,
+                actor_id=_request_actor_id(request),
+                pid=body.pid,
+                hwnd=body.hwnd,
+                expected_request_digest=body.expected_request_digest,
+            )
+        except (NativeProjectConflict, NativeProjectPreconditionError) as exc:
+            store.park_target_operation_lease(
+                operation_id=operation.operation_id,
+                holder_token=holder_token,
+                reason="native_project_resume_rejected",
+            )
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except TargetOperationLeaseConflict as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except BaseException:
+            store.park_target_operation_lease(
+                operation_id=operation.operation_id,
+                holder_token=holder_token,
+                reason="native_project_resume_interrupted",
+            )
+            raise
+        if _native_project_target_lease_must_remain(resumed):
+            store.park_target_operation_lease(
+                operation_id=operation.operation_id,
+                holder_token=holder_token,
+                reason="native_project_resume_requires_recovery",
+            )
+        else:
+            store.release_target_operation_lease(
+                operation_id=operation.operation_id,
+                holder_token=holder_token,
+                reason=f"native_project_resume_{resumed.state.casefold()}",
+            )
+        if resumed.state == "COMPLETED":
+            reopen = resumed.result.get("reopenVerification")
+            simulation = resumed.result.get("simulationVerification")
+            accepted_session = (
+                simulation.get("session")
+                if isinstance(simulation, dict)
+                else None
+            )
+            reopened_workspace = (
+                reopen.get("workspace")
+                if isinstance(reopen, dict)
+                else None
+            )
+            if (
+                isinstance(reopen, dict)
+                and reopen.get("state") == "verified"
+                and isinstance(simulation, dict)
+                and simulation.get("state") == "verified"
+                and isinstance(simulation.get("trial"), dict)
+                and simulation["trial"].get("state") == "ACCEPTED"
+                and isinstance(accepted_session, dict)
+                and isinstance(reopened_workspace, dict)
+            ):
+                workspace = _local_workspace_v1(reopened_workspace)
+                if (
+                    Path(str(accepted_session.get("project_path") or "")).resolve()
+                    == Path(workspace.working_copy.path).resolve()
+                    and str(accepted_session.get("project_hash") or "").casefold()
+                    == workspace.working_copy.current_sha256.casefold()
+                ):
+                    bind_engineering_session(accepted_session)
+                    active_workspace = workspace.model_dump(mode="json")
+                    store.set_host_state("active_workspace", active_workspace)
+                else:
+                    active_engineering_session = None
+                    execution_broker.clear_agent_session()
+            else:
+                active_engineering_session = None
+                execution_broker.clear_agent_session()
+        store.append_event(
+            event_type="native_project.resumed",
+            payload={
+                "nativeProjectId": resumed.id,
+                "operationId": resumed.operation_id,
+                "state": resumed.state.casefold(),
+                "lifecycleMode": resumed.result.get("resumeProvenance", {}).get("lifecycleMode")
+                if isinstance(resumed.result.get("resumeProvenance"), dict)
+                else None,
+            },
+        )
+        store.append_event(
+            event_type="host.status",
+            payload=current_status_v1().model_dump(mode="json", by_alias=True),
+        )
+        return NativeProjectResumedV1(
+            operation=_native_project_operation_v1(resumed),
+            resumed=resumed.state != "QUARANTINED",
         )
 
     @app.post(

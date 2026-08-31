@@ -3919,6 +3919,17 @@ class NativeProjectReconciliationV1(ApiModel):
     reconciled: bool
 
 
+class ResumeNativeProjectRequestV1(ApiModel):
+    pid: int = Field(gt=0)
+    hwnd: int = Field(gt=0)
+    expected_request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class NativeProjectResumedV1(ApiModel):
+    operation: NativeProjectOperationV1
+    resumed: bool
+
+
 class ConnectLSControllerRequestV1(ApiModel):
     host: str = Field(min_length=1, max_length=128)
     port: Literal[2004] = 2004
