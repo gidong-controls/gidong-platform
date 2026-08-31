@@ -4583,6 +4583,36 @@ class CloseIdleXG5000InstanceResponseV1(ApiModel):
     receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CloseIdleXG5000InstanceAttentionV1(ApiModel):
+    operation: Literal["xg5000.close_idle_instance"]
+    verified: Literal[False]
+    status: Literal["needs_attention"]
+    idle_binding: dict[str, Any]
+    close_action: Literal["wm_close"] | None
+    prompt_observed: bool
+    modal_observed: bool
+    attention_reason: Literal[
+        "owned_modal_before_close",
+        "owned_modal_after_close",
+        "close_timeout",
+    ]
+    no_save_prompt_clicked: Literal[False]
+    process_exited: Literal[False]
+    process_terminated: Literal[False]
+    receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_attention_outcome(self) -> CloseIdleXG5000InstanceAttentionV1:
+        expected = {
+            "owned_modal_before_close": (None, True, True),
+            "owned_modal_after_close": ("wm_close", True, True),
+            "close_timeout": ("wm_close", False, False),
+        }[self.attention_reason]
+        if (self.close_action, self.prompt_observed, self.modal_observed) != expected:
+            raise ValueError("idle-instance attention receipt has an invalid close outcome")
+        return self
+
+
 class KnowledgeSourceV1(ApiModel):
     source_id: str
     kind: KnowledgeKindV1

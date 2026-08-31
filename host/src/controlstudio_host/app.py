@@ -64,6 +64,7 @@ from .api_models import (
     ChangeTransactionV1,
     CloseIdleXG5000InstanceRequestV1,
     CloseIdleXG5000InstanceResponseV1,
+    CloseIdleXG5000InstanceAttentionV1,
     ConfirmKnowledgeMemoryRequestV1,
     ConnectLSControllerRequestV1,
     ControllerRestoreBeginRequestV1,
@@ -403,6 +404,34 @@ def _close_idle_xg5000_instance_response(
                 "close_action",
                 "prompt_observed",
                 "modal_observed",
+                "no_save_prompt_clicked",
+                "process_exited",
+                "process_terminated",
+            )
+        }
+        | {"receipt_digest": receipt_digest}
+    )
+
+
+def _close_idle_xg5000_instance_attention(
+    raw: dict[str, Any],
+    *,
+    receipt_digest: str,
+) -> CloseIdleXG5000InstanceAttentionV1:
+    """Project a bounded no-close result without treating it as a completion."""
+
+    return CloseIdleXG5000InstanceAttentionV1.model_validate(
+        {
+            field: raw.get(field)
+            for field in (
+                "operation",
+                "verified",
+                "status",
+                "idle_binding",
+                "close_action",
+                "prompt_observed",
+                "modal_observed",
+                "attention_reason",
                 "no_save_prompt_clicked",
                 "process_exited",
                 "process_terminated",
@@ -10572,11 +10601,20 @@ def create_app(
             raw = await mcp.call_workspace_tool("xg5000.close_idle_instance", arguments)
             if not isinstance(raw, dict):
                 raise TypeError("MCP idle-instance close receipt is not an object")
-            completed = _close_idle_xg5000_instance_response(
-                raw,
-                receipt_digest=_canonical_json_digest(raw),
-            )
-            binding = completed.idle_binding
+            receipt_digest = _canonical_json_digest(raw)
+            if raw.get("status") == "needs_attention":
+                outcome: CloseIdleXG5000InstanceResponseV1 | CloseIdleXG5000InstanceAttentionV1 = (
+                    _close_idle_xg5000_instance_attention(
+                        raw,
+                        receipt_digest=receipt_digest,
+                    )
+                )
+            else:
+                outcome = _close_idle_xg5000_instance_response(
+                    raw,
+                    receipt_digest=receipt_digest,
+                )
+            binding = outcome.idle_binding
             if (
                 binding.get("pid") != body.pid
                 or binding.get("hwnd") != body.hwnd
@@ -10588,6 +10626,41 @@ def create_app(
                 or not binding["executable"]
             ):
                 raise ValueError("MCP idle-instance close receipt binding does not match")
+            if isinstance(outcome, CloseIdleXG5000InstanceAttentionV1):
+                store.append_event(
+                    event_type="xg5000.idle_instance_close_needs_attention",
+                    conversation_id=transaction.conversation_id,
+                    run_id=transaction.run_id,
+                    payload={
+                        "actorId": _request_actor_id(request),
+                        "transactionId": transaction.id,
+                        "planDigest": transaction.plan_digest,
+                        "idleBinding": dict(binding),
+                        "receiptDigest": outcome.receipt_digest,
+                        "attentionReason": outcome.attention_reason,
+                        "closeAction": outcome.close_action,
+                        "promptObserved": outcome.prompt_observed,
+                        "modalObserved": outcome.modal_observed,
+                        "noSavePromptClicked": False,
+                        "processTerminated": False,
+                    },
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "idle_xg5000_needs_attention",
+                        "status": outcome.status,
+                        "attentionReason": outcome.attention_reason,
+                        "idleBinding": dict(binding),
+                        "closeAction": outcome.close_action,
+                        "promptObserved": outcome.prompt_observed,
+                        "modalObserved": outcome.modal_observed,
+                        "noSavePromptClicked": False,
+                        "processExited": False,
+                        "processTerminated": False,
+                    },
+                )
+            completed = outcome
             store.append_event(
                 event_type="xg5000.idle_instance_closed",
                 conversation_id=transaction.conversation_id,

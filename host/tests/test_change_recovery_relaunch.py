@@ -210,6 +210,7 @@ class _IdleCloseMCP:
     def __init__(self) -> None:
         self.status = MCPStatus(status="ready")
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.attention_reason: str | None = None
 
     async def start(self) -> MCPStatus:
         return self.status
@@ -237,25 +238,55 @@ class _IdleCloseMCP:
         self.calls.append((name, dict(arguments)))
         if name != "xg5000.close_idle_instance":
             raise AssertionError(f"unexpected workspace tool: {name}")
-        return {
+        result: dict[str, Any] = {
             "schema": "controlstudio-idle-xg5000-close-cli/v1",
             "operation": "xg5000.close_idle_instance",
-            "ok": True,
-            "verified": True,
-            "status": "closed",
             "idle_binding": {
                 "pid": 7024,
                 "hwnd": 67344,
                 "process_create_time": 123.0,
                 "executable": "C:/XG5000/XG5000.exe",
             },
-            "close_action": "wm_close",
-            "prompt_observed": False,
-            "modal_observed": False,
             "no_save_prompt_clicked": False,
-            "process_exited": True,
             "process_terminated": False,
         }
+        if self.attention_reason is None:
+            return {
+                **result,
+                "ok": True,
+                "verified": True,
+                "status": "closed",
+                "close_action": "wm_close",
+                "prompt_observed": False,
+                "modal_observed": False,
+                "attention_reason": None,
+                "process_exited": True,
+            }
+        if self.attention_reason == "owned_modal_after_close":
+            return {
+                **result,
+                "ok": False,
+                "verified": False,
+                "status": "needs_attention",
+                "close_action": "wm_close",
+                "prompt_observed": True,
+                "modal_observed": True,
+                "attention_reason": self.attention_reason,
+                "process_exited": False,
+            }
+        if self.attention_reason == "close_timeout":
+            return {
+                **result,
+                "ok": False,
+                "verified": False,
+                "status": "needs_attention",
+                "close_action": "wm_close",
+                "prompt_observed": False,
+                "modal_observed": False,
+                "attention_reason": self.attention_reason,
+                "process_exited": False,
+            }
+        raise AssertionError(f"unexpected attention reason: {self.attention_reason}")
 
 
 def _route_plan() -> dict[str, Any]:
@@ -366,23 +397,53 @@ class ChangeRecoveryRelaunchTests(unittest.IsolatedAsyncioTestCase):
                         "confirmIdleClose": True,
                     },
                 )
+                self.assertEqual(response.status_code, 200, response.text)
+                mcp.attention_reason = "owned_modal_after_close"
+                modal = client.post(
+                    f"/api/v1/change-transactions/{transaction.id}/close-idle-instance",
+                    headers={"X-ControlStudio-CSRF": bootstrap.json()["csrfToken"]},
+                    json={
+                        "expectedPlanDigest": transaction.plan_digest,
+                        "pid": 7024,
+                        "hwnd": 67344,
+                        "processCreateTime": 123.0,
+                        "confirmIdleClose": True,
+                    },
+                )
+                mcp.attention_reason = "close_timeout"
+                timed_out = client.post(
+                    f"/api/v1/change-transactions/{transaction.id}/close-idle-instance",
+                    headers={"X-ControlStudio-CSRF": bootstrap.json()["csrfToken"]},
+                    json={
+                        "expectedPlanDigest": transaction.plan_digest,
+                        "pid": 7024,
+                        "hwnd": 67344,
+                        "processCreateTime": 123.0,
+                        "confirmIdleClose": True,
+                    },
+                )
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.json()["status"], "closed")
+            self.assertEqual(modal.status_code, 409, modal.text)
+            self.assertEqual(timed_out.status_code, 409, timed_out.text)
             self.assertEqual(
-                mcp.calls,
-                [
-                    (
-                        "xg5000.close_idle_instance",
-                        {
-                            "pid": 7024,
-                            "hwnd": 67344,
-                            "process_create_time": 123.0,
-                            "confirm_idle_close": True,
-                            "timeout_seconds": 12,
-                        },
-                    )
-                ],
+                modal.json()["detail"]["attentionReason"],
+                "owned_modal_after_close",
             )
+            self.assertEqual(timed_out.json()["detail"]["attentionReason"], "close_timeout")
+            self.assertTrue(modal.json()["detail"]["modalObserved"])
+            self.assertFalse(timed_out.json()["detail"]["processExited"])
+            expected_call = (
+                "xg5000.close_idle_instance",
+                {
+                    "pid": 7024,
+                    "hwnd": 67344,
+                    "process_create_time": 123.0,
+                    "confirm_idle_close": True,
+                    "timeout_seconds": 12,
+                },
+            )
+            self.assertEqual(mcp.calls, [expected_call, expected_call, expected_call])
             self.assertEqual(
                 store.get_change_transaction(transaction.id).state,
                 ChangeTransactionState.QUARANTINED,
@@ -391,6 +452,15 @@ class ChangeRecoveryRelaunchTests(unittest.IsolatedAsyncioTestCase):
             events = store.list_events(limit=100)
             self.assertTrue(
                 any(event.event_type == "xg5000.idle_instance_closed" for event in events)
+            )
+            attention_events = [
+                event
+                for event in events
+                if event.event_type == "xg5000.idle_instance_close_needs_attention"
+            ]
+            self.assertEqual(
+                [event.payload["attentionReason"] for event in attention_events],
+                ["owned_modal_after_close", "close_timeout"],
             )
 
     def test_relaunch_contract_defaults_to_disabled(self) -> None:
