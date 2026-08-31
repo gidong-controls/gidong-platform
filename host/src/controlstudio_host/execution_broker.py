@@ -665,6 +665,24 @@ class MCPExecutionBroker:
             raise MCPToolError("Platform execution broker failed") from exc
         ExternalToolResultV1(request_id=request.request_id, tool_name=request.tool_name, status="completed")
         completed_payload = dict(event_payload)
+        if raw_name == "sim.target_status" and isinstance(result, Mapping):
+            target_status = result.get("target_status")
+            verified = result.get("verified")
+            classification = (
+                target_status.get("classification")
+                if isinstance(target_status, Mapping)
+                else None
+            )
+            if (
+                isinstance(target_status, Mapping)
+                and type(verified) is bool
+                and target_status.get("verified") is verified
+                and classification in {"SIMULATOR_TARGET", "NOT_SIMULATOR_TARGET"}
+            ):
+                completed_payload["simulator_target_status"] = {
+                    "verified": verified,
+                    "classification": classification,
+                }
         if evidence_contract is not None:
             completed_payload["evidence_contract"] = evidence_contract
         if evidence_context is not None:

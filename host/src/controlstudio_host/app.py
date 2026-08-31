@@ -893,6 +893,7 @@ def _agent_tool_evidence_ref(
     tool_call_id: str | None,
     evidence_contract: dict[str, Any] | None = None,
     evidence_context: dict[str, Any] | None = None,
+    simulator_target_status: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     canonical_tool_name = AGENT_TOOL_NAMES.get(tool_name, tool_name)
     definition = _AGENT_TOOL_EVIDENCE.get(canonical_tool_name)
@@ -919,6 +920,25 @@ def _agent_tool_evidence_ref(
     }
     if tool_call_id is not None:
         evidence["toolCallId"] = tool_call_id
+    if canonical_tool_name == "sim.target_status" and isinstance(
+        simulator_target_status, dict
+    ):
+        if simulator_target_status == {
+            "verified": True,
+            "classification": "SIMULATOR_TARGET",
+        }:
+            evidence["summary"] = (
+                "선택된 XG5000 상태 표시줄에서 XG-SIM 대상을 검증했습니다. "
+                "이 관찰은 읽기 전용입니다."
+            )
+        elif simulator_target_status == {
+            "verified": False,
+            "classification": "NOT_SIMULATOR_TARGET",
+        }:
+            evidence["summary"] = (
+                "선택된 XG5000 상태 표시줄을 읽었지만 XG-SIM 대상으로 검증되지는 "
+                "않았습니다. 이는 XG-SIM offline 판정이 아닙니다."
+            )
     receipt_schema = {
         "program.read_ld": "controlstudio-program-read-ld-evidence/v1",
         "project.hardware_context": "controlstudio-hardware-context-evidence/v1",
@@ -8582,6 +8602,11 @@ def create_app(
                     dict,
                 ):
                     raise ValueError("agent tool evidence context must be an object")
+                simulator_target_status = payload.get("simulator_target_status")
+                if simulator_target_status is not None and not isinstance(
+                    simulator_target_status, dict
+                ):
+                    raise ValueError("simulator target status must be an object")
                 store.append_event(
                     event_type=event_type,
                     conversation_id=conversation_id,
@@ -8598,6 +8623,7 @@ def create_app(
                         ),
                         evidence_contract=evidence_contract,
                         evidence_context=evidence_context,
+                        simulator_target_status=simulator_target_status,
                     )
                     if evidence is not None:
                         store.append_event(
