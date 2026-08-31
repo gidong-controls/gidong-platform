@@ -9,11 +9,16 @@ from typing import Any, cast
 
 from controlstudio_host.agent_client import (
     _EXACT_OFFLINE_OPERAND_CONTINUATION_PROMPT,
+    AgentSidecarError,
     AgentSupervisor,
     SubprocessAgentClient,
     build_historical_evidence_bundle,
 )
-from controlstudio_host.agent_protocol import MAX_PROTOCOL_LINE_BYTES, encode_message
+from controlstudio_host.agent_protocol import (
+    MAX_PROTOCOL_LINE_BYTES,
+    decode_message,
+    encode_message,
+)
 from controlstudio_host.execution_broker import ExecutionBroker
 from controlstudio_host.model_connection import (
     MODEL_PROTOCOL,
@@ -53,6 +58,39 @@ class _Supervisor:
         raise _CapturedRun
 
 
+class _ProgressSupervisor(_Supervisor):
+    async def run(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        on_message: Any,
+        historical_evidence: Mapping[str, Any] | None,
+        agent_checkpoint: Mapping[str, Any] | None,
+    ) -> None:
+        self.payload = dict(payload)
+        self.historical_evidence = historical_evidence
+        self.agent_checkpoint = agent_checkpoint
+        for stage, elapsed_seconds in (
+            ("planning_native_design", 0),
+            ("planning_native_design", 15),
+            ("planning_native_design", 30),
+            ("planning_native_design", 30),
+            ("planning_finalize", 30),
+        ):
+            await on_message(
+                decode_message(
+                    encode_message(
+                        "run.progress",
+                        {
+                            "run_id": payload["run_id"],
+                            "stage": stage,
+                            "elapsed_seconds": elapsed_seconds,
+                        },
+                    )
+                )
+            )
+
+
 def _canonical(value: object) -> bytes:
     return json.dumps(
         value,
@@ -63,6 +101,47 @@ def _canonical(value: object) -> bytes:
 
 
 class AgentResumeTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_progress_forwards_elapsed_heartbeats_and_deduplicates_exact_frame(
+        self,
+    ) -> None:
+        progress: list[tuple[str, int]] = []
+
+        async def on_progress(stage: str, elapsed_seconds: int) -> None:
+            progress.append((stage, elapsed_seconds))
+
+        client = SubprocessAgentClient(
+            StoredModelConnection(
+                protocol=MODEL_PROTOCOL,
+                base_url="https://model.invalid/v1",
+                model="unused",
+                timeout_seconds=1.0,
+                updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                capability_verified_at=None,
+                secrets=ModelSecrets(api_key=None, custom_headers={}),
+            ),
+            cast(ExecutionBroker, _Broker()),
+            cast(AgentSupervisor, _ProgressSupervisor()),
+        )
+
+        with self.assertRaises(AgentSidecarError):
+            await client.run(
+                prompt="Prepare a plan.",
+                history=[],
+                conversation_id="conversation-progress",
+                run_id="run-progress",
+                on_progress=on_progress,
+            )
+
+        self.assertEqual(
+            progress,
+            [
+                ("planning_native_design", 0),
+                ("planning_native_design", 15),
+                ("planning_native_design", 30),
+                ("planning_finalize", 30),
+            ],
+        )
+
     async def test_checkpoint_omits_history_and_large_state_uses_separate_frames(
         self,
     ) -> None:

@@ -971,13 +971,13 @@ class SubprocessAgentClient:
             }
         assert_agent_safe_payload(payload)
         result: AgentRunOutput | None = None
-        last_progress_stage: str | None = None
+        last_progress: tuple[str, int] | None = None
         last_mission_cycle = 0
         last_mission_disposition: str | None = None
 
         async def handle(message: AgentProtocolMessage) -> None:
             nonlocal last_mission_cycle, last_mission_disposition
-            nonlocal last_progress_stage, result
+            nonlocal last_progress, result
             if message.type == "run.progress":
                 if message.payload.get("run_id") != run_id:
                     raise AgentProtocolError("Agent progress belongs to another run")
@@ -995,8 +995,9 @@ class SubprocessAgentClient:
                     or elapsed_seconds < 0
                 ):
                     raise AgentProtocolError("Agent progress payload is invalid")
-                if stage != last_progress_stage:
-                    last_progress_stage = stage
+                progress = (stage, elapsed_seconds)
+                if progress != last_progress:
+                    last_progress = progress
                     if on_progress is not None:
                         await on_progress(stage, elapsed_seconds)
                 return
