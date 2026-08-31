@@ -7,6 +7,7 @@ from controlstudio_host.native_projects import (
     NativeProjectPreconditionError,
     _canonical_native_io_address,
     _compile_native_program,
+    _native_simulation_stimulus_ids,
 )
 from controlstudio_host.store import _native_ladder_is_executable
 
@@ -177,6 +178,23 @@ class XgkSealInCompileTests(unittest.TestCase):
     def test_native_xgk_normalization_preserves_word_and_bit(self) -> None:
         self.assertEqual(_canonical_native_io_address("M002A", "XGK"), "M0002A")
         self.assertEqual(_canonical_native_io_address("P0021", "XGK"), "P00021")
+
+    def test_contact_only_internal_fixture_bits_are_simulation_stimuli(self) -> None:
+        artifact = _seal_in_artifact()
+        design = artifact["design"]
+        assert isinstance(design, dict)
+        io_points = design["ioPoints"]
+        networks = design["controlNetworks"]
+        rungs = design["ladderRungs"]
+        assert isinstance(io_points, list)
+        assert isinstance(networks, list)
+        assert isinstance(rungs, list)
+        io_points[2]["address"] = "M00010"
+
+        self.assertEqual(
+            _native_simulation_stimulus_ids(io_points, networks, rungs),
+            ["start", "stop_ok"],
+        )
 
 
 if __name__ == "__main__":

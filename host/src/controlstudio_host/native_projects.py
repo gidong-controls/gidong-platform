@@ -996,6 +996,67 @@ def _canonical_native_io_address(address: str, plc_series: str) -> str | None:
     )
 
 
+def _native_simulation_stimulus_ids(
+    io_points: list[Any],
+    networks: list[Any],
+    ladder_rungs: list[Any],
+) -> list[str]:
+    """Return reviewed digital inputs plus safe, contact-only internal stimuli."""
+
+    output_ids = {
+        str(network.get("outputSignalId") or "")
+        for network in networks
+        if isinstance(network, dict)
+    }
+    contact_signal_ids: set[str] = set()
+    writer_ids: set[str] = set()
+
+    for rung in ladder_rungs:
+        if not isinstance(rung, dict):
+            continue
+        contact_signal_ids.update(
+            _native_ladder_signal_contact_ids(rung.get("condition"))
+        )
+        action = rung.get("action")
+        if (
+            isinstance(action, dict)
+            and action.get("targetType") == "signal"
+            and isinstance(action.get("targetId"), str)
+        ):
+            writer_ids.add(str(action["targetId"]))
+
+    return [
+        str(point.get("signalId") or "")
+        for point in io_points
+        if isinstance(point, dict)
+        and (
+            point.get("kind") == "digital_input"
+            or (
+                point.get("kind") == "internal_bit"
+                and str(point.get("address") or "").upper().startswith("M")
+                and str(point.get("signalId") or "") in contact_signal_ids
+                and str(point.get("signalId") or "") not in output_ids
+                and str(point.get("signalId") or "") not in writer_ids
+            )
+        )
+    ]
+
+
+def _native_ladder_signal_contact_ids(value: object) -> set[str]:
+    if not isinstance(value, dict):
+        return set()
+    if value.get("kind") == "contact":
+        if value.get("sourceType") == "signal":
+            return {str(value.get("sourceId") or "")}
+        return set()
+    terms = value.get("terms")
+    if not isinstance(terms, list):
+        return set()
+    return set().union(
+        *(_native_ladder_signal_contact_ids(term) for term in terms)
+    )
+
+
 def _compile_native_program(
     artifact: dict[str, Any],
     *,
@@ -4848,12 +4909,6 @@ class NativeProjectService:
                 raise NativeProjectEvidenceError(
                     "reviewed simulation signal or safety scope is invalid"
                 )
-            input_id_order = [
-                str(item.get("signalId"))
-                for item in io_points
-                if isinstance(item, dict) and item.get("kind") == "digital_input"
-            ]
-            input_ids = set(input_id_order)
             io_by_id = {
                 str(item.get("signalId") or ""): item
                 for item in io_points
@@ -4883,6 +4938,12 @@ class NativeProjectService:
                 raise NativeProjectEvidenceError(
                     "simulation ladder IR or control-network scope is invalid"
                 )
+            input_id_order = _native_simulation_stimulus_ids(
+                io_points,
+                networks,
+                ladder_rungs,
+            )
+            input_ids = set(input_id_order)
             simulation_latch_id: str | None = None
             known_simulation_steps: list[dict[str, Any]] = []
             if len(alarms) == 1 and isinstance(alarms[0], dict):
@@ -5028,6 +5089,7 @@ class NativeProjectService:
                         f"simulation control network {network_id} condition is invalid"
                     )
                 fixed_contact_values: dict[tuple[str, str], int] = {}
+                fixed_contact_values[("signal", output_id)] = 0
                 if simulation_latch_id is not None:
                     fixed_contact_values[("signal", simulation_latch_id)] = 0
                 selected_step_id = network.get("stepId")
@@ -5053,6 +5115,24 @@ class NativeProjectService:
                     desired=False,
                     fixed_contact_values=fixed_contact_values,
                 )
+                output_feedback = (
+                    output_id in _native_ladder_signal_contact_ids(condition)
+                )
+                if output_feedback:
+                    permits = network.get("permitAll")
+                    if isinstance(permits, list):
+                        for permit in permits:
+                            if (
+                                isinstance(permit, dict)
+                                and str(permit.get("signalId") or "") in input_ids
+                                and permit.get("state") in {"on", "off"}
+                            ):
+                                false_state = {
+                                    str(permit["signalId"]): (
+                                        0 if permit["state"] == "on" else 1
+                                    )
+                                }
+                                break
                 transition_state: dict[str, int] = {}
                 pre_transition_state: dict[str, int] = {}
                 hold_state: dict[str, int] = {}
@@ -5765,7 +5845,7 @@ class NativeProjectService:
             ):
                 raise NativeProjectEvidenceError(
                     "simulation process interlock is not exactly driveable by a reviewed "
-                    "digital input or exercised alarm latch"
+                    "simulation stimulus or exercised alarm latch"
                 )
             process_interlock_ids = [str(item["ruleId"]) for item in process_interlocks]
             external_boundary_ids = [
@@ -6378,7 +6458,7 @@ class NativeProjectService:
                 or not baseline_restore_bound
                 or not scenario_traces_valid
                 or scenarios.get("outputBytesWritten") is not False
-                or boundary.get("onlyReviewedDigitalInputs") is not True
+                or boundary.get("onlyReviewedSimulationStimuli") is not True
                 or boundary.get("outputBytesWritten") is not False
                 or boundary.get("baselineRestoredAfterCpuStop") is not True
                 or not isinstance(boundary.get("restore"), dict)
