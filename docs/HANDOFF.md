@@ -13,11 +13,11 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 
 ## 저장소와 브랜치
 
-- `gidong-platform`: `dev` @ `b05613c`
-- `gidong-agent`: `dev` @ `5a707b0`
-- `gidong-plc-mcp`: `dev` @ `e3e69f9`
-- 독립 XG5000 CLI: `82ae877`
-- 세 저장소의 `main`은 작업 시작 기준 commit에 그대로 두었다. 개발은 `dev`에서만 계속한다.
+- 세 core 저장소 `gidong-platform`, `gidong-agent`, `gidong-plc-mcp`는 `dev`에서 작업한다.
+  코드 checkpoint는 각각 `b05613c`, `5a707b0`, `e3e69f9`이다. 이 SHA는 이 handoff의 코드
+  증거 기준일 뿐, 이후 문서 commit을 포함한 영구적인 최신 `HEAD` 표시는 아니다.
+- 독립 XG5000 CLI는 `main`의 `82ae877`이며 사용자 지정 원격에 게시된 checkpoint다. 위 세 core
+  저장소는 해당 코드 checkpoint 시점에 local 상태였고 push하지 않았다.
 
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
@@ -307,20 +307,28 @@ copy를 실제로 풀어 임시 index까지 생성했으나 acceptance wrapper�
 traceback이 보존되지 않았다. 따라서 live catalog/LD/graph/state와 실제 Agent tool
 started/completed 흐름은 아래 절차로 이어서 확인한다.
 
-다음 세션의 첫 작업은 아래 한 번의 수직 검증이다.
+다음 세션은 항상 새 PowerShell/UAC/smoke에서 다시 시작하지 않고, 아래 evidence-based resume
+순서로 현재 수직을 이어 간다.
 
-1. 보이는 PowerShell에서 `gidong-platform\scripts\Start-ControlStudio-Development.ps1` 실행
-2. Windows UAC 승인
-3. `scripts\Test-ControlStudio-Development.cmd -RequireAgent` 실행. 이 smoke는 기존
-   Development Host를 같은 launcher token으로 검증하고 자신이 시작하지 않은 Host는
-   종료하지 않는다.
-4. UI에서 Development/Debug 표면과 `nemotron-3-ultra` 연결 확인
-5. 실제 working-copy XG5000 project를 attach하고 Agent에 read/analyze 요청
-6. tool started/completed/failed activity와 evidence가 UI에 보이는지 확인
-7. 승인된 작은 MNE 변경 한 건을 candidate → approval → apply → check/save/reopen까지 실행
-8. XG-SIM scope를 선택했다면 receipt를 확인한 뒤 keep 또는 revert까지 완료
+1. 검증된 active Host, engineering session, PID/HWND와 live handle이 있으면 data root,
+   workspace path/hash, transaction/journal identity를 다시 대조한 뒤 보존한다. 관측 timeout이나
+   오류만으로 이 handle을 버리거나 새 launcher를 시작하지 않는다.
+2. Host/session/handle이 실제로 없다는 것을 확인한 경우에만 같은 Development data root를 쓰는
+   normal launcher로 cold start한다. elevation은 실제로 거부된 경우에만 새 explicit user request
+   전까지 다시 요청하지 않으며, timeout이나 과거 관측은 거부로 간주하지 않는다.
+3. 기존 quarantined recovery는 같은 transaction의 journal, target identity, recovery evidence를
+   보존한 채 필요한 승인 아래 계속한다. `restoreVerifiedBackup`은 별도의 opt-in approval이며
+   아직 승인되지 않았으므로 file restoration을 실행하거나 승인된 것처럼 기록하지 않는다.
+4. recovery와 target binding이 허용하는 동안 먼저 read-only scroll/focus 진단으로
+   `XG5000_LD_SOURCE_NOT_VISIBLE`의 실제 표면/identity를 확인한다. 불명확한 side effect나 이미
+   소비된 approval은 replay하지 않는다.
+5. 그 뒤 exact target과 baseline이 다시 증명된 경우에만, 새 approval을 받은 LD
+   `P0020→P0021` operand 변경을 apply → Program Check → save → distinct PID/HWND reopen/readback
+   순서로 수행하고 fresh receipt를 남긴다. XG-SIM scope를 선택하면 receipt 뒤 keep 또는 revert
+   결정을 같은 transaction에서 완료한다.
 
-실기 증거 없이 native/XG-SIM/PLC 성공을 문서 상태만으로 선언하지 않는다.
+실기 증거 없이 native/XG-SIM/PLC 성공을 문서 상태만으로 선언하지 않는다. Browser URL policy의
+PWA acceptance 미검증도, file-restore approval 대기도 이 절차로 해결된 것으로 주장하지 않는다.
 
 ## 반복하지 말아야 할 것
 
