@@ -110,6 +110,9 @@ from .api_models import (
     KnowledgeSummaryV1,
     LauncherHandoffV1,
     LauncherReadinessV1,
+    LaunchIdleXG5000AttentionV1,
+    LaunchIdleXG5000RequestV1,
+    LaunchIdleXG5000ResponseV1,
     LocalWorkspaceCompareV1,
     LocalWorkspaceV1,
     LSControllerConnectionStatusV1,
@@ -439,6 +442,75 @@ def _close_idle_xg5000_instance_attention(
         }
         | {"receipt_digest": receipt_digest}
     )
+
+
+def _launch_idle_xg5000_response(
+    raw: dict[str, Any],
+    *,
+    receipt_digest: str,
+) -> LaunchIdleXG5000ResponseV1:
+    return LaunchIdleXG5000ResponseV1.model_validate(
+        {
+            field: raw.get(field)
+            for field in (
+                "operation",
+                "verified",
+                "status",
+                "launch_action",
+                "idle_binding",
+                "no_existing_instances",
+                "blank_window",
+                "modal_observed",
+                "attention_reason",
+                "process_exited",
+                "process_terminated",
+            )
+        }
+        | {"receipt_digest": receipt_digest}
+    )
+
+
+def _launch_idle_xg5000_attention(
+    raw: dict[str, Any],
+    *,
+    receipt_digest: str,
+) -> LaunchIdleXG5000AttentionV1:
+    return LaunchIdleXG5000AttentionV1.model_validate(
+        {
+            field: raw.get(field)
+            for field in (
+                "operation",
+                "verified",
+                "status",
+                "launch_action",
+                "idle_binding",
+                "no_existing_instances",
+                "blank_window",
+                "modal_observed",
+                "attention_reason",
+                "process_exited",
+                "process_terminated",
+            )
+        }
+        | {"receipt_digest": receipt_digest}
+    )
+
+
+def _validate_idle_xg5000_binding(binding: dict[str, Any]) -> None:
+    if (
+        not isinstance(binding.get("pid"), int)
+        or isinstance(binding.get("pid"), bool)
+        or binding["pid"] <= 0
+        or not isinstance(binding.get("hwnd"), int)
+        or isinstance(binding.get("hwnd"), bool)
+        or binding["hwnd"] <= 0
+        or not isinstance(binding.get("process_create_time"), (int, float))
+        or isinstance(binding.get("process_create_time"), bool)
+        or float(binding["process_create_time"]) <= 0
+        or not isinstance(binding.get("executable"), str)
+        or not binding["executable"]
+    ):
+        raise ValueError("MCP idle XG5000 receipt has an invalid exact identity binding")
 
 
 @dataclass(frozen=True)
@@ -13658,6 +13730,90 @@ def create_app(
             operation=_native_project_operation_v1(resolved),
             reconciled=resolved.state != "QUARANTINED",
         )
+
+    @app.post(
+        "/api/v1/xg5000/launch-idle",
+        response_model=LaunchIdleXG5000ResponseV1,
+    )
+    async def launch_idle_xg5000_v1(
+        body: LaunchIdleXG5000RequestV1,
+        request: Request,
+        _csrf: None = Depends(require_browser_csrf),
+        _target_lease: None = Depends(target_switch_lease),
+    ) -> LaunchIdleXG5000ResponseV1:
+        """Launch exactly one blank XG5000 instance without binding a workspace."""
+
+        try:
+            raw = await mcp.call_workspace_tool(
+                "xg5000.launch_idle",
+                {
+                    "confirm_idle_launch": True,
+                    "timeout_seconds": body.timeout_seconds,
+                },
+            )
+            if not isinstance(raw, dict):
+                raise TypeError("MCP idle XG5000 launch receipt is not an object")
+            receipt_digest = _canonical_json_digest(raw)
+            if raw.get("status") == "needs_attention":
+                outcome: LaunchIdleXG5000ResponseV1 | LaunchIdleXG5000AttentionV1 = (
+                    _launch_idle_xg5000_attention(
+                        raw,
+                        receipt_digest=receipt_digest,
+                    )
+                )
+            else:
+                outcome = _launch_idle_xg5000_response(
+                    raw,
+                    receipt_digest=receipt_digest,
+                )
+            if outcome.idle_binding is not None:
+                _validate_idle_xg5000_binding(outcome.idle_binding)
+            if isinstance(outcome, LaunchIdleXG5000AttentionV1):
+                store.append_event(
+                    event_type="xg5000.idle_launch_needs_attention",
+                    payload={
+                        "actorId": _request_actor_id(request),
+                        "receiptDigest": outcome.receipt_digest,
+                        "attentionReason": outcome.attention_reason,
+                        "idleBinding": outcome.idle_binding,
+                        "launchAction": outcome.launch_action,
+                        "processExited": outcome.process_exited,
+                        "processTerminated": False,
+                    },
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "idle_xg5000_launch_needs_attention",
+                        "attentionReason": outcome.attention_reason,
+                        "idleBinding": outcome.idle_binding,
+                        "launchAction": outcome.launch_action,
+                        "processExited": outcome.process_exited,
+                        "processTerminated": False,
+                    },
+                )
+            store.append_event(
+                event_type="xg5000.idle_launched",
+                payload={
+                    "actorId": _request_actor_id(request),
+                    "receiptDigest": outcome.receipt_digest,
+                    "idleBinding": dict(outcome.idle_binding),
+                    "launchAction": outcome.launch_action,
+                    "workspaceBound": False,
+                    "processTerminated": False,
+                },
+            )
+            return outcome
+        except MCPToolError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="the blank XG5000 launch could not be verified",
+            ) from exc
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="MCP returned an invalid blank XG5000 launch receipt",
+            ) from exc
 
     @app.post(
         "/api/v1/xg5000/attach",

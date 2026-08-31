@@ -4534,6 +4534,54 @@ class AttachXG5000ResponseV1(ApiModel):
     session: EngineeringSessionV1
 
 
+class LaunchIdleXG5000RequestV1(ApiModel):
+    confirm_idle_launch: Literal[True]
+    timeout_seconds: float = Field(default=20, ge=0.1, le=30)
+
+
+class LaunchIdleXG5000ResponseV1(ApiModel):
+    operation: Literal["xg5000.launch_idle"]
+    verified: Literal[True]
+    status: Literal["launched"]
+    launch_action: Literal["process_start"]
+    idle_binding: dict[str, Any]
+    no_existing_instances: Literal[True]
+    blank_window: Literal[True]
+    modal_observed: Literal[False]
+    attention_reason: None
+    process_exited: Literal[False]
+    process_terminated: Literal[False]
+    receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class LaunchIdleXG5000AttentionV1(ApiModel):
+    operation: Literal["xg5000.launch_idle"]
+    verified: Literal[False]
+    status: Literal["needs_attention"]
+    launch_action: Literal["process_start"]
+    idle_binding: dict[str, Any] | None
+    no_existing_instances: Literal[True]
+    blank_window: Literal[False]
+    modal_observed: bool
+    attention_reason: Literal[
+        "launch_timeout",
+        "nonblank_window",
+        "owned_modal",
+        "process_exited",
+    ]
+    process_exited: bool
+    process_terminated: Literal[False]
+    receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_attention_outcome(self) -> LaunchIdleXG5000AttentionV1:
+        if self.modal_observed != (self.attention_reason == "owned_modal"):
+            raise ValueError("idle-launch attention receipt has an invalid modal outcome")
+        if self.idle_binding is None and self.attention_reason != "launch_timeout":
+            raise ValueError("idle-launch attention receipt lost its required identity")
+        return self
+
+
 class ReviewedNoSaveCloseRequestV1(ApiModel):
     """Explicit user-confirmed close; it never implies opening another workspace."""
 

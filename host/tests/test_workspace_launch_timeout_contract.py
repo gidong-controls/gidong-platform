@@ -12,6 +12,7 @@ from controlstudio_host import app as host_app
 from controlstudio_host.api_models import (
     AttachXG5000RequestV1,
     EngineeringSystemStatusV1,
+    LaunchIdleXG5000RequestV1,
     ResumeLocalWorkspaceRequestV1,
     ReviewedNoSaveCloseRequestV1,
 )
@@ -141,6 +142,77 @@ class _ReviewedCloseSuccessMCP:
         }
 
 
+class _IdleLaunchMCP:
+    def __init__(self) -> None:
+        self.status = MCPStatus(status="ready")
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.attention_reason: str | None = None
+
+    async def start(self) -> MCPStatus:
+        return self.status
+
+    async def stop(self) -> None:
+        return None
+
+    def mne_capability_status(self) -> str:
+        return "missing"
+
+    def bind_agent_workspace(self, _workspace: dict[str, Any]) -> None:
+        return None
+
+    def clear_agent_session(self) -> None:
+        return None
+
+    def clear_controller_endpoint(self) -> None:
+        return None
+
+    @property
+    def agent_session_identity_snapshot(self) -> None:
+        return None
+
+    async def call_workspace_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((name, dict(arguments)))
+        if name != "xg5000.launch_idle":
+            raise AssertionError(f"unexpected workspace tool: {name}")
+        binding = {
+            "pid": 7024,
+            "hwnd": 67344,
+            "process_create_time": 123.0,
+            "executable": "C:/XG5000/XG5000.exe",
+        }
+        if self.attention_reason is None:
+            return {
+                "schema": "controlstudio-idle-xg5000-launch-cli/v1",
+                "operation": "xg5000.launch_idle",
+                "ok": True,
+                "verified": True,
+                "status": "launched",
+                "launch_action": "process_start",
+                "idle_binding": binding,
+                "no_existing_instances": True,
+                "blank_window": True,
+                "modal_observed": False,
+                "attention_reason": None,
+                "process_exited": False,
+                "process_terminated": False,
+            }
+        return {
+            "schema": "controlstudio-idle-xg5000-launch-cli/v1",
+            "operation": "xg5000.launch_idle",
+            "ok": True,
+            "verified": False,
+            "status": "needs_attention",
+            "launch_action": "process_start",
+            "idle_binding": None if self.attention_reason == "launch_timeout" else binding,
+            "no_existing_instances": True,
+            "blank_window": False,
+            "modal_observed": self.attention_reason == "owned_modal",
+            "attention_reason": self.attention_reason,
+            "process_exited": self.attention_reason == "process_exited",
+            "process_terminated": False,
+        }
+
+
 class WorkspaceLaunchTimeoutContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_open_project_transport_outlives_mcp_cleanup_contract(self) -> None:
         self.assertEqual(ResumeLocalWorkspaceRequestV1(timeout_seconds=120).timeout_seconds, 120)
@@ -236,6 +308,98 @@ class WorkspaceLaunchTimeoutContractTests(unittest.IsolatedAsyncioTestCase):
             client.calls,
             [("xg5000.close_idle_instance", arguments, {})],
         )
+
+    async def test_idle_launch_is_host_workspace_only_and_uses_normal_transport(self) -> None:
+        self.assertIn("xg5000.launch_idle", HOST_WORKSPACE_MCP_TOOLS)
+        self.assertIn("xg5000.launch_idle", MUTATING_MCP_TOOLS)
+        client = _RecordingClient()
+        gateway = MCPGateway(command="unused")
+        gateway._client = cast(Any, client)
+        gateway._status = MCPStatus(status="ready")
+        arguments = {"confirm_idle_launch": True, "timeout_seconds": 20}
+        with patch.object(MCPGateway, "_decode_tool_result", return_value={"ok": True}):
+            await gateway.call_workspace_tool("xg5000.launch_idle", arguments)
+        self.assertEqual(client.calls, [("xg5000.launch_idle", arguments, {})])
+
+    def test_idle_launch_returns_a_fresh_binding_or_safe_attention(self) -> None:
+        request = LaunchIdleXG5000RequestV1.model_validate(
+            {"confirmIdleLaunch": True}
+        )
+        self.assertEqual(
+            request.model_dump(mode="json", by_alias=True)["confirmIdleLaunch"],
+            True,
+        )
+        with self.assertRaises(ValueError):
+            LaunchIdleXG5000RequestV1.model_validate(
+                {"confirmIdleLaunch": False}
+            )
+
+        with TemporaryDirectory(prefix="controlstudio-idle-launch-") as raw_directory:
+            root = Path(raw_directory)
+            config = HostConfig(
+                database_path=root / "host.sqlite3",
+                knowledge_database_path=root / "knowledge.sqlite3",
+                static_dir=root / "missing-web-dist",
+                launch_token="idle-launch-test-token-0123456789",
+                release_channel="production",
+            )
+            store = HostStore(config.database_path)
+            mcp = _IdleLaunchMCP()
+            app = create_app(config, store=store, mcp=cast(Any, mcp))
+
+            with TestClient(app, base_url="http://localhost:8767") as client:
+                handoff = client.post(
+                    "/api/launcher/handoff",
+                    headers={"Authorization": f"Bearer {config.launch_token}"},
+                )
+                self.assertEqual(handoff.status_code, 201, handoff.text)
+                browser_session = client.post(
+                    "/api/session",
+                    headers={"Authorization": f"Bearer {handoff.json()['handoffTicket']}"},
+                )
+                self.assertEqual(browser_session.status_code, 200, browser_session.text)
+                client.headers.update(
+                    {"Authorization": f"Bearer {browser_session.json()['sessionToken']}"}
+                )
+                bootstrap = client.get("/api/v1/bootstrap")
+                self.assertEqual(bootstrap.status_code, 200, bootstrap.text)
+                headers = {"X-ControlStudio-CSRF": bootstrap.json()["csrfToken"]}
+                launched = client.post(
+                    "/api/v1/xg5000/launch-idle",
+                    headers=headers,
+                    json={"confirmIdleLaunch": True},
+                )
+                mcp.attention_reason = "launch_timeout"
+                attention = client.post(
+                    "/api/v1/xg5000/launch-idle",
+                    headers=headers,
+                    json={"confirmIdleLaunch": True},
+                )
+
+            self.assertEqual(launched.status_code, 200, launched.text)
+            self.assertEqual(launched.json()["status"], "launched")
+            self.assertEqual(launched.json()["idleBinding"]["pid"], 7024)
+            self.assertEqual(attention.status_code, 409, attention.text)
+            self.assertEqual(
+                attention.json()["detail"]["attentionReason"],
+                "launch_timeout",
+            )
+            self.assertIsNone(attention.json()["detail"]["idleBinding"])
+            self.assertEqual(
+                mcp.calls,
+                [
+                    ("xg5000.launch_idle", {"confirm_idle_launch": True, "timeout_seconds": 20}),
+                    ("xg5000.launch_idle", {"confirm_idle_launch": True, "timeout_seconds": 20}),
+                ],
+            )
+            events = store.list_events(limit=100)
+            self.assertTrue(any(event.event_type == "xg5000.idle_launched" for event in events))
+            self.assertTrue(
+                any(
+                    event.event_type == "xg5000.idle_launch_needs_attention"
+                    for event in events
+                )
+            )
 
     def test_transport_timeout_routes_only_to_late_attach_reconciliation(self) -> None:
         self.assertTrue(issubclass(MCPTransportError, MCPToolError))
