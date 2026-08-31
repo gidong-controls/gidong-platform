@@ -76,17 +76,32 @@ API에서도 HTTP 504 표시를 확인했다. 제품 모델은 `nemotron-3-ultra
 ephemeral timeout은 generic `all=false`을 돌려도 예외 시 aggregate false일 수 있으므로 모든
 capability가 지원되지 않는다는 뜻이 아니며, sidecar protocol 오류 증거도 없다.
 
-Agent `0d0999f`는 ready-only native 단계가 수락할 수 없는 `needs_clarification` 응답을
-재시도 안내에서 제거했다. 관련 3건과 Ruff가 통과했지만 현재 live 모델 실행으로 검증되지는
-않았다. `3167fc3`은 native-handoff fake attach에 PID/HWND/path/hash-bound
-`process_create_time` proof를 보완해 lineage 4/4를 통과시켰다. 이 변경은 production
-read-binding 검사를 약화하지 않는다. CLI runtime Agent/Host 주소 수정은 별도 진행 중이며
-완료 또는 실제 검증을 주장하지 않는다.
+Agent `968e2ab`은 runtime 주소를 정규화하고, `0c9b4a7`은 fixture import를 바로잡았다.
+최종 `87ad596`은 `nemotron-3-ultra`의 `supports_json_object_output=False`를 명시해 native
+출력 요청에서 `response_format`을 보내지 않는다. mock wire 15건은 이를 고정하고 invalid JSON은
+계속 거부한다. `artifacts/probe_native_output_20260831.py`의 controlled probe에서 강제 true는
+input 114/output 47, finish `stop`, 29자 text와 `json_invalid`로 24,980ms 뒤 실패했고, 명시
+false는 같은 prompt에서 input 114/output 30, finish `SUCCESS`로 10,621ms 뒤 성공했다. 중간
+기본 profile(override 제거)도 5,660ms/output 45로 성공했으므로 강제 JSON 모드가 항상 실패한다고
+단정하지 않으며, 이번 수정은 간헐적 호환성 위험을 제거한다.
 
-native plan/LD 생성 성공은 아직 아니다. SSH 정보나 UAC 재요청은 하지 않았고 기존 LD operand
-위치 선택의 scroll 단위도 아직 실증되지 않았다. Native Find 리소스 ID만으로 중복 피연산자 중
-정확한 occurrence를 선택한다고 가정하거나 임의 좌표 식으로 바꾸지 않는다. 보호된 기존
-working copy/격리 transaction과 file quarantine은 변경하지 않았다.
+Host `2a4f807`의 canonical compiler와 실제 Agent readiness → artifact 도출 → Host compile
+경로는 M00000/M00001/M00002 출력을 증명했다. Agent 5건, Host fixture 3건, 상위 Host combined
+7건과 Agent focused lint(F/E9/I)가 통과했다. fixture의 RUN_CMD만 M0010으로 둔 것은 XG-SIM
+whole-byte write에서 입력과 출력을 분리하기 위한 test fixture이며 START M0000/STOP_OK M0001과
+사용자의 기존 PLC 주소를 변경한 것이 아니다. `3167fc3`은 native-handoff fake attach에
+PID/HWND/path/hash-bound `process_create_time` proof를 보완해 lineage 4/4를 통과시켰고 production
+read-binding 검사를 약화하지 않는다. CLI runtime의 role-specific internal simulation 수정은 별도
+진행 중이며 완료 또는 실제 검증을 주장하지 않는다.
+
+정상 Host restart는 ready/UAC 없음으로 끝났고, 기존 conversation
+`6bb8a0a4-cf45-4e18-b402-d4b732216723`의 run
+`7b89c506-6583-4ebb-a6ba-8af9c5986266`은 analysing 상태로 진행 중이다. terminal 결과가 아니므로
+native plan/LD 생성 성공은 아직 주장하지 않는다. SSH 정보나 UAC 재요청은 하지 않았고 기존 LD
+operand 위치 선택의 scroll 단위도 아직 실증되지 않았다. Native Find 리소스 ID만으로 중복
+피연산자 중 정확한 occurrence를 선택한다고 가정하거나 임의 좌표 식으로 바꾸지 않는다. 보호된
+기존 working copy/격리 transaction과 file quarantine은 변경하지 않았으며 recovery approval
+질문은 사용자 응답을 기다린다.
 
 ## 현재 제품 경계
 
