@@ -336,6 +336,13 @@ class _NativeHandoffMCP:
                 "project_identity_verified_against_selected_pid": True,
                 "project_identity_read_only_bound_to_selected_pid": True,
                 "project_identity_assurance": "strong_readback",
+                "project_identity_proof": {
+                    "pid": int(arguments["pid"]),
+                    "main_hwnd": int(arguments["hwnd"]),
+                    "process_create_time": 123.0,
+                    "project_path": working_copy["path"],
+                    "project_hash": working_copy["current_sha256"],
+                },
             },
         }
 
