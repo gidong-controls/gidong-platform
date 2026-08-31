@@ -4051,6 +4051,57 @@ def state_model_context(result: Any) -> dict[str, Any] | None:
     return context
 
 
+def logic_graph_context(result: Any) -> dict[str, Any] | None:
+    """Keep the verified graph rung AST available for bounded Agent analysis."""
+
+    # The receipt deliberately indexes individual relation facts, which cannot
+    # represent the parenthesized grouping of a rung condition. Reuse its
+    # existing validator before exposing the same source-derived structure.
+    _logic_graph_contract(result)
+    envelope = _validated_result(result, "program.logic_graph")
+    graph = _mapping(envelope.get("graph"), "logic graph")
+    rungs: list[dict[str, Any]] = []
+    for network_value in _items(graph.get("networks"), "logic graph networks"):
+        network = _mapping(network_value, "logic graph network")
+        network_index = _integer(
+            network.get("network_index"),
+            "logic graph network index",
+            maximum=1_000_000,
+        )
+        for rung_value in _items(network.get("rungs"), "logic graph rungs"):
+            rung = _mapping(rung_value, "logic graph rung")
+            condition = _mapping(rung.get("condition"), "logic graph condition")
+            projected: dict[str, Any] = {
+                "network_index": network_index,
+                "rung_id": _text(rung.get("rung_id"), "logic graph rung id"),
+                "visual_rows": _items(rung.get("visual_rows"), "logic graph visual rows"),
+                # Clone only JSON data: the nested AST and its source spans stay exact.
+                "condition": json.loads(json.dumps(condition, ensure_ascii=False)),
+                "outputs": json.loads(
+                    json.dumps(_items(rung.get("outputs"), "logic graph outputs"), ensure_ascii=False)
+                ),
+                "semantic_status": _semantic(
+                    rung.get("semantic_status"), "logic graph rung"
+                ),
+                "confidence": _text(
+                    rung.get("confidence"), "logic graph rung confidence", maximum=100
+                ),
+            }
+            expression = rung.get("condition_expression")
+            if expression is not None:
+                projected["condition_expression"] = _text(
+                    expression, "logic graph condition expression", maximum=8_000
+                )
+            rungs.append(projected)
+    if not rungs:
+        return None
+    return {
+        "rungs": rungs[:_MODEL_CONTEXT_ITEM_LIMIT],
+        "rungCount": len(rungs),
+        "truncated": len(rungs) > _MODEL_CONTEXT_ITEM_LIMIT,
+    }
+
+
 def _validate_location_fact(value: Any) -> dict[str, Any]:
     fact = _mapping(value, "structural location fact")
     allowed = {
@@ -4798,12 +4849,13 @@ __all__ = [
     "build_structural_evidence_contract",
     "canonical_digest",
     "location_membership_value",
+    "logic_graph_context",
     "project_search_context",
     "relation_membership_value",
-    "structure_membership_value",
     "state_model_context",
-    "structural_receipt_tool_name",
     "structural_observation_statement",
-    "validate_structural_evidence_contract",
+    "structural_receipt_tool_name",
+    "structure_membership_value",
     "validate_project_search_context",
+    "validate_structural_evidence_contract",
 ]

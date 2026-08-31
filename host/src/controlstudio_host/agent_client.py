@@ -59,6 +59,7 @@ from .structural_evidence import (
     STRUCTURAL_ANALYSIS_EVIDENCE_SCHEMA,
     STRUCTURAL_ANALYSIS_TOOL_COVERAGE,
     canonical_digest,
+    logic_graph_context,
     project_search_context,
     state_model_context,
     structural_observation_statement,
@@ -1713,7 +1714,9 @@ def _structural_tool_result_payload(
         "guidance": _STRUCTURAL_TOOL_RESULT_GUIDANCE,
         "_controlstudio_evidence": safe_evidence_ref,
     }
-    if expected_tool_name == "program.state_model":
+    if expected_tool_name == "program.logic_graph":
+        model_context = logic_graph_context(raw_result)
+    elif expected_tool_name == "program.state_model":
         model_context = state_model_context(raw_result)
     elif expected_tool_name == "project.search":
         model_context = validate_project_search_context(
