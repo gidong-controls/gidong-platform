@@ -23,55 +23,23 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-01 필수 읽기 경로 — 작업 중
+## 2026-09-01 필수 읽기 경로 — 현재 진행
 
-- 별도 복사본 초기화/복구 기능은 사용자 지시로 제외했다. 기존 PWA 연결·프로그램 읽기와
-  CLI/MCP 시뮬레이터 상태 조회만 수정한다. 원본/복사본 창과 과거 SIM 실패 기록은 보존한다.
-- Platform `ae816c6`/`97bc8eb`, MCP `2d4cc6a`: 중단된 native/SIM 작업의 잠금은 유지하면서
-  analysis 읽기를 허용하고, 선택 PID/HWND와 일치하는 verified reopen 기대값을 오래된
-  active workspace보다 우선해 fresh MCP attach에 전달한다. cached session을 bind하지 않는다.
-- 실제 PWA와 같은 `{pid:16228,hwnd:723394}` attach가 성공했다. 새 session
-  `cd254b92-bea4-473d-9611-2b30115ca23e`에서 `/api/v1/engineering/programs`가
-  `MainProgram` / `ld:55e388e7aea7a8ce` / LD를 반환했다. API 경로 실증이며 화면 acceptance는 아니다.
-- `program.focus` 실패 원인은 속성 창이 아니다. MCP `ed025ad`의 실제 제한 진단
-  `4e2d92aa-90f3-4f16-a9f7-9a7fe4484acb/697f525ee7e1/error.json`에서 PID/owner가 일치하는
-  `XG5000 - LSPLC`의 PLC 응답 없음·재연결 Retry/Cancel 창과 뒤의 `쓰기` 창이 확인됐다.
-  추측에 기반했던 `b070ffc` 조건 완화는 되돌렸다. MCP `3ef5655`는 이 정확한 pair에만
-  Cancel을 적용한다. 00:13 실제 session `fb5815c2-ae0e-4c6f-861e-1cdc8c398264`, artifact
-  `a253d9aa59db`에서 MainProgram focus가 verified/read-only/project-unchanged로 성공했다.
-  재연결·쓰기 확인은 호출하지 않았으며 이 결과를 과거 SIM 복원 성공으로 간주하지 않는다.
-- CLI `d695cae` / MCP `54b3ee1`은 read-only `sim-target-status` / `sim.target_status`를 추가했고,
-  Host `e503bc4`/`3f6cdca`, Agent `61152d6`가 기존 read tool 경로로 노출한다. 별도 REST/복구
-  화면은 없다. CLI는 지정 원격 main에 push했다. 실제 SIM 상태 조회 결과는 아직 미확인이다.
-- Agent `30b2598`은 Host가 노출한 조회 도구 27개가 실제 실행 선택 목록에 누락된 문제를 고쳤다.
-  `3a8bf1e`는 Host가 인수를 주입하는 빈 입력 도구에서 불필요한 모델 인수 생성 호출을 없애고
-  기존 특수 분기 세 곳을 통합했다. 설정 모델은 변경하지 않았다.
-- 분석 run `48446191-0ba4-4c8f-b7dc-a29b1f104279`는 반환되지 않은 evidenceId 인용으로,
-  `11199eb9-8431-4499-b20d-7cf6ebcd9591`은 위 실행 목록 누락으로 실패했다. 저장된 Agent
-  조회 미션을 이은 `5caf995e-b278-43f9-8327-bfda77afd72d`에서는 실제
-  `get_simulator_target_status` → MCP → CLI 호출까지 도달했지만 네이티브 상태 조회가
-  `XG5000_UIA_TIMEOUT`으로 실패했다. SIM 시작·쓰기·RUN·STOP은 실행하지 않았다.
-  Cancel 후 run `f521faa7-a446-42a0-b253-3549351df6f5`에서도 상태 조회 UIA timeout이 재현됐다.
-  따라서 이 조회 오류를 대화상자만의 문제로 단정하지 않는다. 프로그램 목록과 focus는 성공했으며,
-  Agent LD 읽기 run `fd49a6c7-ceb3-4a24-a09b-b0bf5af3ad5e`를 별도로 실행 중이다.
-- MCP `93614ca`는 시뮬레이터 시작 실패의 Basic toolbar x221 좌표 fallback을 없애고
-  설치된 MainRes RT_MENU의 `도구 → 시뮬레이터 시작/끝`(856)을 현재 메뉴에서 의미적으로
-  찾아 호출한다. UIA dispatch가 unknown인 경우 fallback 금지는 유지한다. 과거 artifact에는
-  호출 단계가 없어 그 좌표 경로가 실제 실행됐는지 알 수 없다. 현재 창만으로 물리 쓰기 실행을
-  추정하지 않는다. 변경 후 새 SIM 시작은 아직 실행하지 않았다.
-- MCP `25f38c5`는 같은 상태 표시줄 HWND에 대해 제한 없는 UIA Button descendants 대신
-  기존 bounded MSAA identity 읽기를 사용한다. 00:18 실제 Agent run
-  `198a1079-2146-4378-9ded-ee3420d3a1ee`에서 `get_simulator_target_status`가 완료되고
-  evidence `a655594b-95a7-5d7e-87de-7bbd8ea89a1d` 및 완료 답변을 반환했다. 당시 evidence는
-  일반적인 '조회 완료' 요약뿐이라 실제 SIMULATOR_TARGET 분류를 사후 증명할 수 없다.
-  tool 완료와 현재 SIM 상태의 검증은 구분한다. 상태값이 답변에 남도록 요약 전달을 수정 중이다.
-- 새 Agent LD 요청 `fd49a6c7-ceb3-4a24-a09b-b0bf5af3ad5e`는 도구 실행 전
-  `answer/mission/cycle_disposition` 누락으로 실패했다. 일반 문장으로 요청한 run
-  `519b7c6d-899a-47c5-95b8-821e1a96e2a1`은 `inspect_project_structure` 실제 호출은 성공했지만
-  그 다음 모델 출력이 `json_invalid`로 실패했다. 아직 Agent의 실제 LD 읽기·설명 성공은 아니다.
-  초기 Nemotron 경로가 도구를 비활성화한 채 전체 답변·미션부터 요구하는 구조를 고친다.
-  현재 문장/programId에 맞춘 정규식 미션 생성 WIP는 폐기했고, Host가 노출한 읽기 도구를
-  일반적으로 먼저 선택·실행한 뒤 기존 근거 기반 분석으로 이어가는 작은 변경만 진행한다.
+- 정상 Host 재시작은 UAC 없이 완료됐다. 동일 XG5000 PID `16228`/HWND `723394`, working project
+  SHA `2d55b348...b48`에 새 read-only session
+  `8cf21b7a-bb56-47ef-a83f-4ea174dd325c`이 연결됐다.
+- 실제 conversation `35fdea15-3dc2-4145-889b-063807425b31`의 run
+  `3c0587d7-c4ad-4bfb-b21f-5c5188191bd2`는 `list_project_programs`를 성공적으로 마친 뒤 LD
+  읽기·답변 단계에 진행 중이다. 이 run의 완료나 회로 설명 성공은 아직 기록하지 않는다.
+- 현재 소스 checkpoint: Agent `567a9be`/`4fad603`은 retained LD facts·citations는 보존하면서
+  final artifact top-level `evidenceRefs`를 current-run receipts로만 제한한다. MCP
+  `6970416`/`01333f6`은 LD decoder topology를 보존한다. Agent focused 77개, MCP focused 48개,
+  Host historical-evidence 1개 테스트가 통과했다.
+- 과거 `ad48d6a1-b66b-4602-9f6a-5dccb03e8a2f`의 답변 후 Host 거절은 retained evidence를
+  current-run receipt로 함께 기록한 계약 불일치였다. 과거 화면 행/coordinate 해석 문제도
+  topology 전달로 분리했으며, 이 기록은 현재 run의 성공 증거가 아니다.
+- 과거 XG-SIM trial은 `QUARANTINED` 상태로 보존된다. 물리 PLC I/O는 실시하지 않았고, 전체
+  CLI vendor-core 독립도 아직 완료되지 않았다. 별도 복구 기능은 사용자 지시로 제외한다.
 
 ## 2026-08-31 21:57 KST native resume: 독립 재열기 검증 완료, XG-SIM 실패 기록
 
