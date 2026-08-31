@@ -55,14 +55,14 @@ PLC·IDE와 상호작용하는 기능은 지원 환경에서의 실제 증거가
 
 ## 1. 제품 정의
 
-기동은 PLC 프로그램의 신규 구축, 기존 설비 이해, 고장 진단, 변경 계획,
-검사·시뮬레이션과 승인된 실행을 하나의 작업공간에서 연결하는
-**증거 중심 PLC 엔지니어링 에이전트**다.
+기동은 PLC 프로그램의 신규 구축, 기존 설비 이해, 고장 진단, 변경·검사·시뮬레이션을
+하나의 작업공간에서 수행하는 **PLC 개발·협업 에이전트**다.
 
 기동의 핵심 약속은 다음과 같다.
 
-> 에이전트는 분석하고 제안한다. Platform은 사용자·대상·승인·감사를 결속한다.
-> PLC MCP는 실제 대상을 다시 검증하고 변경·readback·rollback을 독립 강제한다.
+> 에이전트는 설계·분석·산출물을 만들고, 권한 있는 도구로 작업을 실행한다.
+> 사용자는 목적·위험·결과를 함께 판단하며, Platform과 PLC MCP는 실제 변경의
+> 대상·권한·결과를 결속한다.
 
 기동은 단순 챗봇, 범용 코드 생성기, XG5000 화면 자동화 도구가 아니다. 사용자가
 어떤 근거로 무엇을 승인하고 실제 대상에 어떤 변화가 생겼는지 끝까지 확인할 수
@@ -80,9 +80,9 @@ PLC 유지보수와 신규 구축 정보는 벤더 IDE, 프로젝트 파일, 현
 - AI가 그럴듯한 답을 하더라도 실제 PLC 작업의 권한과 안전을 맡길 수 없다.
 - 벤더가 달라질 때마다 사용자 경험과 안전 절차가 다시 만들어진다.
 
-기동은 원본과 대상의 정체성을 먼저 고정하고, 분석 근거와 대안을 보여 주며,
-사용자가 승인한 정확한 변경만 실행하고, 실제 readback과 journal로 결과를
-확정하는 방식으로 이 문제를 해결한다.
+기동은 사용 가능한 원본과 근거에서 분석·설계·로컬 작업을 시작하고, 사용자가 방향과
+결과를 함께 검토할 수 있게 한다. 선택한 프로젝트나 실제 대상에 적용할 때에는
+정확한 대상과 결과를 readback·journal로 확인한다.
 
 ## 2. 목표 사용자와 핵심 작업
 
@@ -107,8 +107,8 @@ Mitsubishi와 Rockwell 등 다른 벤더는 같은 상위 사용자 경험과 �
    경로로 제공한다.
 3. 프로그램 구조, 신호, 인터록, 시퀀스, 알람과 인과관계를 근거와 함께 설명한다.
 4. 진단 결과 하나를 단정하지 않고 가설, 반증 근거, 대안과 예상 영향을 비교한다.
-5. 변경을 계획·diff·승인·적용·readback·검사·저장·재열기·시뮬레이션·rollback의
-   닫힌 트랜잭션으로 만든다.
+5. 선택한 변경은 적용 뒤 readback·검사·저장·재열기·필요한 시험과 rollback으로
+   결과를 확인한다.
 6. 사용자의 원본과 작업공간을 보존하면서 모델과 파생 인덱스는 교체 가능하게 한다.
 7. 벤더가 달라도 사용자 흐름과 안전 규칙은 유지하고 실제 실행만 adapter로 분리한다.
 8. 일반 사용자에게는 저장소나 sidecar가 아니라 하나의 기동 제품만 제공한다.
@@ -152,29 +152,28 @@ Mitsubishi와 Rockwell 등 다른 벤더는 같은 상위 사용자 경험과 �
 - 검사·시뮬레이션 시나리오
 
 네이티브 설계의 I/O, mode, control network, timer, sequence, alarm, recovery,
-safety 묶음은 각각 `confirmed` 또는 근거가 있는 `not_applicable` 범위 결정을
-가진다. 적용되지 않는 묶음을 가짜 항목으로 채우지 않으며, 빈 값·미확인은
-`not_applicable`로 간주하지 않고 결정 필요 상태로 남긴다. 물리·위험 출력이 있으면
-process interlock 또는 외부 안전 경계를 반드시 기록하며 safety 묶음을 N/A로 둘 수
-없다. 이전 scope 없는 계획은 읽을 수 있지만 새 build 전 다시 계획해야 한다.
-
-검토가 끝나지 않은 계획을 실제 프로젝트 생성이나 PLC 작업 승인으로 간주하지 않는다.
+safety 항목은 알려진 사실, 가정과 미결 사항을 구분한다. 미결 사항은 명시한 채로
+분석·설계·로컬 산출물 작업을 계속할 수 있다. 다만 물리·위험 출력을 만들거나
+적용할 때에는 관련 interlock 또는 외부 안전 경계를 결정해야 한다.
 
 ### 4.3 기존 프로젝트 이해와 유지보수
 
-기동은 원본·working copy·IDE session을 식별한 뒤 프로그램 목록, 사용 신호,
-cross-reference, 로직과 시퀀스를 추출한다. 사용자는 자연어 질문에서 시작하되
-결과를 프로그램 위치, 원본 문서, 실제 readback과 연결해 확인할 수 있어야 한다.
+기동은 사용 가능한 프로젝트·문서에서 프로그램 목록, 사용 신호, cross-reference,
+로직과 시퀀스를 추출한다. IDE session·working copy가 있으면 결과를 연결하며,
+없어도 분석은 출처와 한계를 표시하고 진행한다.
 
 ### 4.4 온라인 읽기와 진단
 
-연결 대상의 strong identity와 프로젝트 일치가 확인된 경우에만 device value,
-상태 변화, trace와 알람을 읽는다. 기동은 관측 사실, 추론, 가설과 확인되지 않은
-부분을 구분하고, 필요한 추가 관측과 안전한 시험 순서를 제안한다.
+device value, 상태 변화, trace와 알람의 읽기 관찰은 알려진 대상 정보와 함께
+기록한다. strong identity 또는 프로젝트 일치가 없으면 관찰을 해당 프로젝트의
+현재 상태로 단정하지 않으며, 실제 변경은 진행하지 않는다. 기동은 관측 사실,
+추론, 가설과 확인되지 않은 부분을 구분하고 필요한 추가 관측을 제안한다.
 
 ### 4.5 승인된 변경
 
-모든 변경은 다음 순서를 닫힌 트랜잭션으로 따른다.
+분석, 설계 초안과 되돌릴 수 있는 local working-copy 작업은 사용 가능한 근거로
+반복할 수 있다. 프로젝트 또는 controller에 적용하는 변경은 다음
+순서로 결과를 닫는다.
 
 ```text
 대상 재확인 → 백업 → 변경 계획·diff → 사용자 승인
@@ -211,14 +210,14 @@ cross-reference, 로직과 시퀀스를 추출한다. 사용자는 자연어 질
 
 | ID | 요구사항 | 합격 기준 |
 | --- | --- | --- |
-| EXE-01 | Agent 제안과 실행 권한을 분리한다. | Agent는 `ExternalToolRequest`만 반환하고 raw MCP connection을 소유하지 않는다. |
+| EXE-01 | Agent의 자율 실행과 실행 권한을 분리한다. | Agent는 `ExternalToolRequest`로 권한 있는 도구 실행을 요청하고 raw MCP connection을 소유하지 않는다. |
 | EXE-02 | Platform이 실행을 중계한다. | `ExecutionBroker`만 allowlist, schema, capability, target과 approval을 확인하고 MCP를 호출한다. |
-| EXE-03 | 승인을 정확한 변경에 결속한다. | 승인에 actor, run, target digest, tool, arguments/plan digest, capability, expiry와 single-use nonce가 포함된다. |
+| EXE-03 | 변경 권한을 정확한 실행에 결속한다. | project 또는 controller mutation의 권한에는 actor, run, target digest, tool, arguments/plan digest, capability, expiry와 single-use nonce가 포함된다. 분석·초안·로컬 탐색에는 이 mutation 권한을 요구하지 않는다. |
 | EXE-04 | MCP가 독립 검증한다. | MCP가 target·precondition·approval을 다시 확인하고 operation journal을 먼저 기록한다. |
 | EXE-05 | 실제 결과를 readback으로 확정한다. | apply 응답만으로 성공 처리하지 않고 native readback, check, save/reopen과 evidence를 검증한다. |
 | EXE-06 | 실패와 불명확한 결과를 안전하게 처리한다. | 자동 중복 실행 없이 rollback, `ABORTED_NO_MUTATION`, `ROLLED_BACK_SAVED`, `COMMITTED` 또는 `QUARANTINED`로 reconciliation한다. |
 | EXE-07 | 감사 연결성을 보장한다. | conversation, run, tool call, operation, approval와 target ID를 Platform audit와 MCP journal 사이에서 추적한다. |
-| EXE-08 | 신규 PLC 설계 제안과 build 권한을 분리한다. | Host가 canonical 설계에서 계산한 모든 scope·주소·상태·시간·관계 항목을 사람이 각각 확인하고, plan·최신 brief·첨부 source revision digest에 결속한 v2 review만 build authority가 된다. 자연어 해석, Agent 출력 또는 이전 section-only review는 실행 권한이 아니다. |
+| EXE-08 | 신규 PLC 설계와 build 권한을 분리한다. | Agent는 요구와 근거에서 설계를 만들고, build는 선택한 scope와 최신 brief·source revision에 결속한 사용자 권한으로 실행한다. 미결 사항은 가정으로 남기며 해당 범위를 실제 적용하지 않는다. |
 
 ### 5.4 사용자 제품과 배포
 
@@ -273,9 +272,9 @@ flowchart LR
 
 1. Agent는 raw MCP client, target identity, PID/HWND, controller endpoint 또는
    approval secret을 소유하지 않는다.
-2. Platform 승인 없이 mutation을 실행하지 않는다.
+2. project 또는 controller mutation은 Platform의 범위에 맞는 권한 없이 실행하지 않는다.
 3. Platform 승인이 있어도 MCP 재검증을 통과하지 못하면 실행하지 않는다.
-4. target, project hash, plan, arguments, capability 또는 nonce가 다르면 fail closed한다.
+4. 실제 적용에 결속한 target, project hash, plan, arguments, capability 또는 nonce가 다르면 fail closed한다.
 5. 원본을 직접 변경하지 않고 확인된 working copy와 백업을 사용한다.
 6. apply 응답만으로 성공을 선언하지 않고 native readback과 journal을 확인한다.
 7. 결과가 불명확한 mutation을 자동 재시도하지 않는다.
