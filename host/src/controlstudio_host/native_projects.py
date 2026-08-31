@@ -6500,7 +6500,15 @@ class NativeProjectService:
                     raise NativeProjectEvidenceError(
                         f"simulation address map references unknown I/O {signal_id!r}"
                     )
-                address = str(point.get("address") or "").upper()
+                address = _canonical_native_io_address(
+                    str(point.get("address") or ""),
+                    plc_series,
+                )
+                if address is None:
+                    raise NativeProjectEvidenceError(
+                        f"simulation I/O address is invalid for {plc_series}: "
+                        f"{str(point.get('address') or '')!r}"
+                    )
                 width = 4 if plc_series == "XGK" else 3 if plc_series == "XGB" else 0
                 match = re.fullmatch(
                     rf"([PM])(\d{{{width}}})([0-9A-F])",

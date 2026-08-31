@@ -176,6 +176,7 @@ class XgkSealInCompileTests(unittest.TestCase):
             )
 
     def test_native_xgk_normalization_preserves_word_and_bit(self) -> None:
+        self.assertEqual(_canonical_native_io_address("M0010", "XGK"), "M00010")
         self.assertEqual(_canonical_native_io_address("M002A", "XGK"), "M0002A")
         self.assertEqual(_canonical_native_io_address("P0021", "XGK"), "P00021")
 
