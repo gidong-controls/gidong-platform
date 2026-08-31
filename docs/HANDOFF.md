@@ -313,12 +313,14 @@ started/completed 흐름은 아래 절차로 이어서 확인한다.
 1. 검증된 active Host, engineering session, PID/HWND와 live handle이 있으면 data root,
    workspace path/hash, transaction/journal identity를 다시 대조한 뒤 보존한다. 관측 timeout이나
    오류만으로 이 handle을 버리거나 새 launcher를 시작하지 않는다.
-2. Host/session/handle이 실제로 없다는 것을 확인한 경우에만 같은 Development data root를 쓰는
-   normal launcher로 cold start한다. elevation은 실제로 거부된 경우에만 새 explicit user request
-   전까지 다시 요청하지 않으며, timeout이나 과거 관측은 거부로 간주하지 않는다.
+2. Host 프로세스가 실제로 없거나 종료됐음을 확인한 경우에만 같은 Development data root를
+   쓰는 normal launcher로 cold start한다. XG5000 session이나 개별 tool handle이 없다는 이유로
+   살아 있는 Host를 다시 시작하지 않는다. elevation이 실제로 거부됐으면 새 explicit user
+   request 전까지 다시 요청하지 않으며, timeout이나 과거 관측은 거부로 간주하지 않는다.
 3. 기존 quarantined recovery는 같은 transaction의 journal, target identity, recovery evidence를
-   보존한 채 필요한 승인 아래 계속한다. `restoreVerifiedBackup`은 별도의 opt-in approval이며
-   아직 승인되지 않았으므로 file restoration을 실행하거나 승인된 것처럼 기록하지 않는다.
+   보존한 채 필요한 승인 아래 계속한다. `restoreVerifiedBackup`은 명시적 opt-in 요청이며,
+   마지막 관측에서는 해당 파일 복원 승인이 미응답이었다. 재개 시 실제 응답과 승인 대상을
+   확인하고, 응답 없는 상태를 승인으로 간주하지 않는다.
 4. recovery와 target binding이 허용하는 동안 먼저 read-only scroll/focus 진단으로
    `XG5000_LD_SOURCE_NOT_VISIBLE`의 실제 표면/identity를 확인한다. 불명확한 side effect나 이미
    소비된 approval은 replay하지 않는다.
