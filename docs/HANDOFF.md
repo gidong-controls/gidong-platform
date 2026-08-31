@@ -23,31 +23,30 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-08-31 native resume: Program Check·저장 실기 검증 — 현재 상태
+## 2026-08-31 21:26 KST native resume: 저장 완료, fresh reopen 재개 중 — 현재 상태
 
 - 원래 native operation `1dc48ccb-a0d8-44d1-9665-bb101dc7c64c`는 기존 PID `14284`/HWND
   `329768`에서 `APPLIED_VERIFIED`에 도달했다. 새 프로젝트 생성이나 IL 재입력 없이, 실제
-  XG5000 MainRes command `876` Program Check가 통과하고 저장까지 완료됐다. exact MNE
-  instruction 6개와 LD roundtrip도 같은 재개 흐름에서 확인됐다.
+  XG5000 MainRes command `876` Program Check(0 errors)가 통과하고 저장까지 완료됐다.
+  exact MNE instruction 6개와 LD roundtrip도 같은 재개 흐름에서 확인됐다. 이 입력·검사·저장을
+  다시 실행하지 않는다.
 - workspace `9674be8c-cbea-4dd1-8d4d-a603280d3569`의 source/working hash와 저장된 프로젝트
   hash는 모두 `2d55b3489f0f1a97666e79d00bd4ef6962d2e2e71fa44839193be04240308b48`로 일치한다.
   이는 검사·저장 재개 checkpoint 증거이며 전체 제품 acceptance의 완료 선언은 아니다.
 - fresh controlled instance PID `16228`/HWND `723394`는 시작됐고, v3 saved-build rebind는
   같은 instance의 native-file proof·경로·hash·process lifetime을 Host 서명 및 MCP attach
   metadata까지 결속해 실제 통과했다. 원래 PID `14284`/HWND `329768`와 source/working hash는
-  계속 보존됐다. `MainProgram` opener의 실제 readback은 아직 실패 상태다. 20:41 KST
-  진단 (`mcp-sessions/444f4253-9ae9-41a2-a70c-adc6737a61f8/1fa995e5c4bf`)에서는
-  해당 HWND가 disabled이고 프로젝트 속성 대화상자가 존재했다. 검색 Edit에 `MainProgram`이
-  들어간 것만으로 첫 결과 행이 그 프로그램임을 보장할 수 없었다. 첫 행 좌표 추정은 제거하고
-  행의 MSAA name/value 및 위치로 실제 프로그램을 식별하는 수정이 진행 중이다. 이를 새 UAC
-  실패나 사용자가 창을 맨 앞으로 가져와야 하는 문제로 보고하지 않는다.
-  따라서 independent fresh reopen 검증은 아직 없고 `engineeredProgramReady`는 `false`다.
+  계속 보존됐다. run `7b54ad7`은 두 Project Properties modal을 닫고 main window enabled까지
+  확인했지만 selector의 2.5초 MSAA timeout에서 중단했다. 별도 4초 진단은 71 node를 읽었다.
+  최신 `b7b199e`은 remaining 12초 내 compact name/value/state/rect read를 사용하며 restart는
+  ready다. 단일 resume session `48144`의 live 결과는 아직 모른다. 따라서 independent fresh
+  reopen 검증은 아직 없고 last known `engineeredProgramReady`는 `false`다.
 - XG-SIM은 시작하지 않았고 물리 I/O도 시험하지 않았다. PLC write나 최종 PWA acceptance를
   완료로 기록해서는 안 된다.
-- 이 관측의 실행 checkpoint는 Platform `97c127d`, MCP `0b8417e`, 독립 CLI `109a030`이다.
-  이후 MCP `70ed7a0`은 opener 진단을, `3022a59`는 MSAA 행의 value 읽기를 보완했으며
-  실제 재열기 성공 증거는 아직 아니다. CLI `109a030`은 지정 원격 main에 push됐다.
-  별도 CLI 회귀 73건도 통과했지만 독립 CLI 경계는 아직 전환 중이다.
+- `dd4582a`는 정상 Agent read/check/snapshot이 SHA-bound program ID→exact name을 유지해
+  bare pixel catalog scan으로 돌아가지 않게 했다. genuinely unnamed legacy catalog sweep의
+  semantic 교체는 별도 작업이다. CLI `109a030`만 지정 원격 main에 push됐고 MCP·Platform
+  checkpoint는 local이다. 별도 CLI 회귀가 통과해도 vendor-core 완전 독립은 아직 아니다.
   CLI가 MCP source module을 import하므로 완전히 standalone인 source copy나 배포 증거로
   해석하지 않는다.
 
