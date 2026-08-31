@@ -311,6 +311,7 @@ _RUNTIME_EXCEPTION_KINDS = frozenset(
         "usage_limit_exceeded",
         "model_transport",
         "model_api_error",
+        "tool_failure",
         "runtime_error",
     }
 )
@@ -323,6 +324,10 @@ _RUNTIME_REASON_CODES = frozenset(
         "provider_timeout",
         "provider_connection",
         "provider_rejected",
+        "tool_error",
+        "host_policy",
+        "transport",
+        "cancelled",
         "runtime_invariant",
     }
 )

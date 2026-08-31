@@ -9295,6 +9295,11 @@ def create_app(
                         user_message = (
                             "모델 연결이 완료되지 않아 에이전트 실행을 종료했습니다."
                         )
+                    elif diagnostic.exception_kind == "tool_failure":
+                        user_message = (
+                            "엔지니어링 도구의 읽기 요청을 완료하지 못했습니다. "
+                            "실제 변경은 수행되지 않았습니다."
+                        )
                     else:
                         user_message = "에이전트 내부 실행이 완료되지 않았습니다."
                     error_code = f"agent_runtime_{diagnostic.reason_code}"

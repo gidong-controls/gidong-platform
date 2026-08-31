@@ -33,6 +33,20 @@ class AgentRuntimeDiagnosticTests(unittest.TestCase):
             )
         )
 
+    def test_accepts_allowlisted_tool_failure_without_detail(self) -> None:
+        diagnostic = _runtime_diagnostic_from_payload(
+            {
+                "stage": "engineering_analysis",
+                "exceptionKind": "tool_failure",
+                "reasonCode": "tool_error",
+            }
+        )
+
+        self.assertIsNotNone(diagnostic)
+        assert diagnostic is not None
+        self.assertEqual(diagnostic.exception_kind, "tool_failure")
+        self.assertEqual(diagnostic.reason_code, "tool_error")
+
 
 if __name__ == "__main__":
     unittest.main()
