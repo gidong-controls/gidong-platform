@@ -23,7 +23,23 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-08-31 18:39 KST 재개 경로 구현·실행 중 — 현재 상태
+## 2026-08-31 native resume CPU identity 확인 대기 — 현재 상태
+
+- 같은 native operation `1dc48ccb-a0d8-44d1-9665-bb101dc7c64c`와 PID `14284`/HWND
+  `329768`에서 최초 LD 입력과 LD roundtrip은 이미 검증됐다. 재개는 Host lease/digest/routing,
+  MCP adapter/schema를 지난 뒤 독립 CLI의 CPU identity 단계에서 fail-closed로 멈췄다:
+  요청 `XGK-CPUH`, 관측 `status=partial`, `model=unavailable`, configuration `Kind=1`,
+  `Type=0`.
+- 설치 vendor catalog의 교차 관측은 `Configuration.Type`가 CPU catalog의 `PLCID`일 수 있음을
+  보인다(Type 7 → `XGB-XBCH`, Type 0 → `XGK-CPUH`). 단, catalog reader 구현·실기 성공은
+  아직 없으며 숫자만으로 요청 CPU를 대체하거나 partial 관측을 승인하지 않는다.
+- 현재 코드 checkpoint는 Platform `700d900`, MCP `e391a2e`, CLI `3deba88`(지정 원격 main
+  push)이다. 이 구간에 물리 I/O, 새 UAC 요청은 없었다.
+- Program Check, save, independent fresh reopen, XG-SIM acceptance는 모두 미완료다. 다음 live
+  resume는 CPU identity reader가 exact observed evidence를 만들기 전까지 이 단계를 건너뛰지
+  않는다.
+
+## 2026-08-31 18:39 KST 재개 경로 구현·실행 중 — 이전 관측
 
 - 기존 입력 LD/PID `14284`/HWND `329768`와 operation
   `1dc48ccb-a0d8-44d1-9665-bb101dc7c64c`를 계속 사용한다. 새 프로젝트 생성, IL 재입력,
