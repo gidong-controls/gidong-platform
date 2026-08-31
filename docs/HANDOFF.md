@@ -94,14 +94,33 @@ PID/HWND/path/hash-bound `process_create_time` proof를 보완해 lineage 4/4를
 read-binding 검사를 약화하지 않는다. CLI runtime의 role-specific internal simulation 수정은 별도
 진행 중이며 완료 또는 실제 검증을 주장하지 않는다.
 
-정상 Host restart는 ready/UAC 없음으로 끝났고, 기존 conversation
+정상 Host restart는 ready/UAC 없음으로 끝났다. 기존 conversation
 `6bb8a0a4-cf45-4e18-b402-d4b732216723`의 run
-`7b89c506-6583-4ebb-a6ba-8af9c5986266`은 analysing 상태로 진행 중이다. terminal 결과가 아니므로
-native plan/LD 생성 성공은 아직 주장하지 않는다. SSH 정보나 UAC 재요청은 하지 않았고 기존 LD
-operand 위치 선택의 scroll 단위도 아직 실증되지 않았다. Native Find 리소스 ID만으로 중복
-피연산자 중 정확한 occurrence를 선택한다고 가정하거나 임의 좌표 식으로 바꾸지 않는다. 보호된
-기존 working copy/격리 transaction과 file quarantine은 변경하지 않았으며 recovery approval
-질문은 사용자 응답을 기다린다.
+`7b89c506-6583-4ebb-a6ba-8af9c5986266`은 event 2342에서 `COMPLETED`가 되었고
+`native_planning_finalize`까지 195초가 기록됐다. 제품 GET conversation의 latest plan message
+`63277186-378f-40ca-96a1-e97542a78261`은 `ready_for_review`, `openDecisions=[]`, digest
+`62af347dbb15fc358c20ca4fd48f2cf7e0daff6fe166fa81431e9b0480b1d0cd`다. read-only SQLite의
+저장 metadata를 실제 Host compiler에 통과시켜 다음 source와 SHA-256을 확인했다.
+
+```
+LOAD M00001
+LOAD M00000
+OR M00010
+AND LOAD
+OUT M00010
+END
+```
+
+`74ff83178d6aa0319631874eed5ffd1d973fa326d8e4c656172ecf6ec9f534d0`이며, 이는 실제
+model → stored product artifact → compiler 경로의 증거다. model source는 M 내부 주소를 쓰되
+START/STOP을 `digital_input`, RUN을 `digital_output`으로 typed 했다. 이는 native XG5000
+create/build/save/reopen/simulation 또는 PLC write/new file write의 성공은 아니다. native create는
+현재 plan의 human review와 global quarantined test transaction의 restore approval을 여전히
+필요로 하며, 후자 async 질문은 사용자 응답을 기다린다. CLI runtime의 role-specific internal
+simulation 수정도 별도 진행 중이다. SSH 정보나 UAC 재요청은 하지 않았고 기존 LD operand 위치
+선택의 scroll 단위도 아직 실증되지 않았다. Native Find 리소스 ID만으로 중복 피연산자 중 정확한
+occurrence를 선택한다고 가정하거나 임의 좌표 식으로 바꾸지 않는다. 보호된 기존 working copy,
+격리 transaction과 file quarantine은 변경하지 않았다.
 
 ## 현재 제품 경계
 
