@@ -23,32 +23,28 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-08-31 21:26 KST native resume: 저장 완료, fresh reopen 재개 중 — 현재 상태
+## 2026-08-31 21:50 KST native resume: MNE reopen readback 확인, fresh Program Check modal 재개 중 — 현재 상태
 
-- 원래 native operation `1dc48ccb-a0d8-44d1-9665-bb101dc7c64c`는 기존 PID `14284`/HWND
-  `329768`에서 `APPLIED_VERIFIED`에 도달했다. 새 프로젝트 생성이나 IL 재입력 없이, 실제
-  XG5000 MainRes command `876` Program Check(0 errors)가 통과하고 저장까지 완료됐다.
-  exact MNE instruction 6개와 LD roundtrip도 같은 재개 흐름에서 확인됐다. 이 입력·검사·저장을
-  다시 실행하지 않는다.
-- workspace `9674be8c-cbea-4dd1-8d4d-a603280d3569`의 source/working hash와 저장된 프로젝트
-  hash는 모두 `2d55b3489f0f1a97666e79d00bd4ef6962d2e2e71fa44839193be04240308b48`로 일치한다.
-  이는 검사·저장 재개 checkpoint 증거이며 전체 제품 acceptance의 완료 선언은 아니다.
-- fresh controlled instance PID `16228`/HWND `723394`는 시작됐고, v3 saved-build rebind는
-  같은 instance의 native-file proof·경로·hash·process lifetime을 Host 서명 및 MCP attach
-  metadata까지 결속해 실제 통과했다. 원래 PID `14284`/HWND `329768`와 source/working hash는
-  계속 보존됐다. run `7b54ad7`은 두 Project Properties modal을 닫고 main window enabled까지
-  확인했지만 selector의 2.5초 MSAA timeout에서 중단했다. 별도 4초 진단은 71 node를 읽었다.
-  최신 `b7b199e`은 remaining 12초 내 compact name/value/state/rect read를 사용하며 restart는
-  ready다. 단일 resume session `48144`의 live 결과는 아직 모른다. 따라서 independent fresh
-  reopen 검증은 아직 없고 last known `engineeredProgramReady`는 `false`다.
-- XG-SIM은 시작하지 않았고 물리 I/O도 시험하지 않았다. PLC write나 최종 PWA acceptance를
-  완료로 기록해서는 안 된다.
-- `dd4582a`는 정상 Agent read/check/snapshot이 SHA-bound program ID→exact name을 유지해
-  bare pixel catalog scan으로 돌아가지 않게 했다. genuinely unnamed legacy catalog sweep의
-  semantic 교체는 별도 작업이다. CLI `109a030`만 지정 원격 main에 push됐고 MCP·Platform
-  checkpoint는 local이다. 별도 CLI 회귀가 통과해도 vendor-core 완전 독립은 아직 아니다.
-  CLI가 MCP source module을 import하므로 완전히 standalone인 source copy나 배포 증거로
-  해석하지 않는다.
+- 원래 native operation `1dc48ccb-a0d8-44d1-9665-bb101dc7c64c`의 LD 입력, MainRes command
+  `876` Program Check(0 errors), 저장은 이미 `APPLIED_VERIFIED`로 완료됐다. 새 프로젝트 생성,
+  IL 재입력, 원래 검사·저장을 반복하지 않는다. workspace
+  `9674be8c-cbea-4dd1-8d4d-a603280d3569` source/working hash와 저장된 프로젝트 hash는 모두
+  `2d55b3489f0f1a97666e79d00bd4ef6962d2e2e71fa44839193be04240308b48`다.
+- `17e855a` 뒤 fresh working instance PID `16228`/HWND `723394`의 MainProgram editor HWND
+  `8390818`를 열었다. CLI `reopen-readback`은 첫 6개 MNE와 expected source SHA-256
+  `74ff83178d6aa0319631874eed5ffd1d973fa326d8e4c656172ecf6ec9f534d0`를 실제 확인했다. 원래
+  PID `14284`/HWND `329768`와 작업 복사본은 계속 보존된다.
+- 현재 blocker는 resource `876`이 필요한 fresh Program Check modal을 생성하지 못한
+  `PROGRAM_CHECK_FRESH_MODAL_UNVERIFIED`다. artifact는
+  `d29bb41f-6777-4408-bab2-52a246e3521d/82616fe0a8ca`다. 따라서 reopen은 `not_verified`,
+  `engineeredProgramReady=false`이고 XG-SIM·물리 I/O·최종 PWA acceptance는 아직 시작하지
+  않았다. 두 restart는 ready이며 이 구간 UAC 요청은 없었다.
+- runtime/native worker가 fresh-check 실패를 조사 중이다. `dd4582a`의 SHA-bound
+  ID→exact-name 경로는 유지한다. genuinely unnamed legacy catalog sweep의 semantic 교체 WIP는
+  아직 commit되지 않아 알려진 legacy debt다. compact XGK 일반 수정 `476cdb9`/`b4738a8`은
+  완료됐지만 persisted actual plan은 이미 full-width 주소를 사용하므로 이번 blocker가 아니다.
+  root architecture README `d615174`도 반영됐다. CLI `109a030`만 지정 원격 main에 push됐고
+  MCP·Platform checkpoint는 local이다. 전체 CLI vendor-core 독립은 아직 완료되지 않았다.
 
 ## 2026-08-31 18:39 KST 재개 경로 구현·실행 중 — 이전 관측
 
