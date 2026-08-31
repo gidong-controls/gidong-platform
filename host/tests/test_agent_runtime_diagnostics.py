@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 
 from controlstudio_host.agent_client import _runtime_diagnostic_from_payload
+from controlstudio_host.agent_runtime import AgentRuntimeDiagnostic
+from controlstudio_host.app import _agent_runtime_user_message
 
 
 class AgentRuntimeDiagnosticTests(unittest.TestCase):
@@ -46,6 +48,23 @@ class AgentRuntimeDiagnosticTests(unittest.TestCase):
         assert diagnostic is not None
         self.assertEqual(diagnostic.exception_kind, "tool_failure")
         self.assertEqual(diagnostic.reason_code, "tool_error")
+
+    def test_tool_failure_message_does_not_claim_read_or_no_mutation(self) -> None:
+        for reason_code in ("tool_error", "transport"):
+            with self.subTest(reason_code=reason_code):
+                message = _agent_runtime_user_message(
+                    AgentRuntimeDiagnostic(
+                        stage="engineering_analysis",
+                        exception_kind="tool_failure",
+                        reason_code=reason_code,
+                    )
+                )
+                self.assertEqual(
+                    message,
+                    "엔지니어링 도구 호출을 완료하지 못했습니다. 실행 기록을 확인해 주세요.",
+                )
+                self.assertNotIn("읽기", message)
+                self.assertNotIn("실제 변경", message)
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ from .agent_runtime import (
     MAX_ENGINEERING_AUTONOMOUS_CYCLES,
     AgentOutputContractDiagnostic,
     AgentOutputContractError,
+    AgentRuntimeDiagnostic,
     AgentRuntimeError,
     ModelCapabilityResult,
 )
@@ -3139,6 +3140,26 @@ async def _rebind_terminal_mne_session(
             "terminal MNE attach did not prove the independently reopened target"
         )
     return dict(session)
+
+
+def _agent_runtime_user_message(diagnostic: AgentRuntimeDiagnostic) -> str:
+    """Return the bounded user-facing message for a sidecar runtime diagnostic."""
+
+    if diagnostic.reason_code == "tool_call_budget":
+        return (
+            "모델이 분석 도구 호출 예산을 소진해 결과를 저장하지 "
+            "않았습니다. 실제 변경은 수행되지 않았습니다."
+        )
+    if diagnostic.reason_code.startswith("provider_http_"):
+        return (
+            f"모델 서버가 HTTP {diagnostic.reason_code.removeprefix('provider_http_')} "
+            "오류를 반환해 실행을 완료하지 못했습니다. 실제 변경은 수행되지 않았습니다."
+        )
+    if diagnostic.exception_kind in {"model_transport", "model_api_error"}:
+        return "모델 연결이 완료되지 않아 에이전트 실행을 종료했습니다."
+    if diagnostic.exception_kind == "tool_failure":
+        return "엔지니어링 도구 호출을 완료하지 못했습니다. 실행 기록을 확인해 주세요."
+    return "에이전트 내부 실행이 완료되지 않았습니다."
 
 
 def create_app(
@@ -9278,30 +9299,7 @@ def create_app(
                         diagnostic.exception_kind,
                         diagnostic.reason_code,
                     )
-                    if diagnostic.reason_code == "tool_call_budget":
-                        user_message = (
-                            "모델이 분석 도구 호출 예산을 소진해 결과를 저장하지 "
-                            "않았습니다. 실제 변경은 수행되지 않았습니다."
-                        )
-                    elif diagnostic.reason_code.startswith("provider_http_"):
-                        user_message = (
-                            f"모델 서버가 HTTP {diagnostic.reason_code.removeprefix('provider_http_')} "
-                            "오류를 반환해 실행을 완료하지 못했습니다. 실제 변경은 수행되지 않았습니다."
-                        )
-                    elif diagnostic.exception_kind in {
-                        "model_transport",
-                        "model_api_error",
-                    }:
-                        user_message = (
-                            "모델 연결이 완료되지 않아 에이전트 실행을 종료했습니다."
-                        )
-                    elif diagnostic.exception_kind == "tool_failure":
-                        user_message = (
-                            "엔지니어링 도구의 읽기 요청을 완료하지 못했습니다. "
-                            "실제 변경은 수행되지 않았습니다."
-                        )
-                    else:
-                        user_message = "에이전트 내부 실행이 완료되지 않았습니다."
+                    user_message = _agent_runtime_user_message(diagnostic)
                     error_code = f"agent_runtime_{diagnostic.reason_code}"
                     error_detail = (
                         "Agent runtime failed with a safe diagnostic: "
