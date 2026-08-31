@@ -332,6 +332,22 @@ started/completed 흐름은 아래 절차로 이어서 확인한다.
 실기 증거 없이 native/XG-SIM/PLC 성공을 문서 상태만으로 선언하지 않는다. Browser URL policy의
 PWA acceptance 미검증도, file-restore approval 대기도 이 절차로 해결된 것으로 주장하지 않는다.
 
+### 2026-08-31 현재 continuation evidence
+
+- MCP `0584ef5`는 LD horizontal/vertical scrollbar notification을 각 bar의 own parent로
+  보낸다. `4d549ed`는 `focus_location`을 CLI 경계로 옮겼고, CLI `d230d96` 및 `fa0ed95`는
+  public `focus-location` 명령을 제공한다. CLI 49건과 MCP focused 91건은 통과했다.
+- 실제 subprocess에 malformed focus request를 한 번 보냈을 때 `InputError`로 끝났고 UI는
+  열리지 않았다. 이는 live LD focus 성공 증거가 아니다.
+- `C:\XG5000\XG5000.exe`의 single `sky.launch_app`만 consent PID `12916`을 만들었다.
+  prompt는 뒤에 사라졌고 XG5000 process/window도 없었으며 원인은 아직 모른다. launch를
+  다시 시도하려면 새 사용자 `다시` 요청이 필요하고, 이 관측을 approval 거부라고 쓰지 않는다.
+- PWA Browser URL policy block은 계속 남아 있으며 우회하지 않는다. working-copy restore
+  approval은 아직 받지 못했고 quarantine도 유지한다.
+- native geometry는 아직 고치지 않았다. payload `739c...` snapshot `bd2300fece86`, token 18 /
+  row 0 / c94에서 modulo 33은 -1211을 내지만 raw 373은 증명되지 않았다. 1024 row stride만으로
+  modulo를 삭제하지 않는다.
+
 ## 반복하지 말아야 할 것
 
 - 기능마다 Host/Agent/MCP/Web에 서로 다른 상태 규칙을 복제하지 않는다. 권위가 있는
