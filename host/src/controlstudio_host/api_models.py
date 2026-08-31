@@ -3923,6 +3923,14 @@ class ResumeNativeProjectRequestV1(ApiModel):
     pid: int = Field(gt=0)
     hwnd: int = Field(gt=0)
     expected_request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reopened_pid: int | None = Field(default=None, gt=0)
+    reopened_hwnd: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def validate_reopened_target(self) -> ResumeNativeProjectRequestV1:
+        if (self.reopened_pid is None) != (self.reopened_hwnd is None):
+            raise ValueError("reopenedPid and reopenedHwnd must be supplied together")
+        return self
 
 
 class NativeProjectResumedV1(ApiModel):

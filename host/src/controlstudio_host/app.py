@@ -13764,8 +13764,8 @@ def create_app(
         operation = native_project_repository.get(native_project_id)
         if operation is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="native project operation not found")
-        if operation.state != "QUARANTINED":
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="only a quarantined native project can be resumed")
+        if operation.state not in {"QUARANTINED", "COMPLETED"}:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="only a quarantined or unbound completed native project can be resumed")
         holder_token = str(uuid.uuid4())
         try:
             store.acquire_target_operation_lease(
@@ -13783,6 +13783,8 @@ def create_app(
                 pid=body.pid,
                 hwnd=body.hwnd,
                 expected_request_digest=body.expected_request_digest,
+                reopened_pid=body.reopened_pid,
+                reopened_hwnd=body.reopened_hwnd,
             )
         except (NativeProjectConflict, NativeProjectPreconditionError) as exc:
             store.park_target_operation_lease(

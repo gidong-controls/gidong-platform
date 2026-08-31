@@ -497,7 +497,7 @@ def _stored_creation_receipt_matches_reviewed_build(
     expected_path: Path,
     destination: Path,
 ) -> bool:
-    """Prove that a checkpoint is the exact validated native-create receipt."""
+    """Prove that a checkpoint is the exact validated create or resume-build receipt."""
 
     try:
         build_bundle = request.get("buildBundle")
@@ -571,7 +571,7 @@ def _stored_creation_receipt_matches_reviewed_build(
         }
         return bool(
             result.get("identityVerified") is True
-            and result.get("operation") == "project.create_native"
+            and result.get("operation") in {"project.create_native", "project.resume_native"}
             and result.get("xg5000Pid") == request.get("xg5000Pid")
             and result.get("xg5000Hwnd") == request.get("xg5000Hwnd")
             and result.get("planDigest") == operation_plan_digest
@@ -2629,6 +2629,21 @@ class NativeProjectRepository:
             )
             return cursor.rowcount == 1
 
+    def begin_completed_verification(self, operation_id: str) -> bool:
+        """Re-open only the unbound verification tail of a completed build."""
+
+        timestamp = _utc_text(_utc_now())
+        with self._connection() as connection, connection:
+            cursor = connection.execute(
+                """
+                UPDATE native_project_operations
+                SET state = 'EXECUTING', completed_at = NULL, updated_at = ?
+                WHERE id = ? AND state = 'COMPLETED' AND plan_digest IS NOT NULL
+                """,
+                (timestamp, operation_id),
+            )
+            return cursor.rowcount == 1
+
     def checkpoint_execution(
         self,
         operation_id: str,
@@ -3511,30 +3526,37 @@ class NativeProjectService:
         result: dict[str, Any],
         created: bool,
         resume: bool,
+        registration: dict[str, Any] | None = None,
+        existing_session: dict[str, Any] | None = None,
+        reopen_verification: dict[str, Any] | None = None,
+        simulation_verification: dict[str, Any] | None = None,
     ) -> tuple[NativeProjectOperation, bool]:
         post_create_stage = "workspace_capture"
         try:
             post_create_stage = "operation_commit"
             self._repository.checkpoint_execution(spec.operation_id, result)
-            workspace_provenance = _new_build_workspace_provenance(
-                native_project_id=spec.operation_id,
-                build_bundle=build_bundle,
-                build_receipt=result["buildBundleReceipt"],
-                project_sha256=result["projectSha256"],
-            )
-            registration = await self._capture_workspace(
-                result["projectPath"],
-                result["projectSha256"],
-                provenance=workspace_provenance,
-            )
+            if registration is None:
+                workspace_provenance = _new_build_workspace_provenance(
+                    native_project_id=spec.operation_id,
+                    build_bundle=build_bundle,
+                    build_receipt=result["buildBundleReceipt"],
+                    project_sha256=result["projectSha256"],
+                )
+                registration = await self._capture_workspace(
+                    result["projectPath"],
+                    result["projectSha256"],
+                    provenance=workspace_provenance,
+                )
             result["workspaceRegistration"] = registration
             self._repository.checkpoint_execution(spec.operation_id, result)
             post_create_stage = "independent_reopen"
-            reopen_verification = await self._verify_fresh_process_reopen(
-                source_pid=spec.xg5000_pid,
-                registration=registration,
-                build_bundle=build_bundle,
-            )
+            if reopen_verification is None:
+                reopen_verification = await self._verify_fresh_process_reopen(
+                    source_pid=spec.xg5000_pid,
+                    registration=registration,
+                    build_bundle=build_bundle,
+                    existing_session=existing_session,
+                )
             result["reopenVerification"] = reopen_verification
             self._repository.checkpoint_execution(spec.operation_id, result)
             simulation_trial_id = _native_simulation_trial_id(
@@ -3542,11 +3564,12 @@ class NativeProjectService:
                 str(build_bundle["bundleId"]),
             )
             post_create_stage = "simulation_verification"
-            simulation_verification = await self._verify_native_simulation(
-                reopen_verification=reopen_verification,
-                build_bundle=build_bundle,
-                trial_id=simulation_trial_id,
-            )
+            if simulation_verification is None:
+                simulation_verification = await self._verify_native_simulation(
+                    reopen_verification=reopen_verification,
+                    build_bundle=build_bundle,
+                    trial_id=simulation_trial_id,
+                )
             result["simulationVerification"] = simulation_verification
             self._repository.checkpoint_execution(spec.operation_id, result)
             simulation_trial = simulation_verification.get("trial")
@@ -3608,6 +3631,443 @@ class NativeProjectService:
                 raise
             return operation, created
 
+    async def _continue_completed_verification(
+        self,
+        operation: NativeProjectOperation,
+        *,
+        actor_id: str,
+        pid: int,
+        hwnd: int,
+        expected_request_digest: str,
+        reopened_pid: int | None,
+        reopened_hwnd: int | None,
+    ) -> NativeProjectOperation:
+        """Retry only an unbound post-create tail against an existing fresh copy."""
+
+        if operation.request_digest != expected_request_digest:
+            raise NativeProjectConflict("native project resume request is stale")
+        request = operation.request
+        if pid != request.get("xg5000Pid") or hwnd != request.get("xg5000Hwnd"):
+            raise NativeProjectConflict("native project resume PID/HWND differs from the stored request")
+        build_bundle = request.get("buildBundle")
+        if not isinstance(build_bundle, dict) or not isinstance(operation.plan_digest, str):
+            raise NativeProjectConflict("completed native project has no stored reviewed build binding")
+        try:
+            destination = Path(operation.destination_directory).resolve()
+            spec = NativeProjectSpec(
+                operation_id=operation.operation_id,
+                project_name=str(request["projectName"]),
+                workspace_parent=Path(str(request["workspaceParent"])),
+                plc_series=str(request["plcSeries"]),
+                cpu_model=str(request["cpuModel"]),
+                program_name=str(request["programName"]),
+                language=str(request["language"]),
+                description=str(request["description"]),
+                xg5000_pid=pid,
+                xg5000_hwnd=hwnd,
+            )
+            expected_path = (destination / f"{spec.project_name}.xgwx").resolve()
+            native_request = _NativeProjectRequest(
+                project_name=spec.project_name,
+                destination_directory=destination,
+                plc_series=spec.plc_series,
+                cpu_type=spec.cpu_model,
+                program_name=spec.program_name,
+                program_language=spec.language,
+                description=_native_bundle_description(build_bundle),
+            )
+        except (KeyError, TypeError, ValueError, OSError) as exc:
+            raise NativeProjectConflict("stored completed native-project binding is invalid") from exc
+        if _native_project_plan_digest(
+            native_request, pid=pid, hwnd=hwnd, build_bundle=build_bundle
+        ) != operation.plan_digest:
+            raise NativeProjectConflict("stored native project plan digest is stale")
+        result = dict(operation.result)
+        registration = result.get("workspaceRegistration")
+        reopen = result.get("reopenVerification")
+        simulation = result.get("simulationVerification")
+        if (
+            result.get("engineeredProgramReady") is True
+            or result.get("workspaceBound") is True
+            or not isinstance(registration, dict)
+            or registration.get("state") != "captured_not_bound"
+            or not isinstance(registration.get("workspace"), dict)
+            or not isinstance(reopen, dict)
+            or not _stored_creation_receipt_matches_reviewed_build(
+                result,
+                request=request,
+                operation_plan_digest=operation.plan_digest,
+                expected_path=expected_path,
+                destination=destination,
+            )
+        ):
+            raise NativeProjectConflict(
+                "completed native project is not an exact unbound post-create verification candidate"
+            )
+        reuse_verified_reopen = reopen.get("state") == "verified"
+        if reuse_verified_reopen:
+            existing_session = reopen.get("session")
+            working = registration["workspace"].get("working_copy")
+            if not isinstance(working, dict) or not self._controlled_reopen_session_matches(
+                existing_session,
+                pid=int(existing_session.get("pid") or 0)
+                if isinstance(existing_session, dict)
+                else 0,
+                hwnd=int(existing_session.get("hwnd") or 0)
+                if isinstance(existing_session, dict)
+                else 0,
+                project_path=str(working.get("path") or ""),
+                project_hash=str(working.get("current_sha256") or "").casefold(),
+            ):
+                raise NativeProjectConflict(
+                    "completed native project lost its verified controlled reopen session"
+                )
+            if (
+                (reopened_pid is not None and reopened_pid != existing_session["pid"])
+                or (reopened_hwnd is not None and reopened_hwnd != existing_session["hwnd"])
+            ):
+                raise NativeProjectConflict(
+                    "reopened PID/HWND differs from the stored verified reopen session"
+                )
+        else:
+            if reopened_pid is None or reopened_hwnd is None:
+                raise NativeProjectConflict(
+                    "unbound completed native project resume requires the existing reopened PID/HWND"
+                )
+            existing_session = await self._rebind_completed_reopen_target(
+                operation=operation,
+                actor_id=actor_id,
+                source_pid=pid,
+                reopened_pid=reopened_pid,
+                reopened_hwnd=reopened_hwnd,
+                registration=registration,
+            )
+        assert isinstance(existing_session, dict)
+        resolved_reopened_pid = int(existing_session["pid"])
+        resolved_reopened_hwnd = int(existing_session["hwnd"])
+        if not self._repository.begin_completed_verification(operation.operation_id):
+            raise NativeProjectConflict("native project changed before completed verification continuation")
+        result["resumeProvenance"] = {
+            "lifecycleMode": "completed_post_create_verification_continuation",
+            "noNewDialog": True,
+            "noIlInsert": True,
+            "reusedControlledReopen": {
+                "pid": resolved_reopened_pid,
+                "hwnd": resolved_reopened_hwnd,
+            },
+        }
+        return (
+            await self._complete_verified_native_tail(
+                spec,
+                build_bundle=build_bundle,
+                result=result,
+                created=False,
+                resume=True,
+                registration=registration,
+                existing_session=existing_session,
+                reopen_verification=reopen if reuse_verified_reopen else None,
+                simulation_verification=(
+                    simulation
+                    if isinstance(simulation, dict)
+                    and simulation.get("state") == "verified"
+                    else None
+                ),
+            )
+        )[0]
+
+    async def _rebind_completed_reopen_target(
+        self,
+        *,
+        operation: NativeProjectOperation,
+        actor_id: str,
+        source_pid: int,
+        reopened_pid: int,
+        reopened_hwnd: int,
+        registration: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Rebind one persisted controlled workspace process without launching another."""
+
+        workspace = registration.get("workspace")
+        working = workspace.get("working_copy") if isinstance(workspace, dict) else None
+        if not isinstance(working, dict) or not isinstance(workspace, dict):
+            raise NativeProjectConflict("completed native project has no protected working-copy binding")
+        project_path = str(working.get("path") or "")
+        project_hash = str(working.get("current_sha256") or "").casefold()
+        workspace_id = str(workspace.get("workspace_id") or "")
+        revision_id = str(workspace.get("revision_id") or "")
+        provenance = validated_new_build_workspace_provenance(operation, workspace)
+        build_receipt = operation.result.get("buildBundleReceipt")
+        if (
+            provenance is None
+            or not isinstance(build_receipt, dict)
+            or not _is_canonical_uuid(workspace_id)
+            or not _is_canonical_uuid(revision_id)
+        ):
+            raise NativeProjectConflict(
+                "completed native project has no exact saved-build workspace lineage"
+            )
+        raw_instances = await self._gateway.call_read_tool("xg5000.instances", {})
+        instances = raw_instances.get("instances") if isinstance(raw_instances, dict) else None
+        if not isinstance(instances, list):
+            raise NativeProjectConflict("MCP returned an invalid XG5000 instance list")
+        matches = [
+            item
+            for item in instances
+            if isinstance(item, dict)
+            and item.get("pid") == reopened_pid
+            and item.get("hwnd") == reopened_hwnd
+            and item.get("visible") is True
+        ]
+        if len(matches) != 1:
+            raise NativeProjectConflict("the requested reopened XG5000 PID/HWND is unavailable")
+        attached = await self._gateway.call_read_tool(
+            "xg5000.attach",
+            {
+                "pid": reopened_pid,
+                "hwnd": reopened_hwnd,
+                "project_path": project_path,
+                "project_hash": project_hash,
+                "workspace_id": workspace_id,
+                "access_profile": "analysis",
+            },
+        )
+        observed_session = (
+            attached.get("session")
+            if isinstance(attached, dict) and isinstance(attached.get("session"), dict)
+            else attached
+        )
+        observed_identity = (
+            observed_session.get("metadata", {}).get("project_identity_proof")
+            if isinstance(observed_session, dict)
+            and isinstance(observed_session.get("metadata"), dict)
+            else None
+        )
+        if reopened_pid == source_pid or not self._selected_native_file_identity_matches(
+            observed_session,
+            proof=observed_identity,
+            pid=reopened_pid,
+            hwnd=reopened_hwnd,
+            project_path=project_path,
+            project_hash=project_hash,
+        ):
+            raise NativeProjectConflict(
+                "the requested reopened XG5000 process lacks exact current workspace identity"
+            )
+        assert isinstance(observed_identity, dict)
+        observed_metadata = observed_session.get("metadata")
+        assert isinstance(observed_metadata, dict)
+        target_process_create_time = float(observed_identity["process_create_time"])
+        title = str(observed_metadata["title"])
+        issued_at = _utc_now()
+        authorization = self._gateway.sign_mutation_authorization(
+            {
+                "schema": "controlstudio-native-session-resume-authorization/v3",
+                "authorization_id": str(uuid.uuid4()),
+                "actor_id": actor_id,
+                "native_project_id": operation.id,
+                "build_receipt_digest": _json_digest(build_receipt),
+                "workspace_provenance_receipt_digest": provenance["receipt_digest"],
+                "workspace_id": workspace_id,
+                "revision_id": revision_id,
+                "pid": reopened_pid,
+                "hwnd": reopened_hwnd,
+                "project_path": project_path,
+                "project_hash": project_hash,
+                "process_create_time": target_process_create_time,
+                "title": title,
+                "purpose": "saved_build_reopen_readback",
+                "capability": "analysis_saved_build_reopen_resume",
+                "allowed_operation": "xg5000.attach",
+                "issued_at": issued_at.isoformat(timespec="milliseconds"),
+                "expires_at": (issued_at + timedelta(minutes=2)).isoformat(
+                    timespec="milliseconds"
+                ),
+                "nonce": str(uuid.uuid4()),
+            }
+        )
+        rebound = await self._gateway.call_read_tool(
+            "xg5000.attach",
+            {
+                "pid": reopened_pid,
+                "hwnd": reopened_hwnd,
+                "project_path": project_path,
+                "project_hash": project_hash,
+                "workspace_id": workspace_id,
+                "resume_authorization": authorization,
+                "access_profile": "analysis",
+            },
+        )
+        session = (
+            rebound.get("session")
+            if isinstance(rebound, dict) and isinstance(rebound.get("session"), dict)
+            else rebound
+        )
+        if not self._controlled_reopen_session_matches(
+            session,
+            pid=reopened_pid,
+            hwnd=reopened_hwnd,
+            project_path=project_path,
+            project_hash=project_hash,
+            saved_build_reopen_authorization=authorization,
+        ):
+            raise NativeProjectConflict(
+                "the requested reopened XG5000 process rejected the saved-build read-only binding"
+            )
+        return session
+
+    @staticmethod
+    def _selected_native_file_identity_matches(
+        session: object,
+        *,
+        proof: object,
+        pid: int,
+        hwnd: int,
+        project_path: str,
+        project_hash: str,
+    ) -> bool:
+        """Accept only the current selected-process native-file proof before signing v3."""
+
+        return bool(
+            isinstance(session, dict)
+            and session.get("pid") == pid
+            and session.get("hwnd") == hwnd
+            and _canonical_path(Path(str(session.get("project_path") or "")))
+            == _canonical_path(Path(project_path))
+            and str(session.get("project_hash") or "").casefold() == project_hash
+            and isinstance(session.get("metadata"), dict)
+            and isinstance(session["metadata"].get("title"), str)
+            and bool(session["metadata"]["title"].strip())
+            and isinstance(proof, dict)
+            and proof.get("method") == "selected_pid_exact_window_title_native_file_use_v1"
+            and proof.get("pid") == pid
+            and proof.get("main_hwnd") == hwnd
+            and _canonical_path(Path(str(proof.get("project_path") or "")))
+            == _canonical_path(Path(project_path))
+            and str(proof.get("project_hash") or "").casefold() == project_hash
+            and isinstance(proof.get("process_create_time"), (int, float))
+            and not isinstance(proof.get("process_create_time"), bool)
+            and float(proof["process_create_time"]) > 0
+        )
+
+    @staticmethod
+    def _controlled_reopen_session_matches(
+        session: object,
+        *,
+        pid: int,
+        hwnd: int,
+        project_path: str,
+        project_hash: str,
+        saved_build_reopen_authorization: dict[str, Any] | None = None,
+    ) -> bool:
+        """Require retained controlled-launch evidence plus current exact identity."""
+
+        if not isinstance(session, dict):
+            return False
+        metadata = session.get("metadata")
+        if not isinstance(metadata, dict):
+            return False
+        if (
+            session.get("pid") != pid
+            or session.get("hwnd") != hwnd
+            or _canonical_path(Path(str(session.get("project_path") or "")))
+            != _canonical_path(Path(project_path))
+            or str(session.get("project_hash") or "").casefold() != project_hash
+            or metadata.get("project_identity_read_only_bound_to_selected_pid") is not True
+            or metadata.get("project_identity_assurance")
+            not in {"controlled_launch_read_only", "strong_readback"}
+        ):
+            return False
+        proof = metadata.get("controlled_open_read_proof")
+        controlled_open = bool(
+            isinstance(proof, dict)
+            and proof.get("method") == "controlled_open_verified_cli_receipt_v3"
+            and proof.get("pid") == pid
+            and proof.get("main_hwnd") == hwnd
+            and isinstance(proof.get("process_create_time"), (int, float))
+            and not isinstance(proof.get("process_create_time"), bool)
+            and float(proof["process_create_time"]) > 0
+            and str(proof.get("project_hash") or "").casefold() == project_hash
+            and _canonical_path(Path(str(proof.get("project_path") or "")))
+            == _canonical_path(Path(project_path))
+        )
+        if controlled_open:
+            return True
+        saved_build_resume = metadata.get("saved_build_reopen_resume")
+        if saved_build_reopen_authorization is not None:
+            expected_keys = {
+                "schema",
+                "authorization_id",
+                "actor_id",
+                "native_project_id",
+                "build_receipt_digest",
+                "workspace_provenance_receipt_digest",
+                "workspace_id",
+                "revision_id",
+                "pid",
+                "hwnd",
+                "project_path",
+                "project_hash",
+                "process_create_time",
+                "title",
+                "purpose",
+                "capability",
+                "allowed_operation",
+            }
+            return bool(
+                metadata.get("project_identity_assurance") == "controlled_launch_read_only"
+                and isinstance(saved_build_resume, dict)
+                and all(
+                    saved_build_resume.get(key) == saved_build_reopen_authorization.get(key)
+                    for key in expected_keys
+                )
+            )
+        if isinstance(saved_build_resume, dict):
+            return bool(
+                metadata.get("project_identity_assurance") == "controlled_launch_read_only"
+                and saved_build_resume.get("schema")
+                == "controlstudio-native-session-resume-authorization/v3"
+                and saved_build_resume.get("purpose") == "saved_build_reopen_readback"
+                and saved_build_resume.get("capability")
+                == "analysis_saved_build_reopen_resume"
+                and saved_build_resume.get("allowed_operation") == "xg5000.attach"
+                and saved_build_resume.get("pid") == pid
+                and saved_build_resume.get("hwnd") == hwnd
+                and str(saved_build_resume.get("project_hash") or "").casefold()
+                == project_hash
+                and _canonical_path(Path(str(saved_build_resume.get("project_path") or "")))
+                == _canonical_path(Path(project_path))
+                and isinstance(saved_build_resume.get("process_create_time"), (int, float))
+                and not isinstance(saved_build_resume.get("process_create_time"), bool)
+                and float(saved_build_resume["process_create_time"]) > 0
+            )
+        native_trial_resume = metadata.get("native_trial_resume")
+        project_proof = metadata.get("project_identity_proof")
+        return bool(
+            isinstance(native_trial_resume, dict)
+            and isinstance(project_proof, dict)
+            and project_proof.get("method") == "same_rot_object_project_tree_and_path_v1"
+            and project_proof.get("same_active_object") is True
+            and project_proof.get("stable_repeat") is True
+            and project_proof.get("pid") == pid
+            and project_proof.get("main_hwnd") == hwnd
+            and str(project_proof.get("project_hash") or "").casefold() == project_hash
+            and _canonical_path(Path(str(project_proof.get("project_path") or "")))
+            == _canonical_path(Path(project_path))
+            and isinstance(project_proof.get("process_create_time"), (int, float))
+            and not isinstance(project_proof.get("process_create_time"), bool)
+            and float(project_proof["process_create_time"]) > 0
+            and native_trial_resume.get("source_kind") == "new_build"
+            and native_trial_resume.get("pid") == pid
+            and native_trial_resume.get("main_hwnd") == hwnd
+            and str(native_trial_resume.get("project_hash") or "").casefold()
+            == project_hash
+            and _canonical_path(Path(str(native_trial_resume.get("project_path") or "")))
+            == _canonical_path(Path(project_path))
+            and isinstance(native_trial_resume.get("process_create_time"), (int, float))
+            and not isinstance(native_trial_resume.get("process_create_time"), bool)
+            and float(native_trial_resume["process_create_time"]) > 0
+        )
+
     async def resume(
         self,
         operation_id: str,
@@ -3616,11 +4076,25 @@ class NativeProjectService:
         pid: int,
         hwnd: int,
         expected_request_digest: str,
+        reopened_pid: int | None = None,
+        reopened_hwnd: int | None = None,
     ) -> NativeProjectOperation:
         """Resume only post-dialog verification for one quarantined native create."""
 
         operation = self._repository.get(operation_id)
-        if operation is None or operation.state != "QUARANTINED":
+        if operation is None:
+            raise NativeProjectConflict("native project operation was not found")
+        if operation.state == "COMPLETED":
+            return await self._continue_completed_verification(
+                operation,
+                actor_id=actor_id,
+                pid=pid,
+                hwnd=hwnd,
+                expected_request_digest=expected_request_digest,
+                reopened_pid=reopened_pid,
+                reopened_hwnd=reopened_hwnd,
+            )
+        if operation.state != "QUARANTINED":
             raise NativeProjectConflict("only a quarantined native project can be resumed")
         if operation.request_digest != expected_request_digest:
             raise NativeProjectConflict("native project resume request is stale")
@@ -4883,6 +5357,7 @@ class NativeProjectService:
         source_pid: int,
         registration: dict[str, Any],
         build_bundle: dict[str, Any],
+        existing_session: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         workspace = registration.get("workspace")
         compiled = build_bundle.get("compiledProgram")
@@ -4927,65 +5402,67 @@ class NativeProjectService:
         reviewed_plan_digest = str(reviewed.get("planDigest") or "").casefold()
         program_name = str(compiled.get("programName") or "")
         try:
-            launch = await self._gateway.call_workspace_tool(
-                "xg5000.open_project",
-                {
-                    "workspace_id": workspace_id,
-                    "expected_working_hash": project_hash,
-                    "independent_from_pid": source_pid,
-                    "timeout_seconds": 60.0,
-                },
-            )
-            if not isinstance(launch, dict):
-                raise NativeProjectEvidenceError(
-                    "fresh-process XG5000 launch result is not an object"
+            if existing_session is None:
+                launch = await self._gateway.call_workspace_tool(
+                    "xg5000.open_project",
+                    {
+                        "workspace_id": workspace_id,
+                        "expected_working_hash": project_hash,
+                        "independent_from_pid": source_pid,
+                        "timeout_seconds": 60.0,
+                    },
                 )
-            instance = launch.get("instance")
-            if (
-                launch.get("ok") is not True
-                or launch.get("verified") is not True
-                or launch.get("identity_assurance") != "controlled_launch_read_only"
-                or launch.get("independent_from_pid") != source_pid
-                or launch.get("process_is_independent") is not True
-                or launch.get("working_path") != project_path
-                or launch.get("working_hash") != project_hash
-                or not isinstance(instance, dict)
-            ):
-                raise NativeProjectEvidenceError(
-                    "MCP did not prove an independent fresh-process working-copy open"
+                if not isinstance(launch, dict):
+                    raise NativeProjectEvidenceError(
+                        "fresh-process XG5000 launch result is not an object"
+                    )
+                instance = launch.get("instance")
+                if (
+                    launch.get("ok") is not True
+                    or launch.get("verified") is not True
+                    or launch.get("identity_assurance") != "controlled_launch_read_only"
+                    or launch.get("independent_from_pid") != source_pid
+                    or launch.get("process_is_independent") is not True
+                    or launch.get("working_path") != project_path
+                    or launch.get("working_hash") != project_hash
+                    or not isinstance(instance, dict)
+                ):
+                    raise NativeProjectEvidenceError(
+                        "MCP did not prove an independent fresh-process working-copy open"
+                    )
+                reopened_pid = int(instance["pid"])
+                reopened_hwnd = int(instance["hwnd"])
+                attached = await self._gateway.call_read_tool(
+                    "xg5000.attach",
+                    {
+                        "pid": reopened_pid,
+                        "hwnd": reopened_hwnd,
+                        "project_path": project_path,
+                        "project_hash": project_hash,
+                        "workspace_id": workspace_id,
+                        "access_profile": "analysis",
+                    },
                 )
-            reopened_pid = int(instance["pid"])
-            reopened_hwnd = int(instance["hwnd"])
+                session = (
+                    attached.get("session")
+                    if isinstance(attached, dict) and isinstance(attached.get("session"), dict)
+                    else attached
+                )
+            else:
+                launch = {"reused_existing_controlled_process": True}
+                session = existing_session
+                reopened_pid = int(session.get("pid") or 0)
+                reopened_hwnd = int(session.get("hwnd") or 0)
             if reopened_pid <= 0 or reopened_hwnd <= 0 or reopened_pid == source_pid:
                 raise NativeProjectEvidenceError(
                     "fresh-process XG5000 identity was not independent"
                 )
-            attached = await self._gateway.call_read_tool(
-                "xg5000.attach",
-                {
-                    "pid": reopened_pid,
-                    "hwnd": reopened_hwnd,
-                    "project_path": project_path,
-                    "project_hash": project_hash,
-                    "workspace_id": workspace_id,
-                    "access_profile": "analysis",
-                },
-            )
-            session = (
-                attached.get("session")
-                if isinstance(attached, dict) and isinstance(attached.get("session"), dict)
-                else attached
-            )
-            if (
-                not isinstance(session, dict)
-                or session.get("pid") != reopened_pid
-                or session.get("hwnd") != reopened_hwnd
-                or _canonical_path(Path(str(session.get("project_path") or "")))
-                != _canonical_path(Path(project_path))
-                or str(session.get("project_hash") or "").casefold() != project_hash
-                or not isinstance(session.get("metadata"), dict)
-                or session["metadata"].get("project_identity_assurance")
-                != "controlled_launch_read_only"
+            if not self._controlled_reopen_session_matches(
+                session,
+                pid=reopened_pid,
+                hwnd=reopened_hwnd,
+                project_path=project_path,
+                project_hash=project_hash,
             ):
                 raise NativeProjectEvidenceError(
                     "fresh-process attach did not preserve the controlled workspace identity"

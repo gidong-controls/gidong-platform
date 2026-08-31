@@ -8,19 +8,22 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
+from pydantic import ValidationError
+
+from controlstudio_host.api_models import ResumeNativeProjectRequestV1
 from controlstudio_host.native_projects import (
     NativeProjectConflict,
     NativeProjectOperation,
     NativeProjectPreconditionError,
     NativeProjectService,
     NativeProjectSpec,
-    _NativeProjectRequest,
     _native_project_plan_digest,
+    _NativeProjectRequest,
     _require_empty_native_project_destination,
+    _stored_creation_receipt_matches_reviewed_build,
     _validate_native_project_request,
 )
 from controlstudio_host.store import HostStore
-
 
 _REQUEST_DIGEST = "a" * 64
 _PLAN_DIGEST = "b" * 64
@@ -65,6 +68,10 @@ class _Repository:
         self.operation = replace(self.operation, state="EXECUTING")
         return True
 
+    def begin_completed_verification(self, _operation_id: str) -> bool:
+        self.operation = replace(self.operation, state="EXECUTING")
+        return True
+
     def quarantine(self, _operation_id: str, *, error_code: str, error_detail: str, result: dict):
         self.operation = replace(
             self.operation,
@@ -100,6 +107,27 @@ class _Gateway:
 
 
 class NativeProjectResumeTests(unittest.IsolatedAsyncioTestCase):
+    def test_completed_tail_reopened_target_fields_are_paired(self) -> None:
+        with self.assertRaises(ValidationError):
+            ResumeNativeProjectRequestV1.model_validate(
+                {
+                    "pid": 101,
+                    "hwnd": 202,
+                    "expectedRequestDigest": _REQUEST_DIGEST,
+                    "reopenedPid": 303,
+                }
+            )
+        request = ResumeNativeProjectRequestV1.model_validate(
+            {
+                "pid": 101,
+                "hwnd": 202,
+                "expectedRequestDigest": _REQUEST_DIGEST,
+                "reopenedPid": 303,
+                "reopenedHwnd": 404,
+            }
+        )
+        self.assertEqual((request.reopened_pid, request.reopened_hwnd), (303, 404))
+
     def test_plan_digest_is_stable_after_the_destination_becomes_populated(self) -> None:
         with TemporaryDirectory() as temporary:
             destination = Path(temporary).resolve()
@@ -265,6 +293,262 @@ class NativeProjectResumeTests(unittest.IsolatedAsyncioTestCase):
         capture.assert_awaited_once()
         reopen.assert_awaited_once()
         simulation.assert_awaited_once()
+
+    async def test_completed_unbound_resume_reuses_only_the_controlled_reopen_tail(self) -> None:
+        repository = _Repository()
+        repository.operation = replace(
+            repository.operation,
+            state="COMPLETED",
+            result={
+                "identityVerified": True,
+                "projectPath": "C:/work/ResumeProject-000000000000/ResumeProject.xgwx",
+                "projectSha256": "d" * 64,
+                "buildBundleReceipt": {"receipt": True},
+                "engineeredProgramReady": False,
+                "workspaceBound": False,
+                "workspaceRegistration": {
+                    "state": "captured_not_bound",
+                    "workspace": {"workspace_id": "workspace-1", "working_copy": {}},
+                },
+                "reopenVerification": {"state": "not_verified"},
+                "simulationVerification": {"state": "not_verified"},
+            },
+        )
+        gateway = _Gateway()
+        service = NativeProjectService(repository, gateway)  # type: ignore[arg-type]
+        existing_session = {"session_id": "fresh-session", "pid": 303, "hwnd": 404}
+        reopened = {
+            "state": "verified",
+            "workspace": repository.operation.result["workspaceRegistration"]["workspace"],
+            "session": existing_session,
+        }
+        simulation = {
+            "state": "not_verified",
+            "detail": "XG-SIM is not yet observed",
+        }
+        with (
+            patch("controlstudio_host.native_projects._native_project_plan_digest", return_value=_PLAN_DIGEST),
+            patch("controlstudio_host.native_projects._native_bundle_description", return_value="reviewed"),
+            patch("controlstudio_host.native_projects._stored_creation_receipt_matches_reviewed_build", return_value=True),
+            patch.object(service, "_rebind_completed_reopen_target", new=AsyncMock(return_value=existing_session)) as rebind,
+            patch.object(service, "_verify_fresh_process_reopen", new=AsyncMock(return_value=reopened)) as verify,
+            patch.object(service, "_verify_native_simulation", new=AsyncMock(return_value=simulation)) as verify_sim,
+        ):
+            operation = await service.resume(
+                _OPERATION_ID,
+                actor_id="actor-1",
+                pid=101,
+                hwnd=202,
+                expected_request_digest=_REQUEST_DIGEST,
+                reopened_pid=303,
+                reopened_hwnd=404,
+            )
+
+        self.assertEqual(operation.state, "COMPLETED")
+        self.assertFalse(operation.result["engineeredProgramReady"])
+        self.assertEqual(
+            operation.result["resumeProvenance"],
+            {
+                "lifecycleMode": "completed_post_create_verification_continuation",
+                "noNewDialog": True,
+                "noIlInsert": True,
+                "reusedControlledReopen": {"pid": 303, "hwnd": 404},
+            },
+        )
+        rebind.assert_awaited_once()
+        verify.assert_awaited_once()
+        self.assertEqual(verify.await_args.kwargs["existing_session"], existing_session)
+        verify_sim.assert_awaited_once()
+        self.assertEqual(gateway.workspace_calls, [])
+
+    async def test_completed_rebind_signs_and_requires_saved_build_read_only_binding(self) -> None:
+        """A current file-use observation is not itself controlled-launch authority."""
+
+        repository = _Repository()
+        project_hash = "d" * 64
+        workspace_id = "22222222-2222-4222-8222-222222222222"
+        revision_id = "33333333-3333-4333-8333-333333333333"
+        project_path = "C:/work/ResumeProject-000000000000/ResumeProject.xgwx"
+        repository.operation = replace(
+            repository.operation,
+            state="COMPLETED",
+            result={"buildBundleReceipt": {"receipt": True}},
+        )
+        gateway = _Gateway()
+        service = NativeProjectService(repository, gateway)  # type: ignore[arg-type]
+        observed = {
+            "session_id": "observed",
+            "pid": 303,
+            "hwnd": 404,
+            "project_path": project_path,
+            "project_hash": project_hash,
+            "metadata": {
+                "title": "ResumeProject - XG5000",
+                "project_identity_proof": {
+                    "method": "selected_pid_exact_window_title_native_file_use_v1",
+                    "pid": 303,
+                    "main_hwnd": 404,
+                    "project_path": project_path,
+                    "project_hash": project_hash,
+                    "process_create_time": 123.0,
+                }
+            },
+        }
+
+        seen_authorizations: list[dict] = []
+
+        async def read_tool(name: str, arguments: dict) -> dict:
+            if name == "xg5000.instances":
+                return {"instances": [{"pid": 303, "hwnd": 404, "visible": True}]}
+            self.assertEqual(name, "xg5000.attach")
+            if "resume_authorization" not in arguments:
+                return {"session": observed}
+            authorization = arguments["resume_authorization"]
+            seen_authorizations.append(authorization)
+            return {
+                "session": {
+                    "session_id": "saved-build-bound",
+                    "pid": 303,
+                    "hwnd": 404,
+                    "project_path": project_path,
+                    "project_hash": project_hash,
+                    "metadata": {
+                        "project_identity_read_only_bound_to_selected_pid": True,
+                        "project_identity_assurance": "controlled_launch_read_only",
+                        "saved_build_reopen_resume": {
+                            key: value
+                            for key, value in authorization.items()
+                            if key != "signature"
+                        },
+                    },
+                }
+            }
+
+        gateway.call_read_tool = read_tool  # type: ignore[attr-defined]
+        registration = {
+            "workspace": {
+                "workspace_id": workspace_id,
+                "revision_id": revision_id,
+                "working_copy": {"path": project_path, "current_sha256": project_hash},
+            }
+        }
+        provenance = {"receipt_digest": "e" * 64}
+        with patch(
+            "controlstudio_host.native_projects.validated_new_build_workspace_provenance",
+            return_value=provenance,
+        ):
+            session = await service._rebind_completed_reopen_target(
+                operation=repository.operation,
+                actor_id="actor-1",
+                source_pid=101,
+                reopened_pid=303,
+                reopened_hwnd=404,
+                registration=registration,
+        )
+
+        self.assertEqual(session["session_id"], "saved-build-bound")
+        # _Gateway preserves claims directly; inspect the rebind request to avoid
+        # accepting a live file-use observation as a controlled binding.
+        self.assertEqual(len(seen_authorizations), 1)
+        self.assertEqual(seen_authorizations[0]["native_project_id"], _OPERATION_ID)
+        self.assertNotIn("trial_id", seen_authorizations[0])
+        self.assertNotIn("receipt_digest", seen_authorizations[0])
+        self.assertEqual(session["metadata"]["saved_build_reopen_resume"]["schema"], "controlstudio-native-session-resume-authorization/v3")
+        self.assertEqual(session["metadata"]["saved_build_reopen_resume"]["purpose"], "saved_build_reopen_readback")
+        self.assertEqual(
+            session["metadata"]["saved_build_reopen_resume"]["build_receipt_digest"],
+            seen_authorizations[0]["build_receipt_digest"],
+        )
+
+    async def test_completed_unbound_resume_rejects_before_tail_without_reopened_target(self) -> None:
+        repository = _Repository()
+        repository.operation = replace(
+            repository.operation,
+            state="COMPLETED",
+            result={
+                "identityVerified": True,
+                "projectPath": "C:/work/ResumeProject-000000000000/ResumeProject.xgwx",
+                "projectSha256": "d" * 64,
+                "buildBundleReceipt": {"receipt": True},
+                "engineeredProgramReady": False,
+                "workspaceBound": False,
+                "workspaceRegistration": {
+                    "state": "captured_not_bound",
+                    "workspace": {"workspace_id": "workspace-1", "working_copy": {}},
+                },
+                "reopenVerification": {"state": "not_verified"},
+            },
+        )
+        gateway = _Gateway()
+        service = NativeProjectService(repository, gateway)  # type: ignore[arg-type]
+
+        with (
+            patch("controlstudio_host.native_projects._native_project_plan_digest", return_value=_PLAN_DIGEST),
+            patch("controlstudio_host.native_projects._native_bundle_description", return_value="reviewed"),
+            patch("controlstudio_host.native_projects._stored_creation_receipt_matches_reviewed_build", return_value=True),
+            self.assertRaisesRegex(NativeProjectConflict, "reopened PID/HWND"),
+        ):
+            await service.resume(
+                _OPERATION_ID,
+                actor_id="actor-1",
+                pid=101,
+                hwnd=202,
+                expected_request_digest=_REQUEST_DIGEST,
+            )
+
+        self.assertEqual(repository.operation.state, "COMPLETED")
+        self.assertEqual(gateway.workspace_calls, [])
+
+    async def test_completed_resume_reuses_verified_reopen_and_pending_trial(self) -> None:
+        repository = _Repository()
+        session = {"session_id": "fresh-session", "pid": 303, "hwnd": 404}
+        registration = {
+            "state": "captured_not_bound",
+            "workspace": {"workspace_id": "workspace-1", "working_copy": {}},
+        }
+        reopen = {"state": "verified", "workspace": registration["workspace"], "session": session}
+        simulation = {"state": "verified", "trial": {"state": "OBSERVING"}}
+        repository.operation = replace(
+            repository.operation,
+            state="COMPLETED",
+            result={
+                "identityVerified": True,
+                "projectPath": "C:/work/ResumeProject-000000000000/ResumeProject.xgwx",
+                "projectSha256": "d" * 64,
+                "buildBundleReceipt": {"receipt": True},
+                "engineeredProgramReady": False,
+                "workspaceBound": False,
+                "workspaceRegistration": registration,
+                "reopenVerification": reopen,
+                "simulationVerification": simulation,
+            },
+        )
+        gateway = _Gateway()
+        service = NativeProjectService(repository, gateway)  # type: ignore[arg-type]
+        final = replace(repository.operation, state="COMPLETED")
+        with (
+            patch("controlstudio_host.native_projects._native_project_plan_digest", return_value=_PLAN_DIGEST),
+            patch("controlstudio_host.native_projects._native_bundle_description", return_value="reviewed"),
+            patch("controlstudio_host.native_projects._stored_creation_receipt_matches_reviewed_build", return_value=True),
+            patch.object(service, "_controlled_reopen_session_matches", return_value=True),
+            patch.object(service, "_verify_fresh_process_reopen", new=AsyncMock()) as verify,
+            patch.object(service, "_verify_native_simulation", new=AsyncMock()) as verify_sim,
+            patch.object(service, "_complete_verified_native_tail", new=AsyncMock(return_value=(final, False))) as tail,
+        ):
+            operation = await service.resume(
+                _OPERATION_ID,
+                actor_id="actor-1",
+                pid=101,
+                hwnd=202,
+                expected_request_digest=_REQUEST_DIGEST,
+            )
+
+        self.assertEqual(operation.state, "COMPLETED")
+        verify.assert_not_awaited()
+        verify_sim.assert_not_awaited()
+        self.assertEqual(tail.await_args.kwargs["reopen_verification"], reopen)
+        self.assertEqual(tail.await_args.kwargs["simulation_verification"], simulation)
+        self.assertEqual(gateway.workspace_calls, [])
 
     async def test_resume_signing_failure_returns_to_quarantine_without_dispatch(self) -> None:
         repository = _Repository()
@@ -439,6 +723,25 @@ class NativeProjectResumeTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(result["resumeProvenance"]["mcp"]["observed_program_name"], "MainProgram")
             self.assertEqual(raw["program_apply"]["program_check"], check_data)
+            with patch("controlstudio_host.native_projects._native_bundle_description", return_value="reviewed"):
+                self.assertTrue(
+                    _stored_creation_receipt_matches_reviewed_build(
+                        result,
+                        request={
+                            "xg5000Pid": 101,
+                            "xg5000Hwnd": 202,
+                            "projectName": "ResumeProject",
+                            "plcSeries": "XGK",
+                            "cpuModel": "XGK-CPUH",
+                            "programName": "MainProgram",
+                            "language": "LD",
+                            "buildBundle": bundle,
+                        },
+                        operation_plan_digest=plan_digest,
+                        expected_path=project,
+                        destination=destination,
+                    )
+                )
 
 
 if __name__ == "__main__":
