@@ -19,6 +19,7 @@ from controlstudio_host.native_projects import (
     NativeProjectSpec,
     _native_project_plan_digest,
     _NativeProjectRequest,
+    _pre_dispatch_native_simulation_failure,
     _require_empty_native_project_destination,
     _stored_creation_receipt_matches_reviewed_build,
     _validate_native_project_request,
@@ -107,6 +108,228 @@ class _Gateway:
 
 
 class NativeProjectResumeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_typed_pre_dispatch_simulation_failure_remains_resumable(self) -> None:
+        raw = {
+            "ok": False,
+            "verified": False,
+            "operation": "project.verify_native_simulation",
+            "project_unchanged": True,
+            "controllerConnected": False,
+            "plcWritePerformed": False,
+            "simulation_failure": {
+                "schemaVersion": "controlstudio-native-simulation-failure/v1",
+                "classification": "PRE_DISPATCH_READ_FAILURE",
+                "phase": "target_status_before_program_write",
+                "detail": "XG5000_UIA_TIMEOUT: target status read timed out",
+                "runtimeError": {
+                    "code": "XG5000_UIA_TIMEOUT",
+                    "workerOperation": "inspect_buttons",
+                    "timeoutSeconds": 4.0,
+                    "dispatchState": "not_applicable",
+                },
+                "dispatch": {
+                    "simulatorStart": "not_attempted",
+                    "programWrite": "not_attempted",
+                    "cpuRun": "not_attempted",
+                },
+                "baseline": {"capture": "not_attempted", "restore": "not_attempted"},
+                "recovery": {
+                    "cpuStop": "not_attempted",
+                    "restorationVerified": False,
+                    "failureStages": [],
+                },
+                "projectHashBefore": "a" * 64,
+                "projectHashAfter": "a" * 64,
+                "projectUnchanged": True,
+            },
+        }
+        gateway = _Gateway()
+        gateway.call_workspace_tool = AsyncMock(return_value=raw)
+        service = NativeProjectService(_Repository(), gateway)  # type: ignore[arg-type]
+        result = await service._verify_native_simulation(
+            reopen_verification={
+                "state": "verified",
+                "session": {
+                    "session_id": "session-1",
+                    "pid": 303,
+                    "hwnd": 404,
+                    "project_path": "C:/work/ResumeProject.xgwx",
+                    "project_hash": "a" * 64,
+                },
+                "workspace": {},
+            },
+            build_bundle={
+                "bundleId": "b" * 64,
+                "reviewedPlan": {"planDigest": "c" * 64},
+                "compiledProgram": {},
+                "engineeringPlan": {},
+                "technicalConfiguration": {},
+            },
+            trial_id="trial-1",
+        )
+
+        self.assertEqual(result["state"], "not_verified")
+        self.assertNotIn("trial", result)
+        self.assertEqual(
+            result["failure"]["classification"], "PRE_DISPATCH_READ_FAILURE"
+        )
+
+    def test_pre_dispatch_failure_rejects_any_program_write_attempt(self) -> None:
+        raw = {
+            "ok": False,
+            "verified": False,
+            "operation": "project.verify_native_simulation",
+            "project_unchanged": True,
+            "controllerConnected": False,
+            "plcWritePerformed": False,
+            "simulation_failure": {
+                "schemaVersion": "controlstudio-native-simulation-failure/v1",
+                "classification": "PRE_DISPATCH_READ_FAILURE",
+                "phase": "target_status_before_program_write",
+                "detail": "typed test failure",
+                "runtimeError": {
+                    "code": "XG5000_UIA_TIMEOUT",
+                    "workerOperation": "inspect_buttons",
+                    "timeoutSeconds": 4.0,
+                    "dispatchState": "not_applicable",
+                },
+                "dispatch": {
+                    "simulatorStart": "not_attempted",
+                    "programWrite": "attempted",
+                    "cpuRun": "not_attempted",
+                },
+                "baseline": {"capture": "not_attempted", "restore": "not_attempted"},
+                "recovery": {
+                    "cpuStop": "not_attempted",
+                    "restorationVerified": False,
+                    "failureStages": [],
+                },
+                "projectHashBefore": "a" * 64,
+                "projectHashAfter": "a" * 64,
+                "projectUnchanged": True,
+            },
+        }
+
+        self.assertIsNone(
+            _pre_dispatch_native_simulation_failure(raw, project_hash="a" * 64)
+        )
+        raw["simulation_failure"]["dispatch"]["programWrite"] = "not_attempted"
+        raw["simulation_failure"]["runtimeError"]["dispatchState"] = "unknown"
+        self.assertIsNone(
+            _pre_dispatch_native_simulation_failure(raw, project_hash="a" * 64)
+        )
+
+    async def test_runtime_write_failure_preserves_phase_in_quarantined_trial(self) -> None:
+        raw = {
+            "ok": False,
+            "verified": False,
+            "operation": "project.verify_native_simulation",
+            "project_unchanged": False,
+            "controllerConnected": False,
+            "plcWritePerformed": False,
+            "simulation_failure": {
+                "schemaVersion": "controlstudio-native-simulation-failure/v1",
+                "classification": "UNRESOLVED_RUNTIME_FAILURE",
+                "phase": "cpu_run",
+                "detail": "XG-SIM RUN command was not verified",
+                "runtimeError": {
+                    "code": "SessionError",
+                    "workerOperation": None,
+                    "timeoutSeconds": None,
+                    "dispatchState": None,
+                },
+                "dispatch": {
+                    "simulatorStart": "attempted",
+                    "programWrite": "attempted",
+                    "cpuRun": "attempted",
+                },
+                "baseline": {"capture": "attempted", "restore": "attempted"},
+                "recovery": {
+                    "cpuStop": "attempted",
+                    "restorationVerified": False,
+                    "failureStages": [],
+                },
+                "projectHashBefore": "a" * 64,
+                "projectHashAfter": "b" * 64,
+                "projectUnchanged": False,
+            },
+        }
+        gateway = _Gateway()
+        gateway.call_workspace_tool = AsyncMock(return_value=raw)
+        service = NativeProjectService(_Repository(), gateway)  # type: ignore[arg-type]
+        result = await service._verify_native_simulation(
+            reopen_verification={
+                "state": "verified",
+                "session": {
+                    "session_id": "session-1",
+                    "pid": 303,
+                    "hwnd": 404,
+                    "project_path": "C:/work/ResumeProject.xgwx",
+                    "project_hash": "a" * 64,
+                },
+                "workspace": {},
+            },
+            build_bundle={
+                "bundleId": "b" * 64,
+                "reviewedPlan": {"planDigest": "c" * 64},
+                "compiledProgram": {},
+                "engineeringPlan": {},
+                "technicalConfiguration": {},
+            },
+            trial_id="trial-1",
+        )
+
+        self.assertEqual(result["state"], "quarantined")
+        self.assertEqual(result["failure"]["phase"], "cpu_run")
+        self.assertEqual(result["failure"]["dispatch"]["programWrite"], "attempted")
+        self.assertEqual(result["trial"]["state"], "QUARANTINED")
+        self.assertFalse(result["trial"]["safeRestorationVerified"])
+
+    async def test_completed_tail_does_not_rerun_an_unresolved_simulation_quarantine(self) -> None:
+        repository = _Repository()
+        repository.operation = replace(
+            repository.operation,
+            state="COMPLETED",
+            result={
+                "engineeredProgramReady": False,
+                "workspaceBound": False,
+                "workspaceRegistration": {
+                    "state": "captured_not_bound",
+                    "workspace": {"workspace_id": "workspace-1", "working_copy": {}},
+                },
+                "reopenVerification": {"state": "verified"},
+                "simulationVerification": {
+                    "state": "quarantined",
+                    "trial": {"state": "QUARANTINED"},
+                },
+            },
+        )
+        gateway = _Gateway()
+        service = NativeProjectService(repository, gateway)  # type: ignore[arg-type]
+        with (
+            patch(
+                "controlstudio_host.native_projects._native_project_plan_digest",
+                return_value=_PLAN_DIGEST,
+            ),
+            patch(
+                "controlstudio_host.native_projects._native_bundle_description",
+                return_value="reviewed",
+            ),
+            patch(
+                "controlstudio_host.native_projects._stored_creation_receipt_matches_reviewed_build",
+                return_value=True,
+            ),
+            self.assertRaisesRegex(NativeProjectConflict, "unresolved XG-SIM quarantine"),
+        ):
+            await service.resume(
+                _OPERATION_ID,
+                actor_id="actor-1",
+                pid=101,
+                hwnd=202,
+                expected_request_digest=_REQUEST_DIGEST,
+            )
+
+
     def test_completed_tail_reopened_target_fields_are_paired(self) -> None:
         with self.assertRaises(ValidationError):
             ResumeNativeProjectRequestV1.model_validate(

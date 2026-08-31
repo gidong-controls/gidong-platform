@@ -468,6 +468,186 @@ def _native_simulation_trial_id(operation_id: str, bundle_id: str) -> str:
     return str(uuid.uuid5(namespace, f"controlstudio-native-simulation:{bundle_id}"))
 
 
+def _native_simulation_failure_projection(
+    raw: object,
+    *,
+    project_hash: str,
+) -> dict[str, Any] | None:
+    """Project one bounded MCP simulator-failure receipt for Host classification."""
+
+    if (
+        not isinstance(raw, dict)
+        or raw.get("ok") is not False
+        or raw.get("verified") is not False
+        or raw.get("operation") != "project.verify_native_simulation"
+    ):
+        return None
+    failure = raw.get("simulation_failure")
+    if not isinstance(failure, dict) or set(failure) != {
+        "schemaVersion",
+        "classification",
+        "phase",
+        "detail",
+        "runtimeError",
+        "dispatch",
+        "baseline",
+        "recovery",
+        "projectHashBefore",
+        "projectHashAfter",
+        "projectUnchanged",
+    }:
+        return None
+    runtime_error = failure.get("runtimeError")
+    dispatch = failure.get("dispatch")
+    baseline = failure.get("baseline")
+    recovery = failure.get("recovery")
+    hash_after = failure.get("projectHashAfter")
+    project_unchanged = failure.get("projectUnchanged")
+    if (
+        failure.get("schemaVersion")
+        != "controlstudio-native-simulation-failure/v1"
+        or failure.get("classification")
+        not in {"PRE_DISPATCH_READ_FAILURE", "UNRESOLVED_RUNTIME_FAILURE"}
+        or failure.get("phase")
+        not in {
+            "simulator_start",
+            "target_status_before_program_write",
+            "program_write",
+            "target_status_after_program_write",
+            "post_write_native_readback",
+            "capture_input_baseline",
+            "cpu_run",
+            "scenario_observation",
+            "cpu_stop",
+            "baseline_restore",
+        }
+        or not isinstance(failure.get("detail"), str)
+        or not 1 <= len(failure["detail"]) <= 1000
+        or not isinstance(runtime_error, dict)
+        or set(runtime_error)
+        != {"code", "workerOperation", "timeoutSeconds", "dispatchState"}
+        or not isinstance(runtime_error.get("code"), str)
+        or re.fullmatch(r"[A-Za-z0-9_]{1,120}", runtime_error["code"]) is None
+        or (
+            runtime_error.get("workerOperation") is not None
+            and (
+                not isinstance(runtime_error["workerOperation"], str)
+                or re.fullmatch(r"[a-z_]{1,80}", runtime_error["workerOperation"])
+                is None
+            )
+        )
+        or (
+            runtime_error.get("timeoutSeconds") is not None
+            and (
+                not isinstance(runtime_error["timeoutSeconds"], (int, float))
+                or isinstance(runtime_error["timeoutSeconds"], bool)
+                or not 0 < float(runtime_error["timeoutSeconds"]) <= 120
+            )
+        )
+        or runtime_error.get("dispatchState")
+        not in {None, "not_attempted", "not_dispatched", "unknown", "not_applicable"}
+        or not isinstance(dispatch, dict)
+        or set(dispatch) != {"simulatorStart", "programWrite", "cpuRun"}
+        or dispatch.get("simulatorStart") not in {"not_attempted", "attempted", "unknown"}
+        or dispatch.get("programWrite") not in {"not_attempted", "attempted"}
+        or dispatch.get("cpuRun") not in {"not_attempted", "attempted"}
+        or not isinstance(baseline, dict)
+        or set(baseline) != {"capture", "restore"}
+        or baseline.get("capture") not in {"not_attempted", "attempted"}
+        or baseline.get("restore") not in {"not_attempted", "attempted"}
+        or not isinstance(recovery, dict)
+        or set(recovery) != {"cpuStop", "restorationVerified", "failureStages"}
+        or recovery.get("cpuStop") not in {"not_attempted", "attempted"}
+        or recovery.get("restorationVerified") not in {True, False}
+        or not isinstance(recovery.get("failureStages"), list)
+        or any(
+            stage not in {"cpu_stop", "baseline_restore"}
+            for stage in recovery["failureStages"]
+        )
+        or len(set(recovery["failureStages"])) != len(recovery["failureStages"])
+        or failure.get("projectHashBefore") != project_hash
+        or (
+            hash_after is not None
+            and (
+                not isinstance(hash_after, str)
+                or re.fullmatch(r"[0-9a-f]{64}", hash_after) is None
+            )
+        )
+        or not isinstance(project_unchanged, bool)
+        or raw.get("project_unchanged") is not project_unchanged
+        or raw.get("controllerConnected") is not False
+        or raw.get("plcWritePerformed") is not False
+    ):
+        return None
+    return {
+        "classification": failure["classification"],
+        "phase": failure["phase"],
+        "detail": failure["detail"],
+        "runtimeError": runtime_error,
+        "dispatch": dispatch,
+        "baseline": baseline,
+        "recovery": recovery,
+        "projectHashBefore": project_hash,
+        "projectHashAfter": hash_after,
+        "projectUnchanged": project_unchanged,
+    }
+
+
+def _pre_dispatch_native_simulation_failure(
+    raw: object,
+    *,
+    project_hash: str,
+) -> dict[str, Any] | None:
+    """Accept only proof that no selected-XG simulator command was dispatched."""
+
+    failure = _native_simulation_failure_projection(raw, project_hash=project_hash)
+    if (
+        failure is None
+        or failure["classification"] != "PRE_DISPATCH_READ_FAILURE"
+        or failure["phase"]
+        not in {"simulator_start", "target_status_before_program_write"}
+        or failure["runtimeError"]["dispatchState"] == "unknown"
+        or (
+            failure["phase"] == "target_status_before_program_write"
+            and failure["runtimeError"]["workerOperation"] != "inspect_buttons"
+        )
+        or failure["dispatch"]
+        != {
+            "simulatorStart": "not_attempted",
+            "programWrite": "not_attempted",
+            "cpuRun": "not_attempted",
+        }
+        or failure["baseline"]
+        != {"capture": "not_attempted", "restore": "not_attempted"}
+        or failure["recovery"]
+        != {
+            "cpuStop": "not_attempted",
+            "restorationVerified": False,
+            "failureStages": [],
+        }
+        or failure["projectHashAfter"] != project_hash
+        or failure["projectUnchanged"] is not True
+    ):
+        return None
+    return failure
+
+
+def _unresolved_native_simulation_failure(
+    raw: object,
+    *,
+    project_hash: str,
+) -> dict[str, Any] | None:
+    """Retain bounded failure facts without claiming safe restoration."""
+
+    failure = _native_simulation_failure_projection(raw, project_hash=project_hash)
+    return (
+        failure
+        if failure is not None
+        and failure["classification"] == "UNRESOLVED_RUNTIME_FAILURE"
+        else None
+    )
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -3686,6 +3866,9 @@ class NativeProjectService:
         registration = result.get("workspaceRegistration")
         reopen = result.get("reopenVerification")
         simulation = result.get("simulationVerification")
+        simulation_trial = (
+            simulation.get("trial") if isinstance(simulation, dict) else None
+        )
         if (
             result.get("engineeredProgramReady") is True
             or result.get("workspaceBound") is True
@@ -3703,6 +3886,15 @@ class NativeProjectService:
         ):
             raise NativeProjectConflict(
                 "completed native project is not an exact unbound post-create verification candidate"
+            )
+        if (
+            isinstance(simulation_trial, dict)
+            and simulation_trial.get("state")
+            in {"QUARANTINED", "QUARANTINE_ACKNOWLEDGED"}
+        ):
+            raise NativeProjectConflict(
+                "completed native project has an unresolved XG-SIM quarantine; "
+                "current-state recovery proof is required before another simulation"
             )
         reuse_verified_reopen = reopen.get("state") == "verified"
         if reuse_verified_reopen:
@@ -5746,6 +5938,45 @@ class NativeProjectService:
                     "build_bundle": build_bundle,
                 },
             )
+            pre_dispatch_failure = _pre_dispatch_native_simulation_failure(
+                raw,
+                project_hash=project_hash,
+            )
+            if pre_dispatch_failure is not None:
+                return {
+                    "state": "not_verified",
+                    "detail": (
+                        "XG-SIM pre-dispatch read failed before any selected-XG simulator "
+                        "command, program write, baseline capture, or CPU RUN. "
+                        "The exact read-only pre-dispatch failure is retained for a normal "
+                        "verification-tail retry."
+                    ),
+                    "failure": pre_dispatch_failure,
+                    "session": session,
+                }
+            unresolved_failure = _unresolved_native_simulation_failure(
+                raw,
+                project_hash=project_hash,
+            )
+            if unresolved_failure is not None:
+                return {
+                    "state": "quarantined",
+                    "detail": (
+                        "XG-SIM runtime failure has retained phase evidence but does not "
+                        "prove safe simulator restoration. Manual current-state recovery is "
+                        "required before another simulation."
+                    ),
+                    "failure": unresolved_failure,
+                    "session": session,
+                    "trial": {
+                        "schemaVersion": NATIVE_SIMULATION_TRIAL_SCHEMA,
+                        "trialId": trial_id,
+                        "state": "QUARANTINED",
+                        "safeRestorationVerified": False,
+                        "quarantinedAt": _utc_text(_utc_now()),
+                        "decision": None,
+                    },
+                }
             preflight = raw.get("preflight") if isinstance(raw, dict) else None
             if (
                 isinstance(preflight, dict)
