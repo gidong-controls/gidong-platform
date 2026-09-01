@@ -488,15 +488,22 @@ function Stop-ExactOwnedHeadlessCertificationFailure {
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds(15)
     while ([DateTimeOffset]::UtcNow -lt $deadline) {
         if ($null -eq (Get-Process -Id $process.Id -ErrorAction SilentlyContinue)) {
-            $actualHash = (Get-FileHash -LiteralPath $Reviewed.ProjectPath -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($actualHash -cne $Reviewed.ProjectHash.ToLowerInvariant()) {
-                throw 'Headless recovery changed the reviewed working-copy hash'
+            # Process exit precedes release of the XG5000 file handle on some
+            # builds.  Keep polling within the same bounded recovery window.
+            try {
+                $actualHash = (Get-FileHash -LiteralPath $Reviewed.ProjectPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+                if ($actualHash -cne $Reviewed.ProjectHash.ToLowerInvariant()) {
+                    throw 'Headless recovery changed the reviewed working-copy hash'
+                }
+                return
+            } catch [System.IO.IOException] {
+                Start-Sleep -Milliseconds 250
+                continue
             }
-            return
         }
         Start-Sleep -Milliseconds 250
     }
-    throw 'Exact headless certification process did not exit'
+    throw 'Exact headless certification process did not exit or release its working-copy file'
 }
 
 function Assert-ResumeAfterReviewedXgClose {
