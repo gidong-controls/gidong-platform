@@ -1096,6 +1096,10 @@ function App() {
   const [activeChange, setActiveChange] = useState<ChangeTransaction | null>(
     null,
   );
+  // Deferring changes only changes this browser's navigation. It never
+  // acknowledges, rejects, or otherwise changes the durable transaction.
+  const [deferredChangeTransactionId, setDeferredChangeTransactionId] =
+    useState<string | null>(null);
   const [missionChangeTransaction, setMissionChangeTransaction] =
     useState<ChangeTransaction | null>(null);
   const [changeBusy, setChangeBusy] = useState(false);
@@ -1820,6 +1824,7 @@ function App() {
     setActiveRunId(null);
     setActiveRunState(null);
     setActiveChange(null);
+    setDeferredChangeTransactionId(null);
     missionChangeTransactionIdRef.current = null;
     missionChangeRefreshEpochRef.current += 1;
     setMissionChangeTransaction(null);
@@ -2084,16 +2089,55 @@ function App() {
       setSessionRequired(false);
       hostApi.setCsrfToken(bootstrap.csrfToken);
       applyHostStatus(bootstrap.status);
+      const activeOperation = bootstrap.status.activeOperation;
+      const operationConversationId = activeOperation?.conversationId;
+      const targetAtBootstrap = currentEngineeringTarget(bootstrap.status);
+      let operationConversation: Conversation | null = null;
+      let restoreActiveOperation = !operationConversationId;
+      if (operationConversationId) {
+        try {
+          operationConversation = await hostApi.getConversation(
+            operationConversationId,
+            controller.signal,
+          );
+          // A global/quarantined operation from another workspace is still
+          // available in history, but must not replace the current target's
+          // conversation or make its composer read-only after startup.
+          restoreActiveOperation =
+            targetAtBootstrap === null ||
+            conversationMatchesCurrentTarget(
+              operationConversation,
+              bootstrap.status,
+            ) ||
+            conversationMissionMatchesCurrentTarget(
+              operationConversation,
+              bootstrap.status,
+            );
+        } catch (error) {
+          if (!(error instanceof HostApiError) || error.status !== 404) {
+            throw error;
+          }
+          restoreActiveOperation = false;
+        }
+      }
       const activeNativeProject =
-        bootstrap.status.activeOperation?.kind === "native_project_create" &&
-        bootstrap.status.activeOperation.nativeProjectId
-          ? bootstrap.status.activeOperation.nativeProjectId
+        restoreActiveOperation &&
+        activeOperation?.kind === "native_project_create" &&
+        activeOperation.nativeProjectId
+          ? activeOperation.nativeProjectId
           : null;
       const recoverableChangeId =
-        bootstrap.status.activeOperation?.kind === "change" &&
-        bootstrap.status.activeOperation.transactionId
-          ? bootstrap.status.activeOperation.transactionId
+        restoreActiveOperation &&
+        activeOperation?.kind === "change" &&
+        activeOperation.transactionId
+          ? activeOperation.transactionId
           : null;
+      if (!restoreActiveOperation) {
+        setActiveRunId(null);
+        setActiveRunState(null);
+        setActiveChange(null);
+        setDeferredChangeTransactionId(null);
+      }
       if (activeNativeProject) {
         setNativeProjectRestoreId(activeNativeProject);
         setLocalProjectOpen(false);
@@ -2101,16 +2145,14 @@ function App() {
         setOnlineControllerOpen(false);
         setNativeProjectOpen(true);
       }
-      if (bootstrap.status.activeOperation?.runId) {
-        setActiveRunId(bootstrap.status.activeOperation.runId);
-        if (isRunState(bootstrap.status.activeOperation.state)) {
-          setActiveRunState(bootstrap.status.activeOperation.state);
+      if (restoreActiveOperation && activeOperation?.runId) {
+        setActiveRunId(activeOperation.runId);
+        if (isRunState(activeOperation.state)) {
+          setActiveRunState(activeOperation.state);
         }
       }
-      const operationConversationId =
-        bootstrap.status.activeOperation?.conversationId;
       let activeConversation: Conversation;
-      if (operationConversationId) {
+      if (operationConversationId && restoreActiveOperation) {
         try {
           activeConversation = await refreshConversation(
             operationConversationId,
@@ -3322,6 +3364,12 @@ function App() {
   };
 
   const openWorkChooser = () => {
+    if (activeChange) {
+      setDeferredChangeTransactionId(activeChange.transactionId);
+      setConnectionMessage(
+        "확인이 필요한 이전 변경은 작업 기록에 보존했습니다. 새 작업을 시작할 수 있습니다.",
+      );
+    }
     if (conversation?.workflow === "engineering") {
       returnWorkspaceRef.current = {
         conversation,
@@ -3908,6 +3956,7 @@ function App() {
     onlineControllerOpen;
   const hasPrimaryChange = Boolean(
     activeChange &&
+      activeChange.transactionId !== deferredChangeTransactionId &&
       (PRIMARY_CHANGE_STATES.has(activeChange.state) ||
         (activeChange.result.reconciliation !== null &&
           typeof activeChange.result.reconciliation === "object")),
