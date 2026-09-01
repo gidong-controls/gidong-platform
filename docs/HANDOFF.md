@@ -16,13 +16,29 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 - 세 core 저장소 `gidong-platform`, `gidong-agent`, `gidong-plc-mcp`는 `dev`에서 작업한다.
   `6d06754`, `f70d30c`, `9edc7e5`는 이 handoff 작성 당시의 역사적 code checkpoint이며 최신
   `HEAD` 표기가 아니다. 현재 제품 checkpoint와 실행 상태는 아래 2026-09-01 절을 우선한다.
-- 독립 XG5000 CLI는 `main`의 `067f4bb`이며 사용자 지정 원격 `origin/main`과 동기화돼 있다.
+- 독립 XG5000 CLI는 `main`의 `6a21db7`이며 사용자 지정 원격 `origin/main`과 동기화돼 있다.
   위 세 core 저장소의 이번 변경은 local commit이며 push하지 않았다.
 
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
 ## 2026-09-01 필수 읽기 경로 — 현재 진행
+
+- CLI `f2a096f`와 문서 `6a21db7`은 production `project.list_programs`의 vendor core를
+  독립 저장소로 옮겼다. `list_programs_entry.py`는 shared canonical UTF-8 JSON wire,
+  exact PID/HWND, XG5000 title과 process lifetime, project path/SHA를 시작·종료에 결속하고,
+  `vendor/program_catalog.py`가 bounded XGWX gzip/XML에서 LD program과 stable ID를 읽는다.
+  기존 8-pixel project-grid sweep은 이 production 경로에서 사용하지 않는다. MCP `b96586b`는
+  in-process structure catalog 대신 이 CLI를 호출하고 source/digest/program identity를 다시
+  검증한다. 실제 PID `16228`/HWND `723394`에서 `MainProgram`과
+  `ld:55e388e7aea7a8ce`, unchanged SHA `2d55b348...08b48`를 반환했다. CLI 전체 121개,
+  MCP CLI/server boundary 112개가 통과했다.
+- 새 deterministic artifact는
+  `artifacts/plc-agent-acceptance-cli-owned-catalog/run-7f9t2xt4/receipt.json`, manifest
+  SHA-256은 `06503a913f3b0542cddbe0d361e721fcda79965c743c8b259bfe0ea6bd3bee15`다.
+  Agent·Host·MCP·독립 CLI·Web build 5개 group이 모두 `PASS`이고 CLI group은 93 tests,
+  MCP group은 126 tests를 실행했다. 장비/외부 live receipt는 공급하지 않았으므로 overall은
+  의도대로 `FAIL_CLOSED`다.
 
 - CLI `067f4bb`은 실제 `read-ld` 생산 진입점의 전체 runtime closure를 독립 저장소가
   소유하게 했다. `read_ld_entry.py`가 canonical UTF-8 request, exact PID/HWND, project

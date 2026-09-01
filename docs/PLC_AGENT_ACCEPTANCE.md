@@ -9,8 +9,10 @@ repeatable local checks:
   working-copy recovery/rebind, and Host source-restart contract tests;
 - MCP subprocess-boundary, field-I/O binding, journal-pinned quarantined-backup
   restoration, independent CLI contract tests, and the CLI-owned production
-  `read-ld` closure (UTF-8 canonical request, exact binding, editor selection,
-  dialog guards, native capture/decode, semantic projection, and private handoff);
+  `list-programs`/`read-ld` closures (`list-programs` uses bounded SHA-bound
+  XGWX XML instead of a project-tree row sweep; `read-ld` owns exact editor
+  selection, dialog guards, native capture/decode, semantic projection, and
+  private handoff; both share the UTF-8 canonical request wire);
 - the production web build.
 
 Run it from `gidong-platform`:
@@ -47,6 +49,16 @@ entry binding, raw clipboard capture, editor selection, fail-closed dialog
 guards, and a subprocess proof that the production closure imports no
 `xg5000_control` module. The receipt remains `FAIL_CLOSED` overall because no
 external live-gate receipt was supplied.
+
+The following CLI-owned catalog run also passed all five deterministic groups:
+`artifacts/plc-agent-acceptance-cli-owned-catalog/run-7f9t2xt4/receipt.json`.
+Its manifest SHA-256 is
+`06503a913f3b0542cddbe0d361e721fcda79965c743c8b259bfe0ea6bd3bee15`.
+The independent CLI group ran 93 tests and the MCP boundary group ran 126.
+The catalog entry is covered for literal Korean paths, duplicate/ambiguous
+program rejection, no MCP import closure, exact stable IDs, project title,
+PID/HWND lifetime, and unchanged file SHA. The receipt remains `FAIL_CLOSED`
+overall only because external live-gate receipts were not supplied.
 
 Separately, real product run `fb410c7f-6cda-4c03-adb7-f18ba42a61ae` completed
 one `project.list_programs` call and one actual `program.read_ld` call against
