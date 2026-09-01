@@ -117,7 +117,12 @@ backup hash와 project path/hash로 묶는다. preflight는 전체 XG5000 PID ba
 기록하고 그 중 인증 spec의 정확한 PID만 no-save close한 뒤 Host listener tree만
 종료한다. 기존 사용자 XG5000 PID는 attach·close·mutation 대상이 아니다. 열린
 프로젝트 파일은 XG5000이 잠글 수 있으므로, full SHA-256 disposable-proof 검사는
-그 정확한 target을 닫은 뒤 새 인증 process를 시작하기 전에 수행한다.
+그 정확한 target을 닫은 뒤 새 인증 process를 시작하기 전에 수행한다. 새 인증
+process는 raw `/Automation` 실행이 아니라 동일 workspace/hash를 independent CLI가
+검증해 반환한 새 PID/HWND여야 한다. 시작 중 headless process가 남으면 recovery는
+PID·start time·native executable·HWND=0·해당 working-copy file-use를 다시 확인하고
+그 PID만 종료한 뒤 hash를 확인한다. Host 재기동에 필요한 서명 secret이 없으면
+recovery는 Host를 임의로 시작하지 않고 복구 receipt만 반환한다.
 
 ## 4. 프로그램 검사와 저장
 

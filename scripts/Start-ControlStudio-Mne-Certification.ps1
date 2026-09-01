@@ -40,7 +40,11 @@ param(
     [switch]$CleanupReviewedHeadlessXgThenNoXgWorkspaceLaunch,
     [string]$HeadlessXgCleanupAuthorization,
     [switch]$HeadlessXgCleanupPreflightOnly,
-    [switch]$VisibleTargetPreflightOnly
+    [switch]$VisibleTargetPreflightOnly,
+    [ValidateRange(0, [int]::MaxValue)]
+    [int]$RecoverOwnedHeadlessPid = 0,
+    [string]$RecoverOwnedHeadlessStartedUtc,
+    [switch]$RecoverOwnedHeadlessPreflightOnly
 )
 
 # Developer-only, one-shot certification/restart harness. It accepts the
@@ -412,6 +416,87 @@ function Assert-ExactVisibleCertificationTarget {
         ProjectPath = $projectPath
         ProjectHash = [string]$target.project_hash
     }
+}
+
+function Assert-ExactOwnedHeadlessCertificationFailure {
+    param(
+        [Parameter(Mandatory)]$Template,
+        [Parameter(Mandatory)][int]$ExpectedPid,
+        [Parameter(Mandatory)][string]$ExpectedStartedUtc,
+        [Parameter(Mandatory)][string]$ExpectedExecutable,
+        [Parameter(Mandatory)][string]$PythonExecutable
+    )
+
+    if ($ExpectedPid -le 0 -or [string]::IsNullOrWhiteSpace($ExpectedStartedUtc)) {
+        throw 'Headless recovery requires an exact PID and start time'
+    }
+    if ($null -ne (Get-DevelopmentListenerPid)) {
+        throw 'Headless recovery refuses to stop a process while a Host listener is active'
+    }
+    $target = $Template.target
+    $projectPath = [IO.Path]::GetFullPath([string]$target.project_path)
+    if (-not (Test-Path -LiteralPath $projectPath -PathType Leaf) -or [string]$target.project_hash -notmatch '^[0-9a-fA-F]{64}$') {
+        throw 'Headless recovery target project binding is invalid'
+    }
+    try { $process = Get-Process -Id $ExpectedPid -ErrorAction Stop }
+    catch { throw 'Headless recovery PID is unavailable' }
+    $process.Refresh()
+    if (
+        $process.HasExited -or
+        $process.ProcessName -ine 'XG5000' -or
+        $process.StartTime.ToUniversalTime().ToString('o') -cne $ExpectedStartedUtc -or
+        [int64]$process.MainWindowHandle -ne 0 -or
+        [string]$process.MainWindowTitle -cne ''
+    ) {
+        throw 'Headless recovery PID/start/window identity differs'
+    }
+    Initialize-ReviewedModalNativeApi
+    $actualExecutable = [ControlStudioMneModalNative]::GetProcessImagePath([uint32]$ExpectedPid)
+    if ([IO.Path]::GetFullPath($actualExecutable) -cne [IO.Path]::GetFullPath($ExpectedExecutable)) {
+        throw 'Headless recovery executable differs'
+    }
+    $usageCode = @'
+import sys
+from xg5000_control.live.windows_file_usage import process_uses_file
+print('true' if process_uses_file(int(sys.argv[1]), sys.argv[2], timeout_seconds=0.75) else 'false')
+'@
+    $saved = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $usage = & $PythonExecutable -c $usageCode $ExpectedPid $projectPath 2>&1
+        $exit = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $saved }
+    if ($exit -ne 0 -or (@($usage | Where-Object { $_ -match '^(?i:true)$' }).Count -ne 1)) {
+        throw 'Headless recovery did not prove that the exact PID owns the reviewed working copy'
+    }
+    return [pscustomobject]@{
+        Process = $process
+        ProjectPath = $projectPath
+        ProjectHash = [string]$target.project_hash
+    }
+}
+
+function Stop-ExactOwnedHeadlessCertificationFailure {
+    param([Parameter(Mandatory)]$Reviewed)
+
+    $process = $Reviewed.Process
+    $process.Refresh()
+    if ($process.HasExited -or [int64]$process.MainWindowHandle -ne 0 -or [string]$process.MainWindowTitle -cne '') {
+        throw 'Headless recovery process changed before exact termination'
+    }
+    Stop-Process -Id $process.Id -Force -ErrorAction Stop
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(15)
+    while ([DateTimeOffset]::UtcNow -lt $deadline) {
+        if ($null -eq (Get-Process -Id $process.Id -ErrorAction SilentlyContinue)) {
+            $actualHash = (Get-FileHash -LiteralPath $Reviewed.ProjectPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -cne $Reviewed.ProjectHash.ToLowerInvariant()) {
+                throw 'Headless recovery changed the reviewed working-copy hash'
+            }
+            return
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    throw 'Exact headless certification process did not exit'
 }
 
 function Assert-ResumeAfterReviewedXgClose {
@@ -1078,6 +1163,31 @@ from xg5000_control.mne_capability_cli import _normalize_spec
 _normalize_spec(json.loads(Path(sys.argv[1]).read_text(encoding='utf-8')))
 '@
 
+if ($RecoverOwnedHeadlessPid -gt 0 -or $RecoverOwnedHeadlessPreflightOnly) {
+    $reviewedHeadless = Assert-ExactOwnedHeadlessCertificationFailure -Template $template -ExpectedPid $RecoverOwnedHeadlessPid -ExpectedStartedUtc $RecoverOwnedHeadlessStartedUtc -ExpectedExecutable $XgExecutable -PythonExecutable $mcpPython
+    if ($RecoverOwnedHeadlessPreflightOnly) {
+        [pscustomobject]@{
+            schema = 'controlstudio-mne-owned-headless-recovery/v1'
+            pid = [int]$reviewedHeadless.Process.Id
+            processStartedUtc = $reviewedHeadless.Process.StartTime.ToUniversalTime().ToString('o')
+            projectPath = $reviewedHeadless.ProjectPath
+            projectHash = $reviewedHeadless.ProjectHash
+            result = 'ready_to_terminate_only_the_exact_headless_certification_process'
+        } | ConvertTo-Json -Compress
+        exit 0
+    }
+    Stop-ExactOwnedHeadlessCertificationFailure -Reviewed $reviewedHeadless
+    [pscustomobject]@{
+        schema = 'controlstudio-mne-owned-headless-recovery/v1'
+        pid = [int]$reviewedHeadless.Process.Id
+        projectPath = $reviewedHeadless.ProjectPath
+        projectHash = $reviewedHeadless.ProjectHash
+        hostRestart = 'not-attempted; a new authorization secret is required to restart against a signed capability bundle'
+        result = 'exact_headless_certification_process_terminated'
+    } | ConvertTo-Json -Compress
+    exit 0
+}
+
 if ($VisibleTargetPreflightOnly) {
     if ((Get-DevelopmentListenerPid) -ne $ExpectedHostListenerPid) {
         throw 'Port 8767 is not owned by the reviewed listener PID'
@@ -1234,8 +1344,26 @@ if ($ResumeAfterReviewedNoXgWorkspaceLaunch -or $CleanupReviewedHeadlessXgThenNo
     $scratchXg = $restored.Process
     $restoredScratchHwnd = [int64]$restored.Hwnd
 } else {
-    $scratchXg = Start-Process -FilePath $XgExecutable -ArgumentList @('/Automation', ('"' + [string]$template.target.project_path + '"')) -PassThru
-    $scratchXg = Wait-ForScratchXgWindow -Process $scratchXg
+    # A raw /Automation launch can leave a headless XG5000 process when other
+    # user sessions are open.  Delegate this launch to the independent CLI so
+    # it captures the immutable baseline and accepts only a new PID/HWND bound
+    # to this exact workspace working copy.
+    $env:LOCALAPPDATA = $dataRoot
+    $env:CONTROLSTUDIO_RELEASE_CHANNEL = 'development'
+    $workspaceRoot = Join-Path $dataRoot 'ControlStudio Development\workspaces'
+    $opened = Open-ExactWorkspaceWorkingCopy -WorkspaceId ([string]$template.target.workspace_id) -ExpectedHash ([string]$template.target.project_hash) -WorkspaceRoot $workspaceRoot -PythonExecutable $mcpPython
+    $instance = $opened.instance
+    if (
+        $opened.verified -ne $true -or
+        $opened.workspace_id -cne [string]$template.target.workspace_id -or
+        [string]$opened.working_path -cne [string]$template.target.project_path -or
+        [string]$opened.working_hash -cne [string]$template.target.project_hash -or
+        $null -eq $instance -or [int]$instance.pid -le 0 -or [int64]$instance.hwnd -le 0
+    ) {
+        throw 'Baseline-aware workspace launch did not return the exact verified working-copy instance'
+    }
+    $scratchXg = Get-Process -Id ([int]$instance.pid) -ErrorAction Stop
+    $restoredScratchHwnd = [int64]$instance.hwnd
 }
 $template.target.pid = [int]$scratchXg.Id
 $template.target.hwnd = if ($null -ne $restoredScratchHwnd) { $restoredScratchHwnd } else { [int64]$scratchXg.MainWindowHandle }
