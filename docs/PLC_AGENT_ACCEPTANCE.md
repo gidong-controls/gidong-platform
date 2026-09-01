@@ -74,7 +74,7 @@ LD evidence is `70964455-e837-58c8-8a6f-7d39705bb07d`.
 
 The deterministic current-LD focus route is included in the same manifest as
 `tests.test_initial_live_ld_focus`. The consolidated run at
-`artifacts/plc-agent-acceptance-agent-focus/run-d4er9_uz/receipt.json` passed
+`artifacts/plc-agent-acceptance-agent-focus-final/run-3i6hmlyv/receipt.json` passed
 all five command groups with manifest SHA-256
 `bfcb8f3528932e4d2b7d3e788da1da71334ebea886e387a1f8c5dea082f70269`.
 Real product run `b4d8fb70-99b1-4750-8980-1cd4991ed205` then executed exactly

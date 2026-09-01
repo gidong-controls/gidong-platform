@@ -44,7 +44,7 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   현재 target과 일치하는 engineering conversation을 선택해도 시작 화면에 남던 상태 버그도
   수정해 해당 작업 화면으로 즉시 복귀한다.
 - 최신 deterministic receipt는
-  `artifacts/plc-agent-acceptance-agent-focus/run-d4er9_uz/receipt.json`이며 manifest SHA-256은
+  `artifacts/plc-agent-acceptance-agent-focus-final/run-3i6hmlyv/receipt.json`이며 manifest SHA-256은
   `bfcb8f3528932e4d2b7d3e788da1da71334ebea886e387a1f8c5dea082f70269`다. 새 Agent focus
   regression을 단일 manifest에 포함한 상태에서 Agent·Host·MCP·독립 CLI·Web build 5개
   group이 모두 `PASS`다. 외부 live-gate 파일을 주입하지 않았으므로 overall은 의도대로
