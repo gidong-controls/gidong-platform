@@ -2031,9 +2031,19 @@ function App() {
         setNewProjectPlanning(planningSessionFromConversation(detail));
         startEventStream(detail.conversationId, 0);
         setConversationHistoryOpen(false);
-        setConnectionMessage(
+        const matchesCurrentTarget =
           conversationMatchesCurrentTarget(detail, status) ||
-            conversationMissionMatchesCurrentTarget(detail, status)
+          conversationMissionMatchesCurrentTarget(detail, status);
+        if (detail.workflow === "engineering" && matchesCurrentTarget) {
+          setNewProjectBriefOpen(false);
+          setNativeProjectOpen(false);
+          setLocalProjectOpen(false);
+          setInstancePickerOpen(false);
+          setOnlineControllerOpen(false);
+          setWorkChooserOpen(false);
+        }
+        setConnectionMessage(
+          matchesCurrentTarget
             ? "저장된 작업 기록을 열었습니다."
             : "현재 엔지니어링 대상과 다른 작업 기록을 읽기 전용으로 열었습니다.",
         );

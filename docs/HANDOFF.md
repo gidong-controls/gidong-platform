@@ -24,6 +24,32 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 ## 2026-09-01 필수 읽기 경로 — 현재 진행
 
+- 실제 프로그램 전면화 vertical이 완료됐다. 독립 CLI `52a3130`은 `focus-program`의
+  UTF-8 JSON wire, exact PID/HWND/process lifetime, 프로그램 ID/name, 프로젝트 경로와
+  SHA 전후 불변을 소유하며 `origin/main`에 push됐다. MCP `df64ee7`은 `program.focus`와
+  `program.focus_location`의 대상 선택을 이 CLI catalog에 결속했고, `54d7349`는 승인된 LD
+  변경의 diff/apply/validate/rollback도 같은 CLI catalog/read/apply 경계로 통일했다. Agent
+  `cd1b554`는 명시적인 현재 XG5000 LD 열기 요청을 모델 선택에 맡기지 않고
+  `project.list_programs` → catalog의 유일한 canonical ID → `program.focus` → verified receipt
+  완료로 진행한다. 튜토리얼과 수정·저장·실행 요청은 이 읽기 전용 경로에서 제외한다.
+- 실제 제품 conversation `ed6a0765-4870-4d2a-b6b0-b7d8b5828f79`, run
+  `b4d8fb70-99b1-4750-8980-1cd4991ed205`는 PID `16228`/HWND `723394`에서 프로그램 목록과
+  포커스를 각각 한 번만 실행하고 `COMPLETED`됐다. focus evidence는
+  `7913a038-ae8e-5227-abd0-7a290c943f35`이며 artifact는
+  `artifacts/change-mutation-e2e-localappdata/ControlStudio Development/artifacts/mcp-sessions/541aa48b-fd96-4187-9a0c-ac02bf1accda/27099419eee3/result.json`이다.
+  `MainProgram`/`ld:55e388e7aea7a8ce`, exact program active, exact foreground, read-only,
+  project unchanged가 모두 true이고 SHA-256 전후는
+  `2d55b3489f0f1a97666e79d00bd4ef6962d2e2e71fa44839193be04240308b48`로 동일하다.
+  PWA 작업 기록에서 이 완료 run과 프로그램 1개를 실제로 다시 열어 확인했다. 작업 기록에서
+  현재 target과 일치하는 engineering conversation을 선택해도 시작 화면에 남던 상태 버그도
+  수정해 해당 작업 화면으로 즉시 복귀한다.
+- 최신 deterministic receipt는
+  `artifacts/plc-agent-acceptance-agent-focus/run-d4er9_uz/receipt.json`이며 manifest SHA-256은
+  `bfcb8f3528932e4d2b7d3e788da1da71334ebea886e387a1f8c5dea082f70269`다. 새 Agent focus
+  regression을 단일 manifest에 포함한 상태에서 Agent·Host·MCP·독립 CLI·Web build 5개
+  group이 모두 `PASS`다. 외부 live-gate 파일을 주입하지 않았으므로 overall은 의도대로
+  `FAIL_CLOSED`이며, 물리 PLC는 장비 확보 뒤 PRD G3/G4 로드맵으로 유지한다. XG-SIM
+  quarantine은 재시도하거나 해제하지 않았다.
 - CLI `f2a096f`와 문서 `6a21db7`은 production `project.list_programs`의 vendor core를
   독립 저장소로 옮겼다. `list_programs_entry.py`는 shared canonical UTF-8 JSON wire,
   exact PID/HWND, XG5000 title과 process lifetime, project path/SHA를 시작·종료에 결속하고,

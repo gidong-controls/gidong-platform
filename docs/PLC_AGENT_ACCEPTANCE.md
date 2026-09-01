@@ -4,7 +4,8 @@
 the deterministic part of CA-01 through CA-12. It deliberately runs only
 repeatable local checks:
 
-- Agent mission resume, legacy-repair, JSON fallback, and approval-wait tests;
+- Agent mission resume, deterministic current-LD catalog/read/focus routing,
+  legacy-repair, JSON fallback, and approval-wait tests;
 - Host change-execution, durable resume, field-I/O projection, quarantined
   working-copy recovery/rebind, and Host source-restart contract tests;
 - MCP subprocess-boundary, field-I/O binding, journal-pinned quarantined-backup
@@ -70,6 +71,18 @@ and one LD-read call. Its catalog receipt records
 `catalog_source: sha_bound_project_xml`, `live_editor_catalog: false`, stable
 program ID `ld:55e388e7aea7a8ce`, and unchanged project SHA before/after; its
 LD evidence is `70964455-e837-58c8-8a6f-7d39705bb07d`.
+
+The deterministic current-LD focus route is included in the same manifest as
+`tests.test_initial_live_ld_focus`. The consolidated run at
+`artifacts/plc-agent-acceptance-agent-focus/run-d4er9_uz/receipt.json` passed
+all five command groups with manifest SHA-256
+`bfcb8f3528932e4d2b7d3e788da1da71334ebea886e387a1f8c5dea082f70269`.
+Real product run `b4d8fb70-99b1-4750-8980-1cd4991ed205` then executed exactly
+one `project.list_programs` and one `program.focus` call and completed. Evidence
+`7913a038-ae8e-5227-abd0-7a290c943f35` binds PID 16228/HWND 723394,
+`MainProgram`/`ld:55e388e7aea7a8ce`, exact foreground activation, read-only
+operation, and identical project SHA before and after. This traceability result
+does not promote or fabricate any external live-gate receipt.
 
 Separately, real product run `fb410c7f-6cda-4c03-adb7-f18ba42a61ae` completed
 one `project.list_programs` call and one actual `program.read_ld` call against

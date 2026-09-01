@@ -13,6 +13,7 @@
     "test:agent-progress": "node --experimental-strip-types --test scripts/tests/agent-progress-activity.test.mts",
     "test:program-catalog": "node --experimental-strip-types --test scripts/tests/program-catalog-evidence-trigger.test.mts",
     "test:mission-start": "node --experimental-strip-types --test scripts/tests/engineering-mission-start-click.test.mts",
+    "test:conversation-history": "node --experimental-strip-types --test scripts/tests/conversation-history-navigation.test.mts",
     "verify-production-entry": "node scripts/verify-production-entry.mjs"
   },
   "dependencies": {

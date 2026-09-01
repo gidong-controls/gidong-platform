@@ -7,7 +7,7 @@
       "id": "agent-mission-resume-and-approval",
       "ca_ids": ["CA-03", "CA-04", "CA-11"],
       "cwd": "gidong-agent",
-      "command": [".venv/Scripts/python.exe", "-m", "unittest", "tests.test_engineering_agent_resume", "tests.test_offline_operand_mission", "tests.test_sidecar_host_tool_results"],
+      "command": [".venv/Scripts/python.exe", "-m", "unittest", "tests.test_engineering_agent_resume", "tests.test_initial_live_ld_focus", "tests.test_offline_operand_mission", "tests.test_sidecar_host_tool_results"],
       "timeout_seconds": 300
     },
     {
