@@ -12,6 +12,7 @@
     "test:recovery-contract": "node --experimental-strip-types --test scripts/tests/change-recovery-contract.test.mts",
     "test:agent-progress": "node --experimental-strip-types --test scripts/tests/agent-progress-activity.test.mts",
     "test:program-catalog": "node --experimental-strip-types --test scripts/tests/program-catalog-evidence-trigger.test.mts",
+    "test:mission-start": "node --experimental-strip-types --test scripts/tests/engineering-mission-start-click.test.mts",
     "verify-production-entry": "node scripts/verify-production-entry.mjs"
   },
   "dependencies": {

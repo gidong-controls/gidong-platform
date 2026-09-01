@@ -3719,7 +3719,10 @@ function App() {
   };
 
   const startNewEngineeringMission = async () => {
-    if (!canStartNewEngineeringMission || missionStartBusy) {
+    // The button already reflects `canStartNewEngineeringMission`. Rechecking
+    // that render-derived value here can silently discard an enabled click
+    // before the fresh conversation POST is reached.
+    if (missionStartBusy) {
       return;
     }
     setMissionStartBusy(true);
