@@ -22,13 +22,8 @@ def _handoff() -> dict[str, object]:
         "buildBundleId": "build-bundle",
         "buildReceiptSchemaVersion": "controlstudio-native-build-receipt/v3",
         "buildReceiptDigest": "4" * 64,
-        "simulationReceiptSchemaVersion": (
-            "controlstudio-native-simulation-receipt/v5"
-        ),
-        "simulationReceiptDigest": "5" * 64,
-        "simulationTrialId": "simulation-trial",
-        "acceptedByActorId": "operator",
-        "acceptedAt": "2026-08-16T00:00:00Z",
+        "reopenReceiptSchemaVersion": "controlstudio-native-reopen-receipt/v2",
+        "reopenReceiptDigest": "5" * 64,
         "projectSha256": "6" * 64,
     }
 
@@ -79,7 +74,6 @@ class NativeEngineeringStatusTests(unittest.TestCase):
                 "reviewed_plan",
                 "native_build",
                 "independent_reopen",
-                "xg_sim_acceptance",
             ],
         )
         self.assertEqual(status["remainingStages"], ["engineering_validation"])

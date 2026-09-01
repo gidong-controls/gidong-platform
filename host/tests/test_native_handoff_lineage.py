@@ -202,6 +202,19 @@ def _completed_operation(root: Path) -> NativeProjectOperation:
             "state": "captured_and_bound",
             "workspace": workspace,
         },
+        "reopenVerification": {
+            "state": "verified",
+            "receipt": {
+                "schemaVersion": "controlstudio-native-reopen-receipt/v2",
+                "status": "REOPEN_VERIFIED",
+                "buildBundleId": bundle_id,
+                "reviewedPlanDigest": reviewed_plan["planDigest"],
+                "projectReadback": {
+                    "projectSha256": project_hash,
+                    "projectUnchanged": True,
+                },
+            },
+        },
         "simulationVerification": {
             "state": "verified",
             "receipt": simulation_receipt,
@@ -457,13 +470,69 @@ def _wait_for_run(store: HostStore, run_id: str) -> None:
 
 
 class NativeHandoffLineageTests(unittest.TestCase):
+    def test_completed_legacy_simulation_quarantine_releases_parked_lease(self) -> None:
+        """A historical optional XG-SIM quarantine cannot serialize new offline work."""
+
+        with tempfile.TemporaryDirectory(prefix="controlstudio-legacy-sim-lease-") as raw:
+            root = Path(raw)
+            operation = _completed_operation(root)
+            result = copy.deepcopy(operation.result)
+            trial = result["simulationVerification"]["trial"]
+            trial["state"] = "QUARANTINED"
+            trial["safeRestorationVerified"] = False
+            operation = NativeProjectOperation(
+                **{
+                    **operation.__dict__,
+                    "result": result,
+                }
+            )
+
+            prior_store = HostStore(root / "host.sqlite3")
+            repository = NativeProjectRepository(prior_store.database_path)
+            _insert(repository, operation)
+            prior_store.acquire_target_operation_lease(
+                operation_id=operation.operation_id,
+                owner_kind="native_project_create",
+                holder_token="legacy-create-holder",
+                target_identity={
+                    "operationId": operation.operation_id,
+                    "xg5000Pid": 41,
+                    "xg5000Hwnd": 42,
+                },
+            )
+            prior_store.park_target_operation_lease(
+                operation_id=operation.operation_id,
+                holder_token="legacy-create-holder",
+                reason="native_simulation_trial_requires_decision_or_recovery",
+            )
+
+            restarted_store = HostStore(prior_store.database_path)
+            self.assertIsNone(restarted_store.selected_target_recovery_authority())
+            self.assertEqual(
+                restarted_store.release_terminal_native_target_operation_leases(),
+                1,
+            )
+            self.assertIsNone(restarted_store.active_target_operation_lease())
+
+            lease = restarted_store.acquire_target_operation_lease(
+                operation_id="44444444-4444-4444-8444-444444444444",
+                owner_kind="native_project_create",
+                holder_token="fresh-offline-create-holder",
+                target_identity={
+                    "operationId": "44444444-4444-4444-8444-444444444444",
+                    "xg5000Pid": 41,
+                    "xg5000Hwnd": 42,
+                },
+            )
+            self.assertEqual(lease["state"], "ACTIVE")
+
     def test_stored_handoff_seeds_first_engineering_mission_without_evidence(self) -> None:
         with tempfile.TemporaryDirectory(prefix="controlstudio-native-mission-") as raw:
             root = Path(raw)
             operation = _completed_operation(root)
             result = copy.deepcopy(operation.result)
-            simulation = result["simulationVerification"]
-            receipt = simulation["receipt"]
+            reopen = result["reopenVerification"]
+            receipt = reopen["receipt"]
             project_hash = result["projectSha256"]
             receipt["buildBundleId"] = operation.request["buildBundle"]["bundleId"]
             receipt["reviewedPlanDigest"] = operation.request["reviewedPlan"][
@@ -471,11 +540,8 @@ class NativeHandoffLineageTests(unittest.TestCase):
             ]
             receipt["projectReadback"] = {
                 "projectSha256": project_hash,
-                "projectUnchangedDuringRuntime": True,
+                "projectUnchanged": True,
             }
-            simulation_digest = _digest(receipt)
-            simulation["trial"]["receiptDigest"] = simulation_digest
-            simulation["trial"]["decision"]["receiptDigest"] = simulation_digest
             operation = NativeProjectOperation(
                 **{
                     **operation.__dict__,
@@ -486,7 +552,6 @@ class NativeHandoffLineageTests(unittest.TestCase):
             reviewed_plan = operation.request["reviewedPlan"]
             build_bundle = operation.request["buildBundle"]
             build_receipt = result["buildBundleReceipt"]
-            trial = simulation["trial"]
 
             config = HostConfig(
                 database_path=root / "host.sqlite3",
@@ -537,11 +602,8 @@ class NativeHandoffLineageTests(unittest.TestCase):
                 "buildBundleId": build_bundle["bundleId"],
                 "buildReceiptSchemaVersion": build_receipt["schemaVersion"],
                 "buildReceiptDigest": _digest(build_receipt),
-                "simulationReceiptSchemaVersion": receipt["schemaVersion"],
-                "simulationReceiptDigest": simulation_digest,
-                "simulationTrialId": trial["trialId"],
-                "acceptedByActorId": trial["decision"]["actorId"],
-                "acceptedAt": trial["decision"]["decidedAt"],
+                "reopenReceiptSchemaVersion": receipt["schemaVersion"],
+                "reopenReceiptDigest": _digest(receipt),
                 "projectSha256": workspace["working_copy"]["current_sha256"],
             }).model_dump(mode="json", by_alias=True)
             conversation, created = store.create_engineering_handoff_conversation(
@@ -683,7 +745,6 @@ class NativeHandoffLineageTests(unittest.TestCase):
                     "reviewed_plan",
                     "native_build",
                     "independent_reopen",
-                    "xg_sim_acceptance",
                 ],
             )
             self.assertEqual(status["remainingStages"], ["engineering_validation"])
@@ -771,6 +832,26 @@ class NativeHandoffLineageTests(unittest.TestCase):
                     [item.id for item in repository.engineering_handoff_candidates()],
                     [operation.id],
                 )
+
+    def test_verified_offline_reopen_candidate_needs_no_simulation_trial(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="controlstudio-offline-handoff-") as raw:
+            root = Path(raw)
+            operation = _completed_operation(root)
+            result = copy.deepcopy(operation.result)
+            result.pop("simulationVerification")
+            offline_operation = NativeProjectOperation(
+                **{
+                    **operation.__dict__,
+                    "result": result,
+                }
+            )
+            repository = NativeProjectRepository(root / "operations.sqlite3")
+            _insert(repository, offline_operation)
+
+            self.assertEqual(
+                [item.id for item in repository.engineering_handoff_candidates()],
+                [offline_operation.id],
+            )
 
     def test_tampered_workspace_identity_cannot_reuse_valid_build_receipts(self) -> None:
         with tempfile.TemporaryDirectory(prefix="controlstudio-tampered-handoff-") as raw:

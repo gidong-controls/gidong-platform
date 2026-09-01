@@ -3293,19 +3293,22 @@ class NativeProjectRepository:
         for row in rows:
             operation = self._from_row(row)
             result = operation.result
-            simulation = result.get("simulationVerification")
-            trial = simulation.get("trial") if isinstance(simulation, dict) else None
-            decision = trial.get("decision") if isinstance(trial, dict) else None
+            reopen_verification = result.get("reopenVerification")
+            reopen_receipt = (
+                reopen_verification.get("receipt")
+                if isinstance(reopen_verification, dict)
+                else None
+            )
+            reopen_project = (
+                reopen_receipt.get("projectReadback")
+                if isinstance(reopen_receipt, dict)
+                else None
+            )
             reviewed_plan = operation.request.get("reviewedPlan")
             build_bundle = operation.request.get("buildBundle")
             bundle_id = (
                 build_bundle.get("bundleId")
                 if isinstance(build_bundle, dict)
-                else None
-            )
-            expected_trial_id = (
-                _native_simulation_trial_id(operation.operation_id, bundle_id)
-                if isinstance(bundle_id, str) and bundle_id
                 else None
             )
             workspace_registration = result.get("workspaceRegistration")
@@ -3323,25 +3326,21 @@ class NativeProjectRepository:
                 or result.get("identityVerified") is not True
                 or result.get("controllerConnected") is not False
                 or result.get("plcWritePerformed") is not False
-                or not isinstance(simulation, dict)
-                or simulation.get("state") != "verified"
-                or not isinstance(trial, dict)
-                or trial.get("schemaVersion") != NATIVE_SIMULATION_TRIAL_SCHEMA
-                or not _is_canonical_uuid(trial.get("trialId"))
-                or trial.get("trialId") != expected_trial_id
-                or trial.get("state") != "ACCEPTED"
-                or trial.get("safeRestorationVerified") is not True
-                or not isinstance(decision, dict)
-                or set(decision)
-                != {"outcome", "actorId", "decidedAt", "receiptDigest"}
-                or decision.get("outcome") != "ACCEPTED"
-                or not isinstance(decision.get("actorId"), str)
-                or not str(decision.get("actorId") or "").strip()
-                or not isinstance(decision.get("decidedAt"), str)
-                or not str(decision.get("decidedAt") or "").strip()
+                or not isinstance(reopen_verification, dict)
+                or reopen_verification.get("state") != "verified"
+                or not isinstance(reopen_receipt, dict)
+                or reopen_receipt.get("schemaVersion")
+                != "controlstudio-native-reopen-receipt/v2"
+                or reopen_receipt.get("status") != "REOPEN_VERIFIED"
+                or reopen_receipt.get("buildBundleId") != bundle_id
                 or not isinstance(reviewed_plan, dict)
                 or not isinstance(reviewed_plan.get("conversationId"), str)
                 or not str(reviewed_plan.get("conversationId") or "").strip()
+                or reopen_receipt.get("reviewedPlanDigest")
+                != reviewed_plan.get("planDigest")
+                or not isinstance(reopen_project, dict)
+                or reopen_project.get("projectSha256") != result.get("projectSha256")
+                or reopen_project.get("projectUnchanged") is not True
                 or not isinstance(workspace_registration, dict)
                 or workspace_registration.get("state") != "captured_and_bound"
                 or not isinstance(workspace, dict)
@@ -3352,55 +3351,6 @@ class NativeProjectRepository:
                     require_capture_verification=True,
                 )
                 is None
-            ):
-                continue
-            receipt = simulation.get("receipt")
-            receipt_schema = (
-                receipt.get("schemaVersion") if isinstance(receipt, dict) else None
-            )
-            scenario_receipt = (
-                receipt.get("scenarioReceipt") if isinstance(receipt, dict) else None
-            )
-            simulator = receipt.get("simulator") if isinstance(receipt, dict) else None
-            boundary = (
-                receipt.get("inputWriteBoundary") if isinstance(receipt, dict) else None
-            )
-            restore = boundary.get("restore") if isinstance(boundary, dict) else None
-            expected_scenario_schema = {
-                LEGACY_NATIVE_SIMULATION_RECEIPT_SCHEMA: (
-                    "controlstudio-native-simulation-scenarios/v1"
-                ),
-                PREVIOUS_NATIVE_SIMULATION_RECEIPT_SCHEMA: (
-                    "controlstudio-native-simulation-scenarios/v2"
-                ),
-                NATIVE_SIMULATION_RECEIPT_SCHEMA: (
-                    "controlstudio-native-simulation-scenarios/v3"
-                ),
-            }.get(receipt_schema)
-            receipt_digest = _json_digest(receipt) if isinstance(receipt, dict) else None
-            if (
-                not isinstance(receipt, dict)
-                or expected_scenario_schema is None
-                or receipt.get("status") != "SIMULATION_VERIFIED"
-                or receipt.get("controllerConnected") is not False
-                or receipt.get("plcWritePerformed") is not False
-                or not isinstance(simulator, dict)
-                or not _native_simulator_evidence_verified(simulator)
-                or simulator.get("cpuStopped") is not True
-                or not isinstance(boundary, dict)
-                or boundary.get("baselineRestoredAfterCpuStop") is not True
-                or not isinstance(restore, dict)
-                or restore.get("attempted") is not True
-                or restore.get("matched") is not True
-                or (
-                    receipt_schema == LEGACY_NATIVE_SIMULATION_RECEIPT_SCHEMA
-                    and restore.get("cpuStoppedBeforeRestore") is not True
-                )
-                or not isinstance(scenario_receipt, dict)
-                or scenario_receipt.get("schemaVersion") != expected_scenario_schema
-                or scenario_receipt.get("status") != "SCENARIOS_VERIFIED"
-                or trial.get("receiptDigest") != receipt_digest
-                or decision.get("receiptDigest") != receipt_digest
             ):
                 continue
             candidates.append(operation)

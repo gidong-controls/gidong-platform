@@ -4610,12 +4610,10 @@ class HostStore:
             return cursor.rowcount
 
     def release_terminal_native_target_operation_leases(self) -> int:
-        """Release only native operations durably proven safe to leave on startup.
+        """Release native leases once their create mutation is terminal.
 
-        A native create row can be ``COMPLETED`` while its XG-SIM trial is still
-        awaiting a human decision, or while simulator STOP/input restoration is
-        quarantined.  Those rows are intentionally still target-blocking even
-        though artifact creation itself is terminal.
+        Historic XG-SIM records stay durable audit evidence, but optional
+        simulator trials cannot keep a completed offline build serialized.
         """
 
         timestamp = _utc_now()
@@ -4672,14 +4670,9 @@ class HostStore:
                     continue
                 if str(row["operation_state"]) != "COMPLETED":
                     continue
-                result = _json_load(str(row["result_json"]))
-                simulation = result.get("simulationVerification")
-                trial = simulation.get("trial") if isinstance(simulation, dict) else None
-                trial_state = str(trial.get("state") or "") if isinstance(trial, dict) else ""
-                if trial_state not in {"OBSERVING", "QUARANTINED"}:
-                    releasable.append(
-                        (str(row["lease_id"]), "native_project_terminal_on_startup")
-                    )
+                releasable.append(
+                    (str(row["lease_id"]), "native_project_terminal_on_startup")
+                )
             released = 0
             for lease_id, reason in releasable:
                 cursor = connection.execute(
@@ -4775,16 +4768,10 @@ class HostStore:
         state: str,
         result: dict[str, Any],
     ) -> bool:
-        if state in {"EXECUTING", "QUARANTINED"}:
-            return True
-        if state != "COMPLETED":
-            return False
-        simulation = result.get("simulationVerification")
-        trial = simulation.get("trial") if isinstance(simulation, dict) else None
-        return isinstance(trial, dict) and trial.get("state") in {
-            "OBSERVING",
-            "QUARANTINED",
-        }
+        # Simulator observation is optional to the offline create/edit
+        # workflow. Only an unfinished or uncertain native mutation can own
+        # recovery authority for the shared engineering target.
+        return state in {"EXECUTING", "QUARANTINED"}
 
     @classmethod
     def _selected_pending_native_operation_row(

@@ -479,7 +479,7 @@ class NativeProjectResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.operation.state, "QUARANTINED")
         self.assertEqual(gateway.workspace_calls, [])
 
-    async def test_verified_resume_enters_capture_reopen_and_simulation_tail(self) -> None:
+    async def test_verified_resume_enters_capture_and_offline_reopen_tail(self) -> None:
         repository = _Repository()
         gateway = _Gateway()
         gateway.resume_result = {"ok": True}
@@ -492,7 +492,6 @@ class NativeProjectResumeTests(unittest.IsolatedAsyncioTestCase):
         }
         capture = AsyncMock(return_value={"state": "capture_failed"})
         reopen = AsyncMock(return_value={"state": "not_verified"})
-        simulation = AsyncMock(return_value={"state": "not_verified"})
         with (
             patch.object(service, "_verify_exact_instance", new=AsyncMock()),
             patch("controlstudio_host.native_projects._native_project_plan_digest", return_value=_PLAN_DIGEST),
@@ -501,7 +500,6 @@ class NativeProjectResumeTests(unittest.IsolatedAsyncioTestCase):
             patch.object(service, "_validate_resume_result", return_value=resumed_result),
             patch.object(service, "_capture_workspace", new=capture),
             patch.object(service, "_verify_fresh_process_reopen", new=reopen),
-            patch.object(service, "_verify_native_simulation", new=simulation),
         ):
             operation = await service.resume(
                 _OPERATION_ID,
@@ -515,7 +513,6 @@ class NativeProjectResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gateway.workspace_calls, ["project.resume_native"])
         capture.assert_awaited_once()
         reopen.assert_awaited_once()
-        simulation.assert_awaited_once()
 
     async def test_completed_unbound_resume_reuses_only_the_controlled_reopen_tail(self) -> None:
         repository = _Repository()
@@ -545,17 +542,12 @@ class NativeProjectResumeTests(unittest.IsolatedAsyncioTestCase):
             "workspace": repository.operation.result["workspaceRegistration"]["workspace"],
             "session": existing_session,
         }
-        simulation = {
-            "state": "not_verified",
-            "detail": "XG-SIM is not yet observed",
-        }
         with (
             patch("controlstudio_host.native_projects._native_project_plan_digest", return_value=_PLAN_DIGEST),
             patch("controlstudio_host.native_projects._native_bundle_description", return_value="reviewed"),
             patch("controlstudio_host.native_projects._stored_creation_receipt_matches_reviewed_build", return_value=True),
             patch.object(service, "_rebind_completed_reopen_target", new=AsyncMock(return_value=existing_session)) as rebind,
             patch.object(service, "_verify_fresh_process_reopen", new=AsyncMock(return_value=reopened)) as verify,
-            patch.object(service, "_verify_native_simulation", new=AsyncMock(return_value=simulation)) as verify_sim,
         ):
             operation = await service.resume(
                 _OPERATION_ID,
@@ -568,7 +560,7 @@ class NativeProjectResumeTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(operation.state, "COMPLETED")
-        self.assertFalse(operation.result["engineeredProgramReady"])
+        self.assertTrue(operation.result["engineeredProgramReady"])
         self.assertEqual(
             operation.result["resumeProvenance"],
             {
@@ -581,7 +573,6 @@ class NativeProjectResumeTests(unittest.IsolatedAsyncioTestCase):
         rebind.assert_awaited_once()
         verify.assert_awaited_once()
         self.assertEqual(verify.await_args.kwargs["existing_session"], existing_session)
-        verify_sim.assert_awaited_once()
         self.assertEqual(gateway.workspace_calls, [])
 
     async def test_completed_rebind_signs_and_requires_saved_build_read_only_binding(self) -> None:
