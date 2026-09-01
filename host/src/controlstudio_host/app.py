@@ -63,9 +63,9 @@ from .api_models import (
     ChangeTargetIdentityV1,
     ChangeTransactionCreatedV1,
     ChangeTransactionV1,
+    CloseIdleXG5000InstanceAttentionV1,
     CloseIdleXG5000InstanceRequestV1,
     CloseIdleXG5000InstanceResponseV1,
-    CloseIdleXG5000InstanceAttentionV1,
     ConfirmKnowledgeMemoryRequestV1,
     ConnectLSControllerRequestV1,
     ControllerRestoreBeginRequestV1,
@@ -151,8 +151,8 @@ from .api_models import (
     ReadLSControllerRequestV1,
     ReconcileChangeTransactionRequestV1,
     ReconcileNativeProjectRequestV1,
-    ResumeNativeProjectRequestV1,
     ResumeLocalWorkspaceRequestV1,
+    ResumeNativeProjectRequestV1,
     ReviewedNoSaveCloseRequestV1,
     ReviewedNoSaveCloseResponseV1,
     RunCancellationV1,
@@ -240,7 +240,10 @@ from .models import (
     RunState,
     StoredEvent,
 )
-from .native_engineering_status import derive_native_engineering_status
+from .native_engineering_status import (
+    NativeEngineeringStatusV1,
+    derive_native_engineering_status,
+)
 from .native_projects import (
     NativeProjectConflict,
     NativeProjectOperation,
@@ -7693,6 +7696,49 @@ def create_app(
             project_plan_authority_digests=project_plan_authority_digests,
             engineering_mission=store.get_engineering_mission(detail.id),
         )
+
+    @app.get(
+        "/api/v1/conversations/{conversation_id}/native-engineering-status",
+        response_model=NativeEngineeringStatusV1,
+    )
+    async def get_native_engineering_status_v1(
+        conversation_id: str,
+    ) -> NativeEngineeringStatusV1:
+        """Return only re-proven native-build continuity facts for this target.
+
+        A persisted handoff is not itself current-target evidence.  Re-run the
+        same Host checks used before an Agent run so the UI cannot present a
+        prior build, reopen, or XG-SIM observation as the active project.
+        """
+
+        detail = store.get_conversation(conversation_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        if detail.workflow != "engineering" or detail.engineering_handoff is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="conversation has no accepted native engineering handoff",
+            )
+        if not engineering_conversation_matches_current_target(detail):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="engineering conversation does not match the active verified target",
+            )
+        engineering_target = current_engineering_conversation_target()
+        if engineering_target is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="no verified engineering target is available",
+            )
+        try:
+            return NativeEngineeringStatusV1.model_validate(
+                native_engineering_status_for_conversation(detail, engineering_target)
+            )
+        except (NativeProjectConflict, ProjectPlanReviewConflict, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="accepted native engineering handoff is no longer exact",
+            ) from exc
 
     @app.post(
         "/api/v1/conversations/{conversation_id}/project-plan/review",
