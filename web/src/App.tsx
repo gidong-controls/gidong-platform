@@ -3088,8 +3088,17 @@ function App() {
           )
         );
       });
-    const catalogKey = locatedMessage
-      ? `${status.workspace?.workspaceId ?? "active-session"}:${conversation?.conversationId ?? "none"}:${locatedMessage.messageId}`
+    // A verified program-list tool result is enough to refresh the existing
+    // read-only navigator; a concise answer need not also carry a location.
+    const catalogEvidence = evidence.find(
+      (item) =>
+        (item as EvidenceRef & { toolName?: string }).toolName ===
+        "project.list_programs",
+    );
+    const catalogTriggerId =
+      catalogEvidence?.evidenceId ?? locatedMessage?.messageId;
+    const catalogKey = catalogTriggerId
+      ? `${status.workspace?.workspaceId ?? "active-session"}:${conversation?.conversationId ?? "none"}:${catalogTriggerId}`
       : null;
     const canLoad =
       !shutdownComplete &&
@@ -3112,6 +3121,7 @@ function App() {
     void loadEngineeringPrograms();
   }, [
     conversation,
+    evidence,
     hostReady,
     mcpReady,
     programs.length,

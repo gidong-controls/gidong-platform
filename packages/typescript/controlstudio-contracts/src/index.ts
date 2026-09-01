@@ -667,6 +667,7 @@ export interface ReverifyBlockedEngineeringMissionStepRequest {
 export interface EvidenceRef {
   evidenceId: string;
   toolCallId?: string;
+  toolName?: string;
   title: string;
   kind:
     | "program_location"
