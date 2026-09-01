@@ -3419,12 +3419,6 @@ class NativeProjectRepository:
             return None
         if operation.state in {"EXECUTING", "QUARANTINED"}:
             return operation
-        simulation = operation.result.get("simulationVerification")
-        trial = simulation.get("trial") if isinstance(simulation, dict) else None
-        if operation.state == "COMPLETED" and isinstance(trial, dict) and trial.get(
-            "state"
-        ) in {"OBSERVING", "QUARANTINED"}:
-            return operation
         return None
 
     def _terminal(
@@ -3739,25 +3733,12 @@ class NativeProjectService:
                 )
             result["reopenVerification"] = reopen_verification
             self._repository.checkpoint_execution(spec.operation_id, result)
-            simulation_trial_id = _native_simulation_trial_id(
-                spec.operation_id,
-                str(build_bundle["bundleId"]),
-            )
-            post_create_stage = "simulation_verification"
-            if simulation_verification is None:
-                simulation_verification = await self._verify_native_simulation(
-                    reopen_verification=reopen_verification,
-                    build_bundle=build_bundle,
-                    trial_id=simulation_trial_id,
-                )
-            result["simulationVerification"] = simulation_verification
-            self._repository.checkpoint_execution(spec.operation_id, result)
-            simulation_trial = simulation_verification.get("trial")
+            # Offline engineering acceptance is complete once the exact LD
+            # build passed Program Check, was saved, and the protected copy was
+            # independently reopened/read back. XG-SIM remains a separate,
+            # opt-in future workflow and is never launched from create/resume.
             result["engineeredProgramReady"] = (
                 reopen_verification.get("state") == "verified"
-                and simulation_verification.get("state") == "verified"
-                and isinstance(simulation_trial, dict)
-                and simulation_trial.get("state") == "ACCEPTED"
             )
             result["workspaceBound"] = result["engineeredProgramReady"]
             if result["workspaceBound"]:
@@ -3767,21 +3748,9 @@ class NativeProjectService:
                     "fresh XG5000 process and is the active engineering target."
                 )
             result["workspaceBindingReason"] = (
-                "The exact reviewed build and XG-SIM receipt were explicitly accepted."
+                "The exact reviewed LD build passed Program Check, save, and independent "
+                "reopen/readback verification."
                 if result["engineeredProgramReady"]
-                else "The protected working copy and plan-bound XG-SIM behavior were "
-                "verified with CPU stop and input restoration; the runtime receipt is "
-                "awaiting an explicit accept or revert decision."
-                if isinstance(simulation_trial, dict)
-                and simulation_trial.get("state") == "OBSERVING"
-                else "The XG-SIM observation outcome is quarantined because safe simulator "
-                "restoration could not be proven from a complete receipt. Do not retry or bind "
-                "the workspace until the simulator state is recovered explicitly."
-                if isinstance(simulation_trial, dict)
-                and simulation_trial.get("state") == "QUARANTINED"
-                else "The protected working copy was independently reopened, but the "
-                "plan-bound XG-SIM observation did not complete."
-                if reopen_verification.get("state") == "verified"
                 else "The created source artifact was captured, but independent "
                 "fresh-process readback did not complete."
             )

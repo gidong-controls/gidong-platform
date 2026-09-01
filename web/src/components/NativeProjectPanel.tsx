@@ -1345,6 +1345,9 @@ function isVerifiedCompletion(
     simulationReceipt.inputWriteBoundary.baselineRestoredAfterCpuStop === true &&
     simulationReceipt.controllerConnected === false &&
     simulationReceipt.plcWritePerformed === false;
+  // XG-SIM evidence stays renderable for historic operations but is not part
+  // of offline create/edit completion.
+  void nativeSimulationVerified;
   return (
     operation.state === "completed" &&
     operation.result?.identityVerified === true &&
@@ -1359,8 +1362,7 @@ function isVerifiedCompletion(
     operation.result.workspaceRegistration?.state === "captured_and_bound" &&
     hasExplicitCompiledCollectionScope(operation) &&
     receiptVerified &&
-    freshProcessReopenVerified &&
-    nativeSimulationVerified
+    freshProcessReopenVerified
   );
 }
 
@@ -1379,9 +1381,7 @@ function verifiedCompletionNotice(operation: NativeProjectOperation): string {
   const confirmedScope = confirmedCollectionScopeSummary(operation);
   if (registration?.state === "captured_and_bound") {
     const reopened = operation.result?.reopenVerification?.receipt?.reopenedProcess;
-    const scenarios =
-      operation.result?.simulationVerification?.receipt?.scenarioReceipt.scenarioCount;
-    return `새 오프라인 프로젝트에 ${confirmedScope}만 구성한 뒤 보호 작업 복사본을 별도 XG5000 PID ${reopened?.pid ?? "—"}에서 다시 열어 mnemonic·LD 왕복·프로그램 검사·파일 hash를 재확인했습니다. 이어 해당 범위의 XG-SIM ${scenarios ?? 0}개 시나리오, CPU 정지와 입력 원복 receipt를 확인하고 명시적으로 채택했습니다.`;
+    return `새 오프라인 프로젝트에 ${confirmedScope}만 구성한 뒤 보호 작업 복사본을 별도 XG5000 PID ${reopened?.pid ?? "—"}에서 다시 열어 mnemonic·LD 왕복·프로그램 검사·파일 hash를 재확인했습니다. PLC 연결·다운로드·쓰기는 수행하지 않았습니다.`;
   }
   if (registration?.state === "captured_not_bound") {
     return "새 오프라인 프로젝트를 만들고 정체성을 확인했습니다. 보호 복사본은 캡처했지만 XG5000에 열린 생성 원본과 별개이므로 분석 세션에는 자동 연결하지 않았습니다.";

@@ -591,14 +591,8 @@ export interface EngineeringConversationHandoff {
   buildBundleId: string;
   buildReceiptSchemaVersion: "controlstudio-native-build-receipt/v3";
   buildReceiptDigest: string;
-  simulationReceiptSchemaVersion:
-    | "controlstudio-native-simulation-receipt/v3"
-    | "controlstudio-native-simulation-receipt/v4"
-    | "controlstudio-native-simulation-receipt/v5";
-  simulationReceiptDigest: string;
-  simulationTrialId: string;
-  acceptedByActorId: string;
-  acceptedAt: string;
+  reopenReceiptSchemaVersion: "controlstudio-native-reopen-receipt/v2";
+  reopenReceiptDigest: string;
   projectSha256: string;
 }
 

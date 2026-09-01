@@ -2535,14 +2535,10 @@ def _native_project_target_lease_identity(
 def _native_project_target_lease_must_remain(
     value: NativeProjectOperation,
 ) -> bool:
-    if value.state in {"EXECUTING", "QUARANTINED"}:
-        return True
-    simulation = value.result.get("simulationVerification")
-    trial = simulation.get("trial") if isinstance(simulation, dict) else None
-    return isinstance(trial, dict) and trial.get("state") in {
-        "OBSERVING",
-        "QUARANTINED",
-    }
+    # A completed, independently reopened offline build is terminal. Historic
+    # XG-SIM receipts remain attached for audit, but an optional simulator
+    # quarantine cannot serialize or block a new offline target.
+    return value.state in {"EXECUTING", "QUARANTINED"}
 
 
 def _request_actor_id(request: Request) -> str:
@@ -3606,7 +3602,7 @@ def create_app(
         reviewed_plan = request.get("reviewedPlan")
         build_bundle = request.get("buildBundle")
         build_receipt = result.get("buildBundleReceipt")
-        simulation = result.get("simulationVerification")
+        reopen_verification = result.get("reopenVerification")
         workspace_registration = result.get("workspaceRegistration")
         if not all(
             isinstance(value, dict)
@@ -3614,7 +3610,7 @@ def create_app(
                 reviewed_plan,
                 build_bundle,
                 build_receipt,
-                simulation,
+                reopen_verification,
                 workspace_registration,
             )
         ):
@@ -3624,12 +3620,10 @@ def create_app(
         assert isinstance(reviewed_plan, dict)
         assert isinstance(build_bundle, dict)
         assert isinstance(build_receipt, dict)
-        assert isinstance(simulation, dict)
+        assert isinstance(reopen_verification, dict)
         assert isinstance(workspace_registration, dict)
 
-        receipt = simulation.get("receipt")
-        trial = simulation.get("trial")
-        decision = trial.get("decision") if isinstance(trial, dict) else None
+        reopen_receipt = reopen_verification.get("receipt")
         workspace = workspace_registration.get("workspace")
         source = workspace.get("source") if isinstance(workspace, dict) else None
         working_copy = (
@@ -3694,30 +3688,6 @@ def create_app(
             raise NativeProjectConflict(
                 "native project handoff requires the exact new-build workspace provenance"
             )
-        receipt_schema = receipt.get("schemaVersion") if isinstance(receipt, dict) else None
-        scenario_receipt = (
-            receipt.get("scenarioReceipt") if isinstance(receipt, dict) else None
-        )
-        expected_scenario_schema = {
-            "controlstudio-native-simulation-receipt/v3": (
-                "controlstudio-native-simulation-scenarios/v1"
-            ),
-            "controlstudio-native-simulation-receipt/v4": (
-                "controlstudio-native-simulation-scenarios/v2"
-            ),
-            "controlstudio-native-simulation-receipt/v5": (
-                "controlstudio-native-simulation-scenarios/v3"
-            ),
-        }.get(receipt_schema)
-        bundle_id = build_bundle.get("bundleId")
-        try:
-            expected_trial_id = (
-                _native_simulation_trial_id(candidate.operation_id, bundle_id)
-                if isinstance(bundle_id, str) and bundle_id
-                else None
-            )
-        except ValueError:
-            expected_trial_id = None
         if (
             result.get("engineeredProgramReady") is not True
             or result.get("workspaceBound") is not True
@@ -3725,45 +3695,16 @@ def create_app(
             or result.get("controllerConnected") is not False
             or result.get("plcWritePerformed") is not False
             or workspace_registration.get("state") != "captured_and_bound"
-            or simulation.get("state") != "verified"
-            or not isinstance(receipt, dict)
-            or expected_scenario_schema is None
-            or receipt.get("status") != "SIMULATION_VERIFIED"
-            or not isinstance(scenario_receipt, dict)
-            or scenario_receipt.get("schemaVersion") != expected_scenario_schema
-            or scenario_receipt.get("status") != "SCENARIOS_VERIFIED"
-            or not isinstance(trial, dict)
-            or trial.get("schemaVersion")
-            != "controlstudio-native-simulation-trial/v1"
-            or not _is_canonical_uuid(trial.get("trialId"))
-            or trial.get("trialId") != expected_trial_id
-            or trial.get("state") != "ACCEPTED"
-            or trial.get("safeRestorationVerified") is not True
-            or not isinstance(decision, dict)
-            or set(decision)
-            != {"outcome", "actorId", "decidedAt", "receiptDigest"}
-            or decision.get("outcome") != "ACCEPTED"
-            or not isinstance(decision.get("actorId"), str)
-            or not str(decision.get("actorId") or "").strip()
-            or not isinstance(decision.get("decidedAt"), str)
-            or not str(decision.get("decidedAt") or "").strip()
-            or "migratedFrom" in decision
+            or reopen_verification.get("state") != "verified"
+            or not isinstance(reopen_receipt, dict)
+            or reopen_receipt.get("schemaVersion")
+            != "controlstudio-native-reopen-receipt/v2"
+            or reopen_receipt.get("status") != "REOPEN_VERIFIED"
             or not isinstance(workspace, dict)
             or not isinstance(working_copy, dict)
         ):
             raise NativeProjectConflict(
-                "native project does not have an explicitly accepted supported trial"
-            )
-
-        simulation_digest = _canonical_json_digest(receipt)
-        trial_receipt_digest = trial.get("receiptDigest")
-        if (
-            not re.fullmatch(r"[0-9a-f]{64}", simulation_digest)
-            or trial_receipt_digest != simulation_digest
-            or decision.get("receiptDigest") != simulation_digest
-        ):
-            raise NativeProjectConflict(
-                "accepted simulation receipt digest is not exact"
+                "native project does not have verified offline reopen evidence"
             )
 
         planning_conversation_id = reviewed_plan.get("conversationId")
@@ -3821,18 +3762,18 @@ def create_app(
             or build_receipt.get("phase") != "engineered_control_program"
             or build_receipt.get("bundleId") != bundle_id
             or build_receipt.get("reviewedPlanDigest") != reviewed_plan_digest
-            or receipt.get("buildBundleId") != bundle_id
-            or receipt.get("reviewedPlanDigest") != reviewed_plan_digest
+            or reopen_receipt.get("buildBundleId") != bundle_id
+            or reopen_receipt.get("reviewedPlanDigest") != reviewed_plan_digest
         ):
             raise NativeProjectConflict(
-                "accepted build and simulation provenance do not match"
+                "verified build and reopen provenance do not match"
             )
 
         workspace_id, revision_id, engineering_session_id = engineering_target
         build_project_sha256 = result.get("projectSha256")
         project_sha256 = working_copy.get("current_sha256")
         project_path = working_copy.get("path")
-        simulation_project = receipt.get("projectReadback")
+        reopen_project = reopen_receipt.get("projectReadback")
         build_program = build_receipt.get("programReadback")
         try:
             active_project_path_matches = bool(
@@ -3859,9 +3800,9 @@ def create_app(
             or re.fullmatch(r"[0-9a-f]{64}", build_project_sha256) is None
             or not isinstance(build_program, dict)
             or build_program.get("savedProjectSha256") != build_project_sha256
-            or not isinstance(simulation_project, dict)
-            or simulation_project.get("projectSha256") != project_sha256
-            or simulation_project.get("projectUnchangedDuringRuntime") is not True
+            or not isinstance(reopen_project, dict)
+            or reopen_project.get("projectSha256") != project_sha256
+            or reopen_project.get("projectUnchanged") is not True
             or not isinstance(active_engineering_session, dict)
             or active_engineering_session.get("session_id")
             != engineering_session_id
@@ -3883,11 +3824,8 @@ def create_app(
             "buildBundleId": bundle_id,
             "buildReceiptSchemaVersion": build_receipt_schema,
             "buildReceiptDigest": _canonical_json_digest(build_receipt),
-            "simulationReceiptSchemaVersion": receipt_schema,
-            "simulationReceiptDigest": simulation_digest,
-            "simulationTrialId": str(trial.get("trialId") or ""),
-            "acceptedByActorId": str(decision["actorId"]),
-            "acceptedAt": str(decision["decidedAt"]),
+            "reopenReceiptSchemaVersion": reopen_receipt["schemaVersion"],
+            "reopenReceiptDigest": _canonical_json_digest(reopen_receipt),
             "projectSha256": project_sha256,
         }
 
@@ -7602,22 +7540,14 @@ def create_app(
                 provenance = EngineeringConversationHandoffV1.model_validate(
                     raw_provenance
                 ).model_dump(mode="json", by_alias=True)
-                conversation, created = await _record_native_handoff_after_freshness(
-                    revalidate_native_handoff_freshness(
-                        engineering_target,
-                        native_project_id=body.native_project_id,
-                        trial_id=str(raw_provenance["simulationTrialId"]),
-                        receipt_digest=str(raw_provenance["simulationReceiptDigest"]),
-                    ),
-                    lambda: store.create_engineering_handoff_conversation(
-                        title=body.title,
-                        native_project_id=body.native_project_id,
-                        planning_conversation_id=planning_conversation_id,
-                        workspace_id=engineering_target[0],
-                        revision_id=engineering_target[1],
-                        engineering_session_id=engineering_target[2],
-                        provenance=provenance,
-                    ),
+                conversation, created = store.create_engineering_handoff_conversation(
+                    title=body.title,
+                    native_project_id=body.native_project_id,
+                    planning_conversation_id=planning_conversation_id,
+                    workspace_id=engineering_target[0],
+                    revision_id=engineering_target[1],
+                    engineering_session_id=engineering_target[2],
+                    provenance=provenance,
                 )
             except (NativeProjectConflict, ProjectPlanReviewConflict, ValueError) as exc:
                 raise HTTPException(
@@ -12982,20 +12912,15 @@ def create_app(
             response.status_code = status.HTTP_200_OK
         if operation.state == "COMPLETED":
             reopen = operation.result.get("reopenVerification")
-            simulation = operation.result.get("simulationVerification")
             reopen_bound = False
             if (
                 isinstance(reopen, dict)
                 and reopen.get("state") == "verified"
-                and isinstance(simulation, dict)
-                and simulation.get("state") == "verified"
-                and isinstance(simulation.get("trial"), dict)
-                and simulation["trial"].get("state") == "ACCEPTED"
                 and isinstance(reopen.get("workspace"), dict)
-                and isinstance(simulation.get("session"), dict)
+                and isinstance(reopen.get("session"), dict)
             ):
                 reopened_workspace = _local_workspace_v1(reopen["workspace"])
-                reopened_session = simulation["session"]
+                reopened_session = reopen["session"]
                 if (
                     Path(str(reopened_session["project_path"])).resolve()
                     == Path(reopened_workspace.working_copy.path).resolve()
@@ -13009,7 +12934,7 @@ def create_app(
             if not reopen_bound:
                 # Same-process creation remains valid, but it is not an active
                 # engineering target until the captured copy is independently
-                # reopened and its plan-bound XG-SIM acceptance is verified.
+                # reopened and read back against the reviewed saved build.
                 active_engineering_session = None
                 active_workspace = None
                 execution_broker.clear_agent_session()
@@ -13899,10 +13824,9 @@ def create_app(
             )
         if resumed.state == "COMPLETED":
             reopen = resumed.result.get("reopenVerification")
-            simulation = resumed.result.get("simulationVerification")
             accepted_session = (
-                simulation.get("session")
-                if isinstance(simulation, dict)
+                reopen.get("session")
+                if isinstance(reopen, dict)
                 else None
             )
             reopened_workspace = (
@@ -13913,10 +13837,6 @@ def create_app(
             if (
                 isinstance(reopen, dict)
                 and reopen.get("state") == "verified"
-                and isinstance(simulation, dict)
-                and simulation.get("state") == "verified"
-                and isinstance(simulation.get("trial"), dict)
-                and simulation["trial"].get("state") == "ACCEPTED"
                 and isinstance(accepted_session, dict)
                 and isinstance(reopened_workspace, dict)
             ):

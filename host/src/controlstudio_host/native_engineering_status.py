@@ -15,7 +15,6 @@ _COMPLETED_STAGES = (
     "reviewed_plan",
     "native_build",
     "independent_reopen",
-    "xg_sim_acceptance",
 )
 _REMAINING_STAGES = ("engineering_validation",)
 _STATUS_KEYS = {
@@ -26,8 +25,7 @@ _STATUS_KEYS = {
     "reviewedPlanDigest",
     "buildBundleId",
     "buildReceiptDigest",
-    "simulationTrialId",
-    "simulationReceiptDigest",
+    "reopenReceiptDigest",
     "projectSha256",
     "completedStages",
     "remainingStages",
@@ -55,14 +53,12 @@ class NativeEngineeringStatusV1(ApiModel):
     reviewed_plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     build_bundle_id: str = Field(min_length=1, max_length=256)
     build_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    simulation_trial_id: str = Field(min_length=1, max_length=256)
-    simulation_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reopen_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     project_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     completed_stages: tuple[
         Literal["reviewed_plan"],
         Literal["native_build"],
         Literal["independent_reopen"],
-        Literal["xg_sim_acceptance"],
     ]
     remaining_stages: tuple[Literal["engineering_validation"]]
     status_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -163,8 +159,7 @@ def derive_native_engineering_status(
         "reviewedPlanDigest": provenance.reviewed_plan_digest,
         "buildBundleId": provenance.build_bundle_id,
         "buildReceiptDigest": provenance.build_receipt_digest,
-        "simulationTrialId": provenance.simulation_trial_id,
-        "simulationReceiptDigest": provenance.simulation_receipt_digest,
+        "reopenReceiptDigest": provenance.reopen_receipt_digest,
         "projectSha256": provenance.project_sha256,
         "completedStages": list(_COMPLETED_STAGES),
         "remainingStages": list(_REMAINING_STAGES),

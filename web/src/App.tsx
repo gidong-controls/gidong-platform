@@ -3229,8 +3229,6 @@ function App() {
           workflow: "engineering",
           nativeProjectId,
         });
-        const simulation = operationResult.simulationVerification;
-        const trial = simulation?.trial;
         const handoff = created.engineeringHandoff;
         if (
           created.workflow !== "engineering" ||
@@ -3241,7 +3239,7 @@ function App() {
           handoff.planningMessageId !== reviewedPlan.messageId ||
           handoff.reviewedPlanDigest !== reviewedPlan.planDigest ||
           handoff.buildBundleId !== operation.request.buildBundle.bundleId ||
-          handoff.simulationReceiptDigest !== trial?.receiptDigest ||
+          !/^[0-9a-f]{64}$/i.test(handoff.reopenReceiptDigest) ||
           handoff.projectSha256 !==
             operationResult.workspaceRegistration?.workspace?.workingCopy
               .currentSha256
@@ -3280,7 +3278,7 @@ function App() {
         returnWorkspaceRef.current = null;
         startEventStream(created.conversationId, 0);
         setConnectionMessage(
-          "Accepted plan, build, and XG-SIM provenance is now bound to the engineering conversation.",
+          "검토한 계획, LD 생성·Program Check·저장과 독립 재열기 readback 근거를 엔지니어링 대화에 연결했습니다.",
         );
         window.setTimeout(() => composerRef.current?.focus(), 0);
       })();
@@ -5572,9 +5570,9 @@ function App() {
                     {conversation.engineeringHandoff.reviewedPlanDigest.slice(0, 12)}
                     {" · build "}
                     {conversation.engineeringHandoff.buildBundleId.slice(0, 12)}
-                    {" · XG-SIM "}
-                    {conversation.engineeringHandoff.simulationReceiptSchemaVersion.replace(
-                      "controlstudio-native-simulation-receipt/",
+                    {" · reopen "}
+                    {conversation.engineeringHandoff.reopenReceiptSchemaVersion.replace(
+                      "controlstudio-native-reopen-receipt/",
                       "",
                     )}
                   </span>

@@ -1504,15 +1504,8 @@ class EngineeringConversationHandoffV1(ApiModel):
         "controlstudio-native-build-receipt/v3"
     ]
     build_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    simulation_receipt_schema_version: Literal[
-        "controlstudio-native-simulation-receipt/v3",
-        "controlstudio-native-simulation-receipt/v4",
-        "controlstudio-native-simulation-receipt/v5",
-    ]
-    simulation_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    simulation_trial_id: str = Field(min_length=1, max_length=256)
-    accepted_by_actor_id: str = Field(min_length=1, max_length=256)
-    accepted_at: datetime
+    reopen_receipt_schema_version: Literal["controlstudio-native-reopen-receipt/v2"]
+    reopen_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     project_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
