@@ -16,7 +16,7 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 - 세 core 저장소 `gidong-platform`, `gidong-agent`, `gidong-plc-mcp`는 `dev`에서 작업한다.
   `6d06754`, `f70d30c`, `9edc7e5`는 이 handoff 작성 당시의 역사적 code checkpoint이며 최신
   `HEAD` 표기가 아니다. 현재 제품 checkpoint와 실행 상태는 아래 2026-09-01 절을 우선한다.
-- 독립 XG5000 CLI는 `main`의 `7a456a1`이며 사용자 지정 원격 `origin/main`과 동기화돼 있다.
+- 독립 XG5000 CLI는 `main`의 `067f4bb`이며 사용자 지정 원격 `origin/main`과 동기화돼 있다.
   위 세 core 저장소의 이번 변경은 local commit이며 push하지 않았다.
 
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
@@ -24,18 +24,26 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 ## 2026-09-01 필수 읽기 경로 — 현재 진행
 
-- CLI의 실제 `read-ld` 생산 진입점을 broad `legacy.py` dispatcher에서 분리했다. 새
-  `read_ld_entry.py`가 canonical UTF-8 request, exact PID/HWND, project path/SHA,
-  stable program ID/name, operation-local private payload handoff를 직접 검증하고,
-  CLI-owned `vendor/ladder.py`와 `vendor/ladder_graph.py`가 native payload를 다시 decode해
-  decoded-program digest와 semantic rung을 만든다. 기존 MCP-owned projection은 public 결과로
-  신뢰하지 않는다. editor-open과 raw clipboard capture는 아직 transitional `legacy-core` seam이며
-  전체 vendor-core 추출 완료로 부르지 않는다. broad legacy import 없이 실패하는 dispatch와 한글
-  경로 canonical request를 포함해 CLI 전체 94개, MCP CLI/server boundary 112개가 통과했다.
-  첫 구현에서 새 entry가 JSON canonicalization을 다시 작성해 한글 경로 규약이 갈라진 재발 결함은
-  값 하나만 고치지 않고 제거했다. `wire.py` 한 곳이 legacy와 fast entry의 UTF-8 canonical JSON,
-  duplicate-key/NaN 거절, 크기 제한을 모두 소유하며 각 entry는 같은 decoder만 호출한다.
-  이 변경은 CLI `7a456a1`로 커밋되어 지정 원격 `origin/main`에 push됐다.
+- CLI `067f4bb`은 실제 `read-ld` 생산 진입점의 전체 runtime closure를 독립 저장소가
+  소유하게 했다. `read_ld_entry.py`가 canonical UTF-8 request, exact PID/HWND, project
+  path/SHA, stable program ID/name, operation-local private payload handoff를 검증하고,
+  CLI-owned decoder가 native payload와 semantic rung을 만든다. editor-open, exact
+  project-tree/MDI selection, cancel-only dialog guard, raw clipboard transaction/capture,
+  UIA/Win32 input/message substrate도 CLI-owned다. subprocess import guard는 이 closure가
+  `xg5000_control`을 하나도 load하지 않음을 검증한다. CLI 전체 112개와 MCP CLI/server
+  boundary 112개가 통과했다. 다른 compatibility command의 vendor core까지 전부 추출됐다는
+  뜻은 아니다. `wire.py` 한 곳이 legacy와 fast entry의 UTF-8 canonical JSON,
+  duplicate-key/NaN 거절, 크기 제한을 모두 소유한다. 초기 entry/shared wire는 `7a456a1`,
+  stable program ID는 `07d1944`, 전체 LD read workflow는 `067f4bb`로 `origin/main`에 push됐다.
+- `067f4bb` 소스 상태에서 실제 제품 conversation
+  `2ed7ebb5-344c-4a69-944e-7aa3a73b4fec`의 run
+  `fb410c7f-6cda-4c03-adb7-f18ba42a61ae`가 `COMPLETED`됐다. Agent는
+  `project.list_programs` 1회와 `program.read_ld` 1회만 호출했고 PID `16228`/HWND
+  `723394`, program `ld:55e388e7aea7a8ce`에서 evidence
+  `5deb704b-8167-57bb-a11c-7c4d343b600b`를 만들었다. payload SHA-256은
+  `aca8fb5f154b49ae9431df075efee8971610fd83dca1ebba65821e6be7795bd7`, project SHA-256은
+  전후 `2d55b3489f0f1a97666e79d00bd4ef6962d2e2e71fa44839193be04240308b48`로 동일하며
+  답변은 `조건식: M00001 AND (M00000 OR M00010), 출력: M00010`이다.
 - 실제 제품 conversation `2ed7ebb5-344c-4a69-944e-7aa3a73b4fec`의 새 run
   `f04421bf-b1e8-4a63-a9ad-125dda7a31a9`은 새 좁은 CLI entry를 통해
   `read_ladder_program`을 1회 실행하고 `COMPLETED`됐다. PID `16228`/HWND `723394`, program

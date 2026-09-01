@@ -26,9 +26,9 @@
     },
     {
       "id": "independent-xg5000-cli-contract",
-      "ca_ids": ["CA-05", "CA-06", "CA-07"],
+      "ca_ids": ["CA-02", "CA-05", "CA-06", "CA-07"],
       "cwd": "controlstudio-xg5000-cli",
-      "command": [".venv/Scripts/python.exe", "-m", "unittest", "tests.test_cli_contract", "tests.test_read_ld_entry"],
+      "command": [".venv/Scripts/python.exe", "-m", "unittest", "tests.test_cli_contract", "tests.test_read_ld_entry", "tests.test_read_ld_capture", "tests.test_read_ld_editor", "tests.test_dialog_guard"],
       "timeout_seconds": 180
     },
     {
