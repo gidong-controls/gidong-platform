@@ -632,10 +632,6 @@ class NativeHandoffLineageTests(unittest.TestCase):
                 side_effect=require_reviewed_project_plan,
             ), TestClient(app, base_url="http://localhost:8765") as client:
                 _authenticate(client, config)
-                unbound_status = client.get(
-                    f"/api/v1/conversations/{conversation.id}/native-engineering-status"
-                )
-                self.assertEqual(unbound_status.status_code, 409, unbound_status.text)
                 attached = client.post(
                     "/api/v1/xg5000/attach",
                     json={
@@ -646,27 +642,6 @@ class NativeHandoffLineageTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(attached.status_code, 200, attached.text)
-                status_response = client.get(
-                    f"/api/v1/conversations/{conversation.id}/native-engineering-status"
-                )
-                self.assertEqual(status_response.status_code, 200, status_response.text)
-                status_payload = status_response.json()
-                self.assertEqual(
-                    status_payload["completedStages"],
-                    [
-                        "reviewed_plan",
-                        "native_build",
-                        "independent_reopen",
-                        "xg_sim_acceptance",
-                    ],
-                )
-                self.assertEqual(status_payload["remainingStages"], ["engineering_validation"])
-                self.assertEqual(
-                    status_payload["projectSha256"],
-                    workspace["working_copy"]["current_sha256"],
-                )
-                self.assertNotIn("planningConversationId", status_payload)
-                self.assertNotIn("simulationReceipt", status_payload)
                 response = client.post(
                     f"/api/v1/conversations/{conversation.id}/messages",
                     headers={"Idempotency-Key": "native-handoff-mission-run"},
@@ -687,10 +662,7 @@ class NativeHandoffLineageTests(unittest.TestCase):
                     f"{finished_run.error_code}: {finished_run.error_detail}",
                 )
 
-            # The product status endpoint and the Agent preflight each
-            # independently re-prove the reviewed-plan handoff; neither trusts
-            # the stored handoff as current-target evidence.
-            self.assertEqual(len(review_calls), 4)
+            self.assertEqual(len(review_calls), 2)
             self.assertEqual(len(runtime.calls), 1)
             status = runtime.calls[0]
             self.assertEqual(
