@@ -60,6 +60,17 @@ program rejection, no MCP import closure, exact stable IDs, project title,
 PID/HWND lifetime, and unchanged file SHA. The receipt remains `FAIL_CLOSED`
 overall only because external live-gate receipts were not supplied.
 
+After the Agent's exact current-LD routing was made deterministic, the full
+manifest passed again at
+`artifacts/plc-agent-acceptance-exact-ld-routing/run-ar8dko26/receipt.json`
+with the same manifest SHA-256. The Agent group ran 79 tests, MCP 126, and the
+independent CLI group 93. Real product run
+`ecb0ee66-560d-4640-a6aa-14a603d3fd34` then executed exactly one program-list
+and one LD-read call. Its catalog receipt records
+`catalog_source: sha_bound_project_xml`, `live_editor_catalog: false`, stable
+program ID `ld:55e388e7aea7a8ce`, and unchanged project SHA before/after; its
+LD evidence is `70964455-e837-58c8-8a6f-7d39705bb07d`.
+
 Separately, real product run `fb410c7f-6cda-4c03-adb7-f18ba42a61ae` completed
 one `project.list_programs` call and one actual `program.read_ld` call against
 XG5000 PID 16228/HWND 723394. Evidence

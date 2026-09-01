@@ -39,6 +39,30 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   Agent·Host·MCP·독립 CLI·Web build 5개 group이 모두 `PASS`이고 CLI group은 93 tests,
   MCP group은 126 tests를 실행했다. 장비/외부 live receipt는 공급하지 않았으므로 overall은
   의도대로 `FAIL_CLOSED`다.
+- Agent `b7c063d`는 현재/실제 XG5000의 named LD read 요청을 모델의 임의 initial-tool
+  선택에서 제거했다. runtime이 `list_project_programs({})`를 먼저 선택하고, verified catalog의
+  stable ID를 기존 deterministic continuation이 `read_ladder_program`에 전달한다. 일반 LD
+  tutorial은 이 경로에 들어오지 않고 특정 fixture 이름에도 고정되지 않는다. 전체 Agent 103 tests가
+  통과했다. 이 수정 전 실제 run `db4d60d0-7896-4cb9-8ae8-486fd216401d`은 static
+  workspace search/structure를 반복하고 `agent_output_contract`로 실패했으며 CLI/XG5000 실패가
+  아니었다.
+- 정상 Host restart 뒤 direct XG5000 session은 process-lifetime-bound라 자동 복원되지 않는다.
+  persisted static workspace SHA `13251e...`와 혼동하지 않도록 exact PID `16228`/HWND `723394`,
+  working path/SHA `2d55b348...08b48`로 read-only attach를 다시 검증했다. 새 conversation
+  `5f3fc135-54a0-448a-aa7a-04864ef731e3`, run
+  `ecb0ee66-560d-4640-a6aa-14a603d3fd34`는 27초 안에 `list_project_programs` 1회와
+  `read_ladder_program` 1회만 실행하고 `COMPLETED`됐다. list artifact
+  `52265d1f.../ec32ddb5c6b3/result.json`은 `catalog_source=sha_bound_project_xml`,
+  `live_editor_catalog=false`, program `ld:55e388e7aea7a8ce`, project SHA 전후 동일을 기록한다.
+  LD artifact `52265d1f.../e8a71258b2b3/result.json`과 evidence
+  `70964455-e837-58c8-8a6f-7d39705bb07d`는 payload SHA
+  `aca8fb5f154b49ae9431df075efee8971610fd83dca1ebba65821e6be7795bd7`와 같은 project SHA를
+  결속한다. 최종 답변은 `조건식: M00001 AND (M00000 OR M00010), 출력: M00010`이다.
+- Agent route 수정 뒤 통합 artifact는
+  `artifacts/plc-agent-acceptance-exact-ld-routing/run-ar8dko26/receipt.json`이다. 같은 manifest
+  SHA `06503a913f3b0542cddbe0d361e721fcda79965c743c8b259bfe0ea6bd3bee15`에서 5개 deterministic
+  group이 모두 `PASS`이며 Agent group은 79, MCP group은 126, CLI group은 93 tests다.
+  external live-gate receipt는 공급하지 않았으므로 overall은 계속 `FAIL_CLOSED`다.
 
 - CLI `067f4bb`은 실제 `read-ld` 생산 진입점의 전체 runtime closure를 독립 저장소가
   소유하게 했다. `read_ld_entry.py`가 canonical UTF-8 request, exact PID/HWND, project
