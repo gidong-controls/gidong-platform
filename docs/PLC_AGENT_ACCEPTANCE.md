@@ -8,7 +8,9 @@ repeatable local checks:
 - Host change-execution, durable resume, field-I/O projection, quarantined
   working-copy recovery/rebind, and Host source-restart contract tests;
 - MCP subprocess-boundary, field-I/O binding, journal-pinned quarantined-backup
-  restoration, and independent CLI contract tests;
+  restoration, independent CLI contract tests, and the narrow `read-ld` entry
+  (UTF-8 canonical request, exact binding, native decode, semantic projection,
+  and private handoff);
 - the production web build.
 
 Run it from `gidong-platform`:
@@ -34,6 +36,19 @@ executions; session `50168`, exit `0`). Its receipt is
 `aba0b0d80046c7b9c66a6f3d0fb00cc82090564ccd565526633466e4f2640f7a`.
 CA-01, CA-02, CA-04--CA-07 and CA-12 remain `NOT_RUN` without their external
 live receipts, so that receipt's `overall_status` is still `FAIL_CLOSED`.
+
+The 2026-09-01 post-`read-ld`-extraction/shared-wire deterministic run passed
+all five command groups at
+`artifacts/plc-agent-acceptance-shared-wire/run-xdarfcco/receipt.json`.
+Its manifest SHA-256 is
+`3a4cce5bccac943d05be4b50559201cf3dc40109b18d595ed75be366609581ef`;
+the CLI group ran 66 tests including `tests.test_read_ld_entry`. The receipt
+remains `FAIL_CLOSED` overall because no external live-gate receipt was supplied.
+Separately, real product run `f04421bf-b1e8-4a63-a9ad-125dda7a31a9`
+completed one actual `read_ladder_program` call against XG5000 PID 16228/HWND
+723394 and produced evidence `b1393d42-fb86-5e11-89c4-63f088036577`.
+That observation is recorded for traceability but is not silently converted
+into a CA-02 receipt; the strict gate schema and manifest binding still apply.
 
 Use `--dry-run` to validate the manifest and inspect the exact commands without
 running them. The runner never starts XG5000, requests UAC, opens a browser, or

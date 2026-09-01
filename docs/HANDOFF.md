@@ -16,7 +16,7 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 - 세 core 저장소 `gidong-platform`, `gidong-agent`, `gidong-plc-mcp`는 `dev`에서 작업한다.
   `6d06754`, `f70d30c`, `9edc7e5`는 이 handoff 작성 당시의 역사적 code checkpoint이며 최신
   `HEAD` 표기가 아니다. 현재 제품 checkpoint와 실행 상태는 아래 2026-09-01 절을 우선한다.
-- 독립 XG5000 CLI는 `main`의 `64f1f75`이며 사용자 지정 원격 `origin/main`과 동기화돼 있다.
+- 독립 XG5000 CLI는 `main`의 `7a456a1`이며 사용자 지정 원격 `origin/main`과 동기화돼 있다.
   위 세 core 저장소의 이번 변경은 local commit이며 push하지 않았다.
 
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
@@ -24,6 +24,37 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 ## 2026-09-01 필수 읽기 경로 — 현재 진행
 
+- CLI의 실제 `read-ld` 생산 진입점을 broad `legacy.py` dispatcher에서 분리했다. 새
+  `read_ld_entry.py`가 canonical UTF-8 request, exact PID/HWND, project path/SHA,
+  stable program ID/name, operation-local private payload handoff를 직접 검증하고,
+  CLI-owned `vendor/ladder.py`와 `vendor/ladder_graph.py`가 native payload를 다시 decode해
+  decoded-program digest와 semantic rung을 만든다. 기존 MCP-owned projection은 public 결과로
+  신뢰하지 않는다. editor-open과 raw clipboard capture는 아직 transitional `legacy-core` seam이며
+  전체 vendor-core 추출 완료로 부르지 않는다. broad legacy import 없이 실패하는 dispatch와 한글
+  경로 canonical request를 포함해 CLI 전체 94개, MCP CLI/server boundary 112개가 통과했다.
+  첫 구현에서 새 entry가 JSON canonicalization을 다시 작성해 한글 경로 규약이 갈라진 재발 결함은
+  값 하나만 고치지 않고 제거했다. `wire.py` 한 곳이 legacy와 fast entry의 UTF-8 canonical JSON,
+  duplicate-key/NaN 거절, 크기 제한을 모두 소유하며 각 entry는 같은 decoder만 호출한다.
+  이 변경은 CLI `7a456a1`로 커밋되어 지정 원격 `origin/main`에 push됐다.
+- 실제 제품 conversation `2ed7ebb5-344c-4a69-944e-7aa3a73b4fec`의 새 run
+  `f04421bf-b1e8-4a63-a9ad-125dda7a31a9`은 새 좁은 CLI entry를 통해
+  `read_ladder_program`을 1회 실행하고 `COMPLETED`됐다. PID `16228`/HWND `723394`, program
+  `ld:55e388e7aea7a8ce`에서 evidence `b1393d42-fb86-5e11-89c4-63f088036577`를 만들었고 답변은
+  `조건식: M00001 AND (M00000 OR M00010), 출력: M00010`이다. 앞선 run
+  `0d62ff8f-660d-49bc-8d5f-60db0c9b58f6`은 새 entry의 한글 경로 JSON canonicalization 차이로
+  실패했으며, 어댑터와 같은 `ensure_ascii=false` 규약으로 수정한 뒤 위 run에서 해결했다.
+  비상승 terminal 직접 호출의 `win32_error=5`는 재시도하지 않았고, 이미 권한을 유지한 Host에서
+  실제 사용자 경로만 검증했다. 새 UAC 요청은 없었다.
+  공용 wire 리팩터 뒤의 마지막 Agent run
+  `c1434d49-068a-4f3c-a6c0-d01e54a06ddf`은 첫 read-only session-status 뒤 모델 제공자
+  HTTP 502로 종료됐으며 `program.read_ld`를 호출하지 않았다. 따라서 CLI 실패나 XG5000 동작
+  증거로 해석하지 않고 같은 실기 요청을 반복하지 않았다.
+- 갱신된 단일 acceptance manifest는 CLI narrow-entry와 shared-wire 회귀까지 포함한다. deterministic 전체
+  실행 artifact는 `artifacts/plc-agent-acceptance-shared-wire/run-xdarfcco/receipt.json`,
+  manifest SHA-256은 `3a4cce5bccac943d05be4b50559201cf3dc40109b18d595ed75be366609581ef`다.
+  다섯 command group이 모두 `PASS`이고 CLI group은 66 tests를 실행했다. 외부 live receipt를
+  이 deterministic run에 주입하지 않았으므로 overall은 의도대로 `FAIL_CLOSED`이며, 위 실제 run을
+  가짜 CA-02 gate 파일로 승격하지 않는다.
 - 최신 완료: MCP `404848a`는 UIA worker의 중복 `native_menu` fallback 순환을 제거했고,
   CLI `ea18481`은 실제 UIA/MSAA helper child를 CLI-owned vendor namespace로 옮겼다. MCP
   `1cf37e4`/`ccb2fb2`는 helper 구현을 삭제하고 부모 subprocess transport/public wrapper만
