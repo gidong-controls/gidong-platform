@@ -39,7 +39,8 @@ param(
     [string]$NoXgWorkspaceLaunchAuthorization,
     [switch]$CleanupReviewedHeadlessXgThenNoXgWorkspaceLaunch,
     [string]$HeadlessXgCleanupAuthorization,
-    [switch]$HeadlessXgCleanupPreflightOnly
+    [switch]$HeadlessXgCleanupPreflightOnly,
+    [switch]$VisibleTargetPreflightOnly
 )
 
 # Developer-only, one-shot certification/restart harness. It accepts the
@@ -112,6 +113,30 @@ public static class ControlStudioMneModalNative {
     private static extern IntPtr CommandLineToArgvW(string commandLine, out int argumentCount);
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr LocalFree(IntPtr memory);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint desiredAccess, bool inheritHandle, uint processId);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool QueryFullProcessImageNameW(IntPtr process, uint flags, StringBuilder path, ref uint size);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    public static string GetProcessImagePath(uint processId) {
+        const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+        IntPtr process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, processId);
+        if (process == IntPtr.Zero) {
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "OpenProcess failed");
+        }
+        try {
+            var path = new StringBuilder(32768);
+            uint length = (uint)path.Capacity;
+            if (!QueryFullProcessImageNameW(process, 0, path, ref length)) {
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "QueryFullProcessImageNameW failed");
+            }
+            return path.ToString();
+        } finally {
+            CloseHandle(process);
+        }
+    }
 
     private static string TextOf(IntPtr hwnd) {
         var text = new StringBuilder(4096);
@@ -314,6 +339,81 @@ function Close-ReviewedXgForCertification {
     throw 'XG5000 did not exit after the exact no-save decision; no process was terminated.'
 }
 
+function Assert-ExactVisibleCertificationTarget {
+    param(
+        [Parameter(Mandatory)]$Template,
+        [Parameter(Mandatory)][int]$ExpectedPid,
+        [Parameter(Mandatory)][string]$ExpectedExecutable
+    )
+
+    # The product launcher owns XG5000 independently of the Host process.  Do
+    # not infer ownership from a process-parent relationship: bind the reviewed
+    # visible window to the disposable spec instead, then retain the complete
+    # pre-close XG5000 baseline so this harness can only close that exact PID.
+    $target = $Template.target
+    if ($null -eq $target -or [int]$target.pid -le 0 -or [int64]$target.hwnd -le 0) {
+        throw 'Certification template target PID/HWND is invalid'
+    }
+    if ([int]$target.pid -ne $ExpectedPid) {
+        throw 'Expected XG5000 PID does not match the reviewed certification target'
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$target.project_path) -or [string]::IsNullOrWhiteSpace([string]$target.project_hash)) {
+        throw 'Certification template target project binding is invalid'
+    }
+    $projectPath = [System.IO.Path]::GetFullPath([string]$target.project_path)
+    if (-not (Test-Path -LiteralPath $projectPath -PathType Leaf)) {
+        throw 'Certification template target project is unavailable'
+    }
+    if ([string]$target.project_hash -notmatch '^[0-9a-fA-F]{64}$') {
+        throw 'Certification template target project hash is invalid'
+    }
+    $markerPath = [System.IO.Path]::GetFullPath([string]$Template.scratch.marker_path)
+    $backupPath = [System.IO.Path]::GetFullPath([string]$Template.scratch.backup_path)
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf) -or -not (Test-Path -LiteralPath $backupPath -PathType Leaf)) {
+        throw 'Certification disposable marker or backup is unavailable'
+    }
+    try { $marker = [System.IO.File]::ReadAllText($markerPath, [Text.Encoding]::UTF8) | ConvertFrom-Json }
+    catch { throw 'Certification disposable marker is not valid UTF-8 JSON' }
+    if (
+        $marker.schema -cne 'controlstudio-xg5000-disposable-project/1.0' -or
+        $marker.confirmed_disposable -ne $true -or
+        [System.IO.Path]::GetFullPath([string]$marker.project_path) -cne $projectPath -or
+        [string]$marker.project_sha256 -cne [string]$target.project_hash
+    ) {
+        throw 'Certification disposable marker does not bind the reviewed target project'
+    }
+    if ((Get-FileHash -LiteralPath $backupPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$target.project_hash).ToLowerInvariant()) {
+        throw 'Certification backup hash does not bind the reviewed target project'
+    }
+
+    Initialize-ReviewedModalNativeApi
+    try { $process = Get-Process -Id $ExpectedPid -ErrorAction Stop }
+    catch { throw 'Reviewed XG5000 target PID is unavailable' }
+    $process.Refresh()
+    if ($process.HasExited -or $process.ProcessName -ine 'XG5000' -or [int64]$process.MainWindowHandle -ne [int64]$target.hwnd) {
+        throw 'Reviewed XG5000 target PID/HWND no longer matches the certification target'
+    }
+    $actualExecutable = [ControlStudioMneModalNative]::GetProcessImagePath([uint32]$ExpectedPid)
+    if ([System.IO.Path]::GetFullPath($actualExecutable) -cne [System.IO.Path]::GetFullPath($ExpectedExecutable)) {
+        throw 'Reviewed XG5000 target executable does not match the certification executable'
+    }
+    $baselinePids = @(
+        Get-Process -Name XG5000 -ErrorAction SilentlyContinue |
+            ForEach-Object { [int]$_.Id } |
+            Sort-Object -Unique
+    )
+    if ($baselinePids -notcontains $ExpectedPid) {
+        throw 'Reviewed XG5000 target is absent from the immutable XG5000 baseline'
+    }
+    return [pscustomobject]@{
+        Process = $process
+        BaselinePids = $baselinePids
+        ProcessStartedUtc = $process.StartTime.ToUniversalTime()
+        ProjectPath = $projectPath
+        ProjectHash = [string]$target.project_hash
+    }
+}
+
 function Assert-ResumeAfterReviewedXgClose {
     param(
         [Parameter(Mandatory)][string]$AuthorizationPath,
@@ -426,21 +526,30 @@ function Get-ExactProcessTree {
 function Stop-ExactDevelopmentTree {
     param(
         [Parameter(Mandatory)][int]$ListenerPid,
-        [Parameter(Mandatory)][int]$XgPid
+        [Parameter(Mandatory)]$ReviewedTarget
     )
 
     if ((Get-DevelopmentListenerPid) -ne $ListenerPid) {
         throw "Port 8767 is not owned by the reviewed listener PID $ListenerPid"
     }
-    $tree = Get-ExactProcessTree -RootPid $ListenerPid
-    $xg = $tree | Where-Object { $_.Pid -eq $XgPid -and $_.Name -ieq 'XG5000.exe' }
-    if ($null -eq $xg) {
-        throw "Reviewed XG5000 PID $XgPid is not in the reviewed Host listener tree"
+    $reviewedProcess = $ReviewedTarget.Process
+    $reviewedProcess.Refresh()
+    if (
+        $reviewedProcess.HasExited -or
+        $reviewedProcess.StartTime.ToUniversalTime() -ne $ReviewedTarget.ProcessStartedUtc -or
+        [int64]$reviewedProcess.MainWindowHandle -le 0 -or
+        [int]$reviewedProcess.Id -notin @($ReviewedTarget.BaselinePids)
+    ) {
+        throw 'Reviewed XG5000 target changed before exact certification close'
     }
-    $xgProcess = Get-Process -Id $XgPid -ErrorAction Stop
-    Close-ReviewedXgForCertification -XgProcess $xgProcess
+    Close-ReviewedXgForCertification -XgProcess $reviewedProcess
 
-    foreach ($entry in ($tree | Where-Object { $_.Pid -ne $XgPid } | Sort-Object Depth -Descending)) {
+    # Only after the one reviewed XG5000 process has gone away may the exact
+    # Host listener tree be stopped.  Other user XG5000 processes are neither
+    # descendants nor targets and are intentionally outside this operation.
+    $tree = Get-ExactProcessTree -RootPid $ListenerPid
+
+    foreach ($entry in ($tree | Where-Object { $_.Pid -ne [int]$ReviewedTarget.Process.Id } | Sort-Object Depth -Descending)) {
         $current = Get-Process -Id $entry.Pid -ErrorAction SilentlyContinue
         if ($null -eq $current) { continue }
         if ($current.StartTime.ToUniversalTime() -ne $entry.StartedUtc) {
@@ -950,7 +1059,17 @@ $template = [System.IO.File]::ReadAllText(
 if (-not (Test-Path -LiteralPath $template.target.project_path -PathType Leaf)) {
     throw 'Certification template does not name an existing scratch project'
 }
-$validateSpec = @'
+$validateSpecShape = @'
+import sys
+from xg5000_control.mne_capability_cli import _load_spec
+
+_load_spec(sys.argv[1])
+'@
+& $mcpPython -c $validateSpecShape $specPath
+if ($LASTEXITCODE -ne 0) {
+    throw 'Certification template failed the CLI JSON shape preflight'
+}
+$validateSpecAfterClose = @'
 import json
 import sys
 from pathlib import Path
@@ -958,9 +1077,23 @@ from xg5000_control.mne_capability_cli import _normalize_spec
 
 _normalize_spec(json.loads(Path(sys.argv[1]).read_text(encoding='utf-8')))
 '@
-& $mcpPython -c $validateSpec $specPath
-if ($LASTEXITCODE -ne 0) {
-    throw 'Certification template failed the CLI static schema and disposable-proof preflight'
+
+if ($VisibleTargetPreflightOnly) {
+    if ((Get-DevelopmentListenerPid) -ne $ExpectedHostListenerPid) {
+        throw 'Port 8767 is not owned by the reviewed listener PID'
+    }
+    $reviewedTarget = Assert-ExactVisibleCertificationTarget -Template $template -ExpectedPid $ExpectedXgPid -ExpectedExecutable $XgExecutable
+    [pscustomobject]@{
+        schema = 'controlstudio-mne-visible-target-preflight/v1'
+        pid = [int]$reviewedTarget.Process.Id
+        hwnd = [int64]$reviewedTarget.Process.MainWindowHandle
+        processStartedUtc = $reviewedTarget.ProcessStartedUtc.ToString('o')
+        xg5000PidsBeforeClose = @($reviewedTarget.BaselinePids)
+        projectPath = $reviewedTarget.ProjectPath
+        projectHash = $reviewedTarget.ProjectHash
+        result = 'ready_to_close_only_the_reviewed_target'
+    } | ConvertTo-Json -Compress
+    exit 0
 }
 
 $selectedResumeModes = @($ResumeAfterReviewedXgClose, $ResumeAfterHiddenScratchLaunch, $ResumeAfterReviewedVisibleScratch) | Where-Object { $_ }
@@ -1011,7 +1144,15 @@ if ($ResumeAfterReviewedXgClose) {
         Stop-ExactReviewedHeadlessXg -Reviewed $headlessCleanup
         Assert-WorkingHashAfterExactHeadlessCleanup -Template $template -ExpectedHash $headlessCleanup.ExpectedWorkingHash
     } elseif (-not $ResumeAfterHiddenScratchLaunch -and -not $ResumeAfterReviewedVisibleScratch -and -not $ResumeAfterReviewedNoXgWorkspaceLaunch) {
-        Stop-ExactDevelopmentTree -ListenerPid $ExpectedHostListenerPid -XgPid $ExpectedXgPid
+        $reviewedTarget = Assert-ExactVisibleCertificationTarget -Template $template -ExpectedPid $ExpectedXgPid -ExpectedExecutable $XgExecutable
+        Stop-ExactDevelopmentTree -ListenerPid $ExpectedHostListenerPid -ReviewedTarget $reviewedTarget
+        # The reviewed XG5000 process legitimately locks its working copy.
+        # Perform the full file-hash/disposable-proof validation only after the
+        # bound process is closed and before any replacement launch.
+        & $mcpPython -c $validateSpecAfterClose $specPath
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Certification template failed the CLI disposable-proof preflight after the reviewed target closed'
+        }
     }
 }
 $restoredScratchHwnd = $null

@@ -110,6 +110,15 @@ online edit 및 controller 검증은 포함하지 않으며 실제 XG5000 produc
 출력 profile을 만들 수 있을 때만 아래 XG-SIM 수명주기로 이어진다. 이 경로도 PLC에는
 연결하거나 쓰지 않는다.
 
+개발자 capability certification의 재시작 harness는 Host의 process-parent 관계를
+XG5000 소유권 증거로 사용하지 않는다. Launcher/MCP가 별도 process로 연 visible
+working copy는 인증 spec의 PID/HWND, native executable path, disposable marker,
+backup hash와 project path/hash로 묶는다. preflight는 전체 XG5000 PID baseline을
+기록하고 그 중 인증 spec의 정확한 PID만 no-save close한 뒤 Host listener tree만
+종료한다. 기존 사용자 XG5000 PID는 attach·close·mutation 대상이 아니다. 열린
+프로젝트 파일은 XG5000이 잠글 수 있으므로, full SHA-256 disposable-proof 검사는
+그 정확한 target을 닫은 뒤 새 인증 process를 시작하기 전에 수행한다.
+
 ## 4. 프로그램 검사와 저장
 
 - XG5000의 공식 `프로그램 검사` 명령 사용
