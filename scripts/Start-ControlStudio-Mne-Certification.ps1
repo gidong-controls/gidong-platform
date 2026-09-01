@@ -44,7 +44,10 @@ param(
     [ValidateRange(0, [int]::MaxValue)]
     [int]$RecoverOwnedHeadlessPid = 0,
     [string]$RecoverOwnedHeadlessStartedUtc,
-    [switch]$RecoverOwnedHeadlessPreflightOnly
+    [switch]$RecoverOwnedHeadlessPreflightOnly,
+    [switch]$ResumeAfterFailedElevatedLaunch,
+    [string]$FailedElevatedLaunchAuthorization,
+    [switch]$FailedElevatedLaunchPreflightOnly
 )
 
 # Developer-only, one-shot certification/restart harness. It accepts the
@@ -504,6 +507,87 @@ function Stop-ExactOwnedHeadlessCertificationFailure {
         Start-Sleep -Milliseconds 250
     }
     throw 'Exact headless certification process did not exit or release its working-copy file'
+}
+
+function Test-FailedElevatedLaunchAuthorizationShape {
+    param([Parameter(Mandatory)]$Authorization)
+
+    $expected = @('schema', 'prior', 'inputs', 'state', 'expectedFailure')
+    if ((@($Authorization.PSObject.Properties.Name | Sort-Object) -join ',') -cne ((@($expected | Sort-Object) -join ','))) { return $false }
+    return (
+        $Authorization.schema -ceq 'controlstudio-mne-resume-after-failed-elevated-launch/v1' -and
+        $Authorization.expectedFailure -ceq 'scratch_xg5000_main_window_timeout/v1' -and
+        $null -ne $Authorization.prior -and $null -ne $Authorization.inputs -and $null -ne $Authorization.state
+    )
+}
+
+function Assert-ResumeAfterFailedElevatedLaunch {
+    param(
+        [Parameter(Mandatory)][string]$AuthorizationPath,
+        [Parameter(Mandatory)][string]$SpecPath,
+        [Parameter(Mandatory)]$Template,
+        [Parameter(Mandatory)][string]$BundlePath,
+        [Parameter(Mandatory)][string]$PythonExecutable
+    )
+
+    if ($null -ne (Get-DevelopmentListenerPid) -or (Test-Path -LiteralPath $BundlePath)) {
+        throw 'Failed-elevated-launch resume requires no Host listener and no capability bundle'
+    }
+    $exactAuthorizationPath = [IO.Path]::GetFullPath($AuthorizationPath)
+    if (-not (Test-Path -LiteralPath $exactAuthorizationPath -PathType Leaf)) { throw 'Failed-elevated-launch authorization is not a file' }
+    $authorization = [IO.File]::ReadAllText($exactAuthorizationPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    if (-not (Test-FailedElevatedLaunchAuthorizationShape -Authorization $authorization)) { throw 'Failed-elevated-launch authorization fields or purpose are invalid' }
+    $inputs = $authorization.inputs
+    foreach ($item in @(
+        @{ Path = $SpecPath; Hash = $inputs.specSha256 },
+        @{ Path = [string]$Template.scratch.backup_path; Hash = $inputs.backupSha256 },
+        @{ Path = [string]$Template.scratch.marker_path; Hash = $inputs.markerSha256 }
+    )) {
+        if (-not (Test-Path -LiteralPath $item.Path -PathType Leaf) -or (Get-FileHash -LiteralPath $item.Path -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$item.Hash).ToLowerInvariant()) {
+            throw 'Failed-elevated-launch authorization input digest mismatched'
+        }
+    }
+    if (
+        $inputs.specPath -cne $SpecPath -or
+        $inputs.projectPath -cne [string]$Template.target.project_path -or
+        $inputs.projectHash -cne [string]$Template.target.project_hash -or
+        $inputs.workspaceId -cne [string]$Template.target.workspace_id
+    ) { throw 'Failed-elevated-launch authorization inputs differ' }
+    $actualProjectHash = (Get-FileHash -LiteralPath ([string]$Template.target.project_path) -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualProjectHash -cne ([string]$Template.target.project_hash).ToLowerInvariant()) { throw 'Failed-elevated-launch working-copy hash differs' }
+    $prior = $authorization.prior
+    foreach ($artifact in @(
+        @{ Path = $prior.receiptPath; Hash = $prior.receiptSha256; Label = 'receipt' },
+        @{ Path = $prior.logPath; Hash = $prior.logSha256; Label = 'log' }
+    )) {
+        $path = [IO.Path]::GetFullPath([string]$artifact.Path)
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$artifact.Hash).ToLowerInvariant()) {
+            throw "Failed-elevated-launch prior $($artifact.Label) digest mismatched"
+        }
+    }
+    $priorReceipt = [IO.File]::ReadAllText([IO.Path]::GetFullPath([string]$prior.receiptPath), [Text.Encoding]::UTF8) | ConvertFrom-Json
+    $priorLog = [IO.File]::ReadAllText([IO.Path]::GetFullPath([string]$prior.logPath), [Text.Encoding]::UTF8)
+    if (
+        $priorReceipt.schema -cne 'controlstudio-elevated-certification-wrapper/v1' -or
+        $priorReceipt.status -cne 'failed' -or
+        ([string]$priorReceipt.error).IndexOf('Scratch XG5000 did not expose its main window within 60 seconds', [StringComparison]::Ordinal) -lt 0 -or
+        $priorLog.IndexOf('Scratch XG5000 did not expose its main window within 60 seconds', [StringComparison]::Ordinal) -lt 0
+    ) { throw 'Failed-elevated-launch prior failure is not the reviewed main-window timeout' }
+    $state = $authorization.state
+    if ($state.listener -cne 'absent' -or [int]$state.ownedHeadlessPid -le 0 -or [string]::IsNullOrWhiteSpace([string]$state.ownedHeadlessStartedUtc)) {
+        throw 'Failed-elevated-launch state binding is invalid'
+    }
+    if ($null -ne (Get-Process -Id ([int]$state.ownedHeadlessPid) -ErrorAction SilentlyContinue)) {
+        throw 'Failed-elevated-launch owned headless PID is still present or was reused'
+    }
+    return [pscustomobject]@{
+        WorkspaceId = [string]$inputs.workspaceId
+        ProjectPath = [string]$inputs.projectPath
+        ProjectHash = [string]$inputs.projectHash
+        Xg5000PidsBeforeLaunch = @(
+            Get-Process -Name XG5000 -ErrorAction SilentlyContinue | ForEach-Object { [int]$_.Id } | Sort-Object -Unique
+        )
+    }
 }
 
 function Assert-ResumeAfterReviewedXgClose {
@@ -1119,6 +1203,10 @@ if ($SelfTest) {
     if (Test-ExactHeadlessXgCleanupAuthorizationShape -Authorization $badHeadlessAuthorization) {
         throw 'Headless cleanup authorization negative self-test failed'
     }
+    $badFailedElevatedAuthorization = '{"schema":"controlstudio-mne-resume-after-failed-elevated-launch/v1","prior":{},"inputs":{},"state":{},"expectedFailure":"wrong"}' | ConvertFrom-Json
+    if (Test-FailedElevatedLaunchAuthorizationShape -Authorization $badFailedElevatedAuthorization) {
+        throw 'Failed elevated-launch authorization negative self-test failed'
+    }
     'Exact no-save modal helper self-test: OK'
     exit 0
 }
@@ -1195,6 +1283,40 @@ if ($RecoverOwnedHeadlessPid -gt 0 -or $RecoverOwnedHeadlessPreflightOnly) {
     exit 0
 }
 
+$resumedFailedElevatedLaunch = $null
+if ($ResumeAfterFailedElevatedLaunch) {
+    if ([string]::IsNullOrWhiteSpace($FailedElevatedLaunchAuthorization)) { throw 'Failed-elevated-launch resume requires an explicit authorization file' }
+    $failedElevated = Assert-ResumeAfterFailedElevatedLaunch -AuthorizationPath $FailedElevatedLaunchAuthorization -SpecPath $specPath -Template $template -BundlePath $bundlePath -PythonExecutable $mcpPython
+    & $mcpPython -c $validateSpecAfterClose $specPath
+    if ($LASTEXITCODE -ne 0) { throw 'Failed-elevated-launch resume template failed the CLI disposable-proof preflight' }
+    if ($FailedElevatedLaunchPreflightOnly) {
+        [pscustomobject]@{
+            schema = 'controlstudio-mne-failed-elevated-launch-resume-preflight/v1'
+            workspaceId = $failedElevated.WorkspaceId
+            projectPath = $failedElevated.ProjectPath
+            projectHash = $failedElevated.ProjectHash
+            xg5000PidsBeforeLaunch = @($failedElevated.Xg5000PidsBeforeLaunch)
+            result = 'ready_to_launch_exact_workspace_through_independent_cli'
+        } | ConvertTo-Json -Compress
+        exit 0
+    }
+    $env:LOCALAPPDATA = $dataRoot
+    $env:CONTROLSTUDIO_RELEASE_CHANNEL = 'development'
+    $workspaceRoot = Join-Path $dataRoot 'ControlStudio Development\workspaces'
+    $opened = Open-ExactWorkspaceWorkingCopy -WorkspaceId $failedElevated.WorkspaceId -ExpectedHash $failedElevated.ProjectHash -WorkspaceRoot $workspaceRoot -PythonExecutable $mcpPython
+    $instance = $opened.instance
+    if (
+        $opened.verified -ne $true -or
+        $opened.workspace_id -cne $failedElevated.WorkspaceId -or
+        [string]$opened.working_path -cne $failedElevated.ProjectPath -or
+        [string]$opened.working_hash -cne $failedElevated.ProjectHash -or
+        $null -eq $instance -or [int]$instance.pid -le 0 -or [int64]$instance.hwnd -le 0
+    ) { throw 'Failed-elevated-launch resume did not return the exact verified working-copy instance' }
+    $template.target.pid = [int]$instance.pid
+    $template.target.hwnd = [int64]$instance.hwnd
+    $resumedFailedElevatedLaunch = [pscustomobject]@{ Process = (Get-Process -Id ([int]$instance.pid) -ErrorAction Stop); Hwnd = [int64]$instance.hwnd }
+}
+
 if ($VisibleTargetPreflightOnly) {
     if ((Get-DevelopmentListenerPid) -ne $ExpectedHostListenerPid) {
         throw 'Port 8767 is not owned by the reviewed listener PID'
@@ -1213,11 +1335,14 @@ if ($VisibleTargetPreflightOnly) {
     exit 0
 }
 
-$selectedResumeModes = @($ResumeAfterReviewedXgClose, $ResumeAfterHiddenScratchLaunch, $ResumeAfterReviewedVisibleScratch) | Where-Object { $_ }
+$selectedResumeModes = @($ResumeAfterReviewedXgClose, $ResumeAfterHiddenScratchLaunch, $ResumeAfterReviewedVisibleScratch, $ResumeAfterFailedElevatedLaunch) | Where-Object { $_ }
 if (@($selectedResumeModes).Count -gt 1) {
     throw 'Only one reviewed resume mode may be selected'
 }
-if ($ResumeAfterReviewedXgClose) {
+if ($ResumeAfterFailedElevatedLaunch) {
+    # The authorization-bound preflight above already established the absent
+    # listener/owned-target state and opened one exact new workspace instance.
+} elseif ($ResumeAfterReviewedXgClose) {
     if ([string]::IsNullOrWhiteSpace($ResumeAuthorization)) { throw 'Resume requires an explicit authorization file' }
     $resumeHost = Assert-ResumeAfterReviewedXgClose -AuthorizationPath $ResumeAuthorization -SpecPath $specPath -Template $template -BundlePath $bundlePath
     if ($ExpectedHostListenerPid -ne [int]$resumeHost.pid -or $ExpectedXgPid -ne [int]$resumeHost.closedXgPid) {
@@ -1273,7 +1398,10 @@ if ($ResumeAfterReviewedXgClose) {
     }
 }
 $restoredScratchHwnd = $null
-if ($ResumeAfterReviewedNoXgWorkspaceLaunch -or $CleanupReviewedHeadlessXgThenNoXgWorkspaceLaunch) {
+if ($ResumeAfterFailedElevatedLaunch) {
+    $scratchXg = $resumedFailedElevatedLaunch.Process
+    $restoredScratchHwnd = [int64]$resumedFailedElevatedLaunch.Hwnd
+} elseif ($ResumeAfterReviewedNoXgWorkspaceLaunch -or $CleanupReviewedHeadlessXgThenNoXgWorkspaceLaunch) {
     if ([string]::IsNullOrWhiteSpace($NoXgWorkspaceLaunchAuthorization)) { throw 'No-XG workspace launch requires an explicit authorization file' }
     $env:LOCALAPPDATA = $dataRoot; $env:CONTROLSTUDIO_RELEASE_CHANNEL = 'development'
     $workspaceRoot = Join-Path $dataRoot 'ControlStudio Development\workspaces'

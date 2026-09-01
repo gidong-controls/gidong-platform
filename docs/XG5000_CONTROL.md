@@ -123,6 +123,10 @@ process는 raw `/Automation` 실행이 아니라 동일 workspace/hash를 indepe
 PID·start time·native executable·HWND=0·해당 working-copy file-use를 다시 확인하고
 그 PID만 종료한 뒤 hash를 확인한다. Host 재기동에 필요한 서명 secret이 없으면
 recovery는 Host를 임의로 시작하지 않고 복구 receipt만 반환한다.
+Elevated launch가 visible main-window timeout으로 끝난 경우에는 별도 resume
+authorization이 prior receipt/log와 모든 입력 digest, Host 부재, retired owned PID의
+부재를 결속한다. 이 resume은 이전 Host/XG close를 반복하지 않고 independent CLI로
+동일 workspace/hash의 새 visible PID/HWND를 검증한 경우에만 인증을 계속한다.
 
 ## 4. 프로그램 검사와 저장
 
