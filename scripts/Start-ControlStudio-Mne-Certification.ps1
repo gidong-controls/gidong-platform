@@ -820,6 +820,66 @@ function Get-ArgvDigest {
     finally { $sha.Dispose() }
 }
 
+function Assert-ExactPreservedXgBaseline {
+    param(
+        [Parameter(Mandatory)]$Baseline,
+        [Parameter(Mandatory)][int]$ReviewedPid,
+        [switch]$RequireReviewedProcess
+    )
+
+    $entries = @($Baseline)
+    if ($entries.Count -eq 0) { throw 'Visible-scratch resume requires a non-empty preserved XG5000 baseline' }
+    $seenPids = @{}
+    foreach ($entry in $entries) {
+        if ($null -eq $entry) { throw 'Preserved XG5000 baseline contains an invalid entry' }
+        $keys = @($entry.PSObject.Properties.Name | Sort-Object)
+        if (($keys -join ',') -cne 'Pid,ProcessName,StartUtc') {
+            throw 'Preserved XG5000 baseline entry fields are invalid'
+        }
+        $pid = [int]$entry.Pid
+        if ($pid -le 0 -or $pid -eq $ReviewedPid -or $seenPids.ContainsKey($pid) -or [string]$entry.ProcessName -cne 'XG5000') {
+            throw 'Preserved XG5000 baseline identity is invalid'
+        }
+        try {
+            $expectedStart = [DateTime]::Parse(
+                [string]$entry.StartUtc,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind
+            ).ToUniversalTime()
+        } catch {
+            throw 'Preserved XG5000 baseline start time is invalid'
+        }
+        if ($expectedStart.ToString('o') -cne [string]$entry.StartUtc) {
+            throw 'Preserved XG5000 baseline start time is not canonical UTC'
+        }
+        $seenPids[$pid] = $entry
+    }
+
+    $allXg = @(Get-Process -Name XG5000 -ErrorAction SilentlyContinue)
+    $expectedCount = $entries.Count + $(if ($RequireReviewedProcess) { 1 } else { 0 })
+    if ($allXg.Count -ne $expectedCount) {
+        throw 'Visible-scratch resume XG5000 process set differs from the reviewed target plus preserved baseline'
+    }
+    $observed = @{}
+    foreach ($process in $allXg) { $observed[[int]$process.Id] = $process }
+    $reviewed = $observed[$ReviewedPid]
+    if ($RequireReviewedProcess -and $null -eq $reviewed) { throw 'Reviewed visible scratch PID is absent from the XG5000 process set' }
+    if (-not $RequireReviewedProcess -and $null -ne $reviewed) { throw 'Reviewed visible scratch PID remained after the exact no-save close' }
+    foreach ($pid in $seenPids.Keys) {
+        $process = $observed[[int]$pid]
+        if ($null -eq $process) { throw 'Preserved XG5000 baseline PID is absent' }
+        $process.Refresh()
+        $expected = $seenPids[$pid]
+        if (
+            [string]$process.ProcessName -cne [string]$expected.ProcessName -or
+            $process.StartTime.ToUniversalTime().ToString('o') -cne [string]$expected.StartUtc
+        ) {
+            throw 'Preserved XG5000 baseline process identity changed'
+        }
+    }
+    return @($entries)
+}
+
 function Assert-ResumeAfterHiddenScratchLaunch {
     param(
         [Parameter(Mandatory)][string]$AuthorizationPath,
@@ -834,14 +894,18 @@ function Assert-ResumeAfterHiddenScratchLaunch {
     $exactAuthorizationPath = [System.IO.Path]::GetFullPath($AuthorizationPath)
     if (-not (Test-Path -LiteralPath $exactAuthorizationPath -PathType Leaf)) { throw 'Hidden-scratch resume authorization is not a file' }
     $authorization = [System.IO.File]::ReadAllText($exactAuthorizationPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-    $expectedKeys = @('schema', 'priorResult', 'inputs', 'scratchProcess', 'expectedFailure')
+    $expectedKeys = if ($RequireVisible) {
+        @('schema', 'disabledReceipt', 'inputs', 'scratchProcess', 'preservedBaseline', 'expectedFailure')
+    } else {
+        @('schema', 'priorResult', 'inputs', 'scratchProcess', 'expectedFailure')
+    }
     if ((@($authorization.PSObject.Properties.Name | Sort-Object) -join ',') -cne ((@($expectedKeys | Sort-Object) -join ','))) {
         throw 'Hidden-scratch resume authorization fields are invalid'
     }
     # A visible process quarantined after a disabled scratch probe is reusable
     # only for the reviewed no-save close plus official workspace reopen path.
     # It is not interchangeable with earlier COM-ready or receipt-only resume.
-    $expectedSchema = if ($RequireVisible) { 'controlstudio-mne-resume-after-visible-scratch/v3' } else { 'controlstudio-mne-resume-after-hidden-scratch-launch/v1' }
+    $expectedSchema = if ($RequireVisible) { 'controlstudio-mne-resume-after-visible-scratch/v4' } else { 'controlstudio-mne-resume-after-hidden-scratch-launch/v1' }
     $expectedFailure = if ($RequireVisible) { 'mne_probe_quarantined_after_disabled_receipt/v1' } else { 'hidden_scratch_main_window/v1' }
     if ($authorization.schema -cne $expectedSchema -or $authorization.expectedFailure -cne $expectedFailure) {
         throw 'Hidden-scratch resume authorization purpose is invalid'
@@ -864,64 +928,81 @@ function Assert-ResumeAfterHiddenScratchLaunch {
     # the exact still-running process is identified, attempting a second read is
     # neither possible nor safer.
     if ([string]$Template.target.project_hash -cne [string]$inputs.scratchSha256) { throw 'Hidden-scratch resume scratch digest is not bound by the static spec' }
-    $prior = $authorization.priorResult
-    $priorPath = [System.IO.Path]::GetFullPath([string]$prior.path)
-    if (-not (Test-Path -LiteralPath $priorPath -PathType Leaf) -or (Get-FileHash -LiteralPath $priorPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$prior.sha256).ToLowerInvariant() -or (Get-Item -LiteralPath $priorPath).LastWriteTimeUtc.ToString('o') -cne [string]$prior.lastWriteTimeUtc) {
-        throw 'Hidden-scratch resume prior-result digest or timestamp mismatched'
-    }
-    $priorJson = [System.IO.File]::ReadAllText($priorPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
     if ($RequireVisible) {
-        $priorOutput = ''
-        $priorAttemptDirectory = [IO.Path]::GetFullPath((Split-Path -Parent $priorPath))
-        foreach ($stream in @(
-            @{ ManifestField = 'stdout'; AuthorizationPath = 'stdoutPath'; AuthorizationHash = 'stdoutSha256' },
-            @{ ManifestField = 'stderr'; AuthorizationPath = 'stderrPath'; AuthorizationHash = 'stderrSha256' }
-        )) {
-            $authorizedPath = [IO.Path]::GetFullPath([string]$prior.($stream.AuthorizationPath))
-            $reportedPath = [IO.Path]::GetFullPath([string]$priorJson.($stream.ManifestField))
-            if (
-                [string]::IsNullOrWhiteSpace([string]$prior.($stream.AuthorizationPath)) -or
-                [string]::IsNullOrWhiteSpace([string]$prior.($stream.AuthorizationHash)) -or
-                $authorizedPath -cne $reportedPath -or
-                (Split-Path -Parent $authorizedPath) -cne $priorAttemptDirectory -or
-                -not (Test-Path -LiteralPath $authorizedPath -PathType Leaf) -or
-                (Get-FileHash -LiteralPath $authorizedPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$prior.($stream.AuthorizationHash)).ToLowerInvariant()
-            ) {
-                throw 'Visible-scratch resume attempt output binding is invalid'
-            }
-            $priorOutput += [IO.File]::ReadAllText($authorizedPath, [Text.Encoding]::UTF8)
+        $disabled = $authorization.disabledReceipt
+        $disabledPath = [IO.Path]::GetFullPath([string]$disabled.path)
+        if (-not (Test-Path -LiteralPath $disabledPath -PathType Leaf) -or (Get-FileHash -LiteralPath $disabledPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$disabled.sha256).ToLowerInvariant()) {
+            throw 'Visible-scratch resume disabled capability receipt digest mismatched'
         }
-        if ($priorJson.state -cne 'failed' -or [int]$priorJson.exitCode -ne 1 -or (([string]$priorJson.wrapperException).IndexOf([string]$prior.outputFragment, [System.StringComparison]::Ordinal) -lt 0 -and $priorOutput.IndexOf([string]$prior.outputFragment, [System.StringComparison]::Ordinal) -lt 0)) {
-            throw 'Visible-scratch resume does not bind the reviewed workspace-identity failure'
+        $disabledJson = [IO.File]::ReadAllText($disabledPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+        $capability = $disabledJson.receipt
+        if (
+            $disabledJson.schema -cne 'controlstudio-mne-probe-disabled/v1' -or
+            $disabledJson.phase -cne 'capability_probe' -or
+            $disabledJson.outcome -cne 'disabled' -or
+            $null -eq $capability -or
+            $capability.enabled -ne $false -or
+            [IO.Path]::GetFullPath([string]$capability.scratch.project_path) -ine [IO.Path]::GetFullPath([string]$Template.target.project_path) -or
+            [string]$capability.scratch.project_sha256_before -cne [string]$Template.target.project_hash
+        ) {
+            throw 'Visible-scratch resume disabled capability receipt is not bound to this exact scratch project'
         }
-    } elseif ($priorJson.status -cne 'error' -or [int]$priorJson.exitCode -ne 1 -or ([string]$priorJson.output).IndexOf([string]$prior.outputFragment, [System.StringComparison]::Ordinal) -lt 0) {
-        throw 'Hidden-scratch resume does not bind the reviewed hidden-launch failure'
+    } else {
+        $prior = $authorization.priorResult
+        $priorPath = [System.IO.Path]::GetFullPath([string]$prior.path)
+        if (-not (Test-Path -LiteralPath $priorPath -PathType Leaf) -or (Get-FileHash -LiteralPath $priorPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$prior.sha256).ToLowerInvariant() -or (Get-Item -LiteralPath $priorPath).LastWriteTimeUtc.ToString('o') -cne [string]$prior.lastWriteTimeUtc) {
+            throw 'Hidden-scratch resume prior-result digest or timestamp mismatched'
+        }
+        $priorJson = [System.IO.File]::ReadAllText($priorPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        if ($priorJson.status -cne 'error' -or [int]$priorJson.exitCode -ne 1 -or ([string]$priorJson.output).IndexOf([string]$prior.outputFragment, [System.StringComparison]::Ordinal) -lt 0) {
+            throw 'Hidden-scratch resume does not bind the reviewed hidden-launch failure'
+        }
     }
     $reviewed = $authorization.scratchProcess
     if ($null -eq $reviewed -or [int]$reviewed.pid -le 0 -or [int64]$reviewed.hwnd -le 0) { throw 'Hidden-scratch resume process identity is invalid' }
-    [string[]]$reviewedArgv = @($reviewed.argv | ForEach-Object { [string]$_ })
-    if ($reviewedArgv.Length -notin @(2,3) -or $reviewedArgv[0] -cne [string]$reviewed.executablePath -or $reviewedArgv[$reviewedArgv.Length - 1] -cne [string]$Template.target.project_path -or ($reviewedArgv.Length -eq 3 -and $reviewedArgv[1] -cne '/Automation')) {
-        throw 'Hidden-scratch resume authorization argv is not the exact reviewed executable and scratch path'
+    if ($RequireVisible) {
+        $reviewedKeys = @($reviewed.PSObject.Properties.Name | Sort-Object)
+        if (($reviewedKeys -join ',') -cne 'className,hwnd,pid,projectPath,projectSha256,startTimeUtc,title') {
+            throw 'Visible-scratch resume process identity fields are invalid'
+        }
+        if (
+            [string]$reviewed.projectPath -cne [string]$Template.target.project_path -or
+            [string]$reviewed.projectSha256 -cne [string]$Template.target.project_hash -or
+            [int]$capability.outcomes.reopen.source_pid -ne [int]$reviewed.pid -or
+            [int64]$capability.outcomes.reopen.source_hwnd -ne [int64]$reviewed.hwnd
+        ) {
+            throw 'Visible-scratch resume process project evidence differs from the bound scratch project'
+        }
+        $preservedBaseline = Assert-ExactPreservedXgBaseline -Baseline $authorization.preservedBaseline -ReviewedPid ([int]$reviewed.pid) -RequireReviewedProcess
+    } else {
+        [string[]]$reviewedArgv = @($reviewed.argv | ForEach-Object { [string]$_ })
+        if ($reviewedArgv.Length -notin @(2,3) -or $reviewedArgv[0] -cne [string]$reviewed.executablePath -or $reviewedArgv[$reviewedArgv.Length - 1] -cne [string]$Template.target.project_path -or ($reviewedArgv.Length -eq 3 -and $reviewedArgv[1] -cne '/Automation')) {
+            throw 'Hidden-scratch resume authorization argv is not the exact reviewed executable and scratch path'
+        }
+        $allXg = @(Get-Process -Name XG5000 -ErrorAction SilentlyContinue)
+        if ($allXg.Count -ne 1 -or $allXg[0].Id -ne [int]$reviewed.pid) { throw 'Hidden-scratch resume requires exactly the reviewed global XG5000 PID' }
+        $preservedBaseline = @()
     }
-    $allXg = @(Get-Process -Name XG5000 -ErrorAction SilentlyContinue)
-    if ($allXg.Count -ne 1 -or $allXg[0].Id -ne [int]$reviewed.pid) { throw 'Hidden-scratch resume requires exactly the reviewed global XG5000 PID' }
     $process = Get-Process -Id ([int]$reviewed.pid) -ErrorAction Stop
     if ($process.StartTime.ToUniversalTime().ToString('o') -cne [string]$reviewed.startTimeUtc) { throw 'Hidden-scratch resume detected XG5000 PID reuse' }
-    $record = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [int]$reviewed.pid) | Select-Object -First 1
-    if ($null -eq $record -or [string]$record.ExecutablePath -cne [string]$reviewed.executablePath) {
-        throw 'Hidden-scratch resume process executable mismatched'
-    }
-    Initialize-ReviewedModalNativeApi
-    $expectedArgv = $reviewedArgv
-    [string[]]$actualArgv = [ControlStudioMneModalNative]::ParseCommandLine([string]$record.CommandLine)
-    if ($expectedArgv.Length -eq 0 -or $actualArgv.Length -ne $expectedArgv.Length) {
-        throw "Hidden-scratch resume process argv length mismatched; actualCount=$($actualArgv.Length); actualDigest=$(Get-ArgvDigest -Arguments $actualArgv); expectedCount=$($expectedArgv.Length); expectedDigest=$(Get-ArgvDigest -Arguments $expectedArgv)"
-    }
-    for ($argumentIndex = 0; $argumentIndex -lt $expectedArgv.Length; $argumentIndex++) {
-        if ($actualArgv[$argumentIndex] -cne $expectedArgv[$argumentIndex]) {
-            throw "Hidden-scratch resume process argv mismatched; actualDigest=$(Get-ArgvDigest -Arguments $actualArgv); expectedDigest=$(Get-ArgvDigest -Arguments $expectedArgv)"
+    if (-not $RequireVisible) {
+        $record = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [int]$reviewed.pid) | Select-Object -First 1
+        if ($null -eq $record -or [string]$record.ExecutablePath -cne [string]$reviewed.executablePath) {
+            throw 'Hidden-scratch resume process executable mismatched'
+        }
+        Initialize-ReviewedModalNativeApi
+        $expectedArgv = $reviewedArgv
+        [string[]]$actualArgv = [ControlStudioMneModalNative]::ParseCommandLine([string]$record.CommandLine)
+        if ($expectedArgv.Length -eq 0 -or $actualArgv.Length -ne $expectedArgv.Length) {
+            throw "Hidden-scratch resume process argv length mismatched; actualCount=$($actualArgv.Length); actualDigest=$(Get-ArgvDigest -Arguments $actualArgv); expectedCount=$($expectedArgv.Length); expectedDigest=$(Get-ArgvDigest -Arguments $expectedArgv)"
+        }
+        for ($argumentIndex = 0; $argumentIndex -lt $expectedArgv.Length; $argumentIndex++) {
+            if ($actualArgv[$argumentIndex] -cne $expectedArgv[$argumentIndex]) {
+                throw "Hidden-scratch resume process argv mismatched; actualDigest=$(Get-ArgvDigest -Arguments $actualArgv); expectedDigest=$(Get-ArgvDigest -Arguments $expectedArgv)"
+            }
         }
     }
+    Initialize-ReviewedModalNativeApi
     $snapshots = @([ControlStudioMneModalNative]::FindTopLevelWindows([uint32]$reviewed.pid))
     $matches = @($snapshots | Where-Object {
         if ($RequireVisible) {
@@ -934,7 +1015,7 @@ function Assert-ResumeAfterHiddenScratchLaunch {
         $matchFailure = if ($RequireVisible) { 'Visible-scratch resume did not find exactly one reviewed visible XG5000 main window' } else { 'Hidden-scratch resume did not find exactly one reviewed hidden XG5000 main window' }
         throw $matchFailure
     }
-    return [pscustomobject]@{ Process = $process; Reviewed = $reviewed }
+    return [pscustomobject]@{ Process = $process; Reviewed = $reviewed; PreservedBaseline = @($preservedBaseline); ExpectedWorkingHash = [string]$inputs.scratchSha256 }
 }
 
 function Assert-ResumeAfterReviewedVisibleScratch {
@@ -1433,11 +1514,23 @@ if ($ResumeAfterFailedElevatedLaunch) {
         # the official launcher to open the immutable workspace working copy.
         Close-ReviewedXgForCertification -XgProcess $visibleScratch.Process
         $closedDeadline = [DateTimeOffset]::UtcNow.AddSeconds(5)
-        while ([DateTimeOffset]::UtcNow -lt $closedDeadline -and $null -ne (Get-Process -Name XG5000 -ErrorAction SilentlyContinue)) {
-            Start-Sleep -Milliseconds 250
+        $preservedBoundaryRestored = $false
+        while ([DateTimeOffset]::UtcNow -lt $closedDeadline) {
+            try {
+                [void](Assert-ExactPreservedXgBaseline -Baseline $visibleScratch.PreservedBaseline -ReviewedPid ([int]$visibleScratch.Reviewed.pid))
+                $preservedBoundaryRestored = $true
+                break
+            } catch {
+                Start-Sleep -Milliseconds 250
+            }
         }
-        if ($null -ne (Get-Process -Name XG5000 -ErrorAction SilentlyContinue)) {
-            throw 'Reviewed scratch did not leave a clean XG5000 process boundary before workspace open'
+        if (-not $preservedBoundaryRestored) {
+            [void](Assert-ExactPreservedXgBaseline -Baseline $visibleScratch.PreservedBaseline -ReviewedPid ([int]$visibleScratch.Reviewed.pid))
+            throw 'Reviewed scratch did not leave the exact preserved XG5000 baseline before workspace open'
+        }
+        Assert-WorkingHashAfterExactHeadlessCleanup -Template $template -ExpectedHash $visibleScratch.ExpectedWorkingHash
+        if ($null -ne (Get-Process -Id ([int]$visibleScratch.Reviewed.pid) -ErrorAction SilentlyContinue)) {
+            throw 'Reviewed scratch PID survived after the exact no-save close'
         }
         $env:LOCALAPPDATA = $dataRoot
         $env:CONTROLSTUDIO_RELEASE_CHANNEL = 'development'
