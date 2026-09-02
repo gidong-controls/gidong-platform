@@ -31,10 +31,20 @@ function Get-Process {
     return @($script:mockXgProcesses)
 }
 
-$baseline = @(
-    [pscustomobject]@{ Pid = 14284; ProcessName = 'XG5000'; StartUtc = '2026-08-31T08:57:58.7651004Z' },
-    [pscustomobject]@{ Pid = 16228; ProcessName = 'XG5000'; StartUtc = '2026-08-31T10:54:12.7899604Z' }
-)
+$authorizationJson = @'
+{
+  "schema": "controlstudio-mne-resume-after-visible-scratch/v4",
+  "preservedBaseline": [
+    { "Pid": 14284, "ProcessName": "XG5000", "StartUtc": "2026-08-31T08:57:58.7651004Z" },
+    { "Pid": 16228, "ProcessName": "XG5000", "StartUtc": "2026-08-31T10:54:12.7899604Z" }
+  ]
+}
+'@
+$authorization = $authorizationJson | ConvertFrom-Json -DateKind String
+if ($authorization.preservedBaseline[0].StartUtc -isnot [string] -or $authorization.preservedBaseline[0].StartUtc -cne '2026-08-31T08:57:58.7651004Z') {
+    throw 'Authorization parser did not preserve canonical StartUtc JSON text'
+}
+$baseline = @($authorization.preservedBaseline)
 $reviewedPid = 21860
 $script:mockXgProcesses = @(
     (New-FakeXgProcess 14284 '2026-08-31T08:57:58.7651004Z'),

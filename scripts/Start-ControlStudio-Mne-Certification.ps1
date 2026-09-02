@@ -893,7 +893,10 @@ function Assert-ResumeAfterHiddenScratchLaunch {
     if (Test-Path -LiteralPath $BundlePath) { throw 'Hidden-scratch resume requires the capability bundle to remain absent' }
     $exactAuthorizationPath = [System.IO.Path]::GetFullPath($AuthorizationPath)
     if (-not (Test-Path -LiteralPath $exactAuthorizationPath -PathType Leaf)) { throw 'Hidden-scratch resume authorization is not a file' }
-    $authorization = [System.IO.File]::ReadAllText($exactAuthorizationPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    # Preserved process StartUtc values are signed authorization identities, so
+    # keep ISO-8601 text intact rather than letting PowerShell coerce it to a
+    # DateTime and silently drop its original precision/UTC representation.
+    $authorization = [System.IO.File]::ReadAllText($exactAuthorizationPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json -DateKind String
     $expectedKeys = if ($RequireVisible) {
         @('schema', 'disabledReceipt', 'inputs', 'scratchProcess', 'preservedBaseline', 'expectedFailure')
     } else {
