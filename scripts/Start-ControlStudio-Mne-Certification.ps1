@@ -836,8 +836,8 @@ function Assert-ExactPreservedXgBaseline {
         if (($keys -join ',') -cne 'Pid,ProcessName,StartUtc') {
             throw 'Preserved XG5000 baseline entry fields are invalid'
         }
-        $pid = [int]$entry.Pid
-        if ($pid -le 0 -or $pid -eq $ReviewedPid -or $seenPids.ContainsKey($pid) -or [string]$entry.ProcessName -cne 'XG5000') {
+        $processId = [int]$entry.Pid
+        if ($processId -le 0 -or $processId -eq $ReviewedPid -or $seenPids.ContainsKey($processId) -or [string]$entry.ProcessName -cne 'XG5000') {
             throw 'Preserved XG5000 baseline identity is invalid'
         }
         try {
@@ -852,7 +852,7 @@ function Assert-ExactPreservedXgBaseline {
         if ($expectedStart.ToString('o') -cne [string]$entry.StartUtc) {
             throw 'Preserved XG5000 baseline start time is not canonical UTC'
         }
-        $seenPids[$pid] = $entry
+        $seenPids[$processId] = $entry
     }
 
     $allXg = @(Get-Process -Name XG5000 -ErrorAction SilentlyContinue)
@@ -865,11 +865,11 @@ function Assert-ExactPreservedXgBaseline {
     $reviewed = $observed[$ReviewedPid]
     if ($RequireReviewedProcess -and $null -eq $reviewed) { throw 'Reviewed visible scratch PID is absent from the XG5000 process set' }
     if (-not $RequireReviewedProcess -and $null -ne $reviewed) { throw 'Reviewed visible scratch PID remained after the exact no-save close' }
-    foreach ($pid in $seenPids.Keys) {
-        $process = $observed[[int]$pid]
+    foreach ($processId in $seenPids.Keys) {
+        $process = $observed[[int]$processId]
         if ($null -eq $process) { throw 'Preserved XG5000 baseline PID is absent' }
         $process.Refresh()
-        $expected = $seenPids[$pid]
+        $expected = $seenPids[$processId]
         if (
             [string]$process.ProcessName -cne [string]$expected.ProcessName -or
             $process.StartTime.ToUniversalTime().ToString('o') -cne [string]$expected.StartUtc
