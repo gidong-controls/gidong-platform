@@ -986,7 +986,7 @@ from xg5000_control.project.catalog import _mdi_client, _project_grid_candidates
 workspace_id, expected_hash, workspace_root = sys.argv[1:]
 result = open_workspace_in_xg5000(
     workspace_id, expected_hash, workspace_root=Path(workspace_root), timeout_seconds=60.0,
-    automation=False
+    automation=False, allow_official_open_fallback=True
 )
 instance = result.get('instance') or {}
 pid, hwnd = int(instance.get('pid') or 0), int(instance.get('hwnd') or 0)
@@ -1310,8 +1310,16 @@ if ($ResumeAfterFailedElevatedLaunch) {
         $opened.workspace_id -cne $failedElevated.WorkspaceId -or
         [string]$opened.working_path -cne $failedElevated.ProjectPath -or
         [string]$opened.working_hash -cne $failedElevated.ProjectHash -or
+        $opened.process_is_independent -ne $true -or
+        $opened.project_identity_read_only_bound_to_selected_pid -ne $true -or
+        $opened.native_file_usage_verified -ne $true -or
+        [string]$opened.identity_assurance -cne 'controlled_launch_read_only' -or
         $null -eq $instance -or [int]$instance.pid -le 0 -or [int64]$instance.hwnd -le 0
     ) { throw 'Failed-elevated-launch resume did not return the exact verified working-copy instance' }
+    if (
+        [int]$opened.launch_pid -ne [int]$instance.pid -or
+        @($failedElevated.Xg5000PidsBeforeLaunch) -contains [int]$instance.pid
+    ) { throw 'Failed-elevated-launch resume returned a baseline or mismatched XG5000 process' }
     $template.target.pid = [int]$instance.pid
     $template.target.hwnd = [int64]$instance.hwnd
     $resumedFailedElevatedLaunch = [pscustomobject]@{ Process = (Get-Process -Id ([int]$instance.pid) -ErrorAction Stop); Hwnd = [int64]$instance.hwnd }
