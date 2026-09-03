@@ -3126,6 +3126,21 @@ function App() {
   }, [connectHost]);
 
   useEffect(() => {
+    const reconnectForBrowserHandoff = () => {
+      const fragment = window.location.hash.startsWith("#")
+        ? window.location.hash.slice(1)
+        : window.location.hash;
+      if (new URLSearchParams(fragment).get("handoff_ticket")) {
+        void connectHost();
+      }
+    };
+    window.addEventListener("hashchange", reconnectForBrowserHandoff);
+    return () => {
+      window.removeEventListener("hashchange", reconnectForBrowserHandoff);
+    };
+  }, [connectHost]);
+
+  useEffect(() => {
     const focusFeature = status.featureReadiness?.find(
       (feature) => feature.featureId === "program_focus",
     );
