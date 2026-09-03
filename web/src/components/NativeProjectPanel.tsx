@@ -2906,7 +2906,8 @@ export function NativeProjectPanel({
                   {reuseVerifiedReopen
                     ? " 검증된 재열기 session을 그대로 재사용해 저장된 프로젝트 내용을 다시 확인합니다."
                     : " fresh XG5000 창을 직접 선택하거나, 선택할 창이 없으면 새 XG5000 창 하나를 열어 저장된 프로젝트 파일을 read-only로 다시 열고 내용을 확인합니다."}
-                  새 프로젝트 생성, IL 삽입, 창 종료, 자동 재시도는 하지 않습니다.
+                  새 프로젝트 생성, IL 삽입, 자동 재시도는 하지 않습니다.
+                  같은 저장 작업이 남긴 미확인 재열기 실행만 정리합니다.
                 </p>
               </div>
 
@@ -2940,7 +2941,7 @@ export function NativeProjectPanel({
                       onChange={(event) => setReopenedHwnd(event.target.value)}
                     >
                       <option value="">
-                        새로 시작한 XG5000 PID/HWND를 직접 선택해 주세요
+                        기존 재열기 창 선택 · 선택하지 않으면 새 창으로 열기
                       </option>
                       {instances
                         .filter(
@@ -2957,8 +2958,8 @@ export function NativeProjectPanel({
 
                   {!instancesLoading && instances.length === 0 && (
                     <p className="native-project-recovery-warning">
-                      실행 중인 XG5000 창이 없습니다. 검증할 fresh 창을 시작한 뒤
-                      목록을 다시 확인해 주세요.
+                      실행 중인 XG5000 창이 없습니다. “저장된 프로젝트 다시
+                      열기”를 누르면 Host가 새 창 하나에서 저장된 파일을 엽니다.
                     </p>
                   )}
                   {selectedReopenedInstance &&
