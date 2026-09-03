@@ -49,8 +49,25 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   추가했다. 최신 웹 reload 후 engineering 대화 `0828547d-ccc2-4797-9e3c-1b66510008a6`와
   현재 PID 12492 대상이 표시됐고, UI에서 MainProgram 실제 LD 읽기·정지 우선 자기유지
   분석을 요청했다. Run `0748e00a-abb8-41e5-9fc9-7a705a8505a2`는 초기 프로그램 목록 도구
-  호출에서 `tool_error`로 실패했다(645ms). 따라서 대화 진입은 확인됐지만 실제 에이전트
-  분석 성공은 아직 아니다. 이 오류를 수정하고 같은 현재 대상을 읽는 것이 다음 작업이다.
+  호출에서 `tool_error`로 실패했다(645ms). MCP `8fe94df`는 이미 exact identity를 확인한
+  `saved_build_reopen_readback` 세션에 일반 읽기 분석을 허용했다. 쓰기 권한은 추가하지
+  않는다. 이 수정 뒤 실제 에이전트 분석 성공은 아직 확인 전이다.
+  UAC 없는 Host 재로딩으로 session이 사라진 뒤 generic attach는 저장된 생성 작업의
+  signed read-only proof를 복원하지 못했다. 같은 기존 창을 이 증명으로 재연결하는
+  경로는 Host `b30562c`로 연결했다. 최초 실제 클릭은 `request` 주입 누락으로 HTTP 500이
+  발생했고 `e995800`에서 수정했다. 실제 웹의 일반 `분석 세션 연결`로 같은 PID 12492 /
+  HWND 1901812의 read-ready 재연결에 성공했다. 추가 UAC나 새 XG5000 실행은 없었다.
+  `이 작업 계속하기`로 새 프로세스를 열거나 생성 작업을 재실행하지 않는다.
+  대화 `ab8f9615-922b-44f9-8703-3f079a476d01` / run
+  `75d6381c-7e4b-40cf-b88d-f95a123230aa`에서 같은 실제 LD 읽기 질문을 재전송했다.
+  프로그램 목록은 2.4초, 실제 래더 읽기는 11초에 완료됐다. Run은 완료로 표시됐지만
+  답변은 실패다: 모델이 `AND NOT M00020`의 부정과 `LOAD NOT M00001`의 부정을 잘못
+  해석하고 일반 `OUT M00020`을 SET으로 설명해 재기동 조건을 반대로 답했다.
+  근거 artifact `95f95894-73c9-5a9a-9be7-370387e5487f`의 실제 표현과 모델 입력을
+  확인해 native LD 표현 문제와 모델 오독을 구분해야 한다. 이 답변을 성공 근거로 쓰지 않는다.
+- CLI `e164ec0`은 fast program catalog가 사용하는 vendored window enumeration에도
+  기존 bounded caption reader를 공유한다. 모든 top-level 창을 읽다가 무기한 막히는
+  경로를 제거했으며, 전체 vendor 동기화나 테스트 코드 추가는 하지 않았다.
   이미 성공한 파일 열기/창 준비/UAC 단계로 돌아가지 않는다.
 - 일회성 stack 수집 코드는 `d2c387f`로 제거했고 trace 원인 증거는 private lease 폴더에
   보존했다. CLI-only source 변경은 다음 CLI 실행에 바로 반영된다. Host 코드 변경만
