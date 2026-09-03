@@ -11,9 +11,9 @@
 
 - 세 core 저장소 `gidong-platform`, `gidong-agent`, `gidong-plc-mcp`는 `dev`에서 작업한다.
   `6d06754`, `f70d30c`, `9edc7e5`는 이 handoff 작성 당시의 역사적 code checkpoint이며 최신
-  `HEAD` 표기가 아니다. 현재 제품 checkpoint와 실행 상태는 아래 2026-09-01 절을 우선한다.
-- 독립 XG5000 CLI는 `main`의 `6a21db7`이며 사용자 지정 원격 `origin/main`과 동기화돼 있다.
-  위 세 core 저장소의 이번 변경은 local commit이며 push하지 않았다.
+  `HEAD` 표기가 아니다. 현재 제품 checkpoint와 실행 상태는 아래 최신 날짜 절을 우선한다.
+- 독립 XG5000 CLI는 `main`에서 작업한다. `6a21db7`의 원격 동기화는 과거 기록이며,
+  현재 HEAD와 원격 동기화 여부는 Git에서 확인한다. 2026-09-03 변경은 local commit이다.
 
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
@@ -40,8 +40,12 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   동일 scratch hash와 exact empty XG5000 baseline을 전제로 실행 없이 준비만 됐다.
 - 2026-09-03의 resume33/34 certification wrapper 관측(예: pre-click
   `XG5000_SEND_INPUT_FOREGROUND_REQUIRED`)은 이전 인증 재시도 기록이며 현재 장애 상태가 아니다.
-- 현재 정상 Development Host health는 ready다. active source-linked CLI의 일반 open/resume
-  official Open 연결은 `0829d35`에 반영됐고, independent 경로 보존 후속만 진행 중이다.
+- 현재 정상 Development Host health는 ready다. CLI `0829d35`/`0611593`은 일반 open/resume에
+  official Open을 연결하고 explicit independent PID 재열기는 기존 native-file 방식을 유지한다.
+  매번 새 CLI가 현재 소스를 읽으므로 이 수정에 Host 재시작은 필요 없다.
+- Platform `16a661f`는 복구 두 경로가 launch receipt를 attached-session의 옛 assurance 문자열과
+  비교하던 오류를 수정했다. PID/HWND/hash 및 후속 독립 readback은 유지한다. 이 Host 수정은
+  아직 실행 중 프로세스에 반영되지 않았으며, 해당 복구 실행 전 정상 Host 재시작이 필요하다.
 - 실제 PWA resume은 아직 수행하지 않았다. 사용자에게 요청된 “이 작업 계속하기” 1회 클릭은
   UAC 요청이나 인증 wrapper 재실행이 아니다.
 - 2026-09-03 사용자 지시로 프로젝트 테스트 코드는 삭제됐다. 이 문서의 날짜가 붙은 과거
