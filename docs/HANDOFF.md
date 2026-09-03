@@ -58,6 +58,11 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   MCP와 동일한 nonblank/unique 표시 이름 규약으로 맞췄다. profile digest 검증은 유지한다.
   그 반영 뒤 run `d910ddc6-4c04-4324-860f-dd1e2274287d`는 도구 실행 전에 모델 제공자의
   HTTP 502로 실패했다. 이를 새 코드/권한 문제로 오인하지 말고 해당 run과 구분한다.
+- 같은 대화에서 재개한 run `7b91c430-cf87-4741-abe6-de30b7e78f2e`는 모델이 응답했고
+  compiler를 실행했으나 event `3589`에서 native `XG5000Error`의
+  `MNE_ROW_COPY_AMBIGUOUS: Expected exactly one copied mnemonic row.`로 실패했다.
+  오류를 변경 후보 성공으로 전환하거나 무작정 반복하지 않는다. 기존 PID `12492`의
+  공용 MNE 행 선택/복사 경로를 진단 중이며 실제 변경 제안·저장·XG-SIM은 여전히 미완료다.
 - 작업 중인 웹은 Codex 내부의 `http://127.0.0.1:8767/` 인증 탭이다. 별도 Edge/Chrome
   창은 확인하지 못했다. 초기 패널 표시 요청은 `queued`였고 선택 탭과 작업 탭도 달랐다.
   07:38에 정상 Launcher `--web-url` handoff로 기존 선택 탭 5를 인증했고, 작업 탭도 5로
