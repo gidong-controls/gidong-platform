@@ -68,6 +68,15 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   반환한 기록이 있다. MCP `9da450e`는 빠른 Ctrl+A 캡처가 fallback할 때 남은 전체
   선택을 기존 checked first-row primitive로 해제하고 행 읽기를 시작한다. 별도 재시도나
   지연 반복은 추가하지 않았다. 실제 후속 web run으로 확인한다.
+- `9da450e`만으로는 해결되지 않았다. run `940256e6-022a-4f56-884c-0543e76176a9`의
+  event `3603`도 같은 native 오류로 실패했고, 보존 디렉터리
+  `artifacts/mcp-sessions/786821c4-f529-4d9d-be99-ff0030c1aa32/aece6a87c3c5`의
+  `error.json`에는 row 0에서 전체 11행을 복사한 기록이 있다. MCP editable source와
+  실제 caller (`derive_supported_mne_adapter_binding -> capture_full_mne ->
+  _discover_exact_mne_row_count -> _read_il_rows_with_view`)까지 확인했다.
+  행 수 탐색의 speculative Ctrl+A 빠른 분기를 제거해 행별 읽기와 뒤의 명시적 전체
+  범위 캡처를 분리하는 후속 수정이 필요하다. 앞선 첫 행 클릭 수정만을 해결 완료로
+  보고하지 않는다.
 - 작업 중인 웹은 Codex 내부의 `http://127.0.0.1:8767/` 인증 탭이다. 별도 Edge/Chrome
   창은 확인하지 못했다. 초기 패널 표시 요청은 `queued`였고 선택 탭과 작업 탭도 달랐다.
   07:38에 정상 Launcher `--web-url` handoff로 기존 선택 탭 5를 인증했고, 작업 탭도 5로
