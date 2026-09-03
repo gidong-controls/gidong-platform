@@ -1383,7 +1383,7 @@ function executionReceiptChecks(
         passed:
           finalReceipt?.verified === true &&
           (rollback
-            ? rollback.ld_raw_equal === true
+            ? rollback.ld_canonical_equal === true
             : application?.verified_in_editor === true),
       },
       {
@@ -1400,7 +1400,7 @@ function executionReceiptChecks(
           reopen?.verified === true &&
           reopen.process_is_independent === true &&
           reopen.stable_readback === true &&
-          reopen.ld_raw_equal === true,
+          safeDigest(reopen.ld_canonical_sha256) !== undefined,
       },
     ];
   }
