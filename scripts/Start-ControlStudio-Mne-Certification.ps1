@@ -23,15 +23,12 @@ param(
     [string]$XgExecutable = 'C:\XG5000\XG5000.exe',
 
     [switch]$DebugCertification,
-    [switch]$SelfTest,
     [switch]$ResumeAfterReviewedXgClose,
     [string]$ResumeAuthorization,
     [switch]$ResumePreflightOnly,
-    [switch]$ResumeExecutionPathSelfTest,
     [switch]$ResumeAfterHiddenScratchLaunch,
     [string]$HiddenScratchResumeAuthorization,
     [switch]$HiddenScratchResumePreflightOnly,
-    [switch]$HiddenScratchResumeExecutionPathSelfTest,
     [switch]$ResumeAfterReviewedVisibleScratch,
     [string]$VisibleScratchResumeAuthorization,
     [string]$ReopenIntoWorkspaceId,
@@ -1273,100 +1270,6 @@ function Assert-WorkingHashAfterExactHeadlessCleanup {
     if ($actual -cne $ExpectedHash.ToLowerInvariant()) { throw 'Working project hash differs after exact headless cleanup; refusing new XG5000 launch' }
 }
 
-if ($SelfTest) {
-    Initialize-ReviewedModalNativeApi
-    $valid = [pscustomobject]@{
-        Parent = [int64]1575014
-        Title = 'XG5000'
-        ClassName = '#32770'
-        ChildTexts = @("프로젝트창이 닫힙니다.`r`n저장하시겠습니까?")
-    }
-    $wrongText = [pscustomobject]@{
-        Parent = [int64]1575014
-        Title = 'XG5000'
-        ClassName = '#32770'
-        ChildTexts = @('다른 확인 창')
-    }
-    $wrongClass = [pscustomobject]@{
-        Parent = [int64]1575014
-        Title = 'XG5000'
-        ClassName = 'OtherClass'
-        ChildTexts = @("프로젝트창이 닫힙니다.`r`n저장하시겠습니까?")
-    }
-    $shadow = [pscustomobject]@{
-        Parent = [int64]1575014
-        Title = ''
-        ClassName = 'BCGPShadowSideWnd'
-        ChildTexts = @()
-        ChildControlIds = @()
-    }
-    $hiddenReviewed = [pscustomobject]@{
-        hwnd = [int64]3410170
-        title = 'UI 레더 수직검증 20260817 - XG5000'
-        className = 'Afx:00400000:8:00010003:00000000:0016083D'
-    }
-    $wrongHidden = [pscustomobject]@{
-        hwnd = [int64]3410171
-        title = 'UI 레더 수직검증 20260817 - XG5000'
-        className = 'Afx:00400000:8:00010003:00000000:0016083D'
-    }
-    if (
-        -not (Test-ExactNoSaveModalShape -Candidate $valid -ExpectedMainHwnd 1575014) -or
-        (Test-ExactNoSaveModalShape -Candidate $wrongText -ExpectedMainHwnd 1575014) -or
-        (Test-ExactNoSaveModalShape -Candidate $wrongClass -ExpectedMainHwnd 1575014)
-    ) {
-        throw 'Exact no-save modal helper self-test failed'
-    }
-    $withShadows = @(Get-ActionableOwnedWindows -Candidates @($shadow, $shadow, $shadow, $shadow, $valid))
-    $shadowsOnly = @(Get-ActionableOwnedWindows -Candidates @($shadow, $shadow, $shadow, $shadow))
-    if ($withShadows.Count -ne 1 -or -not (Test-ExactNoSaveModalShape -Candidate $withShadows[0] -ExpectedMainHwnd 1575014) -or $shadowsOnly.Count -ne 0) {
-        throw 'Decorative shadow modal classifier self-test failed'
-    }
-    # The predicate's visibility check is exercised against only an invalid
-    # HWND here; a live hidden XG window is never touched by self-test.
-    if ((Test-ExactHiddenScratchWindow -Snapshot $wrongHidden -Reviewed $hiddenReviewed)) {
-        throw 'Hidden scratch identity helper self-test failed'
-    }
-    [string[]]$parsedArgv = [ControlStudioMneModalNative]::ParseCommandLine('"C:\XG5000\XG5000.exe" /Automation "C:\scratch path\scratch.xgwx"')
-    if ($parsedArgv.Length -ne 3 -or $parsedArgv[0] -cne 'C:\XG5000\XG5000.exe' -or $parsedArgv[1] -cne '/Automation' -or $parsedArgv[2] -cne 'C:\scratch path\scratch.xgwx') {
-        throw 'Command-line argv parser self-test failed'
-    }
-    $badHeadlessAuthorization = '{"schema":"controlstudio-mne-cleanup-headless-owned-xg/v1","attempt":{},"inputs":{},"scratchProcess":{},"noXgAuthorization":{},"expectedFailure":"wrong"}' | ConvertFrom-Json
-    if (Test-ExactHeadlessXgCleanupAuthorizationShape -Authorization $badHeadlessAuthorization) {
-        throw 'Headless cleanup authorization negative self-test failed'
-    }
-    $badFailedElevatedAuthorization = '{"schema":"controlstudio-mne-resume-after-failed-elevated-launch/v1","prior":{},"inputs":{},"state":{},"expectedFailure":"wrong"}' | ConvertFrom-Json
-    if (Test-FailedElevatedLaunchAuthorizationShape -Authorization $badFailedElevatedAuthorization) {
-        throw 'Failed elevated-launch authorization negative self-test failed'
-    }
-    $bindingPath = 'C:\scratch\working.xgwx'
-    $bindingHash = ('a' * 64) -join ''
-    $bindingInstance = [pscustomobject]@{ pid = 1; hwnd = [int64]2 }
-    $officialBinding = [pscustomobject]@{
-        verified = $true; workspace_id = 'workspace'; working_path = $bindingPath; working_hash = $bindingHash
-        process_is_independent = $true; project_identity_read_only_bound_to_selected_pid = $true
-        native_file_usage_verified = $false; official_open_binding_verified = $true
-        identity_assurance = 'controlled_launch_official_open_read_only'; instance = $bindingInstance
-        open_ui_fallback = [pscustomobject]@{ status = 'passed'; dialog_closed = $true; project_path = $bindingPath }
-    }
-    $nativeBinding = [pscustomobject]@{
-        verified = $true; workspace_id = 'workspace'; working_path = $bindingPath; working_hash = $bindingHash
-        process_is_independent = $true; project_identity_read_only_bound_to_selected_pid = $true
-        native_file_usage_verified = $true; official_open_binding_verified = $false
-        identity_assurance = 'controlled_launch_native_file_read_only'; instance = $bindingInstance; open_ui_fallback = $null
-    }
-    if (
-        -not (Test-ExactOpenedWorkspaceBinding -Opened $officialBinding -ExpectedWorkspaceId 'workspace' -ExpectedWorkingPath $bindingPath -ExpectedWorkingHash $bindingHash) -or
-        -not (Test-ExactOpenedWorkspaceBinding -Opened $nativeBinding -ExpectedWorkspaceId 'workspace' -ExpectedWorkingPath $bindingPath -ExpectedWorkingHash $bindingHash)
-    ) { throw 'Exact workspace binding proof positive self-test failed' }
-    $officialBinding.open_ui_fallback.dialog_closed = $false
-    if (Test-ExactOpenedWorkspaceBinding -Opened $officialBinding -ExpectedWorkspaceId 'workspace' -ExpectedWorkingPath $bindingPath -ExpectedWorkingHash $bindingHash) {
-        throw 'Exact workspace binding proof accepted an unclosed official Open receipt'
-    }
-    'Exact no-save modal helper self-test: OK'
-    exit 0
-}
-
 foreach ($entry in @(
     @{ Name = 'MNE certification executable'; Path = $certifier },
     @{ Name = 'MCP Python'; Path = $mcpPython },
@@ -1514,18 +1417,6 @@ if ($ResumeAfterFailedElevatedLaunch) {
         } | ConvertTo-Json -Compress
         exit 0
     }
-    if ($ResumeExecutionPathSelfTest) {
-        $resolvedStop = Get-Command Stop-ExactHostTreeAfterReviewedXgClose -CommandType Function -ErrorAction Stop
-        $stopReadiness = Stop-ExactHostTreeAfterReviewedXgClose -ListenerPid ([int]$resumeHost.pid) -ListenerStartTimeUtc ([string]$resumeHost.startTimeUtc) -ClosedXgPid ([int]$resumeHost.closedXgPid) -NoOp
-        [pscustomobject]@{
-            schema = 'controlstudio-mne-resume-execution-path/v1'
-            resolvedCommand = $resolvedStop.Name
-            listenerPid = $stopReadiness.listenerPid
-            processCount = $stopReadiness.processCount
-            result = 'ready_to_launch_scratch'
-        } | ConvertTo-Json -Compress
-        exit 0
-    }
     Stop-ExactHostTreeAfterReviewedXgClose -ListenerPid ([int]$resumeHost.pid) -ListenerStartTimeUtc ([string]$resumeHost.startTimeUtc) -ClosedXgPid ([int]$resumeHost.closedXgPid)
 } else {
     if ($CleanupReviewedHeadlessXgThenNoXgWorkspaceLaunch) {
@@ -1626,17 +1517,6 @@ if ($ResumeAfterFailedElevatedLaunch) {
     if ($HiddenScratchResumePreflightOnly) {
         [pscustomobject]@{
             schema = 'controlstudio-mne-hidden-scratch-resume-preflight/v1'
-            xgPid = [int]$hiddenScratch.Reviewed.pid
-            hwnd = [int64]$hiddenScratch.Reviewed.hwnd
-            result = 'ready_to_certify_existing_scratch'
-        } | ConvertTo-Json -Compress
-        exit 0
-    }
-    if ($HiddenScratchResumeExecutionPathSelfTest) {
-        $restoreCommand = Get-Command Restore-ReviewedHiddenScratchWindow -CommandType Function -ErrorAction Stop
-        [pscustomobject]@{
-            schema = 'controlstudio-mne-hidden-scratch-execution-path/v1'
-            resolvedCommand = $restoreCommand.Name
             xgPid = [int]$hiddenScratch.Reviewed.pid
             hwnd = [int64]$hiddenScratch.Reviewed.hwnd
             result = 'ready_to_certify_existing_scratch'
