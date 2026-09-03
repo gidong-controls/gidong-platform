@@ -4887,6 +4887,7 @@ function App() {
             <NewProjectBriefPanel
               initialBrief={newProjectPlanning?.brief}
               busy={sending}
+              nativeProjectAvailable={nativeProjectAvailable}
               onCancel={closeNewProjectBrief}
               onManageKnowledge={() => setKnowledgeOpen(true)}
               onSubmit={(brief) => void submitNewProjectBrief(brief)}

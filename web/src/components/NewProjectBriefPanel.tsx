@@ -17,6 +17,7 @@ export interface NewProjectBrief {
 interface NewProjectBriefPanelProps {
   initialBrief?: NewProjectBrief;
   busy: boolean;
+  nativeProjectAvailable: boolean;
   onCancel: () => void;
   onManageKnowledge: () => void;
   onSubmit: (brief: NewProjectBrief) => void;
@@ -81,6 +82,7 @@ export function ProjectFlowStepper({
 export function NewProjectBriefPanel({
   initialBrief,
   busy,
+  nativeProjectAvailable,
   onCancel,
   onManageKnowledge,
   onSubmit,
@@ -187,7 +189,10 @@ export function NewProjectBriefPanel({
         </button>
       </div>
 
-      <ProjectFlowStepper activeStep={1} />
+      <ProjectFlowStepper
+        activeStep={1}
+        nativeProjectAvailable={nativeProjectAvailable}
+      />
 
       <form
         className="new-project-brief-form"
