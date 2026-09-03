@@ -660,6 +660,35 @@ def _canonical_path(path: Path) -> str:
     return os.path.normcase(str(path.resolve()))
 
 
+def _fresh_reopen_launch_binding_matches(launch: dict[str, Any], project_path: str) -> bool:
+    """Accept one complete launcher proof, not the attach-session label."""
+
+    if launch.get("identity_assurance") == "controlled_launch_native_file_read_only":
+        return (
+            launch.get("native_file_usage_verified") is True
+            and launch.get("official_open_binding_verified") is False
+        )
+    receipt = launch.get("open_ui_fallback")
+    if not (
+        launch.get("identity_assurance")
+        == "controlled_launch_official_open_read_only"
+        and launch.get("native_file_usage_verified") is False
+        and launch.get("official_open_binding_verified") is True
+        and isinstance(receipt, dict)
+        and receipt.get("status") == "passed"
+        and receipt.get("dialog_closed") is True
+        and isinstance(receipt.get("project_path"), str)
+        and bool(receipt["project_path"].strip())
+    ):
+        return False
+    try:
+        return _canonical_path(Path(receipt["project_path"])) == _canonical_path(
+            Path(project_path)
+        )
+    except (OSError, ValueError):
+        return False
+
+
 def _require_within(path: Path, parent: Path, field: str) -> None:
     try:
         path.resolve().relative_to(parent.resolve())
@@ -5756,7 +5785,7 @@ class NativeProjectService:
                 if (
                     launch.get("ok") is not True
                     or launch.get("verified") is not True
-                    or launch.get("identity_assurance") != "controlled_launch_read_only"
+                    or not _fresh_reopen_launch_binding_matches(launch, project_path)
                     or (
                         expected_independent_from_pid is not None
                         and launch.get("independent_from_pid")
