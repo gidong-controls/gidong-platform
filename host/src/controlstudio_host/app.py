@@ -2224,6 +2224,29 @@ def _validated_verified_quarantined_backup_restore(
     return value
 
 
+def _workspace_launch_binding_matches(launch: dict[str, Any], working_path: str) -> bool:
+    """Match launch receipts, which differ from the attached session's assurance."""
+
+    if launch.get("identity_assurance") == "controlled_launch_native_file_read_only":
+        return (
+            launch.get("native_file_usage_verified") is True
+            and launch.get("official_open_binding_verified") is False
+        )
+    receipt = launch.get("open_ui_fallback")
+    return (
+        launch.get("identity_assurance") == "controlled_launch_official_open_read_only"
+        and launch.get("native_file_usage_verified") is False
+        and launch.get("official_open_binding_verified") is True
+        and isinstance(receipt, dict)
+        and receipt.get("status") == "passed"
+        and receipt.get("dialog_closed") is True
+        and isinstance(receipt.get("project_path"), str)
+        and bool(receipt["project_path"].strip())
+        and _normalized_workspace_path(receipt["project_path"])
+        == _normalized_workspace_path(working_path)
+    )
+
+
 async def _relaunch_unavailable_change_recovery_target(
     mcp: MCPGateway,
     transaction: ChangeTransaction,
@@ -2342,7 +2365,7 @@ async def _relaunch_unavailable_change_recovery_target(
                 launch.get("project_identity_verified_against_selected_pid"), bool
             )
             and launch.get("project_identity_read_only_bound_to_selected_pid") is True
-            and launch.get("identity_assurance") == "controlled_launch_read_only"
+            and _workspace_launch_binding_matches(launch, workspace.working_copy.path)
             and not isinstance(launch_pid, bool)
             and not isinstance(pid, bool)
             and not isinstance(hwnd, bool)
@@ -13503,8 +13526,9 @@ def create_app(
                             "project_identity_read_only_bound_to_selected_pid"
                         )
                         is True
-                        and raw_launch.get("identity_assurance")
-                        == "controlled_launch_read_only"
+                        and _workspace_launch_binding_matches(
+                            raw_launch, reopened_workspace.working_copy.path
+                        )
                         and fresh_pid > 0
                         and fresh_pid not in existing_pids
                         and fresh_pid != expected_pid
