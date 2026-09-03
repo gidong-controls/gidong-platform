@@ -607,11 +607,27 @@ def _verification_evidence(transaction: ChangeTransaction) -> dict[str, Any]:
 
 def _profile_plc_series(profile: Mapping[str, Any]) -> str:
     addresses: list[str] = []
-    for field in ("normal_assignments", "deny_assignments", "restore_assignments"):
-        assignments = profile.get(field)
-        if not isinstance(assignments, Mapping):
-            raise ChangeExecutionPreconditionError("MNE XG-SIM profile assignments are invalid")
-        addresses.extend(str(address) for address in assignments)
+    if "scenario" in profile:
+        scenario = profile.get("scenario")
+        steps = scenario.get("steps") if isinstance(scenario, Mapping) else None
+        if not isinstance(steps, list) or not steps:
+            raise ChangeExecutionPreconditionError("MNE XG-SIM scenario profile is invalid")
+        for step in steps:
+            if not isinstance(step, Mapping):
+                raise ChangeExecutionPreconditionError("MNE XG-SIM scenario step is invalid")
+            for field in ("drive", "observe"):
+                assignments = step.get(field)
+                if not isinstance(assignments, Mapping):
+                    raise ChangeExecutionPreconditionError(
+                        "MNE XG-SIM scenario assignments are invalid"
+                    )
+                addresses.extend(str(address) for address in assignments)
+    else:
+        for field in ("normal_assignments", "deny_assignments", "restore_assignments"):
+            assignments = profile.get(field)
+            if not isinstance(assignments, Mapping):
+                raise ChangeExecutionPreconditionError("MNE XG-SIM profile assignments are invalid")
+            addresses.extend(str(address) for address in assignments)
     outputs = profile.get("output_addresses")
     if not isinstance(outputs, list):
         raise ChangeExecutionPreconditionError("MNE XG-SIM profile outputs are invalid")
@@ -631,6 +647,32 @@ def _profile_plc_series(profile: Mapping[str, Any]) -> str:
     if len(series) != 1:
         raise ChangeExecutionPreconditionError("MNE XG-SIM profile mixes PLC address families")
     return series.pop()
+
+
+def _expected_mne_xgsim_observation_phases(
+    profile: Mapping[str, Any],
+) -> tuple[tuple[str, int | dict[str, int]], ...]:
+    """Derive receipt expectations only from the approved compiler profile."""
+
+    scenario = profile.get("scenario")
+    if scenario is None:
+        return (("normal", 1), ("deny", 0), ("restore", 1))
+    steps = scenario.get("steps") if isinstance(scenario, Mapping) else None
+    if not isinstance(steps, list) or not steps:
+        raise ChangeExecutionPreconditionError("MNE XG-SIM scenario profile is invalid")
+    phases: list[tuple[str, int | dict[str, int]]] = []
+    for step in steps:
+        if not isinstance(step, Mapping):
+            raise ChangeExecutionPreconditionError("MNE XG-SIM scenario step is invalid")
+        name = step.get("name")
+        observe = step.get("observe")
+        if not isinstance(name, str) or not isinstance(observe, Mapping) or not observe:
+            raise ChangeExecutionPreconditionError("MNE XG-SIM scenario expectation is invalid")
+        expected = dict(observe)
+        if any(isinstance(value, bool) or value not in {0, 1} for value in expected.values()):
+            raise ChangeExecutionPreconditionError("MNE XG-SIM scenario expectation is invalid")
+        phases.append((name, expected))
+    return tuple(phases)
 
 
 _PUBLIC_CHECKPOINT_EVIDENCE_FIELDS = (
@@ -2252,7 +2294,7 @@ class MNEChangeExecutionService:
                 phases = observation.get("observations")
                 restore = simulation_receipt.get("restore")
                 stop = simulation_receipt.get("stop")
-                expected_phase_values = (("normal", 1), ("deny", 0), ("restore", 1))
+                expected_phase_values = _expected_mne_xgsim_observation_phases(profile)
                 if (
                     set(simulation_receipt)
                     != {
@@ -2298,7 +2340,14 @@ class MNEChangeExecutionService:
                         or item.get("matched") is not True
                         or not isinstance(item.get("outputs"), dict)
                         or not item["outputs"]
-                        or any(value != expected_value for value in item["outputs"].values())
+                        or (
+                            item["outputs"] != expected_value
+                            if isinstance(expected_value, dict)
+                            else any(
+                                value != expected_value
+                                for value in item["outputs"].values()
+                            )
+                        )
                         for item, (expected_name, expected_value) in zip(
                             phases, expected_phase_values, strict=True
                         )
