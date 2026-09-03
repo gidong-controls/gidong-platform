@@ -3883,8 +3883,36 @@ class NativeProjectService:
                 )
         else:
             expected_reopened_process_create_time: float | None = None
+            workspace = registration["workspace"]
+            working = workspace.get("working_copy")
+            workspace_id = str(workspace.get("workspace_id") or "")
+            project_hash = str(working.get("current_sha256") or "").casefold() if isinstance(working, dict) else ""
+            try:
+                cleanup = await self._gateway.call_workspace_tool(
+                    "xg5000.cleanup_abandoned_workspace_launches",
+                    {
+                        "workspace_id": workspace_id,
+                        "expected_working_hash": project_hash,
+                    },
+                )
+            except (MCPToolError, RuntimeError) as exc:
+                raise NativeProjectConflict(
+                    "completed native project saved-build launch cleanup preflight failed"
+                ) from exc
+            cleaned_pids = cleanup.get("cleaned_pids") if isinstance(cleanup, dict) else None
+            if (
+                reopened_pid is not None
+                and reopened_hwnd is not None
+                and isinstance(cleaned_pids, list)
+                and reopened_pid in cleaned_pids
+            ):
+                # The adapter can report a PID only after its durable lease has
+                # exactly terminated that leased child.  Clear the paired UI
+                # selection together so the existing no-source path, rather
+                # than an identity-less rebind, owns the next reopen.
+                reopened_pid = None
+                reopened_hwnd = None
             if reopened_pid is None or reopened_hwnd is None:
-                working = registration["workspace"].get("working_copy")
                 raw_instances = await self._gateway.call_read_tool(
                     "xg5000.instances", {}
                 )
