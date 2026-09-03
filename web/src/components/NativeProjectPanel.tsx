@@ -2974,8 +2974,9 @@ export function NativeProjectPanel({
                         instance.pid !== operation.request.xg5000Pid,
                     ) && (
                       <p className="native-project-recovery-warning">
-                        저장된 원본과 다른 fresh XG5000 창이 필요합니다. 이 화면은
-                        창을 시작하거나 종료하지 않습니다.
+                        선택할 fresh XG5000 창이 없습니다. “저장된 프로젝트 다시
+                        열기”를 누르면 Host가 새 창 하나를 열어 저장된 파일 내용을
+                        확인합니다.
                       </p>
                     )}
                 </>
