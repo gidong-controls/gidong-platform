@@ -3741,7 +3741,7 @@ class NativeProjectService:
         reopened_pid: int | None,
         reopened_hwnd: int | None,
     ) -> NativeProjectOperation:
-        """Retry only an unbound post-create tail against an existing fresh copy."""
+        """Continue the saved build without recreating or editing its source."""
 
         if operation.request_digest != expected_request_digest:
             raise NativeProjectConflict("native project resume request is stale")
@@ -3849,9 +3849,49 @@ class NativeProjectService:
                     working=working,
                 )
                 if failed_target is None:
-                    raise NativeProjectConflict(
-                        "unbound completed native project resume requires the existing reopened PID/HWND"
+                    # An unsuccessful launch may have cleaned up its own child.
+                    # An explicit resume can open the saved working copy once;
+                    # never strand the user behind a selector with no candidate.
+                    raw_instances = await self._gateway.call_read_tool(
+                        "xg5000.instances", {}
                     )
+                    instances = (
+                        raw_instances.get("instances")
+                        if isinstance(raw_instances, dict)
+                        else None
+                    )
+                    if (
+                        not isinstance(instances, list)
+                        or len(instances) != 1
+                        or not isinstance(instances[0], dict)
+                        or instances[0].get("pid") != pid
+                        or instances[0].get("hwnd") != hwnd
+                        or instances[0].get("visible") is not True
+                    ):
+                        raise NativeProjectConflict(
+                            "saved-build reopen requires the original source alone; "
+                            "select an existing reopened XG5000 target if another window is present"
+                        )
+                    if not self._repository.begin_completed_verification(operation.operation_id):
+                        raise NativeProjectConflict(
+                            "native project changed before completed verification continuation"
+                        )
+                    result["resumeProvenance"] = {
+                        "lifecycleMode": "completed_post_create_verification_continuation",
+                        "noNewDialog": True,
+                        "noIlInsert": True,
+                        "explicitSavedBuildReopen": True,
+                    }
+                    return (
+                        await self._complete_verified_native_tail(
+                            spec,
+                            build_bundle=build_bundle,
+                            result=result,
+                            created=False,
+                            resume=True,
+                            registration=registration,
+                        )
+                    )[0]
                 reopened_pid, reopened_hwnd, expected_reopened_process_create_time = failed_target
             existing_session = await self._rebind_completed_reopen_target(
                 operation=operation,
