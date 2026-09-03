@@ -26,14 +26,28 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 - 기존 XG5000 PID `12492` / HWND `1901812`, workspace
   `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`를 유지한다. 새 XG5000을 실행하거나 기존 창을
   종료하지 않았다. 코드 반영은 실행 중인 Host의 UAC 없는 재로드로 수행했다.
-- run `b94fb8ba-419f-498e-9368-6cc2606cbe84`의 event `3401`에서 실제 rung 후보 컴파일이
-  10초에 성공했다. 기존 3개 rung / 11개 명령을 보존하고 마지막 END 앞에
-  `M00010 NO -> OUT M00030`을 추가한 13개 명령의 후보가 event `3402`에 남았다.
-- 이 후보의 `simulation_profile`은 `null`이다. 요청한 START/STOP 순서별 XG-SIM
-  시나리오가 포함된 후보가 아니므로 전체 요청을 충족한 승인안으로 취급하지 않는다.
-- 같은 run은 후보 컴파일 뒤 `mission_checkpoint / approval_state`로 실패했다.
-  Host 승인 transaction 생성보다 Agent의 `waiting_for_approval` 선언이 앞선 순서를
-  바로잡는 중이다. 변경 적용·추가 rung 저장·독립 재열기·XG-SIM 실행은 아직 하지 않았다.
+- 기존 3개 rung / 11개 명령을 보존하고 마지막 END 앞에 `M00010 NO -> OUT M00030`을
+  추가한 13개 명령의 후보 컴파일은 실제 성공했다. 그러나 기존 대화
+  `b155b206-04a8-4c60-821e-d84acd5cb2df`의 run
+  `3970cb1b-d192-481c-8225-b397496a22b5`는 event `3435`의 후보만으로 revision 4를
+  `completed`로 잘못 저장했다. 이 기록은 실제 변경 완료가 아니다. 승인 transaction,
+  변경 적용·추가 rung 저장·독립 재열기·XG-SIM 실행은 아직 없었다.
+- 해당 실제 compiler 인수에는 `simulation_scenario`가 있었다. Host/MCP 전달 누락이
+  아니라 빈 drive 및 단계별로 다른 drive keyset을 가진 잘못된 시나리오였으며,
+  compiler가 `ValueError`를 삼켜 `simulation_profile: null` 후보를 성공 반환한 것이
+  원인이었다. Agent `6bf77b7`은 동일 외부 입력 keyset과 held-input 순서를 명시하고,
+  MCP `8dbafb5` / `2d32d26`은 명시 시나리오의 오류를 숨기지 않는다. 시나리오를
+  요청하지 않은 static/legacy 경로의 optional 동작은 유지한다.
+- Agent `066e87c` / `6bf77b7`은 현재 후보만으로 완료하지 않고 실제 Host proposal과
+  pending authority로 이어지게 한다. 실행 이후 terminal Host outcome은 오래된 후보보다
+  우선한다. 한 번의 잘못된 완료 기록을 위한 별도 복구 예외는 `f7c70a5`로 제거했다.
+  Host/UI에 복구 특례는 추가하지 않았다.
+- 현재 대화는 정상 UI의 새 엔지니어링 작업으로 만든
+  `62c20e54-b378-43fd-9916-ae6d19047785`다. 기존 프로젝트와 PID는 유지하고 원래 목표를
+  재전달했다. run `bce62cf3-b7b7-424c-9670-3ab7f085cd48`에서 프로그램 목록(event `3454`),
+  LD 읽기(event `3459`)가 성공했으며 이후 후보·실제 제안·적용 결과는 실행 기록에서
+  확인해야 한다. 이 run 시작 시 MCP에는 `8dbafb5`까지 로드됐고 `2d32d26`은 다음 코드
+  리로드부터 반영된다. 성공 후보나 화면의 완료 문구만으로 전체 완료를 보고하지 않는다.
 - MCP `7a9778c`는 END 인수에 `operand: null`을 명시한다. Agent `28cf0e4`와 Host
   `7599765` / `d3ac932`는 읽기 전용 후보 컴파일의 ValueError를 성공 근거가 아닌 오류
   피드백으로 전달한다. 권한·통신 오류나 변경 실행을 자동 재시도하는 기능은 아니다.
