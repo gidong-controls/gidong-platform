@@ -38,10 +38,14 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   MCP `523137b`는 빈 BCG menu-bar 경로를 기존 검증된 MainRes Open 명령으로 연결해
   MSAA 위치 탐색을 제거했다. 실제 웹 재열기로 PID 12492/HWND 1901812에
   `웹 LD 자기유지 20260903 - XG5000`이 열렸고 응답 중이다. 이 성공 창을 닫거나 다시 만들지 않는다.
-- 첫 성공 Open 응답을 Host가 독립 실행 증거로 인정하지 않은 계약 문제가 남았다.
-  웹에서 위 PID를 선택한 재개는 attach/rebind를 통과해 `project.verify_native_reopen`까지
-  진행됐으며, 현재 blocker는 `reopen-readback`의
-  `MNE_CAPTURE_CLIPBOARD_SEQUENCE_UNAVAILABLE`이다. 파일 열기/창 준비/UAC 문제로 돌아가지 않는다.
+- Host `80f9d30`은 official Open 성공 영수증의 assurance 계약을 정렬했다. MCP `027e49f`는
+  Copy 전 clipboard sequence 0을 기준값으로 허용하되 Copy 뒤 sequence 변경과 exact XG
+  clipboard owner 확인을 유지한다. 같은 PID 12492의 실제 재개가 성공해 웹이
+  `프로젝트 생성 완료`로 전환됐다: 3개 rung, 11개 mnemonic 행 재확인, LD 왕복,
+  Program Check, 파일 무변경, 현재 분석 세션 연결이 모두 확인됐다.
+- 분석 연결은 `controlled_launch_read_only`이며 쓰기까지 완료됐다는 뜻이 아니다.
+  생성 결과를 닫은 뒤 현재 프로젝트의 새 engineering 대화로 진입하는 UI 연결이 다음 작업이다.
+  이미 성공한 파일 열기/창 준비/UAC 단계로 돌아가지 않는다.
 - 일회성 stack 수집 코드는 `d2c387f`로 제거했고 trace 원인 증거는 private lease 폴더에
   보존했다. CLI-only source 변경은 다음 CLI 실행에 바로 반영된다. Host 코드 변경만
   웹의 `코드 다시 불러오기 (UAC 없음)`으로 반영한다.
