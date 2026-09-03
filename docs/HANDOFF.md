@@ -20,6 +20,18 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 ## 2026-09-03 실행 복구 — 전체 제품 완료 아님
 
+### 현재 웹 계획 체크포인트
+
+- 실제 웹 계획 run `92e018bc-5228-4ec3-b343-2ef46fcff1b4`는 `웹 LD 자기유지20260903`의
+  XGK-CPUH/`MainProgramLD` 계획과 START·STOP·RUN_STATE·PREVIOUS_START·START_PULSE의
+  3-rung LD 설계를 생성했고, 웹 UI에서 81개 항목/23개 섹션 검토를 마쳐 기술 구성 단계에 도달했다.
+- 이는 계획·검토 성공만 뜻한다. XG5000 파일 생성, Program Check, 저장, 독립 재열기는 아직 성공으로
+  기록되지 않았다.
+- 기존 source PID `3948`을 보존하기 위한 새 빈 XG5000 일반 실행은 2026-09-03 현재 Windows consent
+  pending이다. 결과가 확인되기 전에는 생성 실행이나 실패를 단정하지 않는다.
+- 현재 web capability 화면은 Platform `45f5117`과 최신 `web/dist` 빌드가 반영된 상태다. Agent
+  `81aa8f9`/`da97a7c`의 계획 validator 변경도 실제 XG 작업 완료 증거를 대신하지 않는다.
+
 - `elevated-resume28-certification-receipt.json`의 실패는 UAC 거부가 아니라 이미 종료된
   XG5000 PID를 wrapper가 요구한 것이었다. 현재 wrapper는 정확히 빈 XG5000 baseline을
   확인한다. 실행 전 현재 프로세스를 확인하며 과거 PID를 현재 상태로 간주하지 않는다.
