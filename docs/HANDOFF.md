@@ -18,6 +18,25 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
+## 2026-09-04 최신 재열기 체크포인트
+
+- 사용자에게 표시한 웹은 별도 Chrome/PWA 창이 아니라 Codex 오른쪽 브라우저의
+  `http://127.0.0.1:8767/` 인증 탭이다. 실제 browser visibility와 선택 탭을 확인했다.
+- 저장 작업 `4849692c-deb3-40e5-a500-3ce74080d9d5`를 계속 사용한다. 재생성하지 않는다.
+  LD 생성·Program Check·저장은 확인됐지만 독립 재열기는 아직 완료되지 않았다.
+- MCP `9402f3a`/`4fb0e5b`, Host `bf6fb1d`는 saved-build inventory 전에 해당 보호
+  workspace path/hash와 일치하는 dead-CLI/unverified lease만 정리한다. 살아 있는
+  일반 XG5000 창을 종료하지 않으며, `xg5000.instances`는 읽기 전용으로 유지한다.
+- MCP `ad76218`은 durable exact child가 있는 timeout 정리에서 파일 전체 hash와
+  전체 프로세스 재탐색을 제거했다. 75초 CLI timeout 뒤 정상 오류 반환·exact cleanup이
+  실제 확인됐고, 이전처럼 Host의 140초 timeout까지 넘어가 MCP가 끊기지 않았다.
+- 최신 실제 웹 재시도는 stale PID 540을 정리하고 PID 4872 하나를 시작했다.
+  lease `bd8b87f6a58e4a178e9bb45d226efaea`의 마지막 단계는
+  `official_open_ui_dialog_free_check_completed` / `dialog_free=true`다.
+  파일 열기는 75초 timeout으로 실패했고 `launch_cleanup=terminated`로 반환됐다.
+  다음 진단은 이 단계 다음의 executable 확인/official Open 호출이다. 준비 단계나
+  UAC 문제로 되돌아가지 않는다. 변경 반영은 웹의 `코드 다시 불러오기 (UAC 없음)`을 쓴다.
+
 ## 2026-09-04 실제 웹 LD 생성 — 저장 완료, 재열기 미완료
 
 - 개발 웹을 정상 launcher `-WebUrl`로 열고 기존 계획
