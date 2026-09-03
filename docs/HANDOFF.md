@@ -38,9 +38,12 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   이는 Open dialog가 아니라 장식 shadow 후보가 선택된 사례다. semantic dialog wait 수정은
   진행 중이며, 이 기록은 live 인증 성공이나 수정 검증 성공을 뜻하지 않는다. resume32는
   동일 scratch hash와 exact empty XG5000 baseline을 전제로 실행 없이 준비만 됐다.
-- resume33은 Open 명령 전 `XG5000_SEND_INPUT_FOREGROUND_REQUIRED`로 중단됐다. visible
-  PID/HWND만으로 foreground 또는 desktop-session 원인을 추정하지 않으며, Host가 exact
-  foreground proof를 보완 중이다. 이 기록도 인증·LD 작업·Host/PWA 기동 성공을 뜻하지 않는다.
+- 2026-09-03의 resume33/34 certification wrapper 관측(예: pre-click
+  `XG5000_SEND_INPUT_FOREGROUND_REQUIRED`)은 이전 인증 재시도 기록이며 현재 장애 상태가 아니다.
+- 현재 정상 Development Host health는 ready다. active source-linked CLI의 일반 open/resume
+  official Open 연결은 `0829d35`에 반영됐고, independent 경로 보존 후속만 진행 중이다.
+- 실제 PWA resume은 아직 수행하지 않았다. 사용자에게 요청된 “이 작업 계속하기” 1회 클릭은
+  UAC 요청이나 인증 wrapper 재실행이 아니다.
 - 2026-09-03 사용자 지시로 프로젝트 테스트 코드는 삭제됐다. 이 문서의 날짜가 붙은 과거
   test/receipt 기록은 당시 사실일 뿐 현재 test suite의 존재나 통과 상태를 뜻하지 않는다.
   실제 LD 변경·검사·저장·독립 재열기와 PWA 사용자 흐름은 아직 성공으로 판정하지 않는다.
