@@ -8472,6 +8472,15 @@ def create_app(
                     checkpoint_change_transaction_id = str(
                         current_change_outcome["transactionId"]
                     )
+                if (
+                    mission_status == "completed"
+                    and change_request_scope == "offline_candidate_revision"
+                    and linked_terminal_change_state is None
+                ):
+                    raise AgentOutputContractError(
+                        "offline candidate mission completion requires an exact "
+                        "terminal Host change outcome"
+                    )
                 if cycle_disposition == "continue" and (
                     mission_status != "active" or stop_reason != "continuing"
                 ):
