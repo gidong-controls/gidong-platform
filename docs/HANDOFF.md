@@ -23,7 +23,8 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 - 사용자에게 표시한 웹은 별도 Chrome/PWA 창이 아니라 Codex 오른쪽 브라우저의
   `http://127.0.0.1:8767/` 인증 탭이다. 실제 browser visibility와 선택 탭을 확인했다.
 - 저장 작업 `4849692c-deb3-40e5-a500-3ce74080d9d5`를 계속 사용한다. 재생성하지 않는다.
-  LD 생성·Program Check·저장은 확인됐지만 독립 재열기는 아직 완료되지 않았다.
+  LD 생성·Program Check·저장과 독립 재열기·재읽기가 완료됐다. 아래 과거 실패 기록은
+  현재 상태가 아니라 복구 경과다.
 - MCP `9402f3a`/`4fb0e5b`, Host `bf6fb1d`는 saved-build inventory 전에 해당 보호
   workspace path/hash와 일치하는 dead-CLI/unverified lease만 정리한다. 살아 있는
   일반 XG5000 창을 종료하지 않으며, `xg5000.instances`는 읽기 전용으로 유지한다.
@@ -44,7 +45,12 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   `프로젝트 생성 완료`로 전환됐다: 3개 rung, 11개 mnemonic 행 재확인, LD 왕복,
   Program Check, 파일 무변경, 현재 분석 세션 연결이 모두 확인됐다.
 - 분석 연결은 `controlled_launch_read_only`이며 쓰기까지 완료됐다는 뜻이 아니다.
-  생성 결과를 닫은 뒤 현재 프로젝트의 새 engineering 대화로 진입하는 UI 연결이 다음 작업이다.
+  Platform `b815a2c`는 성공 결과에 현재 연결된 프로젝트로 작업을 시작하는 명시적 버튼을
+  추가했다. 최신 웹 reload 후 engineering 대화 `0828547d-ccc2-4797-9e3c-1b66510008a6`와
+  현재 PID 12492 대상이 표시됐고, UI에서 MainProgram 실제 LD 읽기·정지 우선 자기유지
+  분석을 요청했다. Run `0748e00a-abb8-41e5-9fc9-7a705a8505a2`는 초기 프로그램 목록 도구
+  호출에서 `tool_error`로 실패했다(645ms). 따라서 대화 진입은 확인됐지만 실제 에이전트
+  분석 성공은 아직 아니다. 이 오류를 수정하고 같은 현재 대상을 읽는 것이 다음 작업이다.
   이미 성공한 파일 열기/창 준비/UAC 단계로 돌아가지 않는다.
 - 일회성 stack 수집 코드는 `d2c387f`로 제거했고 trace 원인 증거는 private lease 폴더에
   보존했다. CLI-only source 변경은 다음 CLI 실행에 바로 반영된다. Host 코드 변경만
