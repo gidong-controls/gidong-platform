@@ -849,13 +849,12 @@ function sameRungActions(left: unknown[], right: unknown[]): boolean {
 }
 
 function isMneRungXgSimProfile(value: unknown, targetRungDigest: unknown): boolean {
+  const commonKeys = [
+    "schema", "outputAddresses", "targetRungDigest", "programCount",
+    "catalogDigest", "profileDigest",
+  ];
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, [
-      "schema", "normalAssignments", "denyAssignments", "restoreAssignments",
-      "outputAddresses", "targetRungDigest", "programCount", "catalogDigest",
-      "profileDigest",
-    ]) ||
     value.schema !== "controlstudio-mne-rung-xgsim-profile/v1" ||
     value.targetRungDigest !== targetRungDigest || value.programCount !== 1 ||
     typeof value.catalogDigest !== "string" || !SHA256.test(value.catalogDigest) ||
@@ -864,6 +863,25 @@ function isMneRungXgSimProfile(value: unknown, targetRungDigest: unknown): boole
     new Set(value.outputAddresses).size !== value.outputAddresses.length ||
     !value.outputAddresses.every((address) => typeof address === "string" && /^[PM]\d{3,4}[0-9A-F]$/.test(address))
   ) return false;
+  if (hasExactKeys(value, [...commonKeys, "scenario"])) {
+    const scenario = value.scenario;
+    if (!isRecord(scenario) || !hasExactKeys(scenario, ["steps"]) || !Array.isArray(scenario.steps) || scenario.steps.length < 2 || scenario.steps.length > 16) return false;
+    const names = new Set<string>();
+    let drives: string[] | null = null;
+    return scenario.steps.every((step) => {
+      if (!isRecord(step) || !hasExactKeys(step, ["name", "drive", "observe"]) || typeof step.name !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(step.name) || names.has(step.name) || !isRecord(step.drive) || !isRecord(step.observe)) return false;
+      names.add(step.name);
+      const drive = step.drive as Record<string, unknown>;
+      const observe = step.observe as Record<string, unknown>;
+      const driveKeys = Object.keys(drive);
+      if (driveKeys.length === 0 || Object.keys(observe).length === 0 || !driveKeys.every((address) => /^[PM]\d{3,4}[0-9A-F]$/.test(address) && (drive[address] === 0 || drive[address] === 1)) || !Object.entries(observe).every(([address, bit]) => /^[PM]\d{3,4}[0-9A-F]$/.test(address) && (bit === 0 || bit === 1)) || driveKeys.some((address) => Object.prototype.hasOwnProperty.call(observe, address)) || !(value.outputAddresses as string[]).every((address) => Object.prototype.hasOwnProperty.call(observe, address))) return false;
+      if (drives === null) drives = driveKeys.sort();
+      return drives.length === driveKeys.length && drives.every((address) => Object.prototype.hasOwnProperty.call(drive, address));
+    });
+  }
+  if (!hasExactKeys(value, [
+    ...commonKeys, "normalAssignments", "denyAssignments", "restoreAssignments",
+  ])) return false;
   const names = ["normalAssignments", "denyAssignments", "restoreAssignments"] as const;
   const assignments = names.map((name) => value[name]);
   if (assignments.some((assignment) => !isRecord(assignment) || Object.keys(assignment).length === 0)) return false;

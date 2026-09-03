@@ -1951,7 +1951,7 @@ export interface MneRungTargetReceipt {
   rungDigest: string;
 }
 
-export interface MneRungXgSimProfile {
+export interface MneRungXgSimSimpleProfile {
   schema: "controlstudio-mne-rung-xgsim-profile/v1";
   normalAssignments: Record<string, 0 | 1>;
   denyAssignments: Record<string, 0 | 1>;
@@ -1962,6 +1962,26 @@ export interface MneRungXgSimProfile {
   catalogDigest: string;
   profileDigest: string;
 }
+
+export interface MneRungXgSimScenarioStep {
+  name: string;
+  drive: Record<string, 0 | 1>;
+  observe: Record<string, 0 | 1>;
+}
+
+export interface MneRungXgSimScenarioProfile {
+  schema: "controlstudio-mne-rung-xgsim-profile/v1";
+  scenario: { steps: MneRungXgSimScenarioStep[] };
+  outputAddresses: string[];
+  targetRungDigest: string;
+  programCount: 1;
+  catalogDigest: string;
+  profileDigest: string;
+}
+
+export type MneRungXgSimProfile =
+  | MneRungXgSimSimpleProfile
+  | MneRungXgSimScenarioProfile;
 
 export interface MneRungPatchCandidateReceipt {
   schema: "xg5000.mne-rung-patch-candidate/1.0";

@@ -3164,28 +3164,73 @@ class MneRungPatchCandidateV6(ApiModel):
             raise ValueError("candidate targetInstructionCount is inconsistent")
         if self.simulation_profile is not None:
             profile = self.simulation_profile
-            expected_profile_keys = {
+            simple_profile_keys = {
                 "schema", "normal_assignments", "deny_assignments",
                 "restore_assignments", "output_addresses", "target_rung_digest",
                 "program_count", "catalog_digest", "profile_digest",
             }
-            if set(profile) != expected_profile_keys or profile.get("schema") != "controlstudio-mne-rung-xgsim-profile/v1":
-                raise ValueError("candidate simulationProfile has an unexpected contract")
-            assignment_names = (
-                "normal_assignments", "deny_assignments", "restore_assignments"
-            )
-            assignments = [profile.get(name) for name in assignment_names]
-            if any(not isinstance(item, dict) or not item for item in assignments):
-                raise ValueError("candidate simulationProfile assignments are invalid")
-            keys = set(assignments[0])
-            if any(set(item) != keys for item in assignments[1:]) or any(
-                re.fullmatch(r"[PM]\d{3,4}[0-9A-F]", str(address)) is None
-                for address in keys
-            ) or any(
-                isinstance(value, bool) or value not in {0, 1}
-                for assignment in assignments for value in assignment.values()
+            scenario_profile_keys = {
+                "schema", "scenario", "output_addresses", "target_rung_digest",
+                "program_count", "catalog_digest", "profile_digest",
+            }
+            if (
+                set(profile) not in (simple_profile_keys, scenario_profile_keys)
+                or profile.get("schema") != "controlstudio-mne-rung-xgsim-profile/v1"
             ):
-                raise ValueError("candidate simulationProfile assignments are not canonical")
+                raise ValueError("candidate simulationProfile has an unexpected contract")
+            input_keys: set[str]
+            if set(profile) == simple_profile_keys:
+                assignment_names = (
+                    "normal_assignments", "deny_assignments", "restore_assignments"
+                )
+                assignments = [profile.get(name) for name in assignment_names]
+                if any(not isinstance(item, dict) or not item for item in assignments):
+                    raise ValueError("candidate simulationProfile assignments are invalid")
+                input_keys = set(assignments[0])
+                if any(set(item) != input_keys for item in assignments[1:]) or any(
+                    re.fullmatch(r"[PM]\d{3,4}[0-9A-F]", str(address)) is None
+                    for address in input_keys
+                ) or any(
+                    isinstance(value, bool) or value not in {0, 1}
+                    for assignment in assignments for value in assignment.values()
+                ):
+                    raise ValueError("candidate simulationProfile assignments are not canonical")
+            else:
+                scenario = profile.get("scenario")
+                steps = scenario.get("steps") if isinstance(scenario, dict) and set(scenario) == {"steps"} else None
+                if not isinstance(steps, list) or not 2 <= len(steps) <= 16:
+                    raise ValueError("candidate simulationProfile scenario steps are invalid")
+                input_keys = set()
+                names: set[str] = set()
+                for index, step in enumerate(steps):
+                    if not isinstance(step, dict) or set(step) != {"name", "drive", "observe"}:
+                        raise ValueError("candidate simulationProfile scenario step is invalid")
+                    name, drive, observe = step.get("name"), step.get("drive"), step.get("observe")
+                    if (
+                        not isinstance(name, str)
+                        or re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", name) is None
+                        or name in names
+                        or not isinstance(drive, dict)
+                        or not drive
+                        or not isinstance(observe, dict)
+                        or not observe
+                    ):
+                        raise ValueError("candidate simulationProfile scenario step is invalid")
+                    if any(
+                        re.fullmatch(r"[PM]\d{3,4}[0-9A-F]", str(address)) is None
+                        or isinstance(value, bool)
+                        or value not in {0, 1}
+                        for assignments in (drive, observe)
+                        for address, value in assignments.items()
+                    ):
+                        raise ValueError("candidate simulationProfile scenario assignment is invalid")
+                    if set(drive).intersection(observe):
+                        raise ValueError("candidate simulationProfile scenario drives an observed bit")
+                    if index == 0:
+                        input_keys = set(drive)
+                    elif set(drive) != input_keys:
+                        raise ValueError("candidate simulationProfile scenario drive sets differ")
+                    names.add(name)
             outputs = profile.get("output_addresses")
             if (
                 not isinstance(outputs, list)
@@ -3196,11 +3241,16 @@ class MneRungPatchCandidateV6(ApiModel):
                     or re.fullmatch(r"[PM]\d{3,4}[0-9A-F]", address) is None
                     for address in outputs
                 )
-                or any(address in keys for address in outputs)
+                or any(address in input_keys for address in outputs)
                 or self.patch.target_rung is None
                 or profile.get("target_rung_digest") != self.patch.target_rung.rung_digest
             ):
                 raise ValueError("candidate simulationProfile outputs are invalid")
+            if set(profile) == scenario_profile_keys and any(
+                not set(outputs).issubset(step["observe"])
+                for step in profile["scenario"]["steps"]
+            ):
+                raise ValueError("candidate simulationProfile scenario omits target output")
             unsigned_profile = {
                 key: value for key, value in profile.items() if key != "profile_digest"
             }
