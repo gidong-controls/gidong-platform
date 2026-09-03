@@ -18,6 +18,27 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
+## 2026-09-04 실제 웹 LD 생성 — 저장 완료, 재열기 미완료
+
+- 개발 웹을 정상 launcher `-WebUrl`로 열고 기존 계획
+  `92e018bc-5228-4ec3-b343-2ef46fcff1b4`와 검토 완료 상태를 복원했다. 계획을 재생성하지 않았다.
+- 웹의 생성 요청은 한 번이다. native operation
+  `4849692c-deb3-40e5-a500-3ce74080d9d5`는 XGK-CPUH, `MainProgram`, LD 3개 rung을
+  XG5000 PID `2432`/HWND `67174`에 생성했다. 11개 mnemonic 행 exact readback, LD 변환,
+  Program Check, 저장이 확인됐고 saved SHA-256은
+  `16248471e9a7131623b65ea6ad7b43f59fa6a78dcccf462d88687fbc8442f13e`다.
+- 원본은 `artifacts/web-ld-projects/웹 LD 자기유지 20260903-4849692cdeb3/웹 LD 자기유지 20260903.xgwx`다.
+  보호 작업 사본 캡처는 성공했지만 별도 PID `8980`의 재열기가 실패해 `workspaceBound=false`다.
+  저장된 진단은 sanitized `WorkspaceError`뿐이므로 positional/DDE redirect를 관측 사실로 단정하지 않는다.
+- CLI `cc4a325`는 독립 재열기도 빈 새 프로세스에서 공식 Project Open을 사용하게 했다.
+  native file-use 증거를 꾸미지 않고 기존 official Open receipt 대안을 사용한다.
+- Platform `94ceab0`/`6c63309`는 실패한 재열기 창이 남지 않았을 때 명시적 웹 동작으로
+  저장된 작업 사본만 한 번 다시 열 수 있게 한다. 원본만 실행 중인지 확인하며 생성·IL 삽입·자동 반복은 없다.
+- 정상 Host 재시작은 원본 PID `2432`를 보존했다. 재시작 뒤 기술 구성 화면이 저장된
+  completed-but-unbound 작업 대신 빈 생성 폼으로 돌아가는 복원 결함을 추가로 확인했다.
+  해당 복원 경로를 수정한 뒤 같은 operation의 재열기만 이어가야 한다. 새 생성 요청은 금지한다.
+- 이 실행에서 실제 PLC와 XG-SIM은 사용하지 않았다. 생성·검사·저장 성공은 전체 제품 완료와 다르다.
+
 ## 2026-09-03 실행 복구 — 전체 제품 완료 아님
 
 ### 현재 웹 계획 체크포인트
