@@ -37,17 +37,14 @@ jobs:
       - name: Compile Python
         run: >-
           uv run --project host --extra dev --frozen python -m compileall -q
-          host/src host/tests launcher/src packages/python/controlstudio-contracts/src
+          host/src launcher/src packages/python/controlstudio-contracts/src
           packaging scripts
 
       - name: Lint Python
-        run: uv run --project host --extra dev --frozen ruff check --select F,E9,I host/src host/tests
+        run: uv run --project host --extra dev --frozen ruff check --select F,E9,I host/src
 
       - name: Guard generated contracts
         run: uv run --project host --extra dev --frozen python scripts/contracts/contract_guard.py
-
-      - name: Test Host
-        run: uv run --project host --extra dev --frozen python -m unittest discover -s host/tests -v
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

@@ -9,8 +9,7 @@
 5. [배포·버전 정책](refactor/PRODUCT_DISTRIBUTION_AND_VERSIONING.md): artifact 조립과 update 불변조건
 6. [생산급 오픈소스 벤치마크](refactor/PRODUCTION_OPEN_SOURCE_BENCHMARKS.md): 채택한 제품 패턴과 의도적으로 제외한 범위
 7. [코딩 에이전트·PLC 엔지니어링 벤치마크](CODING_AGENT_BENCHMARK.md): 상용 코딩 에이전트, 커뮤니티 실패 사례와 PLC 전용 acceptance suite
-8. [PLC 엔지니어링 Agent acceptance 하네스](PLC_AGENT_ACCEPTANCE.md): CA 자동 회귀 실행, JSON 영수증과 fail-closed 실기 gate
-9. [개발 인계](HANDOFF.md): 현재 `dev` 구현 상태, 검증 결과와 다음 실기 검증 순서
+8. [개발 인계](HANDOFF.md): 현재 `dev` 구현 상태, 검증 결과와 다음 실기 검증 순서
 
 ## 제품·구현 문서
 

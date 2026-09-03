@@ -56,21 +56,6 @@ launcher mutex를 사용한다. production 또는 beta의 설정·토큰·DB를 
 Windows의 사용자별 PowerShell 실행 정책을 변경하지 않고, 저장소에 포함된 정확한
 개발 스크립트 한 번에만 `ExecutionPolicy Bypass`를 적용한다.
 
-개발 조합의 Host·정적 UI·채널 격리·MCP handshake를 실제 프로세스로 검사하고
-자동 종료하려면 다음 명령을 사용한다. 모델 연결까지 준비된 환경의 Agent capability를
-필수로 검사하려면 `-RequireAgent`를 추가한다.
-
-```bat
-.\scripts\Test-ControlStudio-Development.cmd
-.\scripts\Test-ControlStudio-Development.cmd -RequireAgent
-```
-
-이미 8767의 Development Host가 실행 중이면 smoke 명령은 같은 launcher token으로
-그 Host를 검증하고 종료하지 않는다. XG5000 때문에 UAC 승인이 필요한 장비에서는 먼저
-보이는 창에서 `Start-ControlStudio-Development.cmd -NoOpen`을 실행해 승인한 뒤 smoke
-명령을 실행한다. 실행 중인 Host가 없을 때만 smoke가 Host를 시작하고, 그 경우에만 검사
-후 자신이 시작한 Host를 종료한다.
-
 개발 코드를 반영하려면 실행 중인 앱 헤더의 `종료` 확인 화면에서 `코드 다시 불러오기
 (UAC 없음)`을 누른다. 현재 elevated Host가 고정된 self-restart bootstrap을 실행하므로
 추가 `RunAs`/UAC 확인이 없다. bootstrap은 기존 Host가 8767을 반납한 후에만 동일 Python,

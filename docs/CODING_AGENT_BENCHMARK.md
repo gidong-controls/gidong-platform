@@ -85,8 +85,7 @@ FEnet은 아직 `controlstudio-xg5000-cli[legacy-core]`를 통해
 ## ControlStudio acceptance suite
 
 아래 12개가 현재의 제품 벤치마크다. 단위 테스트 통과는 이 실기 결과를 대신하지 않는다.
-반복 가능한 회귀와 외부 실기 영수증은
-[PLC 엔지니어링 Agent acceptance 하네스](PLC_AGENT_ACCEPTANCE.md)로 함께 실행·판정한다.
+외부 실기 영수증은 제품 runtime evidence와 native readback으로 판정한다.
 
 | ID | 실제 사용자 작업 | 합격 기준 |
 |---|---|---|

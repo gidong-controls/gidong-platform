@@ -6,10 +6,6 @@
 코딩 에이전트 제품과 PLC 커뮤니티 벤치마킹에서 도출한 작업·실기 평가 기준은
 [코딩 에이전트·PLC 엔지니어링 벤치마크](CODING_AGENT_BENCHMARK.md)의 CA-01~CA-12를
 사용한다. 일반 SWE-bench나 모델 점수는 XG5000 변경 성공 증거를 대신하지 않는다.
-[PLC 엔지니어링 Agent acceptance 하네스](PLC_AGENT_ACCEPTANCE.md)는 Agent, Host, MCP,
-독립 CLI와 Web build를 한 매니페스트로 실행하고 JSON 영수증을 만든다. 2026-08-25의
-deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영수증이 없어 전체
-상태는 의도대로 `FAIL_CLOSED`다.
 
 ## 저장소와 브랜치
 
@@ -726,7 +722,7 @@ occurrence를 선택한다고 가정하거나 임의 좌표 식으로 바꾸지 
   상태에서 API와 인앱 브라우저 AGENT DEBUG가 모두 generic 문구 대신 정확한 정제 사유
   `모델 엔드포인트에 연결할 수 없습니다.`를 표시하는지 확인
 - 최종 Platform 코드로 Development Host를 다시 시작해 Host/DB/static UI `ready`를 확인하고,
-  `Test-ControlStudio-Development.ps1 -RequireAgent`가 같은 terminal 모델 실패를 기존 약
+  과거 development smoke 실행이 같은 terminal 모델 실패를 기존 약
   120초 대기 대신 0.44초에 정확한 정제 사유와 함께 반환하는지 확인. 새 launcher handoff로
   인앱 UI를 다시 인증해 `DEVELOPMENT source-dev`, `Host 준비됨`, AGENT DEBUG 자동 활성화와
   동일 Agent runtime 사유를 확인
