@@ -200,7 +200,7 @@ _NATIVE_CHECKPOINT_IMMUTABLE_FIELDS = frozenset(
         "target_program_digest",
         "before_mne_sha256",
         "target_mne_sha256",
-        "capability_receipt_digest",
+        "adapter_binding_digest",
         "runtime_identity_digest",
         "baseline_digest",
         "rollback_ld_sha256",
