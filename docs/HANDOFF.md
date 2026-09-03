@@ -22,6 +22,29 @@ deterministic-only 실행은 모두 통과했지만 CA-01/02/04~07/12 실기 영
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
+## 2026-09-03 실행 복구 — 전체 제품 완료 아님
+
+- `elevated-resume28-certification-receipt.json`의 실패는 UAC 거부가 아니라 이미 종료된
+  XG5000 PID를 wrapper가 요구한 것이었다. 현재 wrapper는 정확히 빈 XG5000 baseline을
+  확인한다. 실행 전 현재 프로세스를 확인하며 과거 PID를 현재 상태로 간주하지 않는다.
+- MCP `30a461e`와 Platform `b104e2d`는 launcher의 native-file proof와 official Open
+  receipt proof를 각 소비자가 구분하도록 수정했다. official receipt를 native file-use
+  증거라고 표시하지 않는다. 인증기의 attach는 별도로 native identity를 다시 수집한다.
+- MCP `5eca15f`/`90e4340`는 인증기 최초 source의 bare 실행과 독립 fresh reopen의
+  exact-path positional 실행을 구분한다. PID/HWND/create-time, 제목, 파일 사용, hash,
+  workspace/marker/backup 검증은 유지한다.
+- resume29는 승인 후 실행됐지만 vendor Open 명령 전 창 조회 중 8초 deadline을 소진했다.
+  MCP `8d23686`는 Open 준비의 중복 창 조회를 제거했다. `83d3e19`/`52035ea`는 실제
+  실패 단계와 vendor command dispatch 수를 오류에 남긴다. 과거의 `official Open`
+  오류 문구만으로 실제 명령이 전달됐다고 판단해서는 안 된다.
+- 관련 코드 테스트는 통과했지만 수정 이후 실제 LD 변경·검사·저장·독립 재열기와 PWA
+  사용자 흐름은 아직 성공으로 판정하지 않는다. 현재 live 결과는
+  `artifacts/mne-capability-baseline-cert-20260901-a3/elevated-resume30-certification-receipt.json`
+  및 동명의 log로 확인한다. 파일이 없으면 완료 결과가 아직 없는 것이다.
+- UAC는 한 번 요청하고, Windows가 명시적으로 사용자 취소를 반환하면 사용자 재요청까지
+  기다린다. 승인 후 내부 실행 실패는 권한 거부로 보고하지 않으며 원인을 수정한다.
+  물리 PLC는 장비 확보 후 로드맵이고 현재 검증 대상이 아니다.
+
 ## 2026-09-01 필수 읽기 경로 — 현재 진행
 
 - 실제 프로그램 전면화 vertical이 완료됐다. 독립 CLI `52a3130`은 `focus-program`의
