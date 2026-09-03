@@ -1095,6 +1095,54 @@ print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return ($json[0] | ConvertFrom-Json)
 }
 
+function Test-ExactOpenedWorkspaceBinding {
+    param(
+        [Parameter(Mandatory)]$Opened,
+        [Parameter(Mandatory)][string]$ExpectedWorkspaceId,
+        [Parameter(Mandatory)][string]$ExpectedWorkingPath,
+        [Parameter(Mandatory)][string]$ExpectedWorkingHash
+    )
+
+    $instance = $Opened.instance
+    if (
+        $Opened.verified -ne $true -or
+        [string]$Opened.workspace_id -cne $ExpectedWorkspaceId -or
+        [string]$Opened.working_hash -cne $ExpectedWorkingHash -or
+        $Opened.process_is_independent -ne $true -or
+        $Opened.project_identity_read_only_bound_to_selected_pid -ne $true -or
+        $null -eq $instance -or [int]$instance.pid -le 0 -or [int64]$instance.hwnd -le 0
+    ) { return $false }
+    try {
+        $expectedPath = [IO.Path]::GetFullPath($ExpectedWorkingPath)
+        $actualPath = [IO.Path]::GetFullPath([string]$Opened.working_path)
+    } catch { return $false }
+    if (-not [string]::Equals($actualPath, $expectedPath, [StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+
+    $nativeProof = (
+        $Opened.native_file_usage_verified -eq $true -and
+        $Opened.official_open_binding_verified -ne $true -and
+        [string]$Opened.identity_assurance -ceq 'controlled_launch_native_file_read_only'
+    )
+    $receipt = $Opened.open_ui_fallback
+    $officialProof = $false
+    if ($null -ne $receipt) {
+        try {
+            $receiptPath = [IO.Path]::GetFullPath([string]$receipt.project_path)
+            $officialProof = (
+                $Opened.official_open_binding_verified -eq $true -and
+                $Opened.native_file_usage_verified -ne $true -and
+                [string]$Opened.identity_assurance -ceq 'controlled_launch_official_open_read_only' -and
+                [string]$receipt.status -ceq 'passed' -and
+                $receipt.dialog_closed -eq $true -and
+                [string]::Equals($receiptPath, $expectedPath, [StringComparison]::OrdinalIgnoreCase)
+            )
+        } catch { $officialProof = $false }
+    }
+    return ($nativeProof -xor $officialProof)
+}
+
 function Write-JsonAtomically {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)]$Value)
     $temporary = "$Path.$([Guid]::NewGuid().ToString('N')).tmp"
@@ -1291,6 +1339,30 @@ if ($SelfTest) {
     if (Test-FailedElevatedLaunchAuthorizationShape -Authorization $badFailedElevatedAuthorization) {
         throw 'Failed elevated-launch authorization negative self-test failed'
     }
+    $bindingPath = 'C:\scratch\working.xgwx'
+    $bindingHash = ('a' * 64) -join ''
+    $bindingInstance = [pscustomobject]@{ pid = 1; hwnd = [int64]2 }
+    $officialBinding = [pscustomobject]@{
+        verified = $true; workspace_id = 'workspace'; working_path = $bindingPath; working_hash = $bindingHash
+        process_is_independent = $true; project_identity_read_only_bound_to_selected_pid = $true
+        native_file_usage_verified = $false; official_open_binding_verified = $true
+        identity_assurance = 'controlled_launch_official_open_read_only'; instance = $bindingInstance
+        open_ui_fallback = [pscustomobject]@{ status = 'passed'; dialog_closed = $true; project_path = $bindingPath }
+    }
+    $nativeBinding = [pscustomobject]@{
+        verified = $true; workspace_id = 'workspace'; working_path = $bindingPath; working_hash = $bindingHash
+        process_is_independent = $true; project_identity_read_only_bound_to_selected_pid = $true
+        native_file_usage_verified = $true; official_open_binding_verified = $false
+        identity_assurance = 'controlled_launch_native_file_read_only'; instance = $bindingInstance; open_ui_fallback = $null
+    }
+    if (
+        -not (Test-ExactOpenedWorkspaceBinding -Opened $officialBinding -ExpectedWorkspaceId 'workspace' -ExpectedWorkingPath $bindingPath -ExpectedWorkingHash $bindingHash) -or
+        -not (Test-ExactOpenedWorkspaceBinding -Opened $nativeBinding -ExpectedWorkspaceId 'workspace' -ExpectedWorkingPath $bindingPath -ExpectedWorkingHash $bindingHash)
+    ) { throw 'Exact workspace binding proof positive self-test failed' }
+    $officialBinding.open_ui_fallback.dialog_closed = $false
+    if (Test-ExactOpenedWorkspaceBinding -Opened $officialBinding -ExpectedWorkspaceId 'workspace' -ExpectedWorkingPath $bindingPath -ExpectedWorkingHash $bindingHash) {
+        throw 'Exact workspace binding proof accepted an unclosed official Open receipt'
+    }
     'Exact no-save modal helper self-test: OK'
     exit 0
 }
@@ -1389,17 +1461,9 @@ if ($ResumeAfterFailedElevatedLaunch) {
     $workspaceRoot = Join-Path $dataRoot 'ControlStudio Development\workspaces'
     $opened = Open-ExactWorkspaceWorkingCopy -WorkspaceId $failedElevated.WorkspaceId -ExpectedHash $failedElevated.ProjectHash -WorkspaceRoot $workspaceRoot -PythonExecutable $mcpPython
     $instance = $opened.instance
-    if (
-        $opened.verified -ne $true -or
-        $opened.workspace_id -cne $failedElevated.WorkspaceId -or
-        [string]$opened.working_path -cne $failedElevated.ProjectPath -or
-        [string]$opened.working_hash -cne $failedElevated.ProjectHash -or
-        $opened.process_is_independent -ne $true -or
-        $opened.project_identity_read_only_bound_to_selected_pid -ne $true -or
-        $opened.native_file_usage_verified -ne $true -or
-        [string]$opened.identity_assurance -cne 'controlled_launch_read_only' -or
-        $null -eq $instance -or [int]$instance.pid -le 0 -or [int64]$instance.hwnd -le 0
-    ) { throw 'Failed-elevated-launch resume did not return the exact verified working-copy instance' }
+    if (-not (Test-ExactOpenedWorkspaceBinding -Opened $opened -ExpectedWorkspaceId $failedElevated.WorkspaceId -ExpectedWorkingPath $failedElevated.ProjectPath -ExpectedWorkingHash $failedElevated.ProjectHash)) {
+        throw 'Failed-elevated-launch resume did not return the exact verified working-copy instance'
+    }
     if (
         [int]$opened.launch_pid -ne [int]$instance.pid -or
         @($failedElevated.Xg5000PidsBeforeLaunch) -contains [int]$instance.pid
@@ -1500,7 +1564,7 @@ if ($ResumeAfterFailedElevatedLaunch) {
     $noXgWorkspace = Assert-ResumeAfterReviewedNoXgWorkspaceLaunch -AuthorizationPath $NoXgWorkspaceLaunchAuthorization -SpecPath $specPath -Template $template -BundlePath $bundlePath -WorkspaceRoot $workspaceRoot -PythonExecutable $mcpPython
     $opened = Open-ExactWorkspaceWorkingCopy -WorkspaceId ([string]$noXgWorkspace.workspace_id) -ExpectedHash ([string]$noXgWorkspace.working_copy.current_sha256) -WorkspaceRoot $workspaceRoot -PythonExecutable $mcpPython
     $instance=$opened.instance
-    if($opened.verified -ne $true -or $null -eq $instance -or [int]$instance.pid -le 0 -or [int64]$instance.hwnd -le 0){throw 'No-XG official workspace open did not verify an exact instance'}
+    if(-not (Test-ExactOpenedWorkspaceBinding -Opened $opened -ExpectedWorkspaceId ([string]$noXgWorkspace.workspace_id) -ExpectedWorkingPath ([string]$noXgWorkspace.working_copy.path) -ExpectedWorkingHash ([string]$noXgWorkspace.working_copy.current_sha256))){throw 'No-XG official workspace open did not verify an exact instance'}
     $template.target.workspace_id=[string]$opened.workspace_id;$template.target.project_path=[string]$opened.working_path;$template.target.pid=[int]$instance.pid;$template.target.hwnd=[int64]$instance.hwnd
     $marker=[IO.File]::ReadAllText([string]$template.scratch.marker_path,[Text.Encoding]::UTF8)|ConvertFrom-Json;$marker.project_path=[string]$opened.working_path;$marker.project_sha256=[string]$opened.working_hash;Write-JsonAtomically -Path ([string]$template.scratch.marker_path) -Value $marker;Write-JsonAtomically -Path $specPath -Value $template
     $scratchXg=Get-Process -Id ([int]$instance.pid)-ErrorAction Stop;$restoredScratchHwnd=[int64]$instance.hwnd
@@ -1540,7 +1604,7 @@ if ($ResumeAfterFailedElevatedLaunch) {
         $workspaceRoot = Join-Path $dataRoot 'ControlStudio Development\workspaces'
         $opened = Open-ExactWorkspaceWorkingCopy -WorkspaceId $ReopenIntoWorkspaceId -ExpectedHash ([string]$template.target.project_hash) -WorkspaceRoot $workspaceRoot -PythonExecutable $mcpPython
         $instance = $opened.instance
-        if ($opened.verified -ne $true -or $opened.workspace_id -cne $ReopenIntoWorkspaceId -or [string]$opened.working_hash -cne [string]$template.target.project_hash -or $null -eq $instance -or [int]$instance.pid -le 0 -or [int64]$instance.hwnd -le 0) {
+        if (-not (Test-ExactOpenedWorkspaceBinding -Opened $opened -ExpectedWorkspaceId $ReopenIntoWorkspaceId -ExpectedWorkingPath ([string]$template.target.project_path) -ExpectedWorkingHash ([string]$template.target.project_hash))) {
             throw 'Official workspace open did not return one exact verified working-copy instance'
         }
         $template.target.workspace_id = [string]$opened.workspace_id
@@ -1592,13 +1656,7 @@ if ($ResumeAfterFailedElevatedLaunch) {
     $workspaceRoot = Join-Path $dataRoot 'ControlStudio Development\workspaces'
     $opened = Open-ExactWorkspaceWorkingCopy -WorkspaceId ([string]$template.target.workspace_id) -ExpectedHash ([string]$template.target.project_hash) -WorkspaceRoot $workspaceRoot -PythonExecutable $mcpPython
     $instance = $opened.instance
-    if (
-        $opened.verified -ne $true -or
-        $opened.workspace_id -cne [string]$template.target.workspace_id -or
-        [string]$opened.working_path -cne [string]$template.target.project_path -or
-        [string]$opened.working_hash -cne [string]$template.target.project_hash -or
-        $null -eq $instance -or [int]$instance.pid -le 0 -or [int64]$instance.hwnd -le 0
-    ) {
+    if (-not (Test-ExactOpenedWorkspaceBinding -Opened $opened -ExpectedWorkspaceId ([string]$template.target.workspace_id) -ExpectedWorkingPath ([string]$template.target.project_path) -ExpectedWorkingHash ([string]$template.target.project_hash))) {
         throw 'Baseline-aware workspace launch did not return the exact verified working-copy instance'
     }
     $scratchXg = Get-Process -Id ([int]$instance.pid) -ErrorAction Stop
