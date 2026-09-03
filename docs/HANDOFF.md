@@ -64,7 +64,28 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   답변은 실패다: 모델이 `AND NOT M00020`의 부정과 `LOAD NOT M00001`의 부정을 잘못
   해석하고 일반 `OUT M00020`을 SET으로 설명해 재기동 조건을 반대로 답했다.
   근거 artifact `95f95894-73c9-5a9a-9be7-370387e5487f`의 실제 표현과 모델 입력을
-  확인해 native LD 표현 문제와 모델 오독을 구분해야 한다. 이 답변을 성공 근거로 쓰지 않는다.
+  확인한 결과 `semantic_rungs`가 `NOT` wrapper 안에 `DEVICE(contact:NC)`를 다시 넣어
+  `NOT NOT M00020` / `NOT NOT M00001`로 전달했다. native row의 NC/OUT 디코딩 자체는
+  맞다. MCP `20f4ae7`/`0d86917`, Agent `81b3340`에서 polarity-once semantic 표현과
+  OUT의 scan-assignment 의미를 정렬했다. NC만 정규화하며 P_EDGE/N_EDGE는 보존한다.
+  이 답변을 성공 근거로 쓰지 않는다.
+- 그다음 run `d74c7525-63b7-4bad-92f0-cad058dd443c`는 CLI vendor의 이전 semantic
+  projection과 MCP의 새 projection 전체를 비교하던 결함으로 읽기에 실패했다.
+  MCP `f286dfb`는 private payload/hash/raw decoded rows를 strict 비교한 뒤 모델용 의미
+  표현을 MCP에서 재생성한다. CLI의 독립 파생 projection은 검증 대상 원문도 모델 입력도 아니다.
+  CLI `1d58d44`는 standalone 사용자용 documented projection도 같은 NC/OUT 의미로 고쳤다.
+  대화 `63aebc28-88b2-4bb4-86af-932d3769678c`의 `작업 계속 실행`으로 재개한 run
+  `d280496f-00d2-4a8f-918e-30378a68e101`은 실제 LD 읽기 8.5초 완료 뒤 답변까지 완료했다.
+  새 근거 `cf0708c7-de22-50b1-ad05-d6ef22511834`의 실제 modelContext는 다음과 같다.
+  - `M00000 AND NOT M00020` → `OUT M00021`, assignment=scan
+  - `NOT M00001 AND (M00021 OR M00010)` → `OUT M00010`, assignment=scan
+  - `M00000` → `OUT M00020`, assignment=scan
+  이전 artifact나 이중 부정 projection은 재사용되지 않았다. 최종 답변의 START 유지 중
+  STOP 해제만으로 재기동하지 않고 START 재상승이 필요하다는 결론은 맞다. 다만 M00020을
+  `정지래치`라고 부른 설명과 `동일/다음 스캔`이라는 모호한 순서 표현은 부정확하다.
+  M00020은 마지막 rung에서 갱신하는 이전 START 상태이며 실제 SET/RST 코일이 아니다.
+  따라서 native 읽기·핵심 논리 판단 복구와 모델 설명 품질을 구분한다. 오프라인 편집,
+  XG-SIM 실행 및 전체 제품 완료를 이 read-only 결과로 주장하지 않는다.
 - CLI `e164ec0`은 fast program catalog가 사용하는 vendored window enumeration에도
   기존 bounded caption reader를 공유한다. 모든 top-level 창을 읽다가 무기한 막히는
   경로를 제거했으며, 전체 vendor 동기화나 테스트 코드 추가는 하지 않았다.
