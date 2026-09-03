@@ -644,7 +644,7 @@ export class HostApiClient {
   ): Promise<PrepareOfflineCandidateSessionResponse> {
     return this.request<PrepareOfflineCandidateSessionResponse>(
       "/api/v1/engineering/offline-candidate-session",
-      { method: "POST", body: JSON.stringify(request) },
+      { method: "POST", body: request },
     );
   }
 
