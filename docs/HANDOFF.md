@@ -30,12 +30,21 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 - MCP `ad76218`은 durable exact child가 있는 timeout 정리에서 파일 전체 hash와
   전체 프로세스 재탐색을 제거했다. 75초 CLI timeout 뒤 정상 오류 반환·exact cleanup이
   실제 확인됐고, 이전처럼 Host의 140초 timeout까지 넘어가 MCP가 끊기지 않았다.
-- 최신 실제 웹 재시도는 stale PID 540을 정리하고 PID 4872 하나를 시작했다.
+- 75초 deadline 복구 확인 시도는 stale PID 540을 정리하고 PID 4872 하나를 시작했다.
   lease `bd8b87f6a58e4a178e9bb45d226efaea`의 마지막 단계는
   `official_open_ui_dialog_free_check_completed` / `dialog_free=true`다.
   파일 열기는 75초 timeout으로 실패했고 `launch_cleanup=terminated`로 반환됐다.
-  다음 진단은 이 단계 다음의 executable 확인/official Open 호출이다. 준비 단계나
-  UAC 문제로 되돌아가지 않는다. 변경 반영은 웹의 `코드 다시 불러오기 (UAC 없음)`을 쓴다.
+- 실제 Open 정체 스택은 `msaa_hit_test._location -> IAccessible.accLocation`이었다.
+  MCP `523137b`는 빈 BCG menu-bar 경로를 기존 검증된 MainRes Open 명령으로 연결해
+  MSAA 위치 탐색을 제거했다. 실제 웹 재열기로 PID 12492/HWND 1901812에
+  `웹 LD 자기유지 20260903 - XG5000`이 열렸고 응답 중이다. 이 성공 창을 닫거나 다시 만들지 않는다.
+- 첫 성공 Open 응답을 Host가 독립 실행 증거로 인정하지 않은 계약 문제가 남았다.
+  웹에서 위 PID를 선택한 재개는 attach/rebind를 통과해 `project.verify_native_reopen`까지
+  진행됐으며, 현재 blocker는 `reopen-readback`의
+  `MNE_CAPTURE_CLIPBOARD_SEQUENCE_UNAVAILABLE`이다. 파일 열기/창 준비/UAC 문제로 돌아가지 않는다.
+- 일회성 stack 수집 코드는 `d2c387f`로 제거했고 trace 원인 증거는 private lease 폴더에
+  보존했다. CLI-only source 변경은 다음 CLI 실행에 바로 반영된다. Host 코드 변경만
+  웹의 `코드 다시 불러오기 (UAC 없음)`으로 반영한다.
 
 ## 2026-09-04 실제 웹 LD 생성 — 저장 완료, 재열기 미완료
 
