@@ -93,6 +93,7 @@ class EngineeringSystemStatusV1(ServiceStatusV1):
     project_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     session_verified: bool = False
     read_ready: bool = False
+    offline_candidate_eligible: bool = False
     target_workspace_id: str | None = Field(default=None, min_length=1, max_length=256)
     target_revision_id: str | None = Field(default=None, min_length=1, max_length=256)
     identity_assurance: Literal[
@@ -4543,6 +4544,13 @@ class AttachXG5000RequestV1(ApiModel):
 
 class AttachXG5000ResponseV1(ApiModel):
     status: Literal["attached"] = "attached"
+    session: EngineeringSessionV1
+
+
+class PrepareOfflineCandidateSessionResponseV1(ApiModel):
+    """A prepared candidate remains subject to the normal approval broker."""
+
+    status: Literal["offline_candidate_bound"] = "offline_candidate_bound"
     session: EngineeringSessionV1
 
 

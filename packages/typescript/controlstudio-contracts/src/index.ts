@@ -56,6 +56,7 @@ export interface EngineeringSystemStatus extends ServiceStatus {
   targetRevisionId?: string;
   sessionVerified: boolean;
   readReady?: boolean;
+  offlineCandidateEligible?: boolean;
   identityAssurance?:
     | "strong_readback"
     | "controlled_launch_read_only"
@@ -1602,6 +1603,11 @@ export interface AttachXG5000Request {
 
 export interface AttachXG5000Response {
   status: "attached";
+  session: Record<string, unknown>;
+}
+
+export interface PrepareOfflineCandidateSessionResponse {
+  status: "offline_candidate_bound";
   session: Record<string, unknown>;
 }
 

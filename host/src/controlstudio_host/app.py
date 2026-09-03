@@ -44,6 +44,7 @@ from .api_models import (
     AgentStatusV1,
     AttachXG5000RequestV1,
     AttachXG5000ResponseV1,
+    PrepareOfflineCandidateSessionResponseV1,
     BootstrapV1,
     BrowserSessionV1,
     ChangeApprovalV1,
@@ -2670,6 +2671,43 @@ def _engineering_session_identity_verified(session: dict[str, Any] | None) -> bo
         or metadata.get("project_identity_assurance") != "controlled_launch_read_only"
     ):
         return False
+    candidate = metadata.get("offline_candidate_mutation_binding")
+    if isinstance(candidate, dict):
+        if not (
+            candidate.get("purpose") == "offline_candidate_revision"
+            and candidate.get("source_kind") == "new_build"
+            and candidate.get("pid") == session.get("pid")
+            and candidate.get("main_hwnd") == session.get("hwnd")
+            and str(candidate.get("project_hash") or "").casefold()
+            == str(session.get("project_hash") or "").casefold()
+            and _is_canonical_uuid(candidate.get("workspace_id"))
+            and _is_canonical_uuid(candidate.get("revision_id"))
+            and _is_canonical_uuid(candidate.get("native_project_id"))
+            and _is_canonical_uuid(candidate.get("authorization_id"))
+            and isinstance(candidate.get("process_create_time"), (int, float))
+            and not isinstance(candidate.get("process_create_time"), bool)
+            and math.isfinite(float(candidate["process_create_time"]))
+            and float(candidate["process_create_time"]) > 0
+            and all(
+                isinstance(candidate.get(field), str)
+                and re.fullmatch(r"[0-9a-f]{64}", candidate[field]) is not None
+                for field in (
+                    "build_receipt_digest",
+                    "provenance_receipt_digest",
+                )
+            )
+        ):
+            return False
+        try:
+            candidate_path = os.path.normcase(
+                str(Path(str(candidate.get("project_path") or "")).resolve())
+            )
+            session_path = os.path.normcase(
+                str(Path(str(session.get("project_path") or "")).resolve())
+            )
+        except (OSError, RuntimeError, ValueError):
+            return False
+        return bool(str(candidate.get("project_path") or "").strip()) and candidate_path == session_path
     proof = metadata.get("controlled_open_read_proof")
     if not isinstance(proof, dict) or proof.get("method") != (
         "controlled_open_verified_cli_receipt_v3"
@@ -2728,7 +2766,11 @@ def _engineering_session_process_create_time(session: dict[str, Any] | None) -> 
     metadata = session.get("metadata")
     if not isinstance(metadata, dict):
         return None
-    for key in ("project_identity_proof", "controlled_open_read_proof"):
+    for key in (
+        "project_identity_proof",
+        "controlled_open_read_proof",
+        "offline_candidate_mutation_binding",
+    ):
         proof = metadata.get(key)
         value = proof.get("process_create_time") if isinstance(proof, dict) else None
         if (
@@ -2750,6 +2792,8 @@ def _engineering_session_exact_lifetime_binding(session: dict[str, Any]) -> bool
     proof = metadata.get("project_identity_proof")
     if not isinstance(proof, dict):
         proof = metadata.get("controlled_open_read_proof")
+    if not isinstance(proof, dict):
+        proof = metadata.get("offline_candidate_mutation_binding")
     if not isinstance(proof, dict):
         return False
     created = proof.get("process_create_time")
@@ -6419,6 +6463,32 @@ def create_app(
         mne_capability_status = mcp.mne_capability_status()
         mne_capability_configured = mne_capability_status == "valid"
         offline_mutation_configured = offline_mutation_ready()
+        active_working_copy = (
+            active_workspace.get("working_copy")
+            if isinstance(active_workspace, dict)
+            and isinstance(active_workspace.get("working_copy"), dict)
+            else None
+        )
+        active_workspace_provenance = (
+            active_workspace.get("provenance")
+            if isinstance(active_workspace, dict)
+            and isinstance(active_workspace.get("provenance"), dict)
+            else None
+        )
+        offline_candidate_eligible = bool(
+            mcp_status.status == "ready"
+            and selected_pid_read_ready
+            and not selected_pid_identity_verified
+            and isinstance(active_workspace, dict)
+            and active_workspace.get("source_kind") == "new_build"
+            and isinstance(active_working_copy, dict)
+            and isinstance(active_workspace_provenance, dict)
+            and _is_canonical_uuid(active_workspace_provenance.get("native_project_id"))
+            and str(active_session.get("project_hash") or "").casefold()
+            == str(active_working_copy.get("current_sha256") or "").casefold()
+            and _normalized_workspace_path(str(active_session.get("project_path") or ""))
+            == _normalized_workspace_path(str(active_working_copy.get("path") or ""))
+        )
         mne_execution_configured = (
             offline_mutation_configured and mne_capability_configured
         )
@@ -6661,6 +6731,7 @@ def create_app(
                 ),
                 session_verified=selected_pid_identity_verified,
                 read_ready=selected_pid_read_ready,
+                offline_candidate_eligible=offline_candidate_eligible,
                 target_workspace_id=(
                     engineering_target[0] if engineering_target is not None else None
                 ),
@@ -14190,6 +14261,110 @@ def create_app(
             ),
         )
         return AttachXG5000ResponseV1(session=session)
+
+    @app.post(
+        "/api/v1/engineering/offline-candidate-session",
+        response_model=PrepareOfflineCandidateSessionResponseV1,
+    )
+    async def prepare_offline_candidate_session_v1(
+        request: Request,
+        _csrf: None = Depends(require_browser_csrf),
+        _target_lease: None = Depends(target_switch_lease),
+    ) -> PrepareOfflineCandidateSessionResponseV1:
+        """Bind the displayed saved-build copy for a user-requested candidate.
+
+        This performs no edit and grants no direct mutation capability.  It
+        replaces the analysis-only rebind with one Host-signed binding that the
+        existing offline approval broker can later use for this exact target.
+        """
+
+        session_before_bind = active_engineering_session
+        if not _engineering_session_read_ready(session_before_bind):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="현재 XG5000 읽기 세션을 먼저 확인해 주세요.",
+            )
+        if not isinstance(active_workspace, dict):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="오프라인 후보에는 현재 보호 작업공간이 필요합니다.",
+            )
+        provenance = active_workspace.get("provenance")
+        operation_id = (
+            str(provenance.get("native_project_id") or "")
+            if isinstance(provenance, dict)
+            else ""
+        )
+        try:
+            pid = int(session_before_bind["pid"])
+            hwnd = int(session_before_bind["hwnd"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="현재 분석 세션의 PID/HWND 정체성이 없습니다.",
+            ) from exc
+        if not _is_canonical_uuid(operation_id) or pid <= 0 or hwnd <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="현재 분석 대상은 오프라인 후보로 준비할 수 없습니다.",
+            )
+        try:
+            result = await native_project_service.rebind_completed_bound_analysis_session(
+                operation_id,
+                actor_id=_request_actor_id(request),
+                pid=pid,
+                hwnd=hwnd,
+                active_workspace=active_workspace,
+                offline_candidate_revision=True,
+            )
+        except (MCPToolError, NativeProjectConflict) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "현재 XG5000 창을 보호 작업 복사본의 오프라인 후보 대상으로 "
+                    "다시 검증하지 못했습니다. 창이나 작업공간은 변경하지 않았습니다."
+                ),
+            ) from exc
+        working_copy = active_workspace.get("working_copy")
+        validated = _validated_engineering_session_result(
+            result,
+            pid=pid,
+            hwnd=hwnd,
+            project_path=(
+                str(working_copy["path"])
+                if isinstance(working_copy, dict) and isinstance(working_copy.get("path"), str)
+                else None
+            ),
+            project_hash=(
+                str(working_copy["current_sha256"])
+                if isinstance(working_copy, dict)
+                and isinstance(working_copy.get("current_sha256"), str)
+                else None
+            ),
+        )
+        if validated is None or not _engineering_session_identity_verified(validated):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="MCP가 오프라인 후보 PID/작업 복사본 결합을 완전히 확인하지 못했습니다.",
+            )
+        clear_ls_controller_target()
+        bound_session = bind_engineering_session(validated)
+        store.append_event(
+            event_type="engineering.offline_candidate_bound",
+            payload={
+                "actorId": _request_actor_id(request),
+                "workspaceId": active_workspace.get("workspace_id"),
+                "revisionId": active_workspace.get("revision_id"),
+                "nativeProjectId": operation_id,
+                "pid": pid,
+                "hwnd": hwnd,
+            },
+        )
+        store.append_event(
+            event_type="host.status",
+            payload=current_status_v1().model_dump(mode="json", by_alias=True),
+        )
+        return PrepareOfflineCandidateSessionResponseV1(session=bound_session)
 
     @app.post(
         "/api/v1/xg5000/reviewed-no-save-close",

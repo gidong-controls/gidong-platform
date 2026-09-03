@@ -8,6 +8,7 @@ import type {
   EngineeringProgramsResponse,
   AttachXG5000Request,
   AttachXG5000Response,
+  PrepareOfflineCandidateSessionResponse,
   ReviewedNoSaveCloseRequest,
   ReviewedNoSaveCloseResponse,
   BrowserSessionResponse,
@@ -635,6 +636,13 @@ export class HostApiClient {
       method: "POST",
       body: request,
     });
+  }
+
+  prepareOfflineCandidateSession(): Promise<PrepareOfflineCandidateSessionResponse> {
+    return this.request<PrepareOfflineCandidateSessionResponse>(
+      "/api/v1/engineering/offline-candidate-session",
+      { method: "POST" },
+    );
   }
 
   connectLSController(

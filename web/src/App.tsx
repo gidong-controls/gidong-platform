@@ -1081,6 +1081,8 @@ function App() {
   const [instancesLoading, setInstancesLoading] = useState(false);
   const [recoveryAttachIntent, setRecoveryAttachIntent] = useState(false);
   const [attachingHwnd, setAttachingHwnd] = useState<number | null>(null);
+  const [offlineCandidateBindingBusy, setOfflineCandidateBindingBusy] =
+    useState(false);
   const [restorePreflightBusyHwnd, setRestorePreflightBusyHwnd] = useState<
     number | null
   >(null);
@@ -1156,6 +1158,9 @@ function App() {
     status.engineeringSystem.sessionVerified &&
     (offlineMutateFeature?.currentReady ??
       status.capabilities.includes("offline_mutate"));
+  const offlineCandidateSelectable =
+    offlineCandidateAvailable ||
+    Boolean(status.engineeringSystem.offlineCandidateEligible);
   const planningConversationActive = Boolean(newProjectPlanning);
   const engineeringScopeVisible = !planningConversationActive;
   const selectedOfflineScopeUnavailable =
@@ -2566,6 +2571,40 @@ function App() {
       );
     } finally {
       setAttachingHwnd(null);
+    }
+  };
+
+  const prepareOfflineCandidateSession = async () => {
+    if (offlineCandidateBindingBusy) {
+      return;
+    }
+    setOfflineCandidateBindingBusy(true);
+    setConnectionMessage("");
+    try {
+      await hostApi.prepareOfflineCandidateSession();
+      const nextStatus = await hostApi.getStatus();
+      applyHostStatus(nextStatus);
+      if (!nextStatus.engineeringSystem.sessionVerified) {
+        setConnectionMessage(
+          "오프라인 후보 세션의 PID와 작업 복사본 정체성을 확인하지 못했습니다.",
+        );
+        return;
+      }
+      await activateEngineeringTargetConversation(nextStatus);
+      setChangeRequestScope("offline_candidate_revision");
+      setVerificationScope("offline_native_reopen");
+      setConnectionMessage(
+        "보호 작업 복사본을 승인 가능한 오프라인 후보 대상으로 준비했습니다. 변경은 제안과 승인 뒤에만 적용됩니다.",
+      );
+      composerRef.current?.focus();
+    } catch (error) {
+      setConnectionMessage(
+        error instanceof HostApiError
+          ? error.message
+          : "오프라인 후보 편집 세션을 준비하지 못했습니다. XG5000 창과 작업 복사본은 변경하지 않았습니다.",
+      );
+    } finally {
+      setOfflineCandidateBindingBusy(false);
     }
   };
 
@@ -5855,20 +5894,34 @@ function App() {
                       checked={
                         changeRequestScope === "offline_candidate_revision"
                       }
-                      onChange={() =>
-                        setChangeRequestScope("offline_candidate_revision")
+                      onChange={() => {
+                        if (offlineCandidateAvailable) {
+                          setChangeRequestScope("offline_candidate_revision");
+                        } else {
+                          void prepareOfflineCandidateSession();
+                        }
+                      }}
+                      disabled={
+                        sending ||
+                        offlineCandidateBindingBusy ||
+                        !offlineCandidateSelectable
                       }
-                      disabled={sending || !offlineCandidateAvailable}
                     />
                     <span>
-                      <strong>승인할 오프라인 후보 준비</strong>
+                      <strong>
+                        {offlineCandidateBindingBusy
+                          ? "오프라인 후보 확인 중"
+                          : "승인할 오프라인 후보 준비"}
+                      </strong>
                       제안 생성 · 승인 후에만 작업 복사본 실행 가능
                     </span>
                   </label>
                   <p>
                     {offlineCandidateAvailable
                       ? "정적 저장·재열기 검증이 기본이며, V6 OUT rung 후보에는 XG-SIM 검증을 명시 요청할 수 있습니다."
-                      : "오프라인 후보는 원본 보존 작업 복사본과 strong XG5000 대상에서만 선택할 수 있습니다."}
+                      : status.engineeringSystem.offlineCandidateEligible
+                        ? "이 선택은 현재 읽기 전용 작업 복사본을 승인 후보로 다시 검증합니다. 변경은 제안과 승인 뒤에만 적용됩니다."
+                        : "오프라인 후보는 원본 보존 작업 복사본과 검증된 XG5000 대상에서만 선택할 수 있습니다."}
                   </p>
                 </fieldset>
               )}

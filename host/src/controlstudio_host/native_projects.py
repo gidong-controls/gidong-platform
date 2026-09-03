@@ -4071,8 +4071,14 @@ class NativeProjectService:
         pid: int,
         hwnd: int,
         active_workspace: dict[str, Any],
+        offline_candidate_revision: bool = False,
     ) -> dict[str, Any]:
-        """Restore one accepted saved-build session without reopening its project."""
+        """Restore one accepted saved-build session without reopening its project.
+
+        The optional candidate binding is deliberately not a write grant.  It
+        only lets the existing approval broker recognize this exact protected
+        working copy as a possible offline revision target.
+        """
 
         operation = self._repository.get(operation_id)
         if operation is None or operation.state != "COMPLETED":
@@ -4116,6 +4122,7 @@ class NativeProjectService:
             reopened_pid=pid,
             reopened_hwnd=hwnd,
             registration=registration,
+            offline_candidate_revision=offline_candidate_revision,
         )
 
     async def _rebind_completed_reopen_target(
@@ -4128,6 +4135,7 @@ class NativeProjectService:
         reopened_hwnd: int,
         registration: dict[str, Any],
         expected_process_create_time: float | None = None,
+        offline_candidate_revision: bool = False,
     ) -> dict[str, Any]:
         """Rebind one persisted controlled workspace process without launching another."""
 
@@ -4221,9 +4229,24 @@ class NativeProjectService:
             )
         title = str(observed_metadata["title"])
         issued_at = _utc_now()
+        resume_schema = (
+            "controlstudio-native-session-resume-authorization/v4"
+            if offline_candidate_revision
+            else "controlstudio-native-session-resume-authorization/v3"
+        )
+        resume_purpose = (
+            "offline_candidate_revision"
+            if offline_candidate_revision
+            else "saved_build_reopen_readback"
+        )
+        resume_capability = (
+            "offline_candidate_session_bind"
+            if offline_candidate_revision
+            else "analysis_saved_build_reopen_resume"
+        )
         authorization = self._gateway.sign_mutation_authorization(
             {
-                "schema": "controlstudio-native-session-resume-authorization/v3",
+                "schema": resume_schema,
                 "authorization_id": str(uuid.uuid4()),
                 "actor_id": actor_id,
                 "native_project_id": operation.id,
@@ -4237,8 +4260,8 @@ class NativeProjectService:
                 "project_hash": project_hash,
                 "process_create_time": target_process_create_time,
                 "title": title,
-                "purpose": "saved_build_reopen_readback",
-                "capability": "analysis_saved_build_reopen_resume",
+                "purpose": resume_purpose,
+                "capability": resume_capability,
                 "allowed_operation": "xg5000.attach",
                 "issued_at": issued_at.isoformat(timespec="milliseconds"),
                 "expires_at": (issued_at + timedelta(minutes=2)).isoformat(
@@ -4258,7 +4281,11 @@ class NativeProjectService:
                 "resume_authorization": authorization,
                 "access_profile": "analysis",
             },
-            stage="signed saved-build read-only attach",
+            stage=(
+                "signed offline candidate attach"
+                if offline_candidate_revision
+                else "signed saved-build read-only attach"
+            ),
         )
         session = (
             rebound.get("session")
@@ -4271,7 +4298,12 @@ class NativeProjectService:
             hwnd=reopened_hwnd,
             project_path=project_path,
             project_hash=project_hash,
-            saved_build_reopen_authorization=authorization,
+            saved_build_reopen_authorization=(
+                None if offline_candidate_revision else authorization
+            ),
+            offline_candidate_authorization=(
+                authorization if offline_candidate_revision else None
+            ),
         ):
             raise NativeProjectConflict(
                 "the requested reopened XG5000 process rejected the saved-build read-only binding"
@@ -4357,6 +4389,7 @@ class NativeProjectService:
         project_path: str,
         project_hash: str,
         saved_build_reopen_authorization: dict[str, Any] | None = None,
+        offline_candidate_authorization: dict[str, Any] | None = None,
     ) -> bool:
         """Require retained controlled-launch evidence plus current exact identity."""
 
@@ -4415,6 +4448,34 @@ class NativeProjectService:
                     ],
                     "authorization_id": saved_build_reopen_authorization["authorization_id"],
                     "build_receipt_digest": saved_build_reopen_authorization[
+                        "build_receipt_digest"
+                    ],
+                }
+            )
+        offline_candidate_binding = metadata.get("offline_candidate_mutation_binding")
+        if offline_candidate_authorization is not None:
+            return bool(
+                metadata.get("project_identity_assurance") == "controlled_launch_read_only"
+                and isinstance(offline_candidate_binding, dict)
+                and offline_candidate_binding
+                == {
+                    "purpose": offline_candidate_authorization["purpose"],
+                    "native_project_id": offline_candidate_authorization["native_project_id"],
+                    "source_kind": "new_build",
+                    "provenance_receipt_digest": offline_candidate_authorization[
+                        "workspace_provenance_receipt_digest"
+                    ],
+                    "workspace_id": offline_candidate_authorization["workspace_id"],
+                    "revision_id": offline_candidate_authorization["revision_id"],
+                    "pid": offline_candidate_authorization["pid"],
+                    "main_hwnd": offline_candidate_authorization["hwnd"],
+                    "project_path": offline_candidate_authorization["project_path"],
+                    "project_hash": offline_candidate_authorization["project_hash"],
+                    "process_create_time": offline_candidate_authorization[
+                        "process_create_time"
+                    ],
+                    "authorization_id": offline_candidate_authorization["authorization_id"],
+                    "build_receipt_digest": offline_candidate_authorization[
                         "build_receipt_digest"
                     ],
                 }
