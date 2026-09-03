@@ -43,6 +43,13 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 - 현재 정상 Development Host health는 ready다. CLI `0829d35`/`0611593`은 일반 open/resume에
   official Open을 연결하고 explicit independent PID 재열기는 기존 native-file 방식을 유지한다.
   매번 새 CLI가 현재 소스를 읽으므로 이 수정에 Host 재시작은 필요 없다.
+- 2026-09-03 15:32~15:33 KST standalone CLI `open-project`는
+  `artifacts/cli-open-live-20260903-153207/open-result.jsonl`에서 exit 0, PID `3948`/HWND `787958`,
+  `UI 레더 수직검증 20260817`, working SHA `e0eab4…81db`, official passed/closed binding을 기록했다.
+- 이 receipt는 `official_open_binding_verified:true`/`native_file_usage_verified:false`다. 같은 PID
+  `list-programs`는 `MainProgram` `ld:55e388e7aea7a8ce`를 `sha_bound_project_xml`(live catalog false)로 반환했다.
+- 이는 Host/PWA 통합 또는 `read-ld` 성공이 아니다. 앞선 PS5 elevated JSON quoting 실패는 제품
+  JSON 문제가 아니며, 직접 실행은 PS7.6.4 Standard native arguments를 사용했다.
 - Platform `16a661f`는 복구 두 경로가 launch receipt를 attached-session의 옛 assurance 문자열과
   비교하던 오류를 수정했다. PID/HWND/hash 및 후속 독립 readback은 유지한다. 이 Host 수정은
   아직 실행 중 프로세스에 반영되지 않았으며, 해당 복구 실행 전 정상 Host 재시작이 필요하다.
