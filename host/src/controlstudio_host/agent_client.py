@@ -284,12 +284,14 @@ def _safe_mne_candidate_rejection_error(
         or payload.get("status") != "error"
         or not isinstance(payload.get("error"), dict)
         or set(payload["error"]) != {"type", "message"}
-        or not isinstance(payload["error"].get("type"), str)
+        or payload["error"].get("type") != "ValueError"
         or not isinstance(payload["error"].get("message"), str)
     ):
         return None
     assert_agent_safe_payload(payload)
     return payload
+
+
 _STRUCTURAL_TOOL_RESULT_PROJECTION_SCHEMA = (
     "controlstudio-structural-analysis-tool-result-projection/v1"
 )
