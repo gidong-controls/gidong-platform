@@ -645,8 +645,8 @@ _AGENT_TOOL_EVIDENCE: dict[str, tuple[str, str, str, str]] = {
     ),
     "program.compile_mne_rung_patch_candidate": (
         "artifact",
-        "MNE rung condition candidate",
-        "Compiled one complete Boolean condition replacement before an exact action.",
+        "LD rung 변경 후보",
+        "현재 프로그램을 기준으로 승인 검토용 rung 변경 후보를 컴파일했습니다.",
         "confirmed",
     ),
     "program.logic_graph": (
