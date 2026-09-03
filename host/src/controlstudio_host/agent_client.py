@@ -266,6 +266,30 @@ _MNE_CANDIDATE_TOOL_ALIASES = frozenset(
         "compile_series_guard_candidate",
     }
 )
+
+
+def _safe_mne_candidate_rejection_error(
+    request: ExternalToolRequestV1,
+    error: MCPToolRejectedError,
+) -> dict[str, Any] | None:
+    """Return one MCP-validated compiler rejection for the Agent failure frame."""
+
+    if request.tool_name not in _MNE_CANDIDATE_TOOL_ALIASES:
+        return None
+    payload = error.mcp_error_payload
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"schema_version", "status", "error"}
+        or payload.get("schema_version") != "1.0"
+        or payload.get("status") != "error"
+        or not isinstance(payload.get("error"), dict)
+        or set(payload["error"]) != {"type", "message"}
+        or not isinstance(payload["error"].get("type"), str)
+        or not isinstance(payload["error"].get("message"), str)
+    ):
+        return None
+    assert_agent_safe_payload(payload)
+    return payload
 _STRUCTURAL_TOOL_RESULT_PROJECTION_SCHEMA = (
     "controlstudio-structural-analysis-tool-result-projection/v1"
 )
@@ -1177,7 +1201,21 @@ class SubprocessAgentClient:
         except asyncio.CancelledError:
             await send_failure("cancelled")
             raise
-        except MCPToolRejectedError:
+        except MCPToolRejectedError as exc:
+            compiler_error = _safe_mne_candidate_rejection_error(request, exc)
+            if compiler_error is not None:
+                # The broker already recorded a failed tool event.  This is not
+                # evidence or success.  Preserve the normal failed frame, with
+                # the safe compiler detail needed for model-side correction.
+                await self._supervisor.send_tool_result(
+                    {
+                        "request_id": request.request_id,
+                        "status": "failed",
+                        "failure_kind": "tool_error",
+                        "error": compiler_error,
+                    }
+                )
+                return
             await send_failure("tool_error")
             return
         except MCPTransportError:
