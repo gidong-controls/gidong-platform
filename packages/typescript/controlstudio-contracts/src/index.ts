@@ -250,7 +250,12 @@ export interface ProductFeatureStatus {
     | "not_verified";
   currentReady: boolean;
   detail: string;
-  capabilityStatus?: "missing" | "valid" | "expired" | "runtime_mismatch";
+  capabilityStatus?:
+    | "missing"
+    | "valid"
+    | "expired"
+    | "runtime_mismatch"
+    | "runtime_checked_at_plan";
 }
 
 export interface HostStatusResponse {

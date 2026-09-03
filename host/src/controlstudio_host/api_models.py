@@ -211,6 +211,7 @@ class ProductFeatureStatusV1(ApiModel):
         "valid",
         "expired",
         "runtime_mismatch",
+        "runtime_checked_at_plan",
     ] | None = None
 
 

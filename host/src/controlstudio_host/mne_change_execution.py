@@ -32,7 +32,6 @@ from .change_execution import (
     NativeCheckpointCallback,
 )
 from .mcp_client import MCPGateway, MCPToolError
-from .mne_capability import MNECapabilityBundle, load_mne_capability_bundle
 from .models import ChangeTransaction, ChangeTransactionState
 
 MNE_PLAN_KIND = "mne_full_program_replacement"
@@ -657,7 +656,7 @@ _PUBLIC_CHECKPOINT_EVIDENCE_FIELDS = (
     "baseline_digest",
     "before_mne_sha256",
     "target_mne_sha256",
-    "capability_receipt_digest",
+    "adapter_binding_digest",
     "runtime_identity_digest",
     "target_program_digest",
     "rollback_ld_sha256",
@@ -938,7 +937,7 @@ def _validate_baseline_receipt(
     *,
     transaction: ChangeTransaction,
     target_program: Mapping[str, Any],
-    capability: MNECapabilityBundle,
+    runtime_identity_digest: str,
     approved_baseline: Mapping[str, str],
 ) -> dict[str, Any]:
     baseline = _strict_public_receipt(
@@ -977,7 +976,7 @@ def _validate_baseline_receipt(
         or not _same_path(baseline.get("project_path"), target.project_path)
         or baseline.get("project_sha256") != target.artifact_hash
         or baseline.get("project_sha256") != approved_baseline.get("project_sha256")
-        or baseline.get("runtime_identity_digest") != capability.runtime_identity_digest
+        or baseline.get("runtime_identity_digest") != runtime_identity_digest
         or _SHA256.fullmatch(str(baseline.get("active_project_binding_digest") or "")) is None
         or set(program) != {"program_id", "name", "mdi_hwnd", "editor_hwnd"}
         or program.get("program_id") != target_program.get("program_id")
@@ -1033,7 +1032,8 @@ def _validate_plan_receipt(
     transaction: ChangeTransaction,
     target_program: Mapping[str, Any],
     baseline: Mapping[str, Any],
-    capability: MNECapabilityBundle,
+    adapter_binding_digest: str,
+    runtime_identity_digest: str,
 ) -> dict[str, Any]:
     plan = _strict_public_receipt(
         value,
@@ -1049,7 +1049,7 @@ def _validate_plan_receipt(
             "program_id",
             "program_name",
             "runtime_identity_digest",
-            "capability_receipt_digest",
+            "adapter_binding_digest",
             "before_mne_sha256",
             "target_mne",
             "rollback_mne_sha256",
@@ -1072,8 +1072,8 @@ def _validate_plan_receipt(
         or plan.get("project_sha256") != transaction.target.artifact_hash
         or plan.get("program_id") != target_program.get("program_id")
         or plan.get("program_name") != target_program.get("program_name")
-        or plan.get("runtime_identity_digest") != capability.runtime_identity_digest
-        or plan.get("capability_receipt_digest") != capability.capability_receipt_digest
+        or plan.get("runtime_identity_digest") != runtime_identity_digest
+        or plan.get("adapter_binding_digest") != adapter_binding_digest
         or plan.get("before_mne_sha256")
         != _object(baseline.get("mne"), "MNE baseline MNE receipt").get("payload_sha256")
         or plan.get("rollback_mne_sha256") != plan.get("before_mne_sha256")
@@ -1101,7 +1101,7 @@ def _validate_plan_receipt(
         "baseline_digest",
         "project_sha256",
         "runtime_identity_digest",
-        "capability_receipt_digest",
+        "adapter_binding_digest",
         "before_mne_sha256",
         "rollback_mne_sha256",
         "rollback_ld_sha256",
@@ -1137,7 +1137,7 @@ def _validate_application_receipt(
             "view_hwnd",
             "payload_sha256_before",
             "payload_sha256_after",
-            "capability_receipt_digest",
+            "adapter_binding_digest",
             "phase_readbacks",
             "verified_in_editor",
             "application_digest",
@@ -1158,7 +1158,7 @@ def _validate_application_receipt(
         or application.get("payload_sha256_before") != plan.get("before_mne_sha256")
         or application.get("payload_sha256_after")
         != _object(plan.get("target_mne"), "MNE plan target receipt").get("payload_sha256")
-        or application.get("capability_receipt_digest") != plan.get("capability_receipt_digest")
+        or application.get("adapter_binding_digest") != plan.get("adapter_binding_digest")
         or not isinstance(phases, list)
         or [item.get("phase") for item in phases if isinstance(item, dict)]
         not in (["select", "clear"], ["select", "clear", "paste"])
@@ -1265,7 +1265,7 @@ def _validate_rollback_transition(
     *,
     baseline_mne_sha256: str,
     target_mne_sha256: str,
-    capability_receipt_digest: str,
+    adapter_binding_digest: str,
 ) -> dict[str, Any]:
     transition = _object(value, "MNE rollback transition")
     _assert_no_private_payload(transition)
@@ -1299,7 +1299,7 @@ def _validate_rollback_transition(
         "row_count_after",
         "strategy",
         "phases",
-        "capability_receipt_digest",
+        "adapter_binding_digest",
     }:
         raise ChangeExecutionPreconditionError("MNE rollback transition shape is unsupported")
     strategy = transition.get("strategy")
@@ -1309,7 +1309,7 @@ def _validate_rollback_transition(
         or transition.get("operation") != "program.replace_existing_mne"
         or before != target_mne_sha256
         or after != baseline_mne_sha256
-        or transition.get("capability_receipt_digest") != capability_receipt_digest
+        or transition.get("adapter_binding_digest") != adapter_binding_digest
         or not isinstance(transition.get("row_count_after"), int)
         or isinstance(transition.get("row_count_after"), bool)
         or int(transition["row_count_after"]) <= 0
@@ -1434,9 +1434,9 @@ def _validate_rollback_receipt(
         rollback.get("transition"),
         baseline_mne_sha256=baseline_mne_sha256,
         target_mne_sha256=target_mne_sha256,
-        capability_receipt_digest=_sha256(
-            plan.get("capability_receipt_digest"),
-            "MNE rollback capability digest",
+        adapter_binding_digest=_sha256(
+            plan.get("adapter_binding_digest"),
+            "MNE rollback adapter digest",
         ),
     )
     reopen = _validate_reopen_receipt(
@@ -1512,24 +1512,19 @@ def _validated_persisted_apply_receipts(
             "persisted MNE apply evidence differs from the terminal journal"
         )
     target_program = _typed_target_program(transaction)
-    capability = MNECapabilityBundle(
-        capability_receipt={},
-        runtime_identity={},
-        bundle_digest="",
-        capability_receipt_digest=_sha256(
-            checkpoint.get("capability_receipt_digest"),
-            "terminal MNE capability digest",
-        ),
-        runtime_identity_digest=_sha256(
-            checkpoint.get("runtime_identity_digest"),
-            "terminal MNE runtime digest",
-        ),
+    adapter_binding_digest = _sha256(
+        checkpoint.get("adapter_binding_digest"),
+        "terminal MNE adapter binding digest",
+    )
+    runtime_identity_digest = _sha256(
+        checkpoint.get("runtime_identity_digest"),
+        "terminal MNE runtime digest",
     )
     baseline = _validate_baseline_receipt(
         evidence.get("baseline"),
         transaction=transaction,
         target_program=target_program,
-        capability=capability,
+        runtime_identity_digest=runtime_identity_digest,
         approved_baseline=_approved_baseline_binding(transaction),
     )
     plan = _validate_plan_receipt(
@@ -1537,7 +1532,8 @@ def _validated_persisted_apply_receipts(
         transaction=transaction,
         target_program=target_program,
         baseline=baseline,
-        capability=capability,
+        adapter_binding_digest=adapter_binding_digest,
+        runtime_identity_digest=runtime_identity_digest,
     )
     application = _validate_application_receipt(
         evidence.get("application"),
@@ -1623,7 +1619,6 @@ class CompositeChangeExecutionService:
         gateway: MCPGateway,
         *,
         checkpoint_callback: NativeCheckpointCallback | None = None,
-        capability_loader: Callable[[], MNECapabilityBundle] = load_mne_capability_bundle,
     ) -> None:
         self._operand = MCPChangeExecutionService(
             gateway,
@@ -1632,7 +1627,6 @@ class CompositeChangeExecutionService:
         self._mne = MNEChangeExecutionService(
             gateway,
             checkpoint_callback=checkpoint_callback,
-            capability_loader=capability_loader,
         )
 
     def _service(self, transaction: ChangeTransaction):
@@ -1667,11 +1661,9 @@ class MNEChangeExecutionService:
         gateway: MCPGateway,
         *,
         checkpoint_callback: NativeCheckpointCallback | None,
-        capability_loader: Callable[[], MNECapabilityBundle],
     ) -> None:
         self._gateway = gateway
         self._checkpoint_callback = checkpoint_callback
-        self._capability_loader = capability_loader
 
     async def preflight(self, transaction: ChangeTransaction) -> None:
         target = transaction.target
@@ -1686,23 +1678,12 @@ class MNEChangeExecutionService:
         _typed_target_program(transaction)
         _approved_baseline_binding(transaction)
         _validate_verification_contract(transaction)
-        if self._gateway.mne_capability_status() != "valid":
-            raise ChangeExecutionPreconditionError(
-                "the developer-certified MNE capability bundle is not currently valid"
-            )
-        try:
-            self._capability_loader()
-        except (OSError, ValueError) as exc:
-            raise ChangeExecutionPreconditionError(
-                "a valid developer-certified MNE capability bundle is required"
-            ) from exc
 
     async def apply(self, transaction: ChangeTransaction) -> ChangeApplyResult:
         await self.preflight(transaction)
         target = transaction.target
         target_program = _typed_target_program(transaction)
         approved_baseline = _approved_baseline_binding(transaction)
-        capability = self._capability_loader()
         session_scope = self._session_scope(transaction)
         mcp_transaction_id: str | None = None
         project_identity_digest = MCPChangeExecutionService._project_identity_digest(target)
@@ -1782,8 +1763,6 @@ class MNEChangeExecutionService:
                 "transaction_id": mcp_transaction_id,
                 "snapshot_id": snapshot_id,
                 "backup_id": backup_id,
-                "capability_receipt": capability.capability_receipt,
-                "runtime_identity": capability.runtime_identity,
             }
             plan_kind = transaction.plan.get("plan_kind")
             patch_contract = MNE_PATCH_PLAN_CONTRACTS.get(plan_kind)
@@ -1835,19 +1814,29 @@ class MNEChangeExecutionService:
                 "requires_program_check_save_reopen": True,
             }:
                 raise ChangeExecutionPreconditionError("MNE planning impact contract is invalid")
+            plan_receipt = _object(planned.get("plan"), "MNE replacement plan receipt")
+            adapter_binding_digest = _sha256(
+                plan_receipt.get("adapter_binding_digest"),
+                "MNE supported adapter digest",
+            )
+            runtime_identity_digest = _sha256(
+                plan_receipt.get("runtime_identity_digest"),
+                "MNE live runtime digest",
+            )
             baseline = _validate_baseline_receipt(
                 planned.get("baseline"),
                 transaction=transaction,
                 target_program=target_program,
-                capability=capability,
+                runtime_identity_digest=runtime_identity_digest,
                 approved_baseline=approved_baseline,
             )
             plan = _validate_plan_receipt(
-                planned.get("plan"),
+                plan_receipt,
                 transaction=transaction,
                 target_program=target_program,
                 baseline=baseline,
-                capability=capability,
+                adapter_binding_digest=adapter_binding_digest,
+                runtime_identity_digest=runtime_identity_digest,
             )
             if transaction.plan.get("plan_kind") in MNE_PATCH_PLAN_KINDS:
                 candidate = _object(transaction.plan.get("candidate"), "plan.candidate")
@@ -1896,7 +1885,8 @@ class MNEChangeExecutionService:
                 expected_plan_id=mcp_plan_id,
                 expected_plan_digest=mcp_plan_digest,
                 target_program=target_program,
-                capability=capability,
+                adapter_binding_digest=adapter_binding_digest,
+                runtime_identity_digest=runtime_identity_digest,
                 expected_before_mne_sha256=str(plan["before_mne_sha256"]),
                 expected_target_mne_sha256=str(plan["target_mne"]["payload_sha256"]),
                 expected_project_hash=target.artifact_hash,
@@ -1937,8 +1927,8 @@ class MNEChangeExecutionService:
                     "target_program_digest": target_program["target_program_digest"],
                     "before_mne_sha256": plan["before_mne_sha256"],
                     "target_mne_sha256": plan["target_mne"]["payload_sha256"],
-                    "capability_receipt_digest": capability.capability_receipt_digest,
-                    "runtime_identity_digest": capability.runtime_identity_digest,
+                    "adapter_binding_digest": adapter_binding_digest,
+                    "runtime_identity_digest": runtime_identity_digest,
                     "baseline_digest": baseline["baseline_digest"],
                     "rollback_ld_sha256": plan["rollback_ld_sha256"],
                     "baseline_ld_canonical_sha256": _object(
@@ -1991,8 +1981,8 @@ class MNEChangeExecutionService:
             "target_program_digest": target_program["target_program_digest"],
             "before_mne_sha256": plan["before_mne_sha256"],
             "target_mne_sha256": plan["target_mne"]["payload_sha256"],
-            "capability_receipt_digest": capability.capability_receipt_digest,
-            "runtime_identity_digest": capability.runtime_identity_digest,
+            "adapter_binding_digest": adapter_binding_digest,
+            "runtime_identity_digest": runtime_identity_digest,
             "lease_generation": lease_generation,
         }
         if "hardware_context_digest" in transaction.plan.get("candidate", {}):
@@ -2052,7 +2042,8 @@ class MNEChangeExecutionService:
                 expected_plan_id=mcp_plan_id,
                 expected_plan_digest=mcp_plan_digest,
                 target_program=target_program,
-                capability=capability,
+                adapter_binding_digest=adapter_binding_digest,
+                runtime_identity_digest=runtime_identity_digest,
                 expected_before_mne_sha256=str(plan["before_mne_sha256"]),
                 expected_target_mne_sha256=str(plan["target_mne"]["payload_sha256"]),
                 expected_project_hash=target.artifact_hash,
@@ -2214,7 +2205,8 @@ class MNEChangeExecutionService:
                 expected_plan_id=mcp_plan_id,
                 expected_plan_digest=mcp_plan_digest,
                 target_program=target_program,
-                capability=None,
+                adapter_binding_digest=None,
+                runtime_identity_digest=None,
                 expected_before_mne_sha256=str(plan["before_mne_sha256"]),
                 expected_target_mne_sha256=str(plan["target_mne"]["payload_sha256"]),
                 expected_project_hash=str(verification["project_sha256_after"]),
@@ -2233,8 +2225,8 @@ class MNEChangeExecutionService:
                 verified.get("transaction_checkpoint"),
                 "MNE verify transaction checkpoint",
             )
-            if verified_checkpoint.get("capability_receipt_digest") != plan.get(
-                "capability_receipt_digest"
+            if verified_checkpoint.get("adapter_binding_digest") != plan.get(
+                "adapter_binding_digest"
             ) or verified_checkpoint.get("runtime_identity_digest") != plan.get(
                 "runtime_identity_digest"
             ):
@@ -2506,7 +2498,8 @@ class MNEChangeExecutionService:
                 expected_plan_id=mcp_plan_id,
                 expected_plan_digest=mcp_plan_digest,
                 target_program=target_program,
-                capability=None,
+                adapter_binding_digest=None,
+                runtime_identity_digest=None,
                 expected_before_mne_sha256=str(plan["before_mne_sha256"]),
                 expected_target_mne_sha256=str(plan["target_mne"]["payload_sha256"]),
                 expected_project_hash=project_hash,
@@ -2570,7 +2563,8 @@ class MNEChangeExecutionService:
             expected_plan_id=mcp_plan_id,
             expected_plan_digest=mcp_plan_digest,
             target_program=target_program,
-            capability=None,
+            adapter_binding_digest=None,
+            runtime_identity_digest=None,
             expected_before_mne_sha256=str(plan["before_mne_sha256"]),
             expected_target_mne_sha256=str(plan["target_mne"]["payload_sha256"]),
             expected_project_hash=current_hash,
@@ -2702,7 +2696,8 @@ class MNEChangeExecutionService:
             expected_plan_id=mcp_plan_id,
             expected_plan_digest=mcp_plan_digest,
             target_program=target_program,
-            capability=None,
+            adapter_binding_digest=None,
+            runtime_identity_digest=None,
             expected_before_mne_sha256=str(plan["before_mne_sha256"]),
             expected_target_mne_sha256=str(plan["target_mne"]["payload_sha256"]),
             expected_project_hash=current_hash,
@@ -3286,7 +3281,8 @@ class MNEChangeExecutionService:
         expected_plan_id: str,
         expected_plan_digest: str,
         target_program: Mapping[str, Any],
-        capability: MNECapabilityBundle | None,
+        adapter_binding_digest: str | None,
+        runtime_identity_digest: str | None,
         expected_before_mne_sha256: str,
         expected_target_mne_sha256: str,
         expected_project_hash: str,
@@ -3326,11 +3322,15 @@ class MNEChangeExecutionService:
             "artifact_visibility": expected_artifact_visibility,
             "backup_id": expected_backup_id,
         }
-        if capability is not None:
+        if adapter_binding_digest is not None or runtime_identity_digest is not None:
+            if adapter_binding_digest is None or runtime_identity_digest is None:
+                raise ChangeExecutionPreconditionError(
+                    "MNE adapter and runtime digest must be supplied together"
+                )
             expected.update(
                 {
-                    "capability_receipt_digest": (capability.capability_receipt_digest),
-                    "runtime_identity_digest": capability.runtime_identity_digest,
+                    "adapter_binding_digest": adapter_binding_digest,
+                    "runtime_identity_digest": runtime_identity_digest,
                 }
             )
         if expected_lease_generation is not None:
@@ -3364,7 +3364,7 @@ class MNEChangeExecutionService:
             "target_program_digest",
             "before_mne_sha256",
             "target_mne_sha256",
-            "capability_receipt_digest",
+            "adapter_binding_digest",
             "runtime_identity_digest",
             "baseline_digest",
             "rollback_ld_sha256",
@@ -3500,9 +3500,9 @@ class MNEChangeExecutionService:
                 arguments.get("target_mne_sha256"),
                 "MNE mutation target hash",
             ),
-            "capability_receipt_digest": _sha256(
-                arguments.get("capability_receipt_digest"),
-                "MNE mutation capability digest",
+            "adapter_binding_digest": _sha256(
+                arguments.get("adapter_binding_digest"),
+                "MNE mutation adapter digest",
             ),
             "runtime_identity_digest": _sha256(
                 arguments.get("runtime_identity_digest"),
@@ -3712,7 +3712,7 @@ class MNEChangeExecutionService:
                 "target_program_digest": recovered.get("target_program_digest"),
                 "before_mne_sha256": recovered.get("before_mne_sha256"),
                 "target_mne_sha256": recovered.get("target_mne_sha256"),
-                "capability_receipt_digest": recovered.get("capability_receipt_digest"),
+                "adapter_binding_digest": recovered.get("adapter_binding_digest"),
                 "runtime_identity_digest": recovered.get("runtime_identity_digest"),
                 "baseline_digest": recovered.get("baseline_digest"),
                 "rollback_ld_sha256": recovered.get("rollback_ld_sha256"),
@@ -3773,7 +3773,7 @@ class MNEChangeExecutionService:
                     "target_program_digest": target_program["target_program_digest"],
                     "before_mne_sha256": stored.get("before_mne_sha256"),
                     "target_mne_sha256": stored.get("target_mne_sha256"),
-                    "capability_receipt_digest": stored.get("capability_receipt_digest"),
+                    "adapter_binding_digest": stored.get("adapter_binding_digest"),
                     "runtime_identity_digest": stored.get("runtime_identity_digest"),
                     "baseline_digest": stored.get("baseline_digest"),
                     "rollback_ld_sha256": stored.get("rollback_ld_sha256"),
@@ -3994,7 +3994,8 @@ class MNEChangeExecutionService:
             expected_plan_id=mcp_plan_id,
             expected_plan_digest=mcp_plan_digest,
             target_program=target_program,
-            capability=None,
+            adapter_binding_digest=None,
+            runtime_identity_digest=None,
             expected_before_mne_sha256=str(plan["before_mne_sha256"]),
             expected_target_mne_sha256=str(plan["target_mne"]["payload_sha256"]),
             expected_project_hash=current_project_hash,
@@ -4008,7 +4009,7 @@ class MNEChangeExecutionService:
             expected_simulation_receipt_digest=expected_simulation_receipt_digest,
         )
         if (
-            checkpoint.get("capability_receipt_digest") != plan.get("capability_receipt_digest")
+            checkpoint.get("adapter_binding_digest") != plan.get("adapter_binding_digest")
             or checkpoint.get("runtime_identity_digest") != plan.get("runtime_identity_digest")
             or checkpoint.get("recovery_action") != "rollback_required"
             or checkpoint.get("state") not in {"APPLYING", "APPLIED", "SIM_STOPPED", "QUARANTINED"}
@@ -4070,7 +4071,8 @@ class MNEChangeExecutionService:
             expected_plan_id=mcp_plan_id,
             expected_plan_digest=mcp_plan_digest,
             target_program=target_program,
-            capability=None,
+            adapter_binding_digest=None,
+            runtime_identity_digest=None,
             expected_before_mne_sha256=str(plan["before_mne_sha256"]),
             expected_target_mne_sha256=str(plan["target_mne"]["payload_sha256"]),
             expected_project_hash=str(rollback["project_sha256_after"]),
@@ -4086,8 +4088,8 @@ class MNEChangeExecutionService:
         if (
             final_checkpoint.get("terminal") is not True
             or final_checkpoint.get("recovery_action") != "already_terminal"
-            or final_checkpoint.get("capability_receipt_digest")
-            != plan.get("capability_receipt_digest")
+            or final_checkpoint.get("adapter_binding_digest")
+            != plan.get("adapter_binding_digest")
             or final_checkpoint.get("runtime_identity_digest")
             != plan.get("runtime_identity_digest")
         ):
@@ -4152,9 +4154,9 @@ class MNEChangeExecutionService:
             rollback.get("transition"),
             baseline_mne_sha256=baseline_mne_sha256,
             target_mne_sha256=target_mne_sha256,
-            capability_receipt_digest=_sha256(
-                checkpoint.get("capability_receipt_digest"),
-                "recovered MNE rollback capability digest",
+            adapter_binding_digest=_sha256(
+                checkpoint.get("adapter_binding_digest"),
+                "recovered MNE rollback adapter digest",
             ),
         )
         reopen = _validate_reopen_receipt(

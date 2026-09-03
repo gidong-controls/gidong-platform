@@ -6461,8 +6461,6 @@ def create_app(
         )
         selected_pid_identity_verified = _engineering_session_identity_verified(active_session)
         selected_pid_read_ready = _engineering_session_read_ready(active_session)
-        mne_capability_status = mcp.mne_capability_status()
-        mne_capability_configured = mne_capability_status == "valid"
         offline_mutation_configured = offline_mutation_ready()
         active_working_copy = (
             active_workspace.get("working_copy")
@@ -6490,9 +6488,7 @@ def create_app(
             and _normalized_workspace_path(str(active_session.get("project_path") or ""))
             == _normalized_workspace_path(str(active_working_copy.get("path") or ""))
         )
-        mne_execution_configured = (
-            offline_mutation_configured and mne_capability_configured
-        )
+        mne_execution_configured = offline_mutation_configured
         restore_handoff_pending = False
         try:
             pending_restore = ControllerRestoreHandoffV1.model_validate(
@@ -6910,21 +6906,17 @@ def create_app(
                     current_ready=(
                         mne_execution_configured
                     ),
-                    capability_status=mne_capability_status,
+                    capability_status="runtime_checked_at_plan",
                     detail=(
-                        "전체 프로그램·명령·완전 rung 변경에 필요한 strong selected-PID "
-                        "결속과 developer-certified MNE capability bundle이 구성되었습니다. "
-                        "실행 직전에 MCP가 다시 검증합니다."
+                        "전체 프로그램·명령·완전 rung 변경은 exact selected-PID 결속과 "
+                        "작업공간 path/hash, code-owned adapter 전략 및 실행 직전의 live "
+                        "runtime 결속을 확인한 뒤 기존 승인·readback·저장·재열기 절차로 처리합니다."
                         if mne_execution_configured
                         else (
                             "MNE 구조 변경에는 selected PID의 strong project readback과 "
                             "active workspace의 exact project path/hash 결속이 먼저 "
                             "필요합니다."
-                            if not offline_mutation_configured
-                            else (
-                                "developer-certified MNE capability bundle 상태가 "
-                                f"{mne_capability_status}입니다."
-                            )
+                            if not offline_mutation_configured else "MNE adapter runtime binding을 준비할 수 없습니다."
                         )
                     ),
                 ),

@@ -774,15 +774,6 @@ class MCPGateway:
         ).hexdigest()
         return {**unsigned, "signature": signature}
 
-    def mne_capability_status(self) -> str:
-        """Inspect configured capability authority without exposing its key."""
-
-        from .mne_capability import inspect_mne_capability_bundle
-
-        return inspect_mne_capability_bundle(
-            authorization_key=self._authorization_signing_key,
-        )
-
     async def call_agent_tool(
         self,
         name: str,

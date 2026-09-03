@@ -1148,7 +1148,7 @@ function App() {
     status.featureReadiness?.some(
       (feature) =>
         feature.featureId === "full_program_replacement" &&
-        feature.capabilityStatus === "valid" &&
+        feature.capabilityStatus === "runtime_checked_at_plan" &&
         feature.currentReady,
     ),
   );
