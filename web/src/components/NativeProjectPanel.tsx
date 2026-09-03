@@ -1772,7 +1772,7 @@ export function NativeProjectPanel({
         setNotice(
           created.result?.simulationVerification?.detail ??
             created.result?.reopenVerification?.detail ??
-            "생성·저장은 확인했지만 독립 재열기와 XG-SIM 운전 인수가 완료되지 않았습니다.",
+            "생성·저장은 확인했지만 독립 재열기 검증이 완료되지 않았습니다.",
         );
       } else if (created.state === "failed") {
         setNotice(
@@ -1818,7 +1818,7 @@ export function NativeProjectPanel({
         setNotice(
           next.result?.simulationVerification?.detail ??
             next.result?.reopenVerification?.detail ??
-            "생성·저장은 확인했지만 독립 재열기와 XG-SIM 운전 인수가 완료되지 않았습니다.",
+            "생성·저장은 확인했지만 독립 재열기 검증이 완료되지 않았습니다.",
         );
       } else if (next.state === "failed" || next.state === "quarantined") {
         setNotice(
@@ -1995,7 +1995,7 @@ export function NativeProjectPanel({
         setNotice(
           next.result?.simulationVerification?.detail ??
             next.result?.reopenVerification?.detail ??
-            "입력된 LD의 검사·저장은 확인했지만 독립 재열기와 XG-SIM 운전 인수가 완료되지 않았습니다.",
+            "입력된 LD의 검사·저장은 확인했지만 독립 재열기 검증이 완료되지 않았습니다.",
         );
       } else {
         setNotice("입력된 LD의 검사·저장 재개 상태를 확인하고 있습니다.");
@@ -2023,7 +2023,8 @@ export function NativeProjectPanel({
       typeof sourceHwnd !== "number" ||
       !Number.isSafeInteger(sourceHwnd) ||
       (!reuseVerifiedReopen &&
-        (!selectedReopenedInstance || !reopenedTargetIsIndependent)) ||
+        selectedReopenedInstance !== null &&
+        !reopenedTargetIsIndependent) ||
       !operation.requestDigest ||
       busy
     ) {
@@ -2049,16 +2050,16 @@ export function NativeProjectPanel({
       } else if (next.state === "quarantined") {
         setNotice(
           next.errorDetail ??
-            "독립 재열기 또는 XG-SIM 검증 결과를 확정할 수 없어 격리를 유지합니다.",
+            "독립 재열기 검증 결과를 확정할 수 없어 격리를 유지합니다.",
         );
       } else if (next.state === "completed") {
         setNotice(
           next.result?.simulationVerification?.detail ??
             next.result?.reopenVerification?.detail ??
-            "XG-SIM receipt의 명시적 채택 전에는 엔지니어링 준비 완료가 아닙니다.",
+            "독립 재열기 검증이 완료되기 전에는 엔지니어링 준비가 완료되지 않습니다.",
         );
       } else {
-        setNotice("독립 재열기와 XG-SIM 검증 상태를 확인하고 있습니다.");
+        setNotice("독립 재열기 검증 상태를 확인하고 있습니다.");
       }
       try {
         onStatusChanged(await hostApi.getStatus());
@@ -2897,16 +2898,14 @@ export function NativeProjectPanel({
               <div>
                 <p className="eyebrow">SAVED PROJECT VERIFICATION</p>
                 <h4 id="native-project-completed-verification-title">
-                  {reuseVerifiedReopen
-                    ? "저장된 프로젝트의 미완료 XG-SIM 검증 재개"
-                    : "저장된 프로젝트의 독립 재열기 검증 재개"}
+                  저장된 프로젝트의 독립 재열기 검증 재개
                 </h4>
                 <p>
                   검사·저장은 확인됐지만 엔지니어링 준비가 완료되지 않았습니다.
                   저장된 원본 대상과 request digest는 바꾸지 않습니다.
                   {reuseVerifiedReopen
-                    ? " 검증된 재열기 session을 그대로 재사용해 미완료 XG-SIM 검증만 재개합니다."
-                    : " 이미 시작한 fresh XG5000 창 하나를 직접 선택해 read-only 재열기와 이어지는 XG-SIM 검증을 재개합니다."}
+                    ? " 검증된 재열기 session을 그대로 재사용해 저장된 프로젝트 내용을 다시 확인합니다."
+                    : " fresh XG5000 창을 직접 선택하거나, 선택할 창이 없으면 새 XG5000 창 하나를 열어 저장된 프로젝트 파일을 read-only로 다시 열고 내용을 확인합니다."}
                   새 프로젝트 생성, IL 삽입, 창 종료, 자동 재시도는 하지 않습니다.
                 </p>
               </div>
@@ -2991,24 +2990,40 @@ export function NativeProjectPanel({
                 >
                   XG5000 목록 다시 확인
                 </button>
-                <button
-                  className="button primary-button"
-                  type="button"
-                  disabled={
-                    busy ||
-                    !storedResumeSourceIsValid ||
-                    (!reuseVerifiedReopen &&
-                      (instancesLoading || !reopenedTargetIsIndependent)) ||
-                    !operation.requestDigest
-                  }
-                  onClick={() => void continueCompletedVerification()}
-                >
-                  {busy
-                    ? "저장된 검증 흐름 재개 중…"
-                    : reuseVerifiedReopen
-                      ? "미완료 XG-SIM 검증 재개"
-                      : "독립 재열기·XG-SIM 검증 재개"}
-                </button>
+                {!reuseVerifiedReopen && !selectedReopenedInstance ? (
+                  <button
+                    className="button primary-button"
+                    type="button"
+                    disabled={
+                      busy ||
+                      instancesLoading ||
+                      !storedResumeSourceIsValid ||
+                      !operation.requestDigest
+                    }
+                    onClick={() => void continueCompletedVerification()}
+                  >
+                    {busy
+                      ? "저장된 프로젝트 다시 여는 중…"
+                      : "저장된 프로젝트 다시 열기"}
+                  </button>
+                ) : (
+                  <button
+                    className="button primary-button"
+                    type="button"
+                    disabled={
+                      busy ||
+                      !storedResumeSourceIsValid ||
+                      (!reuseVerifiedReopen &&
+                        (instancesLoading || !reopenedTargetIsIndependent)) ||
+                      !operation.requestDigest
+                    }
+                    onClick={() => void continueCompletedVerification()}
+                  >
+                    {busy
+                      ? "저장된 검증 흐름 재개 중…"
+                      : "독립 재열기 검증 재개"}
+                  </button>
+                )}
               </div>
             </section>
           )}
