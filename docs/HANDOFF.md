@@ -37,6 +37,11 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   MCP `8d23686`는 Open 준비의 중복 창 조회를 제거했다. `83d3e19`/`52035ea`는 실제
   실패 단계와 vendor command dispatch 수를 오류에 남긴다. 과거의 `official Open`
   오류 문구만으로 실제 명령이 전달됐다고 판단해서는 안 된다.
+- resume31은 vendor Open 뒤 `XG5000_OPEN_DIALOG_NOT_FOUND`로 중단됐다. bounded evidence의
+  candidate 수는 189이고 선택된 창은 HWND `199222`, 빈 제목의 `BCGPShadowSideWnd`였다.
+  이는 Open dialog가 아니라 장식 shadow 후보가 선택된 사례다. semantic dialog wait 수정은
+  진행 중이며, 이 기록은 live 인증 성공이나 수정 검증 성공을 뜻하지 않는다. resume32는
+  동일 scratch hash와 exact empty XG5000 baseline을 전제로 실행 없이 준비만 됐다.
 - 관련 코드 테스트는 통과했지만 수정 이후 실제 LD 변경·검사·저장·독립 재열기와 PWA
   사용자 흐름은 아직 성공으로 판정하지 않는다. 현재 live 결과는
   `artifacts/mne-capability-baseline-cert-20260901-a3/elevated-resume30-certification-receipt.json`
