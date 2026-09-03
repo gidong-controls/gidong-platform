@@ -468,10 +468,26 @@ function RungPatchReview({
       {plan.verificationScope === "offline_native_reopen_xgsim" && receipt.simulationProfile && (
         <section className="change-verification-boundary">
           <h4>저장 후 XG-SIM 검증 프로필</h4>
-          <p>단일 프로그램과 OUT 단일 writer 조건으로 컴파일된 입력 전이입니다. PLC에는 연결하거나 쓰지 않습니다.</p>
+          <p>아래 입력과 예상 관찰값을 XG-SIM에서 순서대로 확인합니다. 물리 PLC에는 연결하거나 쓰지 않습니다.</p>
+          {"scenario" in receipt.simulationProfile ? (
+            <ol className="change-plan-list">
+              {receipt.simulationProfile.scenario.steps.map((step, index) => (
+                <li key={`${index}:${step.name}`}>
+                  <strong>{step.name}</strong>
+                  <dl>
+                    <div><dt>입력</dt><dd><code>{Object.entries(step.drive).map(([key, value]) => `${key}=${value}`).join(", ")}</code></dd></div>
+                    <div><dt>예상 관찰값</dt><dd><code>{Object.entries(step.observe).map(([key, value]) => `${key}=${value}`).join(", ")}</code></dd></div>
+                  </dl>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <dl>
+              <div><dt>정상 입력</dt><dd><code>{Object.entries(receipt.simulationProfile.normalAssignments).map(([key, value]) => `${key}=${value}`).join(", ")}</code></dd></div>
+              <div><dt>차단 입력</dt><dd><code>{Object.entries(receipt.simulationProfile.denyAssignments).map(([key, value]) => `${key}=${value}`).join(", ")}</code></dd></div>
+            </dl>
+          )}
           <dl>
-            <div><dt>정상 입력</dt><dd><code>{Object.entries(receipt.simulationProfile.normalAssignments).map(([key, value]) => `${key}=${value}`).join(", ")}</code></dd></div>
-            <div><dt>차단 입력</dt><dd><code>{Object.entries(receipt.simulationProfile.denyAssignments).map(([key, value]) => `${key}=${value}`).join(", ")}</code></dd></div>
             <div><dt>관찰 OUT</dt><dd><code>{receipt.simulationProfile.outputAddresses.join(", ")}</code></dd></div>
             <div><dt>프로필 digest</dt><dd><code>{receipt.simulationProfile.profileDigest}</code></dd></div>
           </dl>
