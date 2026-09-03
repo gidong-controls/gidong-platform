@@ -20,6 +20,13 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 ## 2026-09-04 현재 LD 변경 작업
 
+- 현재 반영 묶음은 Platform `2d866d3` / `d700ad1`, MCP `39b2bb0` / `86d7be0`,
+  CLI `dd64c94`다. native LD의 확인된 가변 헤더는 공용 canonicalizer로 처리하고,
+  raw SHA는 실제 캡처의 출처 값으로 보존한다. 후보 재컴파일, baseline/snapshot,
+  focus, 적용·복구·독립 재열기 및 화면 결과 판정이 canonical SHA를 의미 비교에 쓴다.
+  후보 자체의 digest 검증과 실제 MNE 내용·프로젝트 경로/파일 binding은 유지한다.
+  Platform 웹 production build까지 완료했다. 정적 점검 통과가 실사용 변경 성공을
+  뜻하지는 않으며, 아래 실제 run 실패 기록과 아직 미실행인 변경 단계는 그대로다.
 - 작업 중인 웹은 Codex 내부의 `http://127.0.0.1:8767/` 인증 탭이다. 별도 Edge/Chrome
   창은 확인하지 못했다. 초기 패널 표시 요청은 `queued`였고 선택 탭과 작업 탭도 달랐다.
   07:38에 정상 Launcher `--web-url` handoff로 기존 선택 탭 5를 인증했고, 작업 탭도 5로
