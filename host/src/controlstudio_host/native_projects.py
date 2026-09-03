@@ -4063,6 +4063,61 @@ class NativeProjectService:
             )
         )[0]
 
+    async def rebind_completed_bound_analysis_session(
+        self,
+        operation_id: str,
+        *,
+        actor_id: str,
+        pid: int,
+        hwnd: int,
+        active_workspace: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Restore one accepted saved-build session without reopening its project."""
+
+        operation = self._repository.get(operation_id)
+        if operation is None or operation.state != "COMPLETED":
+            raise NativeProjectConflict("completed native project is unavailable for analysis rebind")
+        result = operation.result
+        registration = result.get("workspaceRegistration") if isinstance(result, dict) else None
+        reopen = result.get("reopenVerification") if isinstance(result, dict) else None
+        workspace = registration.get("workspace") if isinstance(registration, dict) else None
+        working = workspace.get("working_copy") if isinstance(workspace, dict) else None
+        active_working = active_workspace.get("working_copy")
+        if (
+            result.get("engineeredProgramReady") is not True
+            or result.get("workspaceBound") is not True
+            or not isinstance(registration, dict)
+            or registration.get("state") != "captured_and_bound"
+            or not isinstance(workspace, dict)
+            or not isinstance(working, dict)
+            or not isinstance(active_working, dict)
+            or not isinstance(reopen, dict)
+            or reopen.get("state") != "verified"
+            or workspace.get("workspace_id") != active_workspace.get("workspace_id")
+            or workspace.get("revision_id") != active_workspace.get("revision_id")
+            or _canonical_path(Path(str(working.get("path") or "")))
+            != _canonical_path(Path(str(active_working.get("path") or "")))
+            or str(working.get("current_sha256") or "").casefold()
+            != str(active_working.get("current_sha256") or "").casefold()
+        ):
+            raise NativeProjectConflict(
+                "completed native project does not match the active protected workspace"
+            )
+        try:
+            source_pid = int(operation.request["xg5000Pid"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise NativeProjectConflict(
+                "completed native project has no original source identity"
+            ) from exc
+        return await self._rebind_completed_reopen_target(
+            operation=operation,
+            actor_id=actor_id,
+            source_pid=source_pid,
+            reopened_pid=pid,
+            reopened_hwnd=hwnd,
+            registration=registration,
+        )
+
     async def _rebind_completed_reopen_target(
         self,
         *,

@@ -14030,6 +14030,21 @@ def create_app(
             and isinstance(active_workspace.get("working_copy"), dict)
             else None
         )
+        saved_build_rebind_operation_id = (
+            str(active_workspace["provenance"]["native_project_id"])
+            if (
+                not body.allow_unbound_existing_target
+                and body.project_path is None
+                and body.project_hash is None
+                and isinstance(active_workspace, dict)
+                and isinstance(active_workspace.get("provenance"), dict)
+                and isinstance(
+                    active_workspace["provenance"].get("native_project_id"), str
+                )
+                and active_workspace["provenance"]["native_project_id"]
+            )
+            else None
+        )
 
         def parked_native_reopen_expectation() -> dict[str, str] | None:
             """Return only the durable fresh-reopen identity for a read attach."""
@@ -14112,8 +14127,18 @@ def create_app(
         ):
             arguments["project_hash"] = working_copy["current_sha256"]
         try:
-            result = await mcp.call_read_tool("xg5000.attach", arguments)
-        except MCPToolError as exc:
+            result = (
+                await native_project_service.rebind_completed_bound_analysis_session(
+                    saved_build_rebind_operation_id,
+                    actor_id=_request_actor_id(request),
+                    pid=body.pid,
+                    hwnd=body.hwnd,
+                    active_workspace=active_workspace,
+                )
+                if saved_build_rebind_operation_id is not None
+                else await mcp.call_read_tool("xg5000.attach", arguments)
+            )
+        except (MCPToolError, NativeProjectConflict) as exc:
             raise HTTPException(
                 status_code=409,
                 detail=(
