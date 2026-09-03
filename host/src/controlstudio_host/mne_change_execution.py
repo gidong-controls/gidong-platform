@@ -226,7 +226,7 @@ def _typed_target_program(transaction: ChangeTransaction) -> dict[str, Any]:
             expected.add("simulation_profile")
         hardware_fields = {"hardware_context_digest", "field_io_bindings"}
         if (
-            set(candidate) not in {expected, expected | hardware_fields}
+            set(candidate) not in (expected, expected | hardware_fields)
             or candidate.get("schema") != patch_contract.candidate_schema
         ):
             raise ChangeExecutionPreconditionError("plan.candidate has an unexpected schema")
