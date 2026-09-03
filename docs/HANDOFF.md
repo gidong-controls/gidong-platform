@@ -63,6 +63,11 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   `MNE_ROW_COPY_AMBIGUOUS: Expected exactly one copied mnemonic row.`로 실패했다.
   오류를 변경 후보 성공으로 전환하거나 무작정 반복하지 않는다. 기존 PID `12492`의
   공용 MNE 행 선택/복사 경로를 진단 중이며 실제 변경 제안·저장·XG-SIM은 여전히 미완료다.
+- 보존된 `artifacts/mcp-sessions/3eee3e09-4070-4c68-96f5-7e466f4470c9/2382d75be6ed/error.json`
+  (위 development LOCALAPPDATA 아래)에 row 0 복사가 실제 11개 전체 명령과 END를
+  반환한 기록이 있다. MCP `9da450e`는 빠른 Ctrl+A 캡처가 fallback할 때 남은 전체
+  선택을 기존 checked first-row primitive로 해제하고 행 읽기를 시작한다. 별도 재시도나
+  지연 반복은 추가하지 않았다. 실제 후속 web run으로 확인한다.
 - 작업 중인 웹은 Codex 내부의 `http://127.0.0.1:8767/` 인증 탭이다. 별도 Edge/Chrome
   창은 확인하지 못했다. 초기 패널 표시 요청은 `queued`였고 선택 탭과 작업 탭도 달랐다.
   07:38에 정상 Launcher `--web-url` handoff로 기존 선택 탭 5를 인증했고, 작업 탭도 5로
