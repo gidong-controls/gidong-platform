@@ -56,6 +56,18 @@ launcher mutex를 사용한다. production 또는 beta의 설정·토큰·DB를 
 Windows의 사용자별 PowerShell 실행 정책을 변경하지 않고, 저장소에 포함된 정확한
 개발 스크립트 한 번에만 `ExecutionPolicy Bypass`를 적용한다.
 
+개발 중 일반 웹 탭을 사용하려면 다음과 같이 실행한다. 기본 PWA 실행과 같은 Host와
+일회성 세션 연결을 사용하며, 이미 준비된 Host에 새 UAC를 요청하지 않는다.
+
+```powershell
+.\scripts\Start-ControlStudio-Development.ps1 -Web
+```
+
+선택한 개발 브라우저로 연결하려면 `-WebUrl`로 발급된 일회성 URL을 그 브라우저에서
+연다. Launcher는 웹의 인증·초기 연결 완료까지 기다린다. 발급 URL은 인증 정보이므로
+문서·로그·커밋에 저장하지 않는다. `-Web`, `-WebUrl`, `-NoOpen`은 동시에 사용할 수 없다.
+일반 주소 `http://127.0.0.1:8767/`만 새 브라우저에서 여는 것은 세션 발급을 대신하지 않는다.
+
 개발 코드를 반영하려면 실행 중인 앱 헤더의 `종료` 확인 화면에서 `코드 다시 불러오기
 (UAC 없음)`을 누른다. 현재 elevated Host가 고정된 self-restart bootstrap을 실행하므로
 추가 `RunAs`/UAC 확인이 없다. bootstrap은 기존 Host가 8767을 반납한 후에만 동일 Python,
@@ -69,6 +81,10 @@ conversation과 두 SQLite DB는 기존 경로를 그대로 사용한다.
 새 Host는 같은 exact identity를 명시적으로 재-attach한다. 기존 named launcher Job에서
 시작한 Host도 reload 진입 시 breakaway 권한을 idempotent하게 갱신하므로 이 수명 분리에
 추가 UAC가 필요하지 않다.
+
+프로세스 생존과 프로젝트 재연결 성공은 별개다. 특히 별도 CLI로 연 창은 해당 실행의
+연결 근거가 제품 MCP에 없을 수 있다. 기존 창 연결이 거절되면 PID/HWND·프로젝트 경로·해시의
+실제 증명 실패를 확인해야 하며, 이를 UAC 거부로 표시하거나 자동으로 IDE를 재실행하지 않는다.
 
 source-development 보조 기동도 동일한 named launcher Job을 사용한다. 따라서 검증을
 마친 XG5000만 문서화된 breakaway 경로를 사용하며, Host/MCP 재시작 후의 exact identity
