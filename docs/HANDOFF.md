@@ -38,10 +38,15 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   이는 Open dialog가 아니라 장식 shadow 후보가 선택된 사례다. semantic dialog wait 수정은
   진행 중이며, 이 기록은 live 인증 성공이나 수정 검증 성공을 뜻하지 않는다. resume32는
   동일 scratch hash와 exact empty XG5000 baseline을 전제로 실행 없이 준비만 됐다.
-- 관련 코드 테스트는 통과했지만 수정 이후 실제 LD 변경·검사·저장·독립 재열기와 PWA
-  사용자 흐름은 아직 성공으로 판정하지 않는다. 현재 live 결과는
-  `artifacts/mne-capability-baseline-cert-20260901-a3/elevated-resume30-certification-receipt.json`
-  및 동명의 log로 확인한다. 파일이 없으면 완료 결과가 아직 없는 것이다.
+- resume33은 Open 명령 전 `XG5000_SEND_INPUT_FOREGROUND_REQUIRED`로 중단됐다. visible
+  PID/HWND만으로 foreground 또는 desktop-session 원인을 추정하지 않으며, Host가 exact
+  foreground proof를 보완 중이다. 이 기록도 인증·LD 작업·Host/PWA 기동 성공을 뜻하지 않는다.
+- 2026-09-03 사용자 지시로 프로젝트 테스트 코드는 삭제됐다. 이 문서의 날짜가 붙은 과거
+  test/receipt 기록은 당시 사실일 뿐 현재 test suite의 존재나 통과 상태를 뜻하지 않는다.
+  실제 LD 변경·검사·저장·독립 재열기와 PWA 사용자 흐름은 아직 성공으로 판정하지 않는다.
+- 정상 개발 제품 경로는 `Start-ControlStudio-Development.ps1` → persistent elevated Host →
+  Agent/MCP → CLI다. MNE certification wrapper와 root Computer Use는 이 Host/PWA 기동의
+  선행조건이나 runtime 의존성이 아니다.
 - UAC는 한 번 요청하고, Windows가 명시적으로 사용자 취소를 반환하면 사용자 재요청까지
   기다린다. 승인 후 내부 실행 실패는 권한 거부로 보고하지 않으며 원인을 수정한다.
   물리 PLC는 장비 확보 후 로드맵이고 현재 검증 대상이 아니다.
