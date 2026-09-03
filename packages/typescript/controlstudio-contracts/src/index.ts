@@ -882,6 +882,7 @@ export interface MneAnchorFocus {
   instructionDigest: string;
   baselineMneSha256: string;
   baselineLdSha256: string;
+  baselineLdCanonicalSha256?: string;
   baselineInstructionCount: number;
 }
 
@@ -1789,6 +1790,7 @@ export interface MneFullProgramApprovedBaseline {
   programId: string;
   programName: string;
   ldPayloadSha256: string;
+  ldCanonicalSha256?: string;
 }
 
 export interface MneFullProgramReplacementChangePlanV2 {
@@ -1823,6 +1825,7 @@ export interface MneSeriesGuardCandidateReceipt {
   programName: string;
   baselineMneSha256: string;
   baselineLdSha256: string;
+  baselineLdCanonicalSha256?: string;
   baselineInstructionCount: number;
   patch: {
     schema: "controlstudio-mne-series-guard-patch/v1";
@@ -1877,6 +1880,7 @@ export interface MneInstructionPatchCandidateReceipt {
   programName: string;
   baselineMneSha256: string;
   baselineLdSha256: string;
+  baselineLdCanonicalSha256?: string;
   baselineInstructionCount: number;
   patch: {
     schema: "controlstudio-mne-instruction-patch/v1";
@@ -1906,6 +1910,7 @@ export interface MneInstructionBatchPatchCandidateReceipt {
   programName: string;
   baselineMneSha256: string;
   baselineLdSha256: string;
+  baselineLdCanonicalSha256?: string;
   baselineInstructionCount: number;
   patches: MneInstructionPatchCandidateReceipt["patch"][];
   targetInstructionCount: number;
@@ -1990,6 +1995,7 @@ export interface MneRungPatchCandidateReceipt {
   programName: string;
   baselineMneSha256: string;
   baselineLdSha256: string;
+  baselineLdCanonicalSha256?: string;
   baselineInstructionCount: number;
   patch: {
     schema: "controlstudio-mne-rung-patch/v1";

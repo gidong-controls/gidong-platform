@@ -217,6 +217,7 @@ def _typed_target_program(transaction: ChangeTransaction) -> dict[str, Any]:
         expected = {
             "schema", "project_sha256", "program_id", "program_name",
             "baseline_mne_sha256", "baseline_ld_sha256",
+            "baseline_ld_canonical_sha256",
             "baseline_instruction_count", patch_contract.candidate_patch_key,
             "target_instruction_count",
             "target_mne_sha256", "design_digest", "target_program_digest",
@@ -346,13 +347,15 @@ def _approved_baseline_binding(transaction: ChangeTransaction) -> dict[str, str]
         transaction.plan.get("baseline_binding"),
         "plan.baseline_binding",
     )
-    if set(binding) != {
+    base_keys = {
         "schema",
         "project_sha256",
         "program_id",
         "program_name",
         "ld_payload_sha256",
-    }:
+    }
+    keys = set(binding)
+    if keys not in (base_keys, base_keys | {"ld_canonical_sha256"}):
         raise ChangeExecutionPreconditionError(
             "plan.baseline_binding has an unexpected contract"
         )
@@ -365,6 +368,20 @@ def _approved_baseline_binding(transaction: ChangeTransaction) -> dict[str, str]
         binding.get("ld_payload_sha256"),
         "plan.baseline_binding.ld_payload_sha256",
     )
+    ld_canonical_sha256 = (
+        _sha256(
+            binding.get("ld_canonical_sha256"),
+            "plan.baseline_binding.ld_canonical_sha256",
+        )
+        if "ld_canonical_sha256" in binding
+        else None
+    )
+    if transaction.plan.get("plan_kind") in MNE_PATCH_PLAN_CONTRACTS and (
+        ld_canonical_sha256 is None
+    ):
+        raise ChangeExecutionPreconditionError(
+            "structural MNE plan requires a canonical LD baseline identity"
+        )
     if (
         binding.get("schema") != MNE_APPROVED_BASELINE_SCHEMA
         or project_sha256 != transaction.target.artifact_hash
@@ -374,13 +391,16 @@ def _approved_baseline_binding(transaction: ChangeTransaction) -> dict[str, str]
         raise ChangeExecutionPreconditionError(
             "plan.baseline_binding differs from the immutable transaction target"
         )
-    return {
+    result = {
         "schema": MNE_APPROVED_BASELINE_SCHEMA,
         "project_sha256": project_sha256,
         "program_id": str(binding["program_id"]),
         "program_name": str(binding["program_name"]),
         "ld_payload_sha256": ld_payload_sha256,
     }
+    if ld_canonical_sha256 is not None:
+        result["ld_canonical_sha256"] = ld_canonical_sha256
+    return result
 
 
 def _validate_private_snapshot(
@@ -446,18 +466,30 @@ def _validate_private_snapshot(
     total_visual_rows = 0
     target_matches = 0
     target_payload_sha256: str | None = None
+    target_canonical_sha256: str | None = None
     for program in programs:
         if (
             not isinstance(program, dict)
             or set(program)
-            != {
+            not in (
+                {
                 "program_id",
                 "name",
                 "payload_sha256",
                 "payload_size",
                 "visual_row_count",
                 "stable_repeat",
-            }
+                },
+                {
+                    "program_id",
+                    "name",
+                    "payload_sha256",
+                    "canonical_sha256",
+                    "payload_size",
+                    "visual_row_count",
+                    "stable_repeat",
+                },
+            )
         ):
             raise ChangeExecutionPreconditionError(
                 "project.snapshot contains an invalid private-digest program receipt"
@@ -486,11 +518,20 @@ def _validate_private_snapshot(
         ):
             target_matches += 1
             target_payload_sha256 = str(program["payload_sha256"])
+            if "canonical_sha256" in program:
+                target_canonical_sha256 = str(program["canonical_sha256"])
     if (
         target_matches != 1
         or snapshot.get("total_visual_rows") != total_visual_rows
         or snapshot.get("project_hash") != approved_baseline.get("project_sha256")
-        or target_payload_sha256 != approved_baseline.get("ld_payload_sha256")
+        or (
+            approved_baseline.get("ld_canonical_sha256") is not None
+            and target_canonical_sha256 != approved_baseline.get("ld_canonical_sha256")
+        )
+        or (
+            approved_baseline.get("ld_canonical_sha256") is None
+            and target_payload_sha256 != approved_baseline.get("ld_payload_sha256")
+        )
     ):
         raise ChangeExecutionPreconditionError(
             "project.snapshot is not bound to the exact replacement program catalog"
@@ -1052,7 +1093,15 @@ def _validate_baseline_receipt(
             "visual_row_count",
         }
         or ld.get("stable_repeat") is not True
-        or ld.get("payload_sha256") != approved_baseline.get("ld_payload_sha256")
+        or (
+            approved_baseline.get("ld_canonical_sha256") is not None
+            and ld.get("canonical_sha256")
+            != approved_baseline.get("ld_canonical_sha256")
+        )
+        or (
+            approved_baseline.get("ld_canonical_sha256") is None
+            and ld.get("payload_sha256") != approved_baseline.get("ld_payload_sha256")
+        )
     ):
         raise ChangeExecutionPreconditionError(
             "MNE baseline receipt is not bound to the exact target and runtime"
@@ -1096,6 +1145,7 @@ def _validate_plan_receipt(
             "target_mne",
             "rollback_mne_sha256",
             "rollback_ld_sha256",
+            "rollback_ld_canonical_sha256",
             "plan_digest",
         },
         label="program.plan_mne_replacement.plan",
@@ -1119,8 +1169,8 @@ def _validate_plan_receipt(
         or plan.get("before_mne_sha256")
         != _object(baseline.get("mne"), "MNE baseline MNE receipt").get("payload_sha256")
         or plan.get("rollback_mne_sha256") != plan.get("before_mne_sha256")
-        or plan.get("rollback_ld_sha256")
-        != _object(baseline.get("ld"), "MNE baseline LD receipt").get("payload_sha256")
+        or plan.get("rollback_ld_canonical_sha256")
+        != _object(baseline.get("ld"), "MNE baseline LD receipt").get("canonical_sha256")
         or set(target_mne)
         != {
             "canonicalizer_version",
@@ -1147,6 +1197,7 @@ def _validate_plan_receipt(
         "before_mne_sha256",
         "rollback_mne_sha256",
         "rollback_ld_sha256",
+        "rollback_ld_canonical_sha256",
     ):
         _sha256(plan.get(field), f"MNE plan {field}")
     _sha256(target_mne.get("payload_sha256"), "MNE plan target payload hash")
@@ -1226,7 +1277,6 @@ def _validate_reopen_receipt(
     transaction: ChangeTransaction,
     plan: Mapping[str, Any],
     expected_mne_sha256: str,
-    expected_ld_payload_sha256: str | None = None,
     expected_ld_canonical_sha256: str | None = None,
     expected_source_pid: int | None = None,
     expected_source_hwnd: int | None = None,
@@ -1267,7 +1317,6 @@ def _validate_reopen_receipt(
         or reopen.get("verified") is not True
         or reopen.get("process_is_independent") is not True
         or reopen.get("stable_readback") is not True
-        or reopen.get("ld_raw_equal") is not True
         or reopen.get("source_pid") != source_pid
         or reopen.get("source_hwnd") != source_hwnd
         or not isinstance(reopen.get("pid"), int)
@@ -1282,10 +1331,6 @@ def _validate_reopen_receipt(
         or reopen.get("program_id") != plan.get("program_id")
         or reopen.get("program_name") != plan.get("program_name")
         or reopen.get("payload_sha256") != expected_mne_sha256
-        or (
-            expected_ld_payload_sha256 is not None
-            and reopen.get("ld_payload_sha256") != expected_ld_payload_sha256
-        )
         or (
             expected_ld_canonical_sha256 is not None
             and reopen.get("ld_canonical_sha256") != expected_ld_canonical_sha256
@@ -1486,19 +1531,16 @@ def _validate_rollback_receipt(
         transaction=transaction,
         plan=plan,
         expected_mne_sha256=baseline_mne_sha256,
-        expected_ld_payload_sha256=baseline_ld_raw_sha256,
         expected_ld_canonical_sha256=baseline_ld_canonical_sha256,
     )
     if (
         rollback.get("verified") is not True
         or rollback.get("program_check_verified") is not True
         or rollback.get("save_verified") is not True
-        or rollback.get("ld_raw_equal") is not True
         or rollback.get("ld_canonical_equal") is not True
         or rollback.get("plan_digest") != plan.get("plan_digest")
         or rollback.get("baseline_digest") != baseline.get("baseline_digest")
         or rollback.get("baseline_ld_raw_sha256") != baseline_ld_raw_sha256
-        or rollback.get("restored_ld_raw_sha256") != baseline_ld_raw_sha256
         or rollback.get("ld_canonical_sha256") != baseline_ld_canonical_sha256
         or rollback.get("project_sha256_after") != reopen.get("project_sha256")
     ):
@@ -4213,7 +4255,6 @@ class MNEChangeExecutionService:
             transaction=transaction,
             plan=pseudo_plan,
             expected_mne_sha256=baseline_mne_sha256,
-            expected_ld_payload_sha256=baseline_ld_raw_sha256,
             expected_ld_canonical_sha256=baseline_ld_canonical_sha256,
             expected_source_pid=expected_source_pid,
             expected_source_hwnd=expected_source_hwnd,
@@ -4222,12 +4263,10 @@ class MNEChangeExecutionService:
             rollback.get("verified") is not True
             or rollback.get("program_check_verified") is not True
             or rollback.get("save_verified") is not True
-            or rollback.get("ld_raw_equal") is not True
             or rollback.get("ld_canonical_equal") is not True
             or rollback.get("plan_digest") != checkpoint.get("mcp_plan_digest")
             or rollback.get("baseline_digest") != checkpoint.get("baseline_digest")
             or rollback.get("baseline_ld_raw_sha256") != baseline_ld_raw_sha256
-            or rollback.get("restored_ld_raw_sha256") != baseline_ld_raw_sha256
             or rollback.get("ld_canonical_sha256") != baseline_ld_canonical_sha256
             or rollback.get("project_sha256_after") != reopen.get("project_sha256")
         ):

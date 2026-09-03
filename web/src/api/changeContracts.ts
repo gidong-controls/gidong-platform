@@ -324,20 +324,33 @@ export function isMneFullProgramReplacementPlan(
   const baseline = value.baselineBinding;
   if (
     !isRecord(baseline) ||
-    !hasExactKeys(baseline, [
+    !(
+      hasExactKeys(baseline, [
       "schema",
       "projectSha256",
       "programId",
       "programName",
       "ldPayloadSha256",
-    ]) ||
+      ]) ||
+      hasExactKeys(baseline, [
+        "schema",
+        "projectSha256",
+        "programId",
+        "programName",
+        "ldPayloadSha256",
+        "ldCanonicalSha256",
+      ])
+    ) ||
     baseline.schema !== "controlstudio-mne-approved-baseline/v1" ||
     typeof baseline.projectSha256 !== "string" ||
     !SHA256.test(baseline.projectSha256) ||
     baseline.programId !== target.programId ||
     baseline.programName !== target.programName ||
     typeof baseline.ldPayloadSha256 !== "string" ||
-    !SHA256.test(baseline.ldPayloadSha256)
+    !SHA256.test(baseline.ldPayloadSha256) ||
+    (baseline.ldCanonicalSha256 !== undefined &&
+      (typeof baseline.ldCanonicalSha256 !== "string" ||
+        !SHA256.test(baseline.ldCanonicalSha256)))
   ) {
     return false;
   }
@@ -498,14 +511,19 @@ function isMnePatchCandidateEnvelope(
     : "patch";
   const candidateKeys = [
     "schema", "projectSha256", "programId", "programName",
-    "baselineMneSha256", "baselineLdSha256", "baselineInstructionCount",
+    "baselineMneSha256", "baselineLdSha256", "baselineLdCanonicalSha256", "baselineInstructionCount",
     patchKey, "targetInstructionCount", "targetMneSha256", "designDigest",
     "targetProgramDigest", ...(schema === "xg5000.mne-rung-patch-candidate/1.0"
       ? ["simulationProfile"] : []), "candidateDigest",
   ];
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, candidateKeys)
+    !(
+      hasExactKeys(value, candidateKeys) ||
+      hasExactKeys(value, candidateKeys.filter(
+        (key) => key !== "baselineLdCanonicalSha256",
+      ))
+    )
   ) {
     return false;
   }
@@ -524,6 +542,9 @@ function isMnePatchCandidateEnvelope(
     [
       value.baselineMneSha256,
       value.baselineLdSha256,
+      ...(value.baselineLdCanonicalSha256 === undefined
+        ? []
+        : [value.baselineLdCanonicalSha256]),
       value.targetMneSha256,
       value.designDigest,
       value.targetProgramDigest,
@@ -550,18 +571,27 @@ function isApprovedBaselineForCandidate(
 ): boolean {
   return (
     isRecord(value) &&
-    hasExactKeys(value, [
+    (hasExactKeys(value, [
       "schema",
       "projectSha256",
       "programId",
       "programName",
       "ldPayloadSha256",
-    ]) &&
+    ]) || hasExactKeys(value, [
+      "schema",
+      "projectSha256",
+      "programId",
+      "programName",
+      "ldPayloadSha256",
+      "ldCanonicalSha256",
+    ])) &&
     value.schema === "controlstudio-mne-approved-baseline/v1" &&
     value.projectSha256 === candidate.projectSha256 &&
     value.programId === candidate.programId &&
     value.programName === candidate.programName &&
-    value.ldPayloadSha256 === candidate.baselineLdSha256
+    (candidate.baselineLdCanonicalSha256 === undefined
+      ? value.ldPayloadSha256 === candidate.baselineLdSha256
+      : value.ldCanonicalSha256 === candidate.baselineLdCanonicalSha256)
   );
 }
 

@@ -552,11 +552,17 @@ function FullProgramTargetReview({
           </dd>
         </div>
         <div>
-          <dt>승인된 LD 기준</dt>
+          <dt>승인된 LD 원본 기준</dt>
           <dd>
             <code>{plan.baselineBinding.ldPayloadSha256.slice(0, 12)}…</code>
           </dd>
         </div>
+        {plan.baselineBinding.ldCanonicalSha256 && (
+          <div>
+            <dt>승인된 LD 의미 기준</dt>
+            <dd><code>{plan.baselineBinding.ldCanonicalSha256.slice(0, 12)}…</code></dd>
+          </div>
+        )}
       </dl>
       <details className="change-full-program-instructions" open>
         <summary>
@@ -674,6 +680,7 @@ function CandidateDigestDetails({
       <div><dt>Instruction count</dt><dd>{receipt.baselineInstructionCount} → {receipt.targetInstructionCount}</dd></div>
       <div><dt>Baseline MNE digest</dt><dd><code>{receipt.baselineMneSha256}</code></dd></div>
       <div><dt>Baseline LD digest</dt><dd><code>{receipt.baselineLdSha256}</code></dd></div>
+      {receipt.baselineLdCanonicalSha256 && <div><dt>Baseline LD canonical digest</dt><dd><code>{receipt.baselineLdCanonicalSha256}</code></dd></div>}
       <div><dt>Target MNE digest</dt><dd><code>{receipt.targetMneSha256}</code></dd></div>
       <div><dt>Target program digest</dt><dd><code>{receipt.targetProgramDigest}</code></dd></div>
       <div><dt>Design digest</dt><dd><code>{receipt.designDigest}</code></dd></div>

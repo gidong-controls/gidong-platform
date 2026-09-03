@@ -2545,7 +2545,7 @@ class MneFullProgramTargetV2(ApiModel):
 
 
 class MneFullProgramBaselineBindingV2(ApiModel):
-    """Host-derived project and raw-LD identity approved for replacement."""
+    """Host-derived project baseline with raw provenance and semantic LD identity."""
 
     schema_value: Literal["controlstudio-mne-approved-baseline/v1"] = Field(
         default=MNE_APPROVED_BASELINE_SCHEMA,
@@ -2554,13 +2554,21 @@ class MneFullProgramBaselineBindingV2(ApiModel):
     project_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     program_id: str = Field(min_length=1, max_length=512)
     program_name: str = Field(min_length=1, max_length=80)
-    ld_payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # The raw digest is retained as capture provenance.  New structural plans
+    # bind their meaning to the canonical digest because the native LD header
+    # contains volatile bytes.
+    ld_payload_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    ld_canonical_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_serializer(mode="wrap")
     def serialize_binding(self, handler: Any) -> dict[str, Any]:
         serialized = handler(self)
         if "schema_value" in serialized:
             serialized["schema"] = serialized.pop("schema_value")
+        if serialized.get("ld_payload_sha256") is None:
+            serialized.pop("ld_payload_sha256", None)
+        if serialized.get("ld_canonical_sha256") is None:
+            serialized.pop("ld_canonical_sha256", None)
         return serialized
 
 
@@ -2649,6 +2657,9 @@ class MneSeriesGuardCandidateV3(ApiModel):
     program_name: str = Field(min_length=1, max_length=80)
     baseline_mne_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     baseline_ld_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    baseline_ld_canonical_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
     baseline_instruction_count: int = Field(ge=2, le=4_095)
     patch: MneSeriesGuardPatchV3
     target_instruction_count: int = Field(ge=2, le=4_096)
@@ -2666,6 +2677,8 @@ class MneSeriesGuardCandidateV3(ApiModel):
         serialized = handler(self)
         if "schema_value" in serialized:
             serialized["schema"] = serialized.pop("schema_value")
+        if serialized.get("baseline_ld_canonical_sha256") is None:
+            serialized.pop("baseline_ld_canonical_sha256", None)
         if serialized.get("hardware_context_digest") is None:
             serialized.pop("hardware_context_digest", None)
             serialized.pop("field_io_bindings", None)
@@ -2690,6 +2703,8 @@ class MneSeriesGuardCandidateV3(ApiModel):
         if self.hardware_context_digest is None:
             unsigned.pop("hardware_context_digest", None)
             unsigned.pop("field_io_bindings", None)
+        if self.baseline_ld_canonical_sha256 is None:
+            unsigned.pop("baseline_ld_canonical_sha256", None)
         if self.candidate_digest != _canonical_sha256(unsigned):
             raise ValueError("candidate.candidateDigest is not canonical")
         return self
@@ -2773,6 +2788,9 @@ class MneInstructionPatchCandidateV4(ApiModel):
     program_name: str = Field(min_length=1, max_length=80)
     baseline_mne_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     baseline_ld_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    baseline_ld_canonical_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
     baseline_instruction_count: int = Field(ge=2, le=4_096)
     patch: MneInstructionPatchV4
     target_instruction_count: int = Field(ge=2, le=4_096)
@@ -2790,6 +2808,8 @@ class MneInstructionPatchCandidateV4(ApiModel):
         serialized = handler(self)
         if "schema_value" in serialized:
             serialized["schema"] = serialized.pop("schema_value")
+        if serialized.get("baseline_ld_canonical_sha256") is None:
+            serialized.pop("baseline_ld_canonical_sha256", None)
         if serialized.get("hardware_context_digest") is None:
             serialized.pop("hardware_context_digest", None)
             serialized.pop("field_io_bindings", None)
@@ -2821,6 +2841,8 @@ class MneInstructionPatchCandidateV4(ApiModel):
         if self.hardware_context_digest is None:
             unsigned.pop("hardware_context_digest", None)
             unsigned.pop("field_io_bindings", None)
+        if self.baseline_ld_canonical_sha256 is None:
+            unsigned.pop("baseline_ld_canonical_sha256", None)
         if self.candidate_digest != _canonical_sha256(unsigned):
             raise ValueError("candidate.candidateDigest is not canonical")
         return self
@@ -2838,6 +2860,9 @@ class MneInstructionBatchPatchCandidateV5(ApiModel):
     program_name: str = Field(min_length=1, max_length=80)
     baseline_mne_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     baseline_ld_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    baseline_ld_canonical_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
     baseline_instruction_count: int = Field(ge=2, le=4_096)
     patches: list[MneInstructionPatchV4] = Field(min_length=2, max_length=16)
     target_instruction_count: int = Field(ge=2, le=4_096)
@@ -2855,6 +2880,8 @@ class MneInstructionBatchPatchCandidateV5(ApiModel):
         serialized = handler(self)
         if "schema_value" in serialized:
             serialized["schema"] = serialized.pop("schema_value")
+        if serialized.get("baseline_ld_canonical_sha256") is None:
+            serialized.pop("baseline_ld_canonical_sha256", None)
         if serialized.get("hardware_context_digest") is None:
             serialized.pop("hardware_context_digest", None)
             serialized.pop("field_io_bindings", None)
@@ -2893,6 +2920,8 @@ class MneInstructionBatchPatchCandidateV5(ApiModel):
         if self.hardware_context_digest is None:
             unsigned.pop("hardware_context_digest", None)
             unsigned.pop("field_io_bindings", None)
+        if self.baseline_ld_canonical_sha256 is None:
+            unsigned.pop("baseline_ld_canonical_sha256", None)
         if self.candidate_digest != _canonical_sha256(unsigned):
             raise ValueError("candidate.candidateDigest is not canonical")
         return self
@@ -3082,6 +3111,9 @@ class MneRungPatchCandidateV6(ApiModel):
     program_name: str = Field(min_length=1, max_length=80)
     baseline_mne_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     baseline_ld_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    baseline_ld_canonical_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
     baseline_instruction_count: int = Field(ge=2, le=4_096)
     patch: MneRungPatchV6
     target_instruction_count: int = Field(ge=2, le=4_096)
@@ -3100,6 +3132,8 @@ class MneRungPatchCandidateV6(ApiModel):
         serialized = handler(self)
         if "schema_value" in serialized:
             serialized["schema"] = serialized.pop("schema_value")
+        if serialized.get("baseline_ld_canonical_sha256") is None:
+            serialized.pop("baseline_ld_canonical_sha256", None)
         if serialized.get("hardware_context_digest") is None:
             serialized.pop("hardware_context_digest", None)
             serialized.pop("field_io_bindings", None)
@@ -3268,6 +3302,8 @@ class MneRungPatchCandidateV6(ApiModel):
         if self.hardware_context_digest is None:
             unsigned.pop("hardware_context_digest", None)
             unsigned.pop("field_io_bindings", None)
+        if self.baseline_ld_canonical_sha256 is None:
+            unsigned.pop("baseline_ld_canonical_sha256", None)
         if self.candidate_digest != _canonical_sha256(unsigned):
             raise ValueError("candidate.candidateDigest is not canonical")
         return self
@@ -3390,7 +3426,15 @@ def _validate_mne_candidate_plan(plan: Any, candidate: Any) -> None:
         plan.baseline_binding.project_sha256 != candidate.project_sha256
         or plan.baseline_binding.program_id != candidate.program_id
         or plan.baseline_binding.program_name != candidate.program_name
-        or plan.baseline_binding.ld_payload_sha256 != candidate.baseline_ld_sha256
+        or (
+            candidate.baseline_ld_canonical_sha256 is not None
+            and plan.baseline_binding.ld_canonical_sha256
+            != candidate.baseline_ld_canonical_sha256
+        )
+        or (
+            candidate.baseline_ld_canonical_sha256 is None
+            and plan.baseline_binding.ld_payload_sha256 != candidate.baseline_ld_sha256
+        )
     ):
         raise ValueError("plan.baselineBinding must match the compiler candidate")
     try:
@@ -4524,6 +4568,9 @@ class MneAnchorFocusV1(ApiModel):
     instruction_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     baseline_mne_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     baseline_ld_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    baseline_ld_canonical_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
     baseline_instruction_count: int = Field(ge=1, le=4_096)
 
     @model_validator(mode="after")

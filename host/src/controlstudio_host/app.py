@@ -5309,6 +5309,10 @@ def create_app(
             raise ChangeExecutionPreconditionError(
                 "MNE patch candidate differs from the current Host engineering target"
             )
+        if candidate.baseline_ld_canonical_sha256 is None:
+            raise ChangeExecutionPreconditionError(
+                "MNE patch candidate lacks a canonical LD baseline identity"
+            )
         observed = mne_patch_candidate_for_run(
             plan_kind=plan.plan_kind,
             conversation_id=conversation_id,
@@ -5324,8 +5328,15 @@ def create_app(
             program_id=candidate.program_id,
             program_name=candidate.program_name,
             ld_payload_sha256=candidate.baseline_ld_sha256,
+            ld_canonical_sha256=candidate.baseline_ld_canonical_sha256,
         )
-        if plan.baseline_binding is not None and plan.baseline_binding != baseline:
+        if plan.baseline_binding is not None and (
+            plan.baseline_binding.project_sha256 != baseline.project_sha256
+            or plan.baseline_binding.program_id != baseline.program_id
+            or plan.baseline_binding.program_name != baseline.program_name
+            or plan.baseline_binding.ld_canonical_sha256
+            != baseline.ld_canonical_sha256
+        ):
             raise ChangeExecutionPreconditionError(
                 "MNE patch approved baseline differs from its compiler candidate"
             )
@@ -10314,6 +10325,7 @@ def create_app(
                         "expected_instruction_digest": instruction_digest,
                         "expected_mne_sha256": candidate.baseline_mne_sha256,
                         "expected_ld_sha256": candidate.baseline_ld_sha256,
+                        "expected_ld_canonical_sha256": candidate.baseline_ld_canonical_sha256,
                         "expected_instruction_count": candidate.baseline_instruction_count,
                     },
                 )
@@ -10334,6 +10346,9 @@ def create_app(
                         "instruction_digest": raw_focus.get("instruction_digest"),
                         "baseline_mne_sha256": raw_focus.get("baseline_mne_sha256"),
                         "baseline_ld_sha256": raw_focus.get("baseline_ld_sha256"),
+                        "baseline_ld_canonical_sha256": raw_focus.get(
+                            "baseline_ld_canonical_sha256"
+                        ),
                         "baseline_instruction_count": candidate.baseline_instruction_count,
                     }
                 )
@@ -10360,8 +10375,8 @@ def create_app(
                     candidate.baseline_mne_sha256,
                 )
                 or not hmac.compare_digest(
-                    focused_anchor.baseline_ld_sha256,
-                    candidate.baseline_ld_sha256,
+                    str(focused_anchor.baseline_ld_canonical_sha256 or ""),
+                    str(candidate.baseline_ld_canonical_sha256 or ""),
                 )
             ):
                 raise HTTPException(
