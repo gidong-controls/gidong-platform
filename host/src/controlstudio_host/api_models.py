@@ -3242,7 +3242,7 @@ class MneRungPatchCandidateV6(ApiModel):
                     name, drive, observe = step.get("name"), step.get("drive"), step.get("observe")
                     if (
                         not isinstance(name, str)
-                        or re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", name) is None
+                        or not name.strip()
                         or name in names
                         or not isinstance(drive, dict)
                         or not drive

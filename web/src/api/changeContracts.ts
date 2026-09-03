@@ -899,7 +899,7 @@ function isMneRungXgSimProfile(value: unknown, targetRungDigest: unknown): boole
     const names = new Set<string>();
     let drives: string[] | null = null;
     return scenario.steps.every((step) => {
-      if (!isRecord(step) || !hasExactKeys(step, ["name", "drive", "observe"]) || typeof step.name !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(step.name) || names.has(step.name) || !isRecord(step.drive) || !isRecord(step.observe)) return false;
+      if (!isRecord(step) || !hasExactKeys(step, ["name", "drive", "observe"]) || typeof step.name !== "string" || !step.name.trim() || names.has(step.name) || !isRecord(step.drive) || !isRecord(step.observe)) return false;
       names.add(step.name);
       const drive = step.drive as Record<string, unknown>;
       const observe = step.observe as Record<string, unknown>;
