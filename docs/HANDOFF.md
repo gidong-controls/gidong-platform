@@ -74,9 +74,19 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   `error.json`에는 row 0에서 전체 11행을 복사한 기록이 있다. MCP editable source와
   실제 caller (`derive_supported_mne_adapter_binding -> capture_full_mne ->
   _discover_exact_mne_row_count -> _read_il_rows_with_view`)까지 확인했다.
-  행 수 탐색의 speculative Ctrl+A 빠른 분기를 제거해 행별 읽기와 뒤의 명시적 전체
-  범위 캡처를 분리하는 후속 수정이 필요하다. 앞선 첫 행 클릭 수정만을 해결 완료로
-  보고하지 않는다.
+  MCP `a557424`에서 행 수 탐색의 speculative Ctrl+A 빠른 분기를 제거해 행별 읽기와
+  뒤의 명시적 전체 범위 캡처를 분리했다. 후속 실제 run으로 확인했으며, 앞선 첫 행
+  클릭 수정만을 해결 완료로 보고하지 않는다.
+- 같은 대화의 run `190c8d56-2aee-4843-b50a-d433bc67d0ae`에서 event `3626` compiler가
+  10초 만에 성공했다. event `3627`의 후보 근거 `71641432-7f05-590b-91bc-6f3356e27a3b`는
+  기존 11개 명령을 보존한 13개 명령과 유효한 XG-SIM 10단계 profile을 포함한다.
+  START/STOP만 drive하고 M00010/M00030을 observe하며, START 유지 중 STOP 해제 시
+  재기동 금지와 START 해제·재누름 후 재시작까지 포함한다. 한글 단계 이름도 Host에
+  정상 수용됐다. mission revision 6은 이 후보로 `propose_offline_rung_patch`를 호출하는
+  next action을 active 상태로 저장했다. 그러나 다음 분석 응답이 event `3635`에서
+  `agent_output_contract / engineering_analysis / model_retry / structured_output_contract`로
+  실패했다. 아직 proposal 도구 실행·승인 transaction·변경 적용은 없으며, 성공한 후보와
+  같은 프로젝트를 보존한 채 이 후속 연결 오류를 진단한다. XG5000 PID는 `12492`다.
 - 작업 중인 웹은 Codex 내부의 `http://127.0.0.1:8767/` 인증 탭이다. 별도 Edge/Chrome
   창은 확인하지 못했다. 초기 패널 표시 요청은 `queued`였고 선택 탭과 작업 탭도 달랐다.
   07:38에 정상 Launcher `--web-url` handoff로 기존 선택 탭 5를 인증했고, 작업 탭도 5로
