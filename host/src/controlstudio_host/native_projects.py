@@ -3693,6 +3693,7 @@ class NativeProjectService:
         existing_session: dict[str, Any] | None = None,
         reopen_verification: dict[str, Any] | None = None,
         simulation_verification: dict[str, Any] | None = None,
+        allow_saved_no_source_recovery: bool = False,
     ) -> tuple[NativeProjectOperation, bool]:
         post_create_stage = "workspace_capture"
         try:
@@ -3719,6 +3720,7 @@ class NativeProjectService:
                     registration=registration,
                     build_bundle=build_bundle,
                     existing_session=existing_session,
+                    allow_saved_no_source_recovery=allow_saved_no_source_recovery,
                 )
             result["reopenVerification"] = reopen_verification
             self._repository.checkpoint_execution(spec.operation_id, result)
@@ -3883,30 +3885,59 @@ class NativeProjectService:
             expected_reopened_process_create_time: float | None = None
             if reopened_pid is None or reopened_hwnd is None:
                 working = registration["workspace"].get("working_copy")
+                raw_instances = await self._gateway.call_read_tool(
+                    "xg5000.instances", {}
+                )
+                instances = (
+                    raw_instances.get("instances")
+                    if isinstance(raw_instances, dict)
+                    else None
+                )
+                no_xg5000_instances = isinstance(instances, list) and not instances
                 failed_target = self._failed_reopen_target_matches_workspace(
                     reopen.get("reopenTarget"),
                     working=working,
                 )
+                if no_xg5000_instances:
+                    # A failed prior reopen may retain evidence of a child that no
+                    # longer exists.  With every XG5000 instance closed, reopen the
+                    # same protected copy instead of attempting to rebind that stale
+                    # PID/HWND.
+                    if not self._repository.begin_completed_verification(operation.operation_id):
+                        raise NativeProjectConflict(
+                            "native project changed before completed verification continuation"
+                        )
+                    result["resumeProvenance"] = {
+                        "lifecycleMode": "completed_post_create_verification_continuation",
+                        "noNewDialog": True,
+                        "noIlInsert": True,
+                        "explicitSavedBuildReopen": True,
+                        "savedBuildRecoveryWithoutLiveSource": True,
+                    }
+                    return (
+                        await self._complete_verified_native_tail(
+                            spec,
+                            build_bundle=build_bundle,
+                            result=result,
+                            created=False,
+                            resume=True,
+                            registration=registration,
+                            allow_saved_no_source_recovery=True,
+                        )
+                    )[0]
                 if failed_target is None:
                     # An unsuccessful launch may have cleaned up its own child.
                     # An explicit resume can open the saved working copy once;
                     # never strand the user behind a selector with no candidate.
-                    raw_instances = await self._gateway.call_read_tool(
-                        "xg5000.instances", {}
+                    original_source_alone = (
+                        isinstance(instances, list)
+                        and len(instances) == 1
+                        and isinstance(instances[0], dict)
+                        and instances[0].get("pid") == pid
+                        and instances[0].get("hwnd") == hwnd
+                        and instances[0].get("visible") is True
                     )
-                    instances = (
-                        raw_instances.get("instances")
-                        if isinstance(raw_instances, dict)
-                        else None
-                    )
-                    if (
-                        not isinstance(instances, list)
-                        or len(instances) != 1
-                        or not isinstance(instances[0], dict)
-                        or instances[0].get("pid") != pid
-                        or instances[0].get("hwnd") != hwnd
-                        or instances[0].get("visible") is not True
-                    ):
+                    if not original_source_alone:
                         raise NativeProjectConflict(
                             "saved-build reopen requires the original source alone; "
                             "select an existing reopened XG5000 target if another window is present"
@@ -3920,6 +3951,7 @@ class NativeProjectService:
                         "noNewDialog": True,
                         "noIlInsert": True,
                         "explicitSavedBuildReopen": True,
+                        "savedBuildRecoveryWithoutLiveSource": False,
                     }
                     return (
                         await self._complete_verified_native_tail(
@@ -5608,6 +5640,7 @@ class NativeProjectService:
         registration: dict[str, Any],
         build_bundle: dict[str, Any],
         existing_session: dict[str, Any] | None = None,
+        allow_saved_no_source_recovery: bool = False,
     ) -> dict[str, Any]:
         workspace = registration.get("workspace")
         compiled = build_bundle.get("compiledProgram")
@@ -5657,14 +5690,35 @@ class NativeProjectService:
         reopened_hwnd = 0
         try:
             if existing_session is None:
+                open_arguments = {
+                    "workspace_id": workspace_id,
+                    "expected_working_hash": project_hash,
+                    "timeout_seconds": 60.0,
+                }
+                expected_independent_from_pid: int | None = source_pid
+                if allow_saved_no_source_recovery:
+                    raw_instances = await self._gateway.call_read_tool(
+                        "xg5000.instances", {}
+                    )
+                    instances = (
+                        raw_instances.get("instances")
+                        if isinstance(raw_instances, dict)
+                        else None
+                    )
+                    if not isinstance(instances, list) or instances:
+                        raise NativeProjectEvidenceError(
+                            "saved-build recovery requires all XG5000 instances to remain closed"
+                        )
+                    # The historical source is gone.  Opening the exact protected
+                    # copy is still controlled and its new PID must remain distinct
+                    # from that historical PID, but there is no live process for the
+                    # launcher to prove independence from.
+                    expected_independent_from_pid = None
+                else:
+                    open_arguments["independent_from_pid"] = source_pid
                 launch = await self._gateway.call_workspace_tool(
                     "xg5000.open_project",
-                    {
-                        "workspace_id": workspace_id,
-                        "expected_working_hash": project_hash,
-                        "independent_from_pid": source_pid,
-                        "timeout_seconds": 60.0,
-                    },
+                    open_arguments,
                 )
                 if not isinstance(launch, dict):
                     raise NativeProjectEvidenceError(
@@ -5675,7 +5729,11 @@ class NativeProjectService:
                     launch.get("ok") is not True
                     or launch.get("verified") is not True
                     or launch.get("identity_assurance") != "controlled_launch_read_only"
-                    or launch.get("independent_from_pid") != source_pid
+                    or (
+                        expected_independent_from_pid is not None
+                        and launch.get("independent_from_pid")
+                        != expected_independent_from_pid
+                    )
                     or launch.get("process_is_independent") is not True
                     or launch.get("working_path") != project_path
                     or launch.get("working_hash") != project_hash
