@@ -48,8 +48,14 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   `UI 레더 수직검증 20260817`, working SHA `e0eab4…81db`, official passed/closed binding을 기록했다.
 - 이 receipt는 `official_open_binding_verified:true`/`native_file_usage_verified:false`다. 같은 PID
   `list-programs`는 `MainProgram` `ld:55e388e7aea7a8ce`를 `sha_bound_project_xml`(live catalog false)로 반환했다.
-- 이는 Host/PWA 통합 또는 `read-ld` 성공이 아니다. 앞선 PS5 elevated JSON quoting 실패는 제품
-  JSON 문제가 아니며, 직접 실행은 PS7.6.4 Standard native arguments를 사용했다.
+- 2026-09-03 15:33 KST elevated read/check executor PID `7784`는 같은 XG PID `3948`/HWND
+  `787958`에서 `read-ld` exit 0, `stable_repeat:true`, decoded SHA
+  `77687de1bf98820ffefef8d5b354151ec48ef0a2fd120152bf62d3d8e1972989`를 기록했다.
+- readback은 2 visual rows, `P0000 AND P0001 AND P0002 → P0020` 및 `END`이고 project SHA는
+  전후 `e0eab4…81db`로 동일하다. Program Check는 resource command `876`의 actual dialog 뒤
+  error/warning `0`, `status:passed`, `verified:true`를 반환했다.
+- 원본/working copy는 수정·저장하지 않았고 새 XG5000도 실행하지 않았다. 이는 Agent/PWA 통합이나
+  LD 생성 완료가 아니다. 앞선 medium read `Win32 error 5` 뒤 elevated pair만 성공했다.
 - Platform `16a661f`는 복구 두 경로가 launch receipt를 attached-session의 옛 assurance 문자열과
   비교하던 오류를 수정했다. PID/HWND/hash 및 후속 독립 readback은 유지한다. 이 Host 수정은
   아직 실행 중 프로세스에 반영되지 않았으며, 해당 복구 실행 전 정상 Host 재시작이 필요하다.
