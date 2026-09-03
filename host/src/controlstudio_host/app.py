@@ -14022,6 +14022,7 @@ def create_app(
     )
     async def attach_xg5000_v1(
         body: AttachXG5000RequestV1,
+        request: Request,
         _target_lease: None = Depends(target_switch_lease),
     ) -> AttachXG5000ResponseV1:
         working_copy = (
