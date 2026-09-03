@@ -27,6 +27,13 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   후보 자체의 digest 검증과 실제 MNE 내용·프로젝트 경로/파일 binding은 유지한다.
   Platform 웹 production build까지 완료했다. 정적 점검 통과가 실사용 변경 성공을
   뜻하지는 않으며, 아래 실제 run 실패 기록과 아직 미실행인 변경 단계는 그대로다.
+- 위 묶음을 Host PID `15168`로 UAC 없이 리로드하고 기존 XG5000 PID `12492`를
+  연결했다. 최신 정상 UI 대화 `ce6523b3-f02c-47ae-a81e-0a83cb4f6b8d`의 run
+  `e7c8310b-ffb2-42f1-9980-9d3ac0aaef5e`는 event `3500` 프로그램 목록과 `3505` LD
+  읽기가 성공했다. 이후 event `3509`에서 `agent_output_contract`로 실패했다.
+  안전 진단은 `engineering_analysis / model_retry / structured_output_contract`이며
+  이전의 `continuation_contract`와 동일한 오류라고 추정하지 않는다. mission revision 1은
+  active로 남았고 후보·제안·변경 실행은 없었다. 이 대화와 원본 프로젝트를 보존한다.
 - 작업 중인 웹은 Codex 내부의 `http://127.0.0.1:8767/` 인증 탭이다. 별도 Edge/Chrome
   창은 확인하지 못했다. 초기 패널 표시 요청은 `queued`였고 선택 탭과 작업 탭도 달랐다.
   07:38에 정상 Launcher `--web-url` handoff로 기존 선택 탭 5를 인증했고, 작업 탭도 5로
