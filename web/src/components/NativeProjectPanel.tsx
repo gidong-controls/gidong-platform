@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { hostApi, HostApiError } from "../api/client";
 import type {
   CompiledEngineeringPlanNativeCollectionScope,
@@ -1442,8 +1442,7 @@ export function NativeProjectPanel({
   const [operation, setOperation] = useState<NativeProjectOperation | null>(
     null,
   );
-  const handoffInFlightRef = useRef<string | null>(null);
-  const handoffCompletedRef = useRef<string | null>(null);
+  const [startingEngineering, setStartingEngineering] = useState(false);
   const reviewedConfigurationLocked = Boolean(
     reviewedPlan && reviewedProjectName && reviewedTechnicalConfiguration,
   );
@@ -1622,55 +1621,46 @@ export function NativeProjectPanel({
     return () => controller.abort();
   }, [initialNativeProjectId]);
 
-  useEffect(() => {
+  const engineeringWorkspaceReady = (() => {
     if (!operation || !isVerifiedCompletion(operation)) {
-      return;
+      return false;
     }
     const acceptedWorkspace =
       operation.result.workspaceRegistration?.workspace;
     const currentRevision =
       status.workspace?.revision ?? status.workspace?.artifactHash;
-    if (
-      !acceptedWorkspace ||
-      status.engineeringSystem.readReady !== true ||
-      !status.engineeringSystem.sessionId ||
-      !status.workspace ||
-      status.workspace.workspaceId !== acceptedWorkspace.workspaceId ||
-      currentRevision !== acceptedWorkspace.revisionId
-    ) {
+    return Boolean(
+      acceptedWorkspace &&
+        status.engineeringSystem.readReady === true &&
+        status.engineeringSystem.sessionId &&
+        status.workspace &&
+        status.workspace.workspaceId === acceptedWorkspace.workspaceId &&
+        currentRevision === acceptedWorkspace.revisionId,
+    );
+  })();
+
+  const startEngineering = async (): Promise<void> => {
+    if (!operation || !engineeringWorkspaceReady) {
+      setNotice(
+        "현재 보호 작업공간과 읽기 전용 분석 세션이 일치한 뒤 작업을 시작할 수 있습니다.",
+      );
       return;
     }
-    const handoffKey = [
-      operation.nativeProjectId,
-      status.workspace.workspaceId,
-      currentRevision,
-      status.engineeringSystem.sessionId,
-    ].join(":");
-    if (
-      handoffCompletedRef.current === handoffKey ||
-      handoffInFlightRef.current === handoffKey
-    ) {
-      return;
+    setStartingEngineering(true);
+    setNotice("");
+    try {
+      await onEngineeringReady(operation, status);
+    } catch (error: unknown) {
+      setNotice(
+        errorMessage(
+          error,
+          "Accepted project could not be transferred to its engineering conversation.",
+        ),
+      );
+    } finally {
+      setStartingEngineering(false);
     }
-    handoffInFlightRef.current = handoffKey;
-    void onEngineeringReady(operation, status)
-      .then(() => {
-        handoffCompletedRef.current = handoffKey;
-      })
-      .catch((error: unknown) => {
-        setNotice(
-          errorMessage(
-            error,
-            "Accepted project could not be transferred to its engineering conversation.",
-          ),
-        );
-      })
-      .finally(() => {
-        if (handoffInFlightRef.current === handoffKey) {
-          handoffInFlightRef.current = null;
-        }
-      });
-  }, [onEngineeringReady, operation, status]);
+  };
 
   const validate = (): string | null => {
     if (!effectiveProjectName) {
@@ -2664,6 +2654,38 @@ export function NativeProjectPanel({
               )}
             </dl>
             )}
+
+          {isVerifiedCompletion(operation) && (
+            <section className="native-project-recovery">
+              <div>
+                <p className="eyebrow">ENGINEERING HANDOFF</p>
+                <h4>이 프로젝트로 작업 시작</h4>
+                <p>
+                  현재 보호 작업 복사본과 연결된 읽기 전용 분석 세션을 사용해
+                  엔지니어링 대화를 엽니다. 새 XG5000 실행과 PLC 쓰기는 하지
+                  않습니다.
+                </p>
+              </div>
+              {!engineeringWorkspaceReady && (
+                <p className="native-project-recovery-warning">
+                  현재 분석 세션 연결 상태를 확인하는 중입니다. 연결이 완료되면
+                  이 버튼을 사용할 수 있습니다.
+                </p>
+              )}
+              <div className="native-project-recovery-actions">
+                <button
+                  className="button primary-button"
+                  type="button"
+                  disabled={busy || startingEngineering || !engineeringWorkspaceReady}
+                  onClick={() => void startEngineering()}
+                >
+                  {startingEngineering
+                    ? "엔지니어링 대화 여는 중…"
+                    : "이 프로젝트로 작업 시작"}
+                </button>
+              </div>
+            </section>
+          )}
 
           {simulationTrial?.state === "OBSERVING" && (
             <section
