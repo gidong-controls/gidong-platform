@@ -21,8 +21,9 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 ## 2026-09-04 현재 LD 변경 작업
 
 - 작업 중인 웹은 Codex 내부의 `http://127.0.0.1:8767/` 인증 탭이다. 별도 Edge/Chrome
-  창은 확인하지 못했다. Codex 패널 표시 요청도 `queued`였으므로 내부 탭을 조작할 수
-  있다는 사실을 사용자 화면에 표시됐다는 뜻으로 보고하지 않는다.
+  창은 확인하지 못했다. 초기 패널 표시 요청은 `queued`였고 선택 탭과 작업 탭도 달랐다.
+  07:38에 정상 Launcher `--web-url` handoff로 기존 선택 탭 5를 인증했고, 작업 탭도 5로
+  통일한 뒤 `browserVisible=true`와 선택 탭 일치를 확인했다. 당시 웹 화면 캡처도 제공했다.
 - 기존 XG5000 PID `12492` / HWND `1901812`, workspace
   `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`를 유지한다. 새 XG5000을 실행하거나 기존 창을
   종료하지 않았다. 코드 반영은 실행 중인 Host의 UAC 없는 재로드로 수행했다.
@@ -42,12 +43,25 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   pending authority로 이어지게 한다. 실행 이후 terminal Host outcome은 오래된 후보보다
   우선한다. 한 번의 잘못된 완료 기록을 위한 별도 복구 예외는 `f7c70a5`로 제거했다.
   Host/UI에 복구 특례는 추가하지 않았다.
-- 현재 대화는 정상 UI의 새 엔지니어링 작업으로 만든
+- 최근 대화는 정상 UI의 새 엔지니어링 작업으로 만든
   `62c20e54-b378-43fd-9916-ae6d19047785`다. 기존 프로젝트와 PID는 유지하고 원래 목표를
   재전달했다. run `bce62cf3-b7b7-424c-9670-3ab7f085cd48`에서 프로그램 목록(event `3454`),
-  LD 읽기(event `3459`)가 성공했으며 이후 후보·실제 제안·적용 결과는 실행 기록에서
-  확인해야 한다. 이 run 시작 시 MCP에는 `8dbafb5`까지 로드됐고 `2d32d26`은 다음 코드
-  리로드부터 반영된다. 성공 후보나 화면의 완료 문구만으로 전체 완료를 보고하지 않는다.
+  LD 읽기(event `3459`)가 성공했으나 이후 `continuation_contract`로 실패했다.
+  정상 UI 재개의 run `e3b5ca1c-4218-4dfe-81af-009d51fbffd4`는 compiler event `3481`의
+  시뮬레이션 이름 ValueError 후에도 revision 4를 잘못 완료 처리했다. 추가 rung 적용이나
+  XG-SIM 완료가 아니다. 대화 기록은 보존한다.
+- Agent `3514d89`는 LD/최신 compiler 오류→정정 컴파일→후보→실제 제안의 판단을 한
+  함수로 공유한다. pending authority와 terminal Host outcome이 다음 단계를 결정한다.
+  Host `5fb8af3`은 offline candidate 작업의 terminal outcome 없는 완료를 거부한다.
+  MCP `a306270`은 화면 표시용 simulation phase label의 불필요한 영문 식별자 제한을
+  compiler와 native simulator에서 함께 제거했다. 이 묶음은 코드 리로드했으나 아직
+  이후 새 실사용 run을 통과한 결과는 없다.
+- 해당 리로드 때 기존 인증 탭은 일시적 연결 거부 오류 페이지로 전환됐고, 이후 조작은
+  도구의 `data:` 오류 페이지 URL 제한에 막혔다. 로컬 listener와 기존 XG5000은 살아 있다.
+  그 오류 탭이 아니라 이미 열린 정상 HTTP 탭 5를 위 Launcher 경로로 인증해 복구했다.
+  Launcher observation `2419c537-3591-487e-b5bb-75625742ecc7`는
+  `elevation_relaunch_requested=false`, `elevated_host_retention_verified=true`다.
+  localhost 자체가 금지됐다거나 새 UAC가 필요했다고 보고하지 않는다.
 - MCP `7a9778c`는 END 인수에 `operand: null`을 명시한다. Agent `28cf0e4`와 Host
   `7599765` / `d3ac932`는 읽기 전용 후보 컴파일의 ValueError를 성공 근거가 아닌 오류
   피드백으로 전달한다. 권한·통신 오류나 변경 실행을 자동 재시도하는 기능은 아니다.
