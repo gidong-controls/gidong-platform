@@ -8,6 +8,7 @@ import type {
   EngineeringProgramsResponse,
   AttachXG5000Request,
   AttachXG5000Response,
+  PrepareOfflineCandidateSessionRequest,
   PrepareOfflineCandidateSessionResponse,
   ReviewedNoSaveCloseRequest,
   ReviewedNoSaveCloseResponse,
@@ -638,10 +639,12 @@ export class HostApiClient {
     });
   }
 
-  prepareOfflineCandidateSession(): Promise<PrepareOfflineCandidateSessionResponse> {
+  prepareOfflineCandidateSession(
+    request: PrepareOfflineCandidateSessionRequest,
+  ): Promise<PrepareOfflineCandidateSessionResponse> {
     return this.request<PrepareOfflineCandidateSessionResponse>(
       "/api/v1/engineering/offline-candidate-session",
-      { method: "POST" },
+      { method: "POST", body: JSON.stringify(request) },
     );
   }
 

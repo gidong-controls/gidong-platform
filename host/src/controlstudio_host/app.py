@@ -44,6 +44,7 @@ from .api_models import (
     AgentStatusV1,
     AttachXG5000RequestV1,
     AttachXG5000ResponseV1,
+    PrepareOfflineCandidateSessionRequestV1,
     PrepareOfflineCandidateSessionResponseV1,
     BootstrapV1,
     BrowserSessionV1,
@@ -14268,6 +14269,7 @@ def create_app(
     )
     async def prepare_offline_candidate_session_v1(
         request: Request,
+        body: PrepareOfflineCandidateSessionRequestV1,
         _csrf: None = Depends(require_browser_csrf),
         _target_lease: None = Depends(target_switch_lease),
     ) -> PrepareOfflineCandidateSessionResponseV1:
@@ -14288,6 +14290,18 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="오프라인 후보에는 현재 보호 작업공간이 필요합니다.",
+            )
+        conversation_before_bind = store.get_conversation(body.conversation_id)
+        if conversation_before_bind is None:
+            raise HTTPException(status_code=404, detail="현재 대화를 찾지 못했습니다.")
+        if (
+            conversation_before_bind.workflow != "engineering"
+            or conversation_before_bind.workspace_id != active_workspace.get("workspace_id")
+            or conversation_before_bind.revision_id != active_workspace.get("revision_id")
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="선택한 대화와 현재 작업 복사본이 다릅니다.",
             )
         provenance = active_workspace.get("provenance")
         operation_id = (
@@ -14347,12 +14361,23 @@ def create_app(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="MCP가 오프라인 후보 PID/작업 복사본 결합을 완전히 확인하지 못했습니다.",
             )
+        try:
+            store.rebind_engineering_conversation_session(
+                conversation_id=body.conversation_id,
+                workspace_id=str(active_workspace["workspace_id"]),
+                revision_id=str(active_workspace["revision_id"]),
+                engineering_session_id=str(validated["session_id"]),
+                reason="offline_candidate_preparation",
+            )
+        except EngineeringMissionConflict as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         clear_ls_controller_target()
         bound_session = bind_engineering_session(validated)
         store.append_event(
             event_type="engineering.offline_candidate_bound",
             payload={
                 "actorId": _request_actor_id(request),
+                "conversationId": body.conversation_id,
                 "workspaceId": active_workspace.get("workspace_id"),
                 "revisionId": active_workspace.get("revision_id"),
                 "nativeProjectId": operation_id,

@@ -1606,6 +1606,10 @@ export interface AttachXG5000Response {
   session: Record<string, unknown>;
 }
 
+export interface PrepareOfflineCandidateSessionRequest {
+  conversationId: string;
+}
+
 export interface PrepareOfflineCandidateSessionResponse {
   status: "offline_candidate_bound";
   session: Record<string, unknown>;

@@ -4547,6 +4547,10 @@ class AttachXG5000ResponseV1(ApiModel):
     session: EngineeringSessionV1
 
 
+class PrepareOfflineCandidateSessionRequestV1(ApiModel):
+    conversation_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
+
+
 class PrepareOfflineCandidateSessionResponseV1(ApiModel):
     """A prepared candidate remains subject to the normal approval broker."""
 

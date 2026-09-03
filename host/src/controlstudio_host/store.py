@@ -2590,6 +2590,7 @@ class HostStore:
         if reason not in {
             "engineering_message_submission",
             "engineering_mission_resume",
+            "offline_candidate_preparation",
         }:
             raise EngineeringMissionConflict("mission session rebind reason is invalid")
         timestamp = _utc_now()
@@ -2616,9 +2617,12 @@ class HostStore:
                     """,
                     (conversation_id,),
                 ).fetchone()
-                if (
-                    mission is None
-                    or mission["workspace_id"] != workspace_id
+                if mission is None and reason != "offline_candidate_preparation":
+                    raise EngineeringMissionConflict(
+                        "mission resume requires an existing durable mission"
+                    )
+                if mission is not None and (
+                    mission["workspace_id"] != workspace_id
                     or mission["revision_id"] != revision_id
                 ):
                     raise EngineeringMissionConflict(

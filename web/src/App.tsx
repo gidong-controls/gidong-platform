@@ -2575,13 +2575,16 @@ function App() {
   };
 
   const prepareOfflineCandidateSession = async () => {
-    if (offlineCandidateBindingBusy) {
+    const requestedConversationId = conversationIdRef.current;
+    if (offlineCandidateBindingBusy || !requestedConversationId) {
       return;
     }
     setOfflineCandidateBindingBusy(true);
     setConnectionMessage("");
     try {
-      await hostApi.prepareOfflineCandidateSession();
+      await hostApi.prepareOfflineCandidateSession({
+        conversationId: requestedConversationId,
+      });
       const nextStatus = await hostApi.getStatus();
       applyHostStatus(nextStatus);
       if (!nextStatus.engineeringSystem.sessionVerified) {
@@ -2590,7 +2593,13 @@ function App() {
         );
         return;
       }
-      await activateEngineeringTargetConversation(nextStatus);
+      if (conversationIdRef.current !== requestedConversationId) {
+        return;
+      }
+      await refreshConversation(requestedConversationId);
+      if (conversationIdRef.current !== requestedConversationId) {
+        return;
+      }
       setChangeRequestScope("offline_candidate_revision");
       setVerificationScope("offline_native_reopen");
       setConnectionMessage(
