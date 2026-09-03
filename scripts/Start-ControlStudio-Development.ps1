@@ -1,9 +1,14 @@
 [CmdletBinding()]
 param(
-    [switch]$NoOpen
+    [switch]$NoOpen,
+    [switch]$Web,
+    [switch]$WebUrl
 )
 
 $ErrorActionPreference = 'Stop'
+if ((@($NoOpen, $Web, $WebUrl) | Where-Object { $_ }).Count -gt 1) {
+    throw 'Specify only one of -NoOpen, -Web, or -WebUrl.'
+}
 $platform = Split-Path -Parent $PSScriptRoot
 $workspace = Split-Path -Parent $platform
 $launcher = Join-Path $platform 'launcher\.venv\Scripts\controlstudio.exe'
@@ -43,5 +48,7 @@ $env:CONTROLSTUDIO_XG5000_CLI_COMMAND = $xg5000Cli
 
 $arguments = @('--no-config')
 if ($NoOpen) { $arguments += '--no-open' }
+if ($Web) { $arguments += '--web' }
+if ($WebUrl) { $arguments += '--web-url' }
 & $launcher @arguments
 exit $LASTEXITCODE

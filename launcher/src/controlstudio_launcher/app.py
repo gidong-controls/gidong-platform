@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Callable
+from typing import Literal
 from urllib.parse import quote
 
 from .config import LauncherSettings
@@ -32,6 +33,8 @@ _HOST_ONLY_DEVELOPMENT_MODEL_ENVIRONMENT = (
     "CONTROLSTUDIO_DEVELOPMENT_MODEL_TIMEOUT_SECONDS",
     "CONTROLSTUDIO_DEVELOPMENT_MODEL_API_KEY",
 )
+UiMode = Literal["app", "web", "web-url", "none"]
+
 
 
 def _take_host_only_environment() -> dict[str, str]:
@@ -69,7 +72,8 @@ class ControlStudioLauncher:
         self._monotonic = monotonic
         self._sleep = sleep
 
-    def run(self, *, open_ui: bool = True) -> None:
+    def run(self, *, ui_mode: UiMode = "app") -> None:
+        open_ui = ui_mode != "none"
         # Elevation must be handed off before taking the launcher mutex. If the
         # medium-integrity parent held it while invoking ``runas``, the elevated
         # child would observe "already running" and exit before starting Host.
@@ -122,7 +126,10 @@ class ControlStudioLauncher:
                 self._verify_launch_token_until_ready(launch_token, None)
                 self._verify_elevated_host_retention()
                 if open_ui:
-                    self._open_elevation_handoff_under_instance_guard(launch_token)
+                    self._open_elevation_handoff_under_instance_guard(
+                        launch_token,
+                        ui_mode,
+                    )
                 self._elevation_receipts.finish(
                     observation,
                     elevation_relaunch_requested=True,
@@ -202,6 +209,7 @@ class ControlStudioLauncher:
                 if open_ui:
                     self._open_ui(
                         launch_token,
+                        ui_mode=ui_mode,
                         reuse_existing=(
                             process is None
                             and (
@@ -255,6 +263,7 @@ class ControlStudioLauncher:
     def _open_elevation_handoff_under_instance_guard(
         self,
         launch_token: str,
+        ui_mode: UiMode,
     ) -> None:
         """Serialize parent-side UI handoff after the elevated child exits."""
 
@@ -262,7 +271,7 @@ class ControlStudioLauncher:
         while self._monotonic() < deadline:
             try:
                 with self._instance_guard:
-                    self._open_ui(launch_token, reuse_existing=False)
+                    self._open_ui(launch_token, ui_mode=ui_mode, reuse_existing=False)
                     return
             except LauncherAlreadyRunning:
                 self._sleep(self._settings.poll_interval_seconds)
@@ -271,10 +280,16 @@ class ControlStudioLauncher:
             "remained busy"
         )
 
-    def _open_ui(self, launch_token: str, *, reuse_existing: bool) -> None:
+    def _open_ui(
+        self,
+        launch_token: str,
+        *,
+        ui_mode: UiMode,
+        reuse_existing: bool,
+    ) -> None:
         """Focus a live Host's verified window or create one fresh handoff."""
 
-        if reuse_existing and self._ui_opener.focus_existing():
+        if ui_mode == "app" and reuse_existing and self._ui_opener.focus_existing():
             return
 
         handoff = self._health_probe.issue_browser_handoff(launch_token)
@@ -284,9 +299,15 @@ class ControlStudioLauncher:
             or handoff.readiness_receipt is None
         ):
             raise UnexpectedServiceError(handoff.detail)
-        self._ui_opener.open(
-            f"{CANONICAL_BASE_URL}/#handoff_ticket={quote(handoff.ticket, safe='')}"
-        )
+        url = f"{CANONICAL_BASE_URL}/#handoff_ticket={quote(handoff.ticket, safe='')}"
+        if ui_mode == "app":
+            self._ui_opener.open(url)
+        elif ui_mode == "web":
+            self._ui_opener.open_browser(url)
+        elif ui_mode == "web-url":
+            print(url, flush=True)
+        else:
+            raise ValueError(f"unsupported UI mode: {ui_mode}")
         self._wait_for_browser_bootstrap(launch_token, handoff.readiness_receipt)
 
     def _wait_for_browser_bootstrap(

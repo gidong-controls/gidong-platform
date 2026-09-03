@@ -24,6 +24,8 @@ class UiOpener(Protocol):
 
     def open(self, url: str) -> None: ...
 
+    def open_browser(self, url: str) -> None: ...
+
 
 def build_app_mode_command(browser: Path, url: str) -> tuple[str, ...]:
     return (str(browser), f"--app={url}")
@@ -574,6 +576,12 @@ class SystemUiOpener:
                     ) from window_error
                 raise UiOpenError("ControlStudio did not produce exactly one foreground app window")
             raise UiOpenError("could not start Microsoft Edge or Google Chrome")
+
+        if not self._browser_open(url, new=1, autoraise=True):
+            raise UiOpenError(f"could not open ControlStudio UI; open {url} manually")
+
+    def open_browser(self, url: str) -> None:
+        """Open a normal browser tab without inspecting or reusing PWA windows."""
 
         if not self._browser_open(url, new=1, autoraise=True):
             raise UiOpenError(f"could not open ControlStudio UI; open {url} manually")

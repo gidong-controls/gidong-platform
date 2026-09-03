@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import ctypes
 import base64
+import ctypes
 import json
 import os
 import socket
@@ -137,6 +137,15 @@ class WindowsElevationBroker:
 
         if target_integrity > current_integrity:
             arguments = self._arguments
+            if parent_opens_ui:
+                # The medium-integrity parent owns every UI mode after the elevated
+                # child has made Host ready.  Remove any parent browser selection so
+                # the child receives exactly one non-opening mode.
+                arguments = tuple(
+                    argument
+                    for argument in arguments
+                    if argument not in {"--web", "--web-url"}
+                )
             if parent_opens_ui and "--no-open" not in arguments:
                 arguments = (*arguments, "--no-open")
             self._relaunch(_arguments_with_elevation_context(arguments))

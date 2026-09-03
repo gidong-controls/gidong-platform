@@ -66,10 +66,21 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help="seconds to wait for the verified Host",
     )
-    parser.add_argument(
+    ui_mode = parser.add_mutually_exclusive_group()
+    ui_mode.add_argument(
         "--no-open",
         action="store_true",
         help="verify/start the Host without opening a browser (local diagnostics only)",
+    )
+    ui_mode.add_argument(
+        "--web",
+        action="store_true",
+        help="open the verified one-time handoff in the system web browser",
+    )
+    ui_mode.add_argument(
+        "--web-url",
+        action="store_true",
+        help="write one verified one-time handoff URL to stdout without opening a browser",
     )
     parser.add_argument("--elevation-context", help=argparse.SUPPRESS)
     return parser
@@ -132,7 +143,15 @@ def _main(
                 tuple(sys.argv[1:] if argv is None else argv)
             ),
         )
-        launcher.run(open_ui=not arguments.no_open)
+        if arguments.no_open:
+            ui_mode = "none"
+        elif arguments.web_url:
+            ui_mode = "web-url"
+        elif arguments.web:
+            ui_mode = "web"
+        else:
+            ui_mode = "app"
+        launcher.run(ui_mode=ui_mode)
     except ConfigurationError as exc:
         _report_error(
             f"ControlStudio launcher configuration error: {exc}",
