@@ -1073,6 +1073,8 @@ function App() {
   const [nativeProjectRestoreId, setNativeProjectRestoreId] = useState<
     string | null
   >(null);
+  const [nativeProjectRestoreLoading, setNativeProjectRestoreLoading] =
+    useState(false);
   const [onlineControllerOpen, setOnlineControllerOpen] = useState(false);
   const [instancePickerOpen, setInstancePickerOpen] = useState(false);
   const [instances, setInstances] = useState<XG5000Instance[]>([]);
@@ -4051,6 +4053,40 @@ function App() {
     Boolean(latestPlanningDigest) &&
     Boolean(latestPlanningReview);
 
+  const openTechnicalSetup = async () => {
+    if (
+      nativeProjectRestoreLoading ||
+      !conversation ||
+      !latestPlanningResult ||
+      !latestPlanningReview
+    ) {
+      return;
+    }
+    setNativeProjectRestoreLoading(true);
+    try {
+      const saved = await hostApi.getCompletedUnboundNativeProject(
+        conversation.conversationId,
+        latestPlanningResult.messageId,
+        latestPlanningReview.planDigest,
+      );
+      setNativeProjectRestoreId(saved.nativeProjectId);
+      setNativeProjectOpen(true);
+    } catch (error) {
+      if (error instanceof HostApiError && error.status === 404) {
+        setNativeProjectRestoreId(null);
+        setNativeProjectOpen(true);
+      } else {
+        setConnectionMessage(
+          error instanceof HostApiError
+            ? error.message
+            : "저장된 프로젝트 생성 작업을 확인하지 못했습니다.",
+        );
+      }
+    } finally {
+      setNativeProjectRestoreLoading(false);
+    }
+  };
+
   const reviewLatestProjectPlan = async (
     planDigest: string,
     reviewedSectionIds: string[],
@@ -5385,6 +5421,7 @@ function App() {
                     disabled={
                       !planningReadyForTechnicalSetup ||
                       !nativeProjectAvailable ||
+                      nativeProjectRestoreLoading ||
                       sending ||
                       canCancelActiveRun
                     }
@@ -5400,7 +5437,7 @@ function App() {
                         ? "XG5000 새 프로젝트 생성 코어가 준비되어야 합니다"
                         : undefined
                     }
-                    onClick={() => setNativeProjectOpen(true)}
+                    onClick={() => void openTechnicalSetup()}
                   >
                     기술 구성으로
                   </button>

@@ -13002,6 +13002,34 @@ def create_app(
         )
 
     @app.get(
+        "/api/v1/native-projects/recovery",
+        response_model=NativeProjectOperationV1,
+    )
+    async def completed_unbound_native_project_v1(
+        conversation_id: str = Query(
+            alias="conversationId", min_length=1, max_length=256
+        ),
+        message_id: str = Query(alias="messageId", min_length=1, max_length=256),
+        plan_digest: str = Query(
+            alias="planDigest", pattern=r"^[0-9a-f]{64}$"
+        ),
+    ) -> NativeProjectOperationV1:
+        try:
+            operation = native_project_repository.completed_unbound_for_reviewed_plan(
+                conversation_id=conversation_id,
+                message_id=message_id,
+                plan_digest=plan_digest,
+            )
+        except NativeProjectConflict as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        if operation is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="completed unbound native project not found for reviewed plan",
+            )
+        return _native_project_operation_v1(operation)
+
+    @app.get(
         "/api/v1/native-projects/{native_project_id}",
         response_model=NativeProjectOperationV1,
     )

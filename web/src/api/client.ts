@@ -445,6 +445,23 @@ export class HostApiClient {
     );
   }
 
+  getCompletedUnboundNativeProject(
+    conversationId: string,
+    messageId: string,
+    planDigest: string,
+    signal?: AbortSignal,
+  ): Promise<NativeProjectOperation> {
+    const search = new URLSearchParams({
+      conversationId,
+      messageId,
+      planDigest,
+    });
+    return this.request<NativeProjectOperation>(
+      `/api/v1/native-projects/recovery?${search.toString()}`,
+      { signal },
+    );
+  }
+
   preflightControllerProjectRestore(
     request: ControllerRestorePreflightRequest,
   ): Promise<ControllerRestorePreflight> {

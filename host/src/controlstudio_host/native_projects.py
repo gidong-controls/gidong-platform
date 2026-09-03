@@ -3273,6 +3273,45 @@ class NativeProjectRepository:
             ).fetchone()
         return self._from_row(row) if row is not None else None
 
+    def completed_unbound_for_reviewed_plan(
+        self,
+        *,
+        conversation_id: str,
+        message_id: str,
+        plan_digest: str,
+    ) -> NativeProjectOperation | None:
+        """Return one exact saved build that still needs reopen verification."""
+
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM native_project_operations
+                WHERE state = 'COMPLETED'
+                  AND json_extract(request_json, '$.reviewedPlan.conversationId') = ?
+                  AND json_extract(request_json, '$.reviewedPlan.messageId') = ?
+                  AND json_extract(request_json, '$.reviewedPlan.planDigest') = ?
+                  AND json_extract(request_json, '$.buildBundle.reviewedPlan.conversationId') = ?
+                  AND json_extract(request_json, '$.buildBundle.reviewedPlan.messageId') = ?
+                  AND json_extract(request_json, '$.buildBundle.reviewedPlan.planDigest') = ?
+                  AND COALESCE(json_extract(result_json, '$.engineeredProgramReady'), 0) != 1
+                  AND COALESCE(json_extract(result_json, '$.workspaceBound'), 0) != 1
+                ORDER BY created_at ASC, operation_id ASC
+                """,
+                (
+                    conversation_id,
+                    message_id,
+                    plan_digest,
+                    conversation_id,
+                    message_id,
+                    plan_digest,
+                ),
+            ).fetchall()
+        if len(rows) > 1:
+            raise NativeProjectConflict(
+                "multiple completed unbound native projects match the reviewed plan"
+            )
+        return self._from_row(rows[0]) if rows else None
+
     def engineering_handoff_candidates(self) -> list[NativeProjectOperation]:
         """Return explicit accepted operations that may need a Host handoff.
 
