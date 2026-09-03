@@ -34,6 +34,12 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   안전 진단은 `engineering_analysis / model_retry / structured_output_contract`이며
   이전의 `continuation_contract`와 동일한 오류라고 추정하지 않는다. mission revision 1은
   active로 남았고 후보·제안·변경 실행은 없었다. 이 대화와 원본 프로젝트를 보존한다.
+- 해당 실행의 저장된 실제 LD 근거로 실패 원인을 재현했다. 내부 lifecycle factory가
+  만든 영어 `next_actions`가 한국어 응답 검사에 거부됐다. Agent `af884ce`는 초기·계속·
+  compact 경로가 공유하는 factory에서 사용자 언어에 맞는 표시 문장을 생성하며,
+  도구명·근거 ID는 코드 표기로 유지한다. 검증된 LD나 변경 승인 조건은 바꾸지 않았다.
+  원래 로그에는 ModelRetry 원문이 없었으므로 이 진단은 원문 로그를 읽었다는 주장이 아니다.
+  웹의 `MainProgram XG5000에서 열기`도 실제 성공했고 프로젝트 내용은 바뀌지 않았다.
 - 작업 중인 웹은 Codex 내부의 `http://127.0.0.1:8767/` 인증 탭이다. 별도 Edge/Chrome
   창은 확인하지 못했다. 초기 패널 표시 요청은 `queued`였고 선택 탭과 작업 탭도 달랐다.
   07:38에 정상 Launcher `--web-url` handoff로 기존 선택 탭 5를 인증했고, 작업 탭도 5로
