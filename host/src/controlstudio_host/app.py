@@ -14101,12 +14101,30 @@ def create_app(
             project_hash=(str(arguments["project_hash"]) if "project_hash" in arguments else None),
         )
         if validated is None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
+            raw_session = (
+                result.get("session")
+                if isinstance(result, dict) and isinstance(result.get("session"), dict)
+                else result
+            )
+            metadata = raw_session.get("metadata") if isinstance(raw_session, dict) else None
+            if (
+                isinstance(raw_session, dict)
+                and raw_session.get("plc_policy") == "read_only_unverified"
+                and isinstance(metadata, dict)
+                and metadata.get("project_identity_assurance") == "unverified"
+            ):
+                detail = (
+                    "현재 프로젝트 경로를 검증하지 못했습니다. 창은 보존됩니다. "
+                    "ControlStudio에서 working copy를 열어 연결해 주세요."
+                )
+            else:
+                detail = (
                     "XG5000 창은 찾았지만 요청한 PID/HWND, 프로젝트, 프로세스 "
                     "수명에 묶인 읽기 세션을 확인하지 못했습니다."
-                ),
+                )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=detail,
             )
         clear_ls_controller_target()
         session = bind_engineering_session(validated)
