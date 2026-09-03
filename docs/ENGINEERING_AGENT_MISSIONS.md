@@ -109,8 +109,10 @@ run을 시작한다. 완료되거나 차단된 mission에서 별개의 목표로
 토글을 켜면 현재 conversation/run, 검증된 target, mission revision·digest,
 active step·stop reason, event sequence/type, selected-PID identity assurance,
 Host capability와 오프라인 변경 준비 상태를 확인할 수 있다. 전체 프로그램 교체는
-strong readback과 developer-certified capability bundle 중 어느 전제에서 막혔는지도
-별도로 표시한다. 이 진단 표시는 권한을 열거나 안전 gate를 우회하지 않는다.
+strong readback, exact working-copy 결속, 그리고 plan 시점의 supported adapter/live
+runtime binding 중 어느 전제에서 막혔는지를 별도로 표시한다. `runtime_checked_at_plan`은
+지원 전략의 runtime 검증이 plan에서 수행된다는 뜻이지, apply/save/reopen/XG-SIM acceptance가
+이미 확인되었다는 뜻은 아니다. 이 진단 표시는 권한을 열거나 안전 gate를 우회하지 않는다.
 Agent checkpoint는 원문 message나 tool 인수를 펼치지 않고 저장 cycle과 digest만 event
 activity에 표시한다.
 이 화면은 재현과 상태 전이 추적을 위한 것이며 모델 프롬프트, 원문 도구

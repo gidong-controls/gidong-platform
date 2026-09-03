@@ -84,8 +84,8 @@ application instruction이 있으면 network/rung을 `partial`로 표시하며 �
 
 ## 3. XG5000MNE
 
-`XG5000MNE`는 제한된 빈 프로그램 작성과 developer-certified 기존 프로그램 전체
-교체 경로에 사용한다. CPU나 프로젝트 언어 설정에 따라 IL/MNE를 사용할 수 없으므로
+`XG5000MNE`는 제한된 빈 프로그램 작성과 지원되는 기존 프로그램 전체 교체 경로에
+사용한다. CPU나 프로젝트 언어 설정에 따라 IL/MNE를 사용할 수 없으므로
 일반 프로젝트 분석의 기본 경로로 사용하지 않는다. 일반 분석의 기준은 LD다.
 
 안전 규칙:
@@ -97,7 +97,8 @@ application instruction이 있으면 network/rung을 `partial`로 표시하며 �
 - 전체 교체는 typed 13-command IR, 최대 4,096개 instruction과 마지막 단일 `END` 검사
 - 모델·공개 API에 raw MNE/LD 또는 private artifact 경로를 노출하지 않음
 - exact PID/HWND·active program/editor/view·project path/hash·DPI·runtime identity 결속
-- scratch-project에서 서명된 capability certificate와 사람의 일회성 plan 승인 요구
+- code-owned 지원 adapter 전략과 plan 시점의 live runtime identity를 exact project
+  path/hash에 결속하고, 사람의 일회성 plan 승인을 요구
 - 적용 전 raw MNE/LD baseline과 project backup을 MCP journal-private artifact로 보존
 - 적용 후 MNE/LD exact readback, Program Check, 저장 hash, 별도 PID 재열기 검증
 - 실패 시 durable baseline 또는 승인 target checkpoint일 때만 exact rollback하고,
@@ -110,7 +111,17 @@ online edit 및 controller 검증은 포함하지 않으며 실제 XG5000 produc
 출력 profile을 만들 수 있을 때만 아래 XG-SIM 수명주기로 이어진다. 이 경로도 PLC에는
 연결하거나 쓰지 않는다.
 
-개발자 capability certification의 재시작 harness는 Host의 process-parent 관계를
+일반 사용자 MNE 편집은 developer scratch capability bundle을 만들거나
+`CONTROLSTUDIO_MNE_CAPABILITY_BUNDLE`을 설정할 것을 요구하지 않는다. MCP가
+read-only CLI를 통해 현재 PID/HWND·프로그램·project path/hash의 supported adapter
+binding을 만들고, private transaction journal에는 전체 binding을, Host 승인과 공개
+receipt에는 `adapter_binding_digest`와 `runtime_identity_digest`만 보관한다. apply와
+rollback은 같은 binding과 exact readback을 다시 확인한다. 이 production 전환은 MCP
+`6b98523`, `c0c1247`, `50a1520`, CLI `4b20a4e`, Host `e155437`, `2a83a07`,
+`7bb3336`에 기록되어 있다. 실제 구조 변경의 apply·Program Check·save·독립 reopen·XG-SIM
+수명주기 acceptance는 아직 이 working copy에서 확인되지 않았다.
+
+개발자 전용 capability probe/certification의 재시작 harness는 Host의 process-parent 관계를
 XG5000 소유권 증거로 사용하지 않는다. Launcher/MCP가 별도 process로 연 visible
 working copy는 인증 spec의 PID/HWND, native executable path, disposable marker,
 backup hash와 project path/hash로 묶는다. preflight는 전체 XG5000 PID baseline을

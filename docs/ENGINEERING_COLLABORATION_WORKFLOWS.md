@@ -481,8 +481,9 @@ program의 여러 edit zone일 수 있으면 ControlStudio는 사용자가 말�
   `engineered_control_program`
   build bundle, 일회성 승인, XGK/XGB mnemonic exact readback·LD 변환·Program
   Check·저장 hash receipt
-- 동일 길이 LD operand 한 개의 제한된 변경 계약과, raw payload를 공개하지 않는
-  developer-certified 기존 프로그램 전체 MNE 교체 계약
+- 동일 길이 LD operand 한 개의 제한된 변경 계약과, raw payload를 공개하지 않고
+  code-owned supported adapter/live runtime binding을 plan 승인에 결속하는 기존 프로그램
+  전체 MNE 교체 계약
 - 영향·위험·가정·대안·acceptance·관찰 신호·중단 조건과 10개 필수 coverage를
   검사하는 Host 완전성 gate
 - `잠깐`, `시험`, `temporary`, `trial` 요청을 서버가 감지하고 사용자가
