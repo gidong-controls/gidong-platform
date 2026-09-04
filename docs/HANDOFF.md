@@ -18,10 +18,10 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-04 10:28 KST 이어갈 지점
+## 2026-09-04 10:38 KST 이어갈 지점
 
 - 현재 대화는 `ce6523b3-f02c-47ae-a81e-0a83cb4f6b8d`, workspace는
-  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `15312`, XG5000 PID `12492` /
+  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `4632`, XG5000 PID `12492` /
   HWND `1901812`를 유지한다. 아래 경과 기록의 이전 PID·실패 run으로 돌아가지 않는다.
 - Platform `2dcb3b6`, Agent `503f2f1`까지 정상 웹의 UAC 없는 Host 재로드로 반영했다.
   만료된 후보의 재개 허용 정보가 Host serializer와 Agent sidecar decoder 양쪽에서
@@ -41,9 +41,21 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   저장된 recovery 진단은 `preparation_error_kind=ChangeExecutionPreconditionError`,
   `abort_error_kind=MCPToolError`, `known_mcp_transaction_id=null`이다. 이 기록만으로
   native 변경 또는 원복 성공을 단정하지 않는다. 정확한 준비 실패와 복구 경계를 조사한다.
-- 같은 실행 버튼을 반복하지 않는다. 현재 Web 복구 gate도 유효한 rung 계약을 알 수 없는
-  계약으로 표시하는 문제가 있어 수정 중이다. mission revision 12는 승인 결과 대기이며,
-  실제 적용·저장·독립 재열기·XG-SIM·Keep 완료를 뜻하지 않는다.
+- 준비 실패 원인은 MCP snapshot program receipt의 `canonical_sha256` 누락이었다.
+  MCP `bbfaf48`는 공용 LD receipt/catalog producer에 기존 canonicalizer의 결과를
+  포함한다. 실제 보존된 snapshot은 승인된 canonical digest `f3a044…`와 일치한다.
+  Platform `5cf11f4`는 snapshot이 생성한 transaction UUID를 먼저 검증·보존하여
+  뒤의 의미 비교 실패에서도 정확한 journal을 중단할 수 있게 했다. Web `29ffd65`는
+  전체 구조 변경 종류에 공용 plan validator를 사용해 복구 gate 누락·중복을 없앴다.
+  위 수정은 UAC 없는 정상 Host 재로드로 반영했다.
+- 10:37에 정상 Web 복구 selector에서 기존 PID/HWND를 선택해 한 번 복구를 실행했다.
+  MCP transaction `167a51a8-d243-47a1-8c21-a43bd656aef9` lookup, recovery attach,
+  status 읽기는 성공했다. 상태는 `SNAPSHOT_CREATED`, `mutation_possible=false`,
+  `recovery_action=abort_safe`이며 새 세션은 `449c3c40-eec0-40a3-b364-9cd9a1c812c7`다.
+  이후 `change.abort`의 `MCPToolError`로 정상 중단은 실패했고 Host 오류는
+  `mne_native_abort_unproven`으로 바뀌었다. 이 호출의 실제 오류를 조사 중이다.
+  같은 변경 실행/복구 버튼을 무작정 반복하지 않는다. 실제 적용·저장·독립 재열기·
+  XG-SIM·Keep은 아직 완료되지 않았다. mission revision 12는 결과 대기 상태다.
 - Platform `cd14e0e`는 Web Keep 판정을 고정 3단계 대신 승인된 scenario의 각 관측값에
   맞췄다. 실제 시뮬레이션 receipt는 아직 없어 실사용 성공 판정 전이다. `cfe2fc6`은 완료된
   과거 신규 프로젝트 handoff보다 저장된 대화를 복원하도록 했으며, 최신 Host 재로드에서
