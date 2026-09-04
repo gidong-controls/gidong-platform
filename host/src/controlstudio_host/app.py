@@ -1355,6 +1355,88 @@ def _expired_exact_operand_reproposal_callback_permitted(
     return clean_terminal_wait or active_retry
 
 
+def _expired_internal_mne_rung_reproposal_callback_permitted(
+    mission: dict[str, Any] | None,
+    change_outcome: dict[str, Any] | None,
+    linked_change: ChangeTransaction | None,
+) -> bool:
+    """Admit one fresh internal-only MNE rung proposal after expiration.
+
+    The old authority remains terminal.  This narrow callback gate only lets
+    the Agent compile the current editor baseline and create a new proposal
+    for the exact same durable conversation after an approval that was never
+    executed.  Physical I/O, rejection, failure, quarantine, and every
+    non-expired outcome stay outside this route.
+    """
+
+    if (
+        not isinstance(mission, dict)
+        or mission.get("status") not in {"waiting_for_approval", "active"}
+        or not isinstance(change_outcome, dict)
+        or change_outcome.get("state") != "EXPIRED"
+        or change_outcome.get("disposition") != "expired"
+        or linked_change is None
+        or linked_change.state is not ChangeTransactionState.EXPIRED
+    ):
+        return False
+    plan = linked_change.plan
+    if not isinstance(plan, dict) or (
+        plan.get("plan_kind", plan.get("planKind")) != "mne_rung_patch"
+        or plan.get("change_mode", plan.get("changeMode"))
+        != "offline_working_copy_revision"
+        or plan.get("request_scope", plan.get("requestScope"))
+        != "offline_candidate_revision"
+        or plan.get("verification_scope", plan.get("verificationScope"))
+        != "offline_native_reopen_xgsim"
+    ):
+        return False
+    candidate = plan.get("candidate")
+    if not isinstance(candidate, dict) or any(
+        key in candidate
+        for key in (
+            "field_io_bindings",
+            "fieldIoBindings",
+            "hardware_context_digest",
+            "hardwareContextDigest",
+        )
+    ):
+        return False
+    patch = candidate.get("patch")
+    profile = candidate.get("simulation_profile", candidate.get("simulationProfile"))
+    if not isinstance(patch, dict) or not isinstance(profile, dict):
+        return False
+    target_rung = patch.get("target_rung", patch.get("targetRung"))
+    scenario = profile.get("scenario")
+    if (
+        not isinstance(target_rung, dict)
+        or not isinstance(target_rung.get("condition"), dict)
+        or not isinstance(target_rung["condition"].get("operand"), str)
+        or not isinstance(target_rung.get("actions"), list)
+        or not isinstance(scenario, dict)
+        or not isinstance(scenario.get("steps"), list)
+        or not isinstance(profile.get("output_addresses", profile.get("outputAddresses")), list)
+    ):
+        return False
+    addresses = [target_rung["condition"]["operand"]]
+    for action in target_rung["actions"]:
+        if not isinstance(action, dict) or not isinstance(action.get("operand"), str):
+            return False
+        addresses.append(action["operand"])
+    for step in scenario["steps"]:
+        if not isinstance(step, dict):
+            return False
+        for assignments in (step.get("drive"), step.get("observe")):
+            if not isinstance(assignments, dict):
+                return False
+            addresses.extend(assignments)
+    addresses.extend(profile.get("output_addresses", profile.get("outputAddresses")))
+    return bool(addresses) and all(
+        isinstance(address, str)
+        and re.fullmatch(r"M\d{3,4}[0-9A-F]", address) is not None
+        for address in addresses
+    )
+
+
 def _acknowledged_terminal_source_run_change(
     mission: EngineeringMission,
     transactions: list[ChangeTransaction],
@@ -8227,6 +8309,13 @@ def create_app(
                     rejected_reauthorized=rejected_change_reauthorized,
                 )
             )
+            expired_internal_mne_rung_reproposal_permitted = (
+                _expired_internal_mne_rung_reproposal_callback_permitted(
+                    engineering_mission_snapshot,
+                    current_change_outcome,
+                    linked_change,
+                )
+            )
 
             latest_mission_checkpoint: tuple[
                 dict[str, Any],
@@ -8766,6 +8855,7 @@ def create_app(
                         current_change_outcome,
                         rejected_reauthorized=rejected_change_reauthorized,
                     )
+                    or expired_internal_mne_rung_reproposal_permitted
                 )
                 and change_request_scope != "analysis_only"
                 and isinstance(knowledge_workspace_snapshot, dict)
@@ -9001,7 +9091,10 @@ def create_app(
                         )
                     return response
 
-                bind_change_planner(propose_change)
+                bind_change_planner(
+                    propose_change,
+                    mne_available=mne_change_planner_available,
+                )
             output = await runtime.run(
                 prompt=prompt,
                 history=history,
@@ -9030,6 +9123,13 @@ def create_app(
                         "change_request_scope": change_request_scope,
                         "mne_change_planner_available": mne_change_planner_available,
                         "verification_scope": verification_scope,
+                        **(
+                            {
+                                "expired_internal_mne_rung_reproposal_permitted": True
+                            }
+                            if expired_internal_mne_rung_reproposal_permitted
+                            else {}
+                        ),
                         **(
                             {"offline_operand_mission": offline_operand_mission}
                             if offline_operand_mission is not None
