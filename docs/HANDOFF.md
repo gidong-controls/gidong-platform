@@ -130,9 +130,23 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   camelCase로 기대하던 불일치를 확인했다. Platform `0444e88`는 outer `simulationProfile`을
   유지하고 digest에 포함된 inner native key를 contracts/parser/panel 전부에서 보존한다.
   profile/candidate/plan의 실제 digest나 저장된 데이터를 재작성하지 않는다. production
-  build 후 browser-only reload에서도 연결 실패 문구가 남아 추가 응답 계약을 조사 중이다.
-  Host가 살아 있는 상태에서 parser 오류를 네트워크 장애로 표시하는 catch도 별도 수정 중이다.
-  pending approval의 engineering session identity를 보존하려고 Host/XG5000은 재시작하지 않는다.
+  build만으로 해결됐다고 보지 않았으며 실제 browser-only reload로 남은 오류를 추적했다.
+  Platform `3b13ee3`는 bootstrap 성공 뒤 응답 계약 파싱 실패를 Host 연결 장애로 표시하지 않는다.
+  `ee31b84`는 END 삽입 분기 전에 END anchor를 거부하던 모순과 Host의 정확한 inert alias
+  기본값을 처리한다. `f5b91ff`는 private payload guard가 baseline MNE/LD/canonical SHA까지
+  거부하던 중복 규칙을 수정했다. 실제 event `3698`의 transaction을 production parser에
+  직접 전달한 읽기 전용 진단에서 전체 transaction/plan/list가 통과했고, 웹에서도 승인
+  카드·11→13 명령·M00010→OUT M00030·10단계 시나리오가 실제로 표시됐다.
+  임시 진단 파일은 제거했고 테스트 파일/스위트는 추가·실행하지 않았다.
+- 표시 후에도 별도 승인 버튼 gate에 전체 프로그램용 10개 coverage 조건이 남아 있었다.
+  Platform `1842b27`는 compiler candidate의 공용 계약 검사 결과를 재사용하고 필수 2개
+  coverage 및 실제 XG-SIM 단계 수를 표시한다. 전체 프로그램 교체의 10개 조건은 유지한다.
+  실제 웹 승인 버튼이 활성화된 것을 확인했다. 09:51에 그 버튼을 사용했으나 이미
+  유효 시간이 지나 서버가 event `3706`/`3707`에서 EXPIRED를 확정했다. transaction의
+  execution/verification 시작 시각은 모두 null이며 적용·저장·재열기·시뮬레이션은 없었다.
+  웹의 `결과 확인하고 계속`은 활성화됐다. 기존 mission에서 만료 후 새 baseline compiler
+  근거로 다시 제안하는 연결과 10단계 시나리오 완료 receipt의 Web Keep 판정을 수정 중이다.
+  Host/XG5000은 아직 PID `14820`/`12492`를 유지하며 보호 원본 SHA도 동일하다.
 - 작업 중인 웹은 Codex 내부의 `http://127.0.0.1:8767/` 인증 탭이다. 별도 Edge/Chrome
   창은 확인하지 못했다. 초기 패널 표시 요청은 `queued`였고 선택 탭과 작업 탭도 달랐다.
   07:38에 정상 Launcher `--web-url` handoff로 기존 선택 탭 5를 인증했고, 작업 탭도 5로
