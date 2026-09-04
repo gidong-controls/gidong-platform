@@ -85,8 +85,24 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   CLI `0615b54`의 Project 검색 Edit 포커스 후 Enter 입력 변경은 반영됐지만, 위 루트 표시
   불일치보다 뒤의 프로그램 선택 성공을 입증하지 못했다. 성공한 수정으로 기록하지 않는다.
   MCP `a4a75f1`은 durable attach의 기존 오류를 바꾸지 않고 origin session에 기존 오류 bundle을
-  남겨 실제 실패 지점을 확인하게 했다. 프로젝트 루트의 live 표시 라벨을 정확히 해석하는
-  최소 수정을 CLI/MCP에 적용한 뒤 정상 웹에서 한 번 확인한다.
+  남겨 실제 실패 지점을 확인하게 했다.
+- MCP `3e8e12e` / CLI `2dcddf4`는 live 루트의 표시 라벨을 제목 또는 정확히 `제목 + " *"`로
+  해석한다. 첫 실행의 `050f8807ad5c`는 새 resolver가 경량 MSAA 결과에 없던 `role`을 요구해
+  실패한 구현 오류였다. CLI `26e115a`가 공유 helper의 경량 결과에 실제 역할 값을 포함하게
+  고쳤으며, MCP는 같은 helper의 노드를 그대로 받는다.
+- 16:32:39 KST 실행 `f1c09f2be8e6`는 루트 선택·펼침을 통과했다. Enter를 보내기 전 이미
+  MainProgram이 visible MSAA row `[68,265,100,281]`로 나타났지만 추가 검색 입력의 포커스
+  검사에서 멈췄다(`1444554` Search Edit 대신 `1049978` workspace toolbar가 포커스 보유).
+  이는 프로젝트 검색이 이미 적용된 뒤 불필요한 Enter를 요구한 문제다. MCP `8ce1d4a` /
+  CLI `5a79efb`는 그 물리 클릭·Enter를 제거하고 기존 WM_SETTEXT readback·settle·실제 MSAA
+  행 확인을 유지한다. 커서 원복이 클릭을 다른 곳으로 보냈다는 인과는 입증하지 못했으므로
+  공용 SendInput을 추정으로 바꾸지 않았다.
+- 16:42:26 KST 실행 `0bfdfdf726e3`는 마지막 프로그램 MSAA 읽기에 남은 시간이 0.05초여서
+  실패했다. MCP `8f46ac4` / CLI `40f9689`는 정상 경로를 요청 프로그램 필터 → exact 행 확인
+  → 편집기 열기로 바꿨다. 기존 결과가 실제 hidden-only exact 행을 증명할 때만 루트 펼침을
+  한 번 수행하며, 전체 제한 시간은 늘리지 않았다. 해당 오류 manifest의
+  `current_process_elevated=true`이므로 이 실패를 UAC 미승인으로 설명하지 않는다.
+  16:51:53 KST 정상 웹 복구 실행으로 수정본의 결과를 확인 중이다.
 - 보호된 source 파일 SHA256은 여전히
   `16248471e9a7131623b65ea6ad7b43f59fa6a78dcccf462d88687fbc8442f13e`다.
 - 사용자 화면에 웹을 열었다고 주장하지 않는다. `127.0.0.1:8767` 서버와 내부 tab 5의 정상 웹은
