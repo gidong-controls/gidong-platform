@@ -22,8 +22,8 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 - 같은 대화 `868e0126-a603-481a-9262-4ecef0023e9d`, run `e6259675-650a-48d7-b08a-7d726ef6bd4b`,
   Host transaction `588463c0-11fe-4748-a8e1-0b2639df1a05`, MCP transaction
-  `1f4710c8-797e-476a-85f2-aa972ff137c7`를 유지한다. 상태는 `QUARANTINED`, journal seq `37`,
-  active session `0e56fadb-eb35-4929-bb70-461845348cb9`, active PID `13884` / HWND `3803514`다.
+  `1f4710c8-797e-476a-85f2-aa972ff137c7`를 유지한다. 상태는 `QUARANTINED`, journal seq `39`,
+  active session `f4da5b69-c70c-4565-94af-43ce04be6aef`, active PID `13884` / HWND `3803514`다.
   과거 session/lease 값을 다시 쓰지 말고 현재 journal을 읽는다.
   M30 적용·독립 재열기 최종 readback·XG-SIM·Keep은 미완료다.
 - MCP `508fff0` / `9921075`의 collapsed dock 펼침을 반영한 정상 웹 복구는
@@ -115,7 +115,19 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   active-tab/native-child 체인을 유일한 판정 경로로 사용한다. 닫기 재시도나 timeout 증가는 없다.
   반영 후 첫 instances 조회는 503이었으나 한 번의 읽기 전용 새로고침은 200과 동일 XG5000
   창을 반환했다. 이를 import 오류나 UAC 실패로 설명하지 않는다.
-  17:06:32 KST 정상 웹 복구를 실행 중이다.
+  17:06:32 KST 정상 웹 복구는 `PROGRAM_CHECK_FRESH_MODAL_UNVERIFIED`로 끝났다.
+  artifact `f4da5b69-c70c-4565-94af-43ce04be6aef/75987b6eebdf`의 실제 캡처에는 LD 보기 위에
+  `프로그램 검사 - LSPLC` 선택 대화상자가 열려 있다. 같은 자료의 `#32770` HWND `853350`은
+  native text가 빈 문자열이다. 명령이 실행되지 않았다는 판정이 아니라 modal 관찰 실패다.
+  현재 열린 이 대화상자를 그대로 둔 채 876 명령이나 editor 복구를 반복하지 않는다.
+  `visible_top_windows`의 cross-process WM_GETTEXT timeout과 `wait_for_new_dialog`의 첫
+  무관한 top-level 후보 조기 반환을 수정 중이다. 정확한 소유 Program Check modal 취소에는
+  `recover_reviewed_save_modal`의 IDCANCEL 경로를 재사용할 수 있다. 이 함수는 XG5000을
+  닫지 않으며, 뒤의 별도 `close_reviewed_xg5000_no_save`와 혼동하지 않는다.
+- 사용자 화면의 일반 Chrome/Edge에 ControlStudio 창을 열었다는 증거는 없다. 현재 조작 중인
+  `http://127.0.0.1:8767/`은 Codex 내부 browser tab 5다. 내부 tab visibility 또는 queued 상태의
+  `open_in_codex`를 외부 창 표시 성공으로 설명하지 않는다. Windows Computer Use helper의
+  허용된 복구가 실패했고 외부 창 launch가 거부된 뒤 우회 실행이나 수동 UIA 입력은 하지 않았다.
 - 보호된 source 파일 SHA256은 여전히
   `16248471e9a7131623b65ea6ad7b43f59fa6a78dcccf462d88687fbc8442f13e`다.
 - 사용자 화면에 웹을 열었다고 주장하지 않는다. `127.0.0.1:8767` 서버와 내부 tab 5의 정상 웹은
