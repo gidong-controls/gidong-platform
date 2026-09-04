@@ -1077,6 +1077,7 @@ function App() {
     useState<ReviewedNoSaveCloseResponse | null>(null);
   const [reviewedCloseDialogTarget, setReviewedCloseDialogTarget] =
     useState<ReviewedNoSaveCloseRequest | null>(null);
+  const [reviewedCloseWindowTitle, setReviewedCloseWindowTitle] = useState("");
   const [workspaceResumeBusy, setWorkspaceResumeBusy] = useState(false);
   const [workspaceResumeNotice, setWorkspaceResumeNotice] = useState("");
   const [workspaceCompare, setWorkspaceCompare] =
@@ -4063,14 +4064,18 @@ function App() {
   const recoveryAttachRequired =
     Boolean(status.workspace) && !status.engineeringSystem.readReady;
 
-  const openReviewedCloseDialog = () => {
-    if (!reviewedCloseTarget) return;
+  const openReviewedCloseDialog = (
+    target: Omit<ReviewedNoSaveCloseRequest, "confirmNoSave"> | null = reviewedCloseTarget,
+    title = "",
+  ) => {
+    if (!target) return;
     setReviewedCloseAttempted(false);
     setReviewedCloseBusy(false);
     setReviewedCloseNotice("");
     setReviewedCloseReceipt(null);
+    setReviewedCloseWindowTitle(title);
     setReviewedCloseDialogTarget({
-      ...reviewedCloseTarget,
+      ...target,
       confirmNoSave: true,
     });
     setReviewedCloseDialogOpen(true);
@@ -4094,13 +4099,13 @@ function App() {
       setReviewedCloseReceipt(receipt);
       applyHostStatus(await hostApi.getStatus());
       setConnectionMessage(
-        "검토한 XG5000 창을 저장 없이 닫았습니다. 새 프로젝트 열기는 별도로 선택해야 합니다.",
+        "검토한 XG5000 창을 저장 없이 닫았습니다. 기존 작업 복구나 프로젝트 열기를 선택할 수 있습니다.",
       );
     } catch (error) {
       setReviewedCloseNotice(
         error instanceof HostApiError
           ? error.message
-          : "저장 없이 닫기를 완료하지 못했습니다. 현재 XG5000 창은 그대로 유지됩니다.",
+          : "닫기 결과를 확인하지 못했습니다. XG5000 창 목록을 새로 확인해 주세요.",
       );
     } finally {
       setReviewedCloseBusy(false);
@@ -4818,6 +4823,7 @@ function App() {
                 mcpReady={mcpReady}
                 currentWorkspaceHash={status.workspace?.artifactHash}
                 onReconcile={reconcileChange}
+                onReviewClose={openReviewedCloseDialog}
               />
             )}
           </>
@@ -5214,7 +5220,7 @@ function App() {
                     className="button secondary-button"
                     type="button"
                     disabled={localProjectBusy || localProjectBrowseBusy}
-                    onClick={openReviewedCloseDialog}
+                    onClick={() => openReviewedCloseDialog()}
                   >
                     저장 없이 닫기 검토
                   </button>
@@ -6334,15 +6340,16 @@ function App() {
               {!reviewedCloseReceipt ? (
                 <>
                   <p>
-                    다음에 표시된 정확한 XG5000 세션만 닫습니다. 저장 대화상자가
+                    다음에 표시된 XG5000 창만 저장하지 않고 닫습니다. 미저장 변경은 버려집니다. 저장 대화상자가
                     예상과 다르거나 정체성이 달라지면 작업은 중단되고 창은 닫지 않습니다.
                   </p>
                   <dl className="reviewed-close-binding">
-                    <div><dt>프로젝트</dt><dd>{reviewedCloseDialogTarget.projectPath}</dd></div>
+                    {reviewedCloseWindowTitle && <div><dt>창</dt><dd>{reviewedCloseWindowTitle}</dd></div>}
+                    {reviewedCloseDialogTarget.projectPath && <div><dt>프로젝트</dt><dd>{reviewedCloseDialogTarget.projectPath}</dd></div>}
                     <div><dt>PID / HWND</dt><dd>{reviewedCloseDialogTarget.pid} / {reviewedCloseDialogTarget.hwnd}</dd></div>
                     <div><dt>프로세스 생성 시각</dt><dd>{reviewedCloseDialogTarget.processCreateTime}</dd></div>
-                    <div><dt>세션 ID</dt><dd>{reviewedCloseDialogTarget.sessionId}</dd></div>
-                    <div><dt>프로젝트 해시</dt><dd>{reviewedCloseDialogTarget.projectHash}</dd></div>
+                    {reviewedCloseDialogTarget.sessionId && <div><dt>세션 ID</dt><dd>{reviewedCloseDialogTarget.sessionId}</dd></div>}
+                    {reviewedCloseDialogTarget.projectHash && <div><dt>프로젝트 해시</dt><dd>{reviewedCloseDialogTarget.projectHash}</dd></div>}
                   </dl>
                   <p>
                     이 동작은 한 번만 요청하며, 성공해도 다른 프로젝트를 열거나 다시
@@ -6354,10 +6361,10 @@ function App() {
                   <strong>저장 없이 닫기 완료</strong>
                   <p>
                     PID {reviewedCloseReceipt.reviewedBinding.pid} · HWND {reviewedCloseReceipt.reviewedBinding.hwnd}
-                    의 확인된 세션을 닫았고, durable receipt를 기록했습니다.
+                    창을 정상 종료했습니다.
                   </p>
                   <code>{reviewedCloseReceipt.receiptDigest}</code>
-                  <p>새 프로젝트는 아래 버튼을 누른 뒤 별도로 선택해 여세요.</p>
+                  <p>닫기만 완료했습니다. 기존 작업 복구나 프로젝트 열기는 별도로 진행하세요.</p>
                 </div>
               )}
               {reviewedCloseNotice && (

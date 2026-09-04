@@ -23,6 +23,7 @@ interface ChangeRecoveryPanelProps {
     hwnd: number,
     options?: RecoveryReconcileOptions,
   ) => Promise<void>;
+  onReviewClose: (target: { pid: number; hwnd: number; processCreateTime: number }, title?: string) => void;
 }
 
 interface RecoveryReconcileOptions {
@@ -104,6 +105,7 @@ export function ChangeRecoveryPanel({
   mcpReady,
   currentWorkspaceHash,
   onReconcile,
+  onReviewClose,
 }: ChangeRecoveryPanelProps) {
   const recoverySupported = hasSupportedRecoveryContract(transaction);
   const [instances, setInstances] = useState<XG5000Instance[]>([]);
@@ -179,6 +181,8 @@ export function ChangeRecoveryPanel({
   const relaunchTarget = journaledRecoveryRelaunchTarget(
     transaction.targetIdentity,
   );
+  const selectedCreated = selectedInstance?.process_create_time;
+  const closeAvailable = typeof selectedCreated === "number" && Number.isFinite(selectedCreated) && selectedCreated > 0;
   const relaunchAvailable = canOfferRecoveryRelaunch({
     transactionState: transaction.state,
     recoverySupported,
@@ -283,6 +287,22 @@ export function ChangeRecoveryPanel({
             disabled={busy || instancesLoading || !selectedInstance}
           >
             {busy ? "복구 증거 확인 중…" : "선택한 창으로 격리 복구 검사"}
+          </button>
+          <button
+            className="button secondary-button"
+            type="button"
+            disabled={busy || instancesLoading || !selectedInstance || !closeAvailable}
+            onClick={() => {
+              if (selectedInstance && closeAvailable) {
+                onReviewClose({
+                  pid: selectedInstance.pid,
+                  hwnd: selectedInstance.hwnd,
+                  processCreateTime: selectedCreated,
+                }, selectedInstance.title);
+              }
+            }}
+          >
+            선택한 창 저장 없이 닫기 검토
           </button>
           {!hasCurrentHashMismatch && relaunchAvailable && relaunchTarget && (
             <button

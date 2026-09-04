@@ -839,6 +839,7 @@ export interface XG5000Instance {
   pid: number;
   hwnd: number;
   title?: string;
+  process_create_time?: number | null;
   version?: string;
   [key: string]: unknown;
 }
@@ -1627,12 +1628,12 @@ export interface HostShutdownResponse {
 }
 
 export interface ReviewedNoSaveCloseRequest {
-  sessionId: string;
+  sessionId?: string | null;
   pid: number;
   hwnd: number;
   processCreateTime: number;
-  projectPath: string;
-  projectHash: string;
+  projectPath?: string | null;
+  projectHash?: string | null;
   confirmNoSave: true;
   timeoutSeconds?: number;
 }
@@ -1644,12 +1645,12 @@ export interface ReviewedNoSaveCloseResponse {
   automaticWorkspaceOpen: false;
   processTerminated: false;
   reviewedBinding: {
-    sessionId: string;
+    sessionId?: string | null;
     pid: number;
     hwnd: number;
     processCreateTime: number;
-    projectPath: string;
-    projectHash: string;
+    projectPath?: string | null;
+    projectHash?: string | null;
   };
   close: Record<string, unknown>;
   receiptDigest: string;
