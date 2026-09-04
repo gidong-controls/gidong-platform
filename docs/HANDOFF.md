@@ -20,19 +20,25 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 ## 2026-09-04 LD 원복과 재열기 — 현재 이어갈 지점
 
-- 현재 실행 체크포인트: journal seq `49`는 `QUARANTINED`이며 current saved hash와
-  실제 working `.xgwx`는 모두
-  `7ced78111c6dfcfc5af67c72e5821662645862d05062a15ab1a9fcc68354d405`다.
-  파일은 존재한다. CLI `a98668b`는 `fresh-reopen-readback`의 `WorkspaceError` 원문을
+- 최신 실행은 journal seq `51`, `QUARANTINED`, saved hash
+  `a81e9e1b7d3dae92df9001d4ddc561533c916e295528f2aff8522f881546a86b`다.
+  직전 seq `49`의 실제 파일/journal 일치 해시 `7ced7811…`로 첫 재열기는 성공했다.
+  CLI `a98668b`는 `fresh-reopen-readback`의 `WorkspaceError` 원문을
   노출하지 않고 기존 고정 `{reason_code, stage}` 분류를 다음 실행에 전달하게 했다.
   이는 launcher 오류를 고쳤다는 주장이 아니며, 이전 session
   `9bf51bf1-d186-4632-9ba9-9624d01a5eda/94942f622d80/error.json`의 실제 종료 원인은
   구조화 정보가 없어서 아직 확정되지 않았다.
 - Host `ff2d723`와 UI `0a361aa`는 검증된 현재 journal saved hash로 창 없는 복구 재열기를
   결속하고, UI가 직전 cached workspace hash 때문에 백업 복원만 요구하지 않게 정리했다.
-  정상 웹 재로딩 뒤 `XG5000에서 작업 복사본 다시 열어 복구`를 **백업 복원 없이 한 번**
-  진행 중이다. 이 요청의 실행 결과는 아직 미확정이며, 최종 원복·M30 적용·XG-SIM·Keep도
-  미완료다. 아래 19:12 기록은 이전 실패로, 같은 수정을 반복하지 않는다.
+  정상 웹 재로딩 뒤 `XG5000에서 작업 복사본 다시 열어 복구`를 백업 복원 없이 한 번
+  실행했다. PID `15120`으로 프로젝트가 열리고 session
+  `734dc4d1-854a-4284-a9f0-665bd7ffd548` 복구 연결까지 성공했다. 웹 해시도 `7ced7811…`로
+  갱신됐다. 이후 원복의 독립 재열기가 `XG5000_OFFICIAL_OPEN_UI_FAILED`,
+  `stage=official_open_ui`로 실패했다(`e2d4f1e53f68/error.json`). 현재 XG5000은 없다.
+  첫 재열기와 독립 재열기의 차이를 조사 중이며 최종 원복·M30 적용·XG-SIM·Keep은 미완료다.
+- 이미 반영된 MCP `e7cb417` / CLI `33f5c3b`의 plaintext/raw MNE 해시 분리와
+  MCP `f8b2ab6`의 Windows 경로 비교 수정은 유지한다. 아래 19:12 해시 오류는 이 수정 전
+  기록으로, 같은 원인을 다시 고치지 않는다.
 
 - 19:12 KST 최신 실행: MCP `d65a6af`는 live baseline LD 일치가 확인된 복구에서 private
   baseline MNE 행 수를 전달해 중복 행별 탐색을 생략한다. 그 후 관측한 END-only 복사를
