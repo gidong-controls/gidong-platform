@@ -87,6 +87,22 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   `agent_output_contract / engineering_analysis / model_retry / structured_output_contract`로
   실패했다. 아직 proposal 도구 실행·승인 transaction·변경 적용은 없으며, 성공한 후보와
   같은 프로젝트를 보존한 채 이 후속 연결 오류를 진단한다. XG5000 PID는 `12492`다.
+- 후속 코드 대조에서 제안 경로의 실제 불일치 두 가지를 확인했다. exact local tool
+  호출이 JSON의 coverage 객체를 typed 모델로 변환하지 않았고, 컴파일된 부분 변경에도
+  compiler 근거로는 충족할 수 없는 전체 프로그램용 10개 coverage 행/7개 confirmed
+  영역을 요구했다. Agent `58f8e3b`는 기존 함수 스키마로 인수를 변환하고,
+  Agent `f0ae432` / Platform `12a5fae`는 compiler 후보의 `target_identity`와
+  `direct_impact`를 현재 후보 근거에 결속한다. 추가 coverage는 선택 사항이며 근거가
+  필요하고, 전체 프로그램 교체의 10개 영역 계약은 바꾸지 않았다. 저장·재열기·rollback·
+  XG-SIM 실행 성공을 compiler만으로 확인했다고 표시하지 않는다. 기존 native plan,
+  원본 보호, 승인 및 ordered verification 경계도 유지한다.
+  저장된 과거 후보는 재개 문맥에 보존되지만 새 run의 제안에는 현재 run의 compiler
+  근거가 필요하므로 기존 lifecycle action에서 한 번 새로 컴파일한 뒤 제안한다.
+  generic `3635` 로그만으로 원래 실패한 세부 항목을 확정한 것은 아니며, 잘못 의심했던
+  Nemotron 실행 분기 변경은 반영하지 않았다. 알려진 실패는 고정된 안전 진단 코드로
+  구분하도록 했으며 원문 모델 응답이나 자격 증명은 기록하지 않는다.
+  코드 반영은 웹의 UAC 없는 재로드(Host PID `13272`)로 수행했고, 같은 대화의
+  run `b190fdb9-5a5a-4c11-a7cc-d5ce3056fc31`를 event `3642`에서 실제 재개했다.
 - 작업 중인 웹은 Codex 내부의 `http://127.0.0.1:8767/` 인증 탭이다. 별도 Edge/Chrome
   창은 확인하지 못했다. 초기 패널 표시 요청은 `queued`였고 선택 탭과 작업 탭도 달랐다.
   07:38에 정상 Launcher `--web-url` handoff로 기존 선택 탭 5를 인증했고, 작업 탭도 5로
