@@ -81,6 +81,11 @@ _MAX_HISTORICAL_EVIDENCE_ITEMS = 2_500
 _MAX_HISTORICAL_EVIDENCE_BUNDLE_BYTES = 1_500_000
 _MAX_AGENT_CHECKPOINT_BYTES = 1_500_000
 _DURABLE_RESUME_SYNC_CAPABILITY = "durable-resume-sync-v1"
+_SAFE_ENGINEERING_VALIDATOR_STDERR = re.compile(
+    r"^engineering output validator rejected at runtime frame "
+    r"(?P<function>[A-Za-z_][A-Za-z0-9_]*) line "
+    r"(?P<line>[1-9][0-9]{0,6})\r?\n?$"
+)
 
 # The exact typed operand route is Host-selected from a durable mission rather
 # than inferred from conversational prose.  Its sidecar finalization is fully
@@ -852,8 +857,20 @@ class AgentSupervisor:
         # stderr is allowed for diagnostics, but do not mirror arbitrary child
         # text into Host logs where endpoint data or credentials could spread.
         emitted = False
-        while await process.stderr.readline():
+        while line := await process.stderr.readline():
             emitted = True
+            try:
+                diagnostic = line.decode("ascii")
+            except UnicodeDecodeError:
+                continue
+            match = _SAFE_ENGINEERING_VALIDATOR_STDERR.fullmatch(diagnostic)
+            if match is not None:
+                logger.warning(
+                    "Agent sidecar: engineering output validator rejected at "
+                    "runtime frame %s line %s",
+                    match["function"],
+                    match["line"],
+                )
         if emitted:
             logger.warning("Agent sidecar emitted diagnostics on stderr")
 
