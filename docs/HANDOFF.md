@@ -20,6 +20,15 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 ## 2026-09-04 LD 원복과 재열기 — 현재 이어갈 지점
 
+- MCP `1b22ab2`는 정확 MNE 범위 선택 뒤 물리 Ctrl+C와 후속 native Copy를 중복 보내던
+  경로를 단일 동기 `ID_EDIT_COPY`로 바꿨다(15줄 추가/182줄 삭제). MCP `2d77321`은 기존
+  정확 모달 분류기를 통해 `OpenClipboard 실패입니다.` 안내만 확인하고 새 복구 읽기를
+  시작하도록 연결했다. 두 변경을 UAC 없이 반영했다. 재시작 직후 MCP unavailable은 이후
+  정상 창 조회로 회복됐고 PID `16168` / HWND `1377718`을 웹에서 다시 확인했다.
+  같은 창의 복구 요청은 Host에서 HTTP 409 `active recovery workspace identity changed`로
+  거부돼 네이티브 읽기에 도달하지 않았다. 복원 후 작업공간 identity의 실제 차이를 조사 중이다.
+  따라서 단일 Copy 수정의 실기 성공은 아직 주장하지 않는다. seq `43`과 현재 창을 유지한다.
+
 - 18:35 KST 실제 진행: Platform `2e74c5d`를 UAC 없이 반영한 뒤 같은 웹 종료 요청이
   성공했다. PID `13884`는 정상 종료됐고 종료 receipt digest는
   `caf152fe2865a94e5b7ef110d07d8c41090d967ae621df1fb34e5b790a4c081d`다.
