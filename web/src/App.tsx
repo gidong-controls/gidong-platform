@@ -2103,10 +2103,24 @@ function App() {
       hostApi.setCsrfToken(bootstrap.csrfToken);
       applyHostStatus(bootstrap.status);
       const activeOperation = bootstrap.status.activeOperation;
-      const operationConversationId = activeOperation?.conversationId;
+      const storedConversationId = readStoredConversationId();
+      // The Host may surface an accepted, completed native-build handoff merely
+      // as a future engineering convenience.  It is not an in-flight recovery,
+      // so it must not replace an explicit browser conversation choice.
+      const completedNativeHandoffFallback = Boolean(
+        storedConversationId &&
+          activeOperation?.kind === "native_project_create" &&
+          activeOperation.state === "completed" &&
+          activeOperation.label ===
+            "accepted_native_project_engineering_handoff_pending",
+      );
+      const operationConversationId = completedNativeHandoffFallback
+        ? undefined
+        : activeOperation?.conversationId;
       const targetAtBootstrap = currentEngineeringTarget(bootstrap.status);
       let operationConversation: Conversation | null = null;
-      let restoreActiveOperation = !operationConversationId;
+      let restoreActiveOperation =
+        !operationConversationId && !completedNativeHandoffFallback;
       if (operationConversationId) {
         try {
           operationConversation = await hostApi.getConversation(
