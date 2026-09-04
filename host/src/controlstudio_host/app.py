@@ -4177,7 +4177,13 @@ def create_app(
     def pending_native_project_handoff(
         engineering_target: tuple[str, str, str] | None,
     ) -> tuple[NativeProjectOperation, str] | None:
-        """Select a durable accepted handoff or exact-session rebind to resume."""
+        """Select an accepted native project that has not claimed a conversation.
+
+        An existing handoff is durable history, not a pending operation.  In
+        particular, a later reattach to the same workspace must not advertise
+        its original planning conversation as the active operation and replace
+        a user's currently selected engineering conversation.
+        """
 
         fallback_without_conversation: tuple[NativeProjectOperation, str] | None = None
         for candidate in native_project_repository.engineering_handoff_candidates():
@@ -4292,43 +4298,21 @@ def create_app(
                     current_target_matches = False
 
             existing = store.get_engineering_handoff_conversation(candidate.id)
-            if existing is None:
-                pending = (candidate, planning_conversation_id)
-                if current_target_matches:
-                    try:
-                        accepted_native_project_handoff(candidate.id, engineering_target)
-                    except (NativeProjectConflict, ProjectPlanReviewConflict):
-                        continue
-                    return pending
-                if fallback_without_conversation is None:
-                    fallback_without_conversation = pending
-                continue
-
-            provenance = existing.engineering_handoff
-            immutable_handoff_matches = bool(
-                isinstance(provenance, dict)
-                and existing.workflow == "engineering"
-                and existing.workspace_id == expected_workspace_id
-                and existing.revision_id == expected_revision_id
-                and provenance.get("nativeProjectId") == candidate.id
-                and provenance.get("planningConversationId")
-                == planning_conversation_id
-                and provenance.get("projectSha256") == expected_hash
-            )
-            if not immutable_handoff_matches:
+            # A handoff conversation owns this accepted operation already.
+            # Its continuity is re-proved only when that conversation is
+            # explicitly opened; status must not promote it over a current
+            # same-workspace conversation after an ordinary attach.
+            if existing is not None:
                 continue
             pending = (candidate, planning_conversation_id)
-            if not current_target_matches or engineering_target is None:
-                if fallback_without_conversation is None:
-                    fallback_without_conversation = pending
-                continue
-            if existing.engineering_session_id == engineering_target[2]:
-                continue
-            try:
-                accepted_native_project_handoff(candidate.id, engineering_target)
-            except (NativeProjectConflict, ProjectPlanReviewConflict):
-                continue
-            return pending
+            if current_target_matches:
+                try:
+                    accepted_native_project_handoff(candidate.id, engineering_target)
+                except (NativeProjectConflict, ProjectPlanReviewConflict):
+                    continue
+                return pending
+            if fallback_without_conversation is None:
+                fallback_without_conversation = pending
         return fallback_without_conversation
 
     async def refresh_terminal_change_identity(
