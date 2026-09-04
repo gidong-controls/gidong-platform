@@ -82,7 +82,10 @@ _MAX_HISTORICAL_EVIDENCE_BUNDLE_BYTES = 1_500_000
 _MAX_AGENT_CHECKPOINT_BYTES = 1_500_000
 _DURABLE_RESUME_SYNC_CAPABILITY = "durable-resume-sync-v1"
 _SAFE_ENGINEERING_VALIDATOR_STDERR = re.compile(
-    r"^engineering output validator rejected at runtime frame "
+    r"^(?:[0-9]{4})-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01]) "
+    r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9],[0-9]{3} "
+    r"WARNING controlstudio_agent\.runtime "
+    r"engineering output validator rejected at runtime frame "
     r"(?P<function>[A-Za-z_][A-Za-z0-9_]*) line "
     r"(?P<line>[1-9][0-9]{0,6})\r?\n?$"
 )
