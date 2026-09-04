@@ -18,12 +18,12 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-04 11:08 KST 이어갈 지점
+## 2026-09-04 11:20 KST 이어갈 지점
 
-- 현재 대화는 `ce6523b3-f02c-47ae-a81e-0a83cb4f6b8d`, workspace는
-  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `15320`, XG5000 PID `12492` /
+- 현재 대화는 `868e0126-a603-481a-9262-4ecef0023e9d`, workspace는
+  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `6552`, XG5000 PID `12492` /
   HWND `1901812`를 유지한다. 아래 경과 기록의 이전 PID·실패 run으로 돌아가지 않는다.
-- Platform runtime `031a52a`, Web `364e4ed`, MCP `c386b52`, Agent `503f2f1`까지
+- Platform runtime `6098968`, Web `6113faf`, MCP `8586ffe`, Agent `503f2f1`까지
   정상 웹의 UAC 없는 Host 재로드로 반영했다. 앞선 Platform `2dcb3b6` / Agent `503f2f1`는
   만료된 후보의 재개 허용 정보가 Host serializer와 Agent sidecar decoder 양쪽에서
   누락되던 문제를 수정했다. 앞선 `bf1295a1-b8e4-426e-873f-5f7abf836e6f`는 잘못된
@@ -77,12 +77,24 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   새 대화 대신 이전 `ce6523b3…`로 돌아갔다. 새 사용자 요청의 실제 run
   `c543a380-3c11-40d5-8d2d-a12fd59382ea`가 이전 대화에 연결된 것을 확인하고 정상 취소
   버튼으로 중단했다(event `3791`, CANCELLED). 이 run은 progress만 있으며 tool 실행이
-  없다. 현재 선택한 새 대화가 attach/promotion/Host 갱신을 거쳐도 보존되도록 수정 중이다.
-  빈 새 대화와 기존 파일/창을 보존하며, 이전 미션의 승인·state를 임의 재활성화하지 않는다.
+  없다. Host `6098968`은 이미 대화가 귀속된 과거 handoff를 진행 중 작업으로 다시
+  광고하지 않는다. Web `6113faf`는 현재 명시 선택을 우선하며, 대상 연결 전 생성된 빈
+  대화는 기존 create API로 target-bound 대화에 승격한다. 예전 label-specific 예외는
+  제거했다. 원래 빈 대화와 기존 미션 기록은 삭제하거나 재활성화하지 않는다.
+- 위 수정을 반영한 실제 웹에서 `22465379…`를 작업 기록으로 선택한 뒤 기존 PID `12492`
+  연결, 오프라인 후보·XG-SIM 선택을 진행했다. target-bound 대화 `868e0126…`가
+  event `3793`에서 생성됐으며 선택이 과거 `ce6523b3…`로 바뀌지 않았다. 정상 메시지
+  전송의 새 run은 `8952faca-4ee6-44be-b2ef-fa9debf1f6fd`(event `3798`)다. 기존
+  3개 rung을 보존하고 END 직전에 M00010→OUT M00030을 추가하며 10단계 XG-SIM을
+  수행하는 제안을 요청했다. 새 run 결과를 이어서 확인한다. 아직 실제 적용·저장·독립
+  재열기·XG-SIM·Keep 완료를 주장하지 않는다.
+- MCP `8586ffe`는 MNE catalog guard에 남아 있던 target raw LD SHA 동등 비교를
+  기존 필수 canonical SHA 동등 비교로 통일한다. raw SHA는 출처 값으로 보존하고,
+  canonical 필드 누락/형식 검사는 유지한다. 이는 점검 중 찾은 잔여 비교 수정이며
+  이 gate에서 실제 실패가 재현됐다는 뜻은 아니다.
 - Platform `cd14e0e`는 Web Keep 판정을 고정 3단계 대신 승인된 scenario의 각 관측값에
-  맞췄다. 실제 시뮬레이션 receipt는 아직 없어 실사용 성공 판정 전이다. `cfe2fc6`은 완료된
-  과거 신규 프로젝트 handoff보다 저장된 대화를 복원하도록 했으며, 최신 Host 재로드에서
-  현재 대화 보존을 실제 확인했다. 실행 중인 작업·복구 handoff 우선순위는 유지한다.
+  맞췄다. 실제 시뮬레이션 receipt는 아직 없어 실사용 성공 판정 전이다. 실행 중인
+  작업·복구 handoff 우선순위는 유지한다.
 - 작업 웹은 Codex 내부 `http://127.0.0.1:8767/`의 탭 5다. 선택 탭과 visible 상태는
   확인했지만 Codex 패널 열기는 현재 작업으로 이동한 뒤에도 `queued`였다. 별도
   Edge/Chrome 창이나 사용자 화면에 웹이 표시됐다고 보고하지 않는다.
