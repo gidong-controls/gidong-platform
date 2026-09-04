@@ -31,7 +31,7 @@ from .change_execution import (
     MCPChangeExecutionService,
     NativeCheckpointCallback,
 )
-from .mcp_client import MCPGateway, MCPToolError
+from .mcp_client import MCPGateway, MCPToolError, MCPToolRejectedError
 from .models import ChangeTransaction, ChangeTransactionState
 
 MNE_PLAN_KIND = "mne_full_program_replacement"
@@ -636,13 +636,52 @@ def _validate_verification_contract(transaction: ChangeTransaction) -> None:
         )
 
 
-def _verification_evidence(transaction: ChangeTransaction) -> dict[str, Any]:
+def _verification_evidence(
+    transaction: ChangeTransaction,
+    *,
+    executed_checks: tuple[str, ...] = MNE_VALIDATION_STEPS,
+) -> dict[str, Any]:
     _validate_verification_contract(transaction)
     return {
         "verification_scope": transaction.plan["verification_scope"],
-        "executed_checks": list(MNE_VALIDATION_STEPS),
-        "not_executed": list(MNE_NOT_EXECUTED_VALIDATION_TIERS),
+        "executed_checks": list(executed_checks),
+        "not_executed": [
+            *(check for check in MNE_VALIDATION_STEPS if check not in executed_checks),
+            *MNE_NOT_EXECUTED_VALIDATION_TIERS,
+        ],
         "manual_follow_up": list(transaction.plan["manual_follow_up"]),
+    }
+
+
+_SAFE_ABORT_REJECTION_CODES = {
+    "mutation requires a same-COM-object selected-PID project proof": (
+        "recovery_identity_requires_same_com_proof"
+    ),
+    "durable quarantined recovery identity is unavailable": (
+        "durable_recovery_identity_unavailable"
+    ),
+    "abort session does not own the transaction": "abort_session_ownership_mismatch",
+    "abort PID/HWND differs from transaction": "abort_target_identity_mismatch",
+    "abort project path differs from transaction": "abort_project_path_mismatch",
+    "abort project hash differs from transaction": "abort_project_hash_mismatch",
+}
+
+
+def _public_mcp_rejection(exc: BaseException) -> dict[str, str] | None:
+    """Project one exact MCP error into a fixed diagnostic without vendor text."""
+
+    if not isinstance(exc, MCPToolRejectedError):
+        return None
+    payload = exc.mcp_error_payload
+    if payload is None:
+        return None
+    # `MCPGateway` accepts this only through `_exact_tool_error_payload`.
+    error = payload["error"]
+    error_type = error["type"]
+    message = error["message"]
+    return {
+        "type": error_type if error_type in {"SessionError", "MCPProtocolError"} else "MCPError",
+        "code": _SAFE_ABORT_REJECTION_CODES.get(message, "mcp_rejection_unclassified"),
     }
 
 
@@ -2919,7 +2958,7 @@ class MNEChangeExecutionService:
         native_state = str(checkpoint.get("state") or "")
         recovery_action = str(checkpoint.get("recovery_action") or "")
         base_evidence = {
-            **_verification_evidence(transaction),
+            **_verification_evidence(transaction, executed_checks=()),
             "lookup_checkpoint": _public_checkpoint_evidence(checkpoint),
         }
         try:
@@ -3196,11 +3235,17 @@ class MNEChangeExecutionService:
                 ValueError,
                 TypeError,
             ) as exc:
+                rejection = _public_mcp_rejection(exc)
                 return ChangeVerificationResult(
                     state=ChangeTransactionState.QUARANTINED,
                     evidence={
                         **recovery_evidence,
                         "abort_error_kind": _public_failure_kind(exc),
+                        **(
+                            {"abort_rejection": rejection}
+                            if rejection is not None
+                            else {}
+                        ),
                     },
                     error_code="mne_native_abort_unproven",
                     error_detail="The pre-mutation MNE transaction could not be aborted.",

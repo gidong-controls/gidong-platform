@@ -674,7 +674,10 @@ class MCPGateway:
             async with self._call_lock:
                 result = await client.call_tool(name, dict(arguments or {}))
         except ToolError as exc:
-            raise MCPToolError(f"{name} was rejected by MCP: {exc}") from exc
+            raise MCPToolRejectedError(
+                f"{name} was rejected by MCP: {exc}",
+                mcp_error_payload=_exact_tool_error_payload(str(exc)),
+            ) from exc
         except Exception as exc:
             self._mark_connection_lost(exc)
             raise MCPToolError(f"{name} failed because MCP disconnected") from exc
@@ -696,7 +699,10 @@ class MCPGateway:
             async with self._call_lock:
                 result = await client.call_tool(name, dict(arguments or {}))
         except ToolError as exc:
-            raise MCPToolError(f"{name} was rejected by MCP: {exc}") from exc
+            raise MCPToolRejectedError(
+                f"{name} was rejected by MCP: {exc}",
+                mcp_error_payload=_exact_tool_error_payload(str(exc)),
+            ) from exc
         except Exception as exc:
             self._mark_connection_lost(exc)
             raise MCPToolError(f"{name} failed because MCP disconnected") from exc
@@ -1172,7 +1178,11 @@ class MCPGateway:
 
     def _decode_tool_result(self, name: str, result: Any) -> Any:
         if result.is_error:
-            raise MCPToolError(f"{name} failed: {self._result_text(result)}")
+            rendered = self._result_text(result)
+            raise MCPToolRejectedError(
+                f"{name} failed: {rendered}",
+                mcp_error_payload=_exact_tool_error_payload(rendered),
+            )
         if result.structured_content is not None:
             return self._unwrap_success_envelope(result.structured_content)
         if result.data is not None:
