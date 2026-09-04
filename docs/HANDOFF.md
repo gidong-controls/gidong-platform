@@ -20,6 +20,13 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 ## 2026-09-04 LD 원복과 재열기 — 현재 이어갈 지점
 
+- 20:12 후속: CLI `0a2bdcd`는 wrapper의 직접 원인 예외에서 고정 XG5000 오류 코드를
+  전달한다. 정상 재로딩 후 백업 없는 재열기를 한 번 요청했으나 이번에는 첫
+  `xg5000.open_project`가 HTTP 409로 종료됐다. 실제 원인은
+  `XG5000_OPEN_PROJECT_TIMEOUT`, `stage=official_open_ui`다. PID `14792`는 종료됐고
+  journal seq `51`은 그대로다. 권한 오류로 바꾸어 설명하거나 동일 요청을 반복하지 않는다.
+  Open UI 내부 단계와 중복 창 탐색의 시간 소모를 조사 중이다.
+
 - 최신 실행은 journal seq `51`, `QUARANTINED`, saved hash
   `a81e9e1b7d3dae92df9001d4ddc561533c916e295528f2aff8522f881546a86b`다.
   직전 seq `49`의 실제 파일/journal 일치 해시 `7ced7811…`로 첫 재열기는 성공했다.
