@@ -18,12 +18,12 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-04 11:29 KST 이어갈 지점
+## 2026-09-04 11:36 KST 이어갈 지점
 
 - 현재 대화는 `868e0126-a603-481a-9262-4ecef0023e9d`, workspace는
-  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `6552`, XG5000 PID `12492` /
+  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `14672`, XG5000 PID `12492` /
   HWND `1901812`를 유지한다. 아래 경과 기록의 이전 PID·실패 run으로 돌아가지 않는다.
-- Platform runtime `6098968`, Web `6113faf`, MCP `8586ffe`, Agent `503f2f1`까지
+- Platform runtime `9e381cb`, Web `6113faf`, MCP `abc3d1c`, Agent `4b7465d`까지
   정상 웹의 UAC 없는 Host 재로드로 반영했다. 앞선 Platform `2dcb3b6` / Agent `503f2f1`는
   만료된 후보의 재개 허용 정보가 Host serializer와 Agent sidecar decoder 양쪽에서
   누락되던 문제를 수정했다. 앞선 `bf1295a1-b8e4-426e-873f-5f7abf836e6f`는 잘못된
@@ -101,10 +101,16 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   `8eb1ceb7-12c8-4530-a42f-5861808e628e`는 유효한 snapshot
   `b3e49e2b-3934-48e2-8710-f2513dccc02a` 생성 뒤 binder에서 실패했고,
   `ABORTED_NO_MUTATION`으로 종료됐다. backup/plan/apply는 시작되지 않았다.
-  MCP `abc3d1c`가 모든 해당 binder/loader 필드 규약과 SHA 검사를 맞췄다(아직 미로드).
-  Host·Agent의 기존 만료 후 fresh compile 경로를 정확한 no-mutation FAILED 결과에도
-  적용하는 수정이 진행 중이다. 같은 대화에서 새 baseline 컴파일·새 제안으로 이어갈
-  수 있게 하되 이전 transaction/승인 기록은 되살리지 않는다.
+  MCP `abc3d1c`가 모든 해당 binder/loader 필드 규약과 SHA 검사를 맞췄다.
+  Host `9e381cb` / Agent `4b7465d`는 기존 만료 후 fresh compile 경로를 정확한
+  `FAILED/native_change_not_applied`에도 적용한다. 동일한 내부 M 디바이스·후보·profile
+  범위 검사를 유지하고 Host의 `internal_mne_rung_reproposal_permitted`를 양쪽
+  serializer에 전달한다. 이전 transaction/승인은 되살리지 않는다. Host는 새로운 준비
+  실패에서 원문 대신 단계·오류 종류·정형 MCP 오류 코드만 결과에 보존한다.
+- 위 묶음을 정상 Web의 UAC 없는 재로드로 반영한 뒤, 같은 PID/HWND를 연결하고
+  오프라인 후보·XG-SIM을 다시 선택했다. 대화 `868e0126…`가 유지된 상태에서
+  `결과 확인하고 계속`을 눌러 run `27fbf9b2-5fbf-4448-945b-7ff2c0be8a25`
+  (event `3848`)를 시작했다. 이 재개 실행의 fresh compile·새 제안 결과부터 이어간다.
 - MCP `8586ffe`는 MNE catalog guard에 남아 있던 target raw LD SHA 동등 비교를
   기존 필수 canonical SHA 동등 비교로 통일한다. raw SHA는 출처 값으로 보존하고,
   canonical 필드 누락/형식 검사는 유지한다. 이는 점검 중 찾은 잔여 비교 수정이며
