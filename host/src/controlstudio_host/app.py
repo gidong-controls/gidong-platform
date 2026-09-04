@@ -128,6 +128,7 @@ from .api_models import (
     MneFullProgramBaselineBindingV2,
     MneInstructionBatchPatchCandidateV5,
     MneInstructionPatchCandidateV4,
+    MNE_COMPILER_CANDIDATE_REQUIRED_COVERAGE_AREAS,
     MneRungPatchCandidateV6,
     MneSeriesGuardCandidateV3,
     ModelCapabilityFlagsV1,
@@ -5052,11 +5053,37 @@ def create_app(
             )
 
         coverage_by_area = {item.area: item for item in plan.coverage}
-        for area in _CHANGE_COVERAGE_MUST_BE_CONFIRMED:
+        required_confirmed_areas = (
+            _CHANGE_COVERAGE_MUST_BE_CONFIRMED
+            if require_full_program_evidence
+            else frozenset(MNE_COMPILER_CANDIDATE_REQUIRED_COVERAGE_AREAS)
+        )
+        for area in required_confirmed_areas:
             if coverage_by_area[area].status != "confirmed":
                 raise ChangeExecutionPreconditionError(
                     f"MNE coverage {area} must be confirmed with "
                     "server-authored evidence"
+                )
+        compiler_tool: str | None = None
+        if not require_full_program_evidence:
+            patch_contract = MNE_PATCH_PLAN_CONTRACTS.get(plan.plan_kind)
+            compiler_tool = (
+                patch_contract.compiler_tool if patch_contract is not None else None
+            )
+            candidate_evidence_id = getattr(plan, "candidate_evidence_id", None)
+            if (
+                compiler_tool is None
+                or not isinstance(candidate_evidence_id, str)
+                or evidence_by_id.get(candidate_evidence_id, {}).get("toolName")
+                != compiler_tool
+                or any(
+                    candidate_evidence_id
+                    not in coverage_by_area[area].evidence_refs
+                    for area in required_confirmed_areas
+                )
+            ):
+                raise ChangeExecutionPreconditionError(
+                    "compiler candidate coverage must bind the exact current-run receipt"
                 )
         for item in plan.coverage:
             if item.status != "confirmed":
@@ -5070,6 +5097,8 @@ def create_app(
                     "static workspace file evidence cannot satisfy MNE coverage"
                 )
             allowed_tools = _MNE_COVERAGE_ALLOWED_TOOLS[item.area]
+            if compiler_tool is not None and item.area in required_confirmed_areas:
+                allowed_tools = allowed_tools | frozenset({compiler_tool})
             if not observed_tools.intersection(allowed_tools):
                 raise ChangeExecutionPreconditionError(
                     f"MNE coverage {item.area} has no applicable "

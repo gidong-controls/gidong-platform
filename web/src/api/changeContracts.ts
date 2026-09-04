@@ -41,6 +41,10 @@ export type StructuralMnePlan =
     };
 
 const SHA256 = /^[0-9a-f]{64}$/;
+const MNE_COMPILER_CANDIDATE_COVERAGE_AREAS: ChangeCoverageArea[] = [
+  "target_identity",
+  "direct_impact",
+];
 const MNE_BOOLEAN_CONTACT_COMMANDS = new Set([
   "LOAD",
   "LOAD NOT",
@@ -197,6 +201,19 @@ function isCoverage(value: unknown, exact = false): value is ChangeCoverageItem[
   }
   const areas = new Set(value.map((item) => item.area));
   return !exact || (value.length === COVERAGE_AREAS.size && areas.size === value.length);
+}
+
+function isMneCandidateCoverage(
+  value: unknown,
+  candidateEvidenceId: string,
+): value is ChangeCoverageItem[] {
+  if (!isCoverage(value) || value.length < 2) return false;
+  const byArea = new Map(value.map((item) => [item.area, item]));
+  if (byArea.size !== value.length || value.some((item) => item.status === "confirmed" && item.evidenceRefs.length === 0)) return false;
+  return MNE_COMPILER_CANDIDATE_COVERAGE_AREAS.every((area) => {
+    const item = byArea.get(area);
+    return item?.status === "confirmed" && item.evidenceRefs.includes(candidateEvidenceId);
+  });
 }
 
 function isCanonicalMneInstruction(value: unknown): boolean {
@@ -478,7 +495,7 @@ function isMneCandidatePlanEnvelope(
     isStringList(value.rollback, true) &&
     Array.isArray(value.blockingUnknowns) &&
     value.blockingUnknowns.length === 0 &&
-    isCoverage(value.coverage, true)
+    isMneCandidateCoverage(value.coverage, value.candidateEvidenceId)
   );
 }
 

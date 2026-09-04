@@ -1782,6 +1782,10 @@ REQUIRED_CHANGE_COVERAGE_AREAS = (
     "validation",
     "rollback",
 )
+MNE_COMPILER_CANDIDATE_REQUIRED_COVERAGE_AREAS = (
+    "target_identity",
+    "direct_impact",
+)
 
 
 class ChangeCoverageItemV1(ApiModel):
@@ -3309,7 +3313,11 @@ class MneRungPatchCandidateV6(ApiModel):
         return self
 
 
-def _validate_mne_plan_common(plan: Any) -> None:
+def _validate_mne_plan_common(
+    plan: Any,
+    *,
+    required_coverage_areas: tuple[str, ...] = REQUIRED_CHANGE_COVERAGE_AREAS,
+) -> None:
     """Shared human-approval contract for both MNE change shapes."""
 
     text_lists = {
@@ -3336,10 +3344,11 @@ def _validate_mne_plan_common(plan: Any) -> None:
             "xg5000_program_check, project_save, and project_reopen in that order"
         )
     coverage_by_area = {item.area: item for item in plan.coverage}
-    if len(coverage_by_area) != len(plan.coverage) or set(coverage_by_area) != set(
-        REQUIRED_CHANGE_COVERAGE_AREAS
+    if (
+        len(coverage_by_area) != len(plan.coverage)
+        or not set(required_coverage_areas).issubset(coverage_by_area)
     ):
-        raise ValueError("plan.coverage must contain each required area exactly once")
+        raise ValueError("plan.coverage is missing a required area or repeats an area")
     for area, item in coverage_by_area.items():
         if item.status == "unknown_blocking":
             raise ValueError(f"plan.coverage[{area}] is unresolved")
@@ -3408,7 +3417,7 @@ class MneCandidateChangePlanBase(ApiModel):
     observation_signals: list[str] = Field(min_length=1, max_length=200)
     stop_conditions: list[str] = Field(min_length=1, max_length=200)
     coverage: list[ChangeCoverageItemV1] = Field(
-        min_length=len(REQUIRED_CHANGE_COVERAGE_AREAS),
+        min_length=len(MNE_COMPILER_CANDIDATE_REQUIRED_COVERAGE_AREAS),
         max_length=len(REQUIRED_CHANGE_COVERAGE_AREAS),
     )
     verification_scope: Literal[
@@ -3421,7 +3430,20 @@ class MneCandidateChangePlanBase(ApiModel):
 
 
 def _validate_mne_candidate_plan(plan: Any, candidate: Any) -> None:
-    _validate_mne_plan_common(plan)
+    _validate_mne_plan_common(
+        plan,
+        required_coverage_areas=MNE_COMPILER_CANDIDATE_REQUIRED_COVERAGE_AREAS,
+    )
+    coverage_by_area = {item.area: item for item in plan.coverage}
+    for area in MNE_COMPILER_CANDIDATE_REQUIRED_COVERAGE_AREAS:
+        item = coverage_by_area[area]
+        if (
+            item.status != "confirmed"
+            or plan.candidate_evidence_id not in item.evidence_refs
+        ):
+            raise ValueError(
+                f"plan.coverage[{area}] must confirm the exact compiler candidate"
+            )
     if plan.baseline_binding is not None and (
         plan.baseline_binding.project_sha256 != candidate.project_sha256
         or plan.baseline_binding.program_id != candidate.program_id
