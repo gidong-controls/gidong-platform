@@ -18,7 +18,7 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-04 13:54 KST 이어갈 지점
+## 2026-09-04 14:21 KST 이어갈 지점
 
 - 같은 대화 `868e0126-a603-481a-9262-4ecef0023e9d`와 run
   `e6259675-650a-48d7-b08a-7d726ef6bd4b`를 유지한다. Host transaction
@@ -48,6 +48,33 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   lease `e1b75df0-eebf-453e-9eeb-c7aee7827008`이다. 이 시도에서는 Program Check
   측정 단계에 도달하지 않았다. 지금은 이 exact row-copy publication 경로를 조사한다.
   원인 변경 없이 다시 실행하거나 journal을 직접 수정하지 않는다.
+- MCP `378f82c`의 row-copy publication 순서 수정 뒤 session
+  `4d68677d-582b-4c6f-8aef-c1989b6c83f3/cbceccf2f7d3`는 별도의
+  `XG5000_LADDER_CLIPBOARD_MISSING`에서 끝났다. 실제 실행 파일은 MCP ladder 복사본이
+  아니라 standalone CLI `vendor/live/read_ld.py`다. CLI `efd2183` / `deb2078`,
+  MCP `1792f26`은 copy 직후 clipboard를 열지 않고 sequence 변경·대상 PID 소유권·
+  예상 native format의 `IsClipboardFormatAvailable`을 확인한 뒤 읽는다. 마지막 무조건
+  format 열거/read와 쓰이지 않는 helper도 제거했다. Copy 횟수·기한은 늘리지 않았다.
+- 위 변경을 정상 웹에서 UAC 없이 반영한 Host PID는 `8360`이다. 실행 코드 기준
+  Platform/Web `0e6a8d9`, MCP `1792f26`, Agent `efc42a9`, CLI `deb2078`이며 XG5000
+  PID/HWND는 여전히 `12492` / `1901812`다. Web `0e6a8d9`는 historical SSE 재생의
+  대화 조회를 in-flight+trailing 방식으로 합친다. 실제 웹 reload 뒤 같은 대화/격리
+  복원이 유지됐고, 관찰한 새 log 53줄 중 해당 대화 GET은 10개였다. 모든 재연결에서
+  고정 2회라고 주장하지 않는다. 가장 최신 caller의 epoch와 allowSwitch를 함께 사용한다.
+- 최신 실제 복구는 MNE·LD 읽기를 통과하고 Program Check result-read까지 도달했다.
+  artifact는 `6034066e-ffd9-48f0-ba63-d8e5e7b1e75c/a609974c7900/error.json`이다.
+  임시 측정 값은 `program_check_phase=check_result_read`, `program_check_elapsed_ms=14062`,
+  `cli_timeout_seconds=30.0`이다. journal seq `29`, active session은 위 6034…,
+  lease는 `33527b10-7323-445a-9a80-5c5c2c8f3959`이며 여전히 `QUARANTINED`다.
+  따라서 현재 원인은 toolbar 탐색/권한이 아니라 실제 결과 dock의 collapsed layout이다.
+  controls artifact에서 caption `854680` 높이 1, pane `1312976`(32840)와 list `723156`
+  (32849) 높이가 0이다. parser가 hidden/stale 결과를 pass로 수용하지 않는 것은 맞다.
+  다음 작업은 동일 결과 dock에 인접한 live horizontal BCGPSlider를 한 번 끌어 실제
+  결과 면적을 확보하는 정상 UI 동작이다. 고정 HWND/좌표·전체 레이아웃 초기화·추가
+  사용자 권한 조건을 도입하지 않는다. 실제 결과를 읽은 뒤 임시 phase trace를 제거한다.
+- Codex 오른쪽 표시 도구를 최근 다시 호출해도 `status=queued`였다. 내부 browser의
+  visibility=true는 사용자 화면에 패널이 실제 펼쳐졌다는 증거가 아니다. 외부 브라우저나
+  사용자 화면에 웹을 띄웠다고 말하지 않는다. 내부 탭에서 정상 웹 조작은 계속 가능하다.
 
 ## 2026-09-04 13:26 KST 경과 기록
 
