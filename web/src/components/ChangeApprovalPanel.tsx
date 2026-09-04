@@ -921,6 +921,7 @@ function hasExecutableMneContract(
     | MneInstructionBatchPatchChangePlanV5
     | MneRungPatchChangePlanV6,
 ): boolean {
+  const compilerCandidate = plan.planKind !== "mne_full_program_replacement";
   const coverageByArea = new Map(
     plan.coverage.map((item) => [item.area, item]),
   );
@@ -937,16 +938,21 @@ function hasExecutableMneContract(
         "project_reopen",
       ].join("\u0000") &&
     plan.blockingUnknowns.length === 0 &&
-    coverageByArea.size === REQUIRED_COVERAGE_AREAS.length &&
-    REQUIRED_COVERAGE_AREAS.every((area) => {
-      const item = coverageByArea.get(area);
-      return Boolean(
-        item &&
-          item.status !== "unknown_blocking" &&
-          (!MNE_MUST_BE_CONFIRMED.has(area) || item.status === "confirmed") &&
-          (item.status !== "confirmed" || item.evidenceRefs.length > 0),
-      );
-    })
+    // `getStructuralMnePlan` already applies the shared candidate receipt
+    // validator: its compiler-backed variants require the exact two
+    // evidence-bound coverage rows. Full replacement remains the only path
+    // that requires all ten investigation areas here.
+    (compilerCandidate ||
+      (coverageByArea.size === REQUIRED_COVERAGE_AREAS.length &&
+        REQUIRED_COVERAGE_AREAS.every((area) => {
+          const item = coverageByArea.get(area);
+          return Boolean(
+            item &&
+              item.status !== "unknown_blocking" &&
+              (!MNE_MUST_BE_CONFIRMED.has(area) || item.status === "confirmed") &&
+              (item.status !== "confirmed" || item.evidenceRefs.length > 0),
+          );
+        })))
   );
 }
 
@@ -1117,9 +1123,11 @@ function hasExecutableChangeContract(
 
 function CoverageReview({
   items,
+  compilerCandidate = false,
   onOpenEvidence,
 }: {
   items: ChangeCoverageItem[];
+  compilerCandidate?: boolean;
   onOpenEvidence?: () => void;
 }) {
   if (items.length === 0) {
@@ -1143,7 +1151,11 @@ function CoverageReview({
           <p className="panel-kicker">IMPACT COVERAGE</p>
           <h3 id="change-coverage-title">영향 조사 완전성</h3>
         </div>
-        <strong>{items.length}/10 영역</strong>
+        <strong>
+          {compilerCandidate
+            ? `필수 2개 · 기록 ${items.length}개`
+            : `${items.length}/10 영역`}
+        </strong>
       </div>
       <ul>
         {items.map((item) => (
@@ -1524,6 +1536,14 @@ export function ChangeApprovalPanel({
     );
   }
   const canDecide = transaction.state === "pending_approval";
+  const compilerCandidate = Boolean(
+    structuralMnePlan && structuralMnePlan.kind !== "full_program_replacement",
+  );
+  const xgSimScenarioStepCount =
+    rungPatchPlan?.candidate.simulationProfile &&
+    "scenario" in rungPatchPlan.candidate.simulationProfile
+      ? rungPatchPlan.candidate.simulationProfile.scenario.steps.length
+      : null;
   const contractReady = hasExecutableChangeContract(
     structuralMnePlan,
     legacyPlan,
@@ -1630,7 +1650,9 @@ export function ChangeApprovalPanel({
         )}
         <span>
           {rungPatchPlan?.verificationScope === "offline_native_reopen_xgsim"
-            ? "컴파일된 XG-SIM normal→deny→restore 관찰 뒤 CPU 정지·입력 원복을 확인하고, 사용자가 Keep/Revert를 선택합니다. PLC 연결·쓰기는 포함되지 않습니다."
+            ? xgSimScenarioStepCount !== null
+              ? `컴파일된 XG-SIM ${xgSimScenarioStepCount}단계 관찰 뒤 CPU 정지·입력 원복을 확인하고, 사용자가 Keep/Revert를 선택합니다. PLC 연결·쓰기는 포함되지 않습니다.`
+              : "컴파일된 XG-SIM normal→deny→restore 관찰 뒤 CPU 정지·입력 원복을 확인하고, 사용자가 Keep/Revert를 선택합니다. PLC 연결·쓰기는 포함되지 않습니다."
             : "XG-SIM 시험, 실제 PLC readback, 런중 수정과 설비 동작 검증은 이 실행에 포함되지 않습니다."}
         </span>
       </div>
@@ -1686,6 +1708,7 @@ export function ChangeApprovalPanel({
 
       <CoverageReview
         items={transaction.plan.coverage ?? []}
+        compilerCandidate={compilerCandidate}
         onOpenEvidence={onOpenEvidence}
       />
 
@@ -1874,9 +1897,9 @@ export function ChangeApprovalPanel({
       )}
       {canDecide && !contractReady && (
         <p className="change-notice change-error" role="alert">
-          영향·위험·성공 기준과 10개 필수 조사 영역이 현재 Host 안전 계약을
-          충족하지 않습니다. 이 계약은 승인할 수 없으며 수정 요청으로 다시
-          작성해야 합니다.
+          {compilerCandidate
+            ? "영향·위험·성공 기준 또는 compiler receipt에 결속된 대상 식별·직접 영향 2개 조사 영역이 현재 Host 안전 계약을 충족하지 않습니다."
+            : "영향·위험·성공 기준과 10개 필수 조사 영역이 현재 Host 안전 계약을 충족하지 않습니다."} 이 계약은 승인할 수 없으며 수정 요청으로 다시 작성해야 합니다.
         </p>
       )}
       {canExecuteApproved && (
