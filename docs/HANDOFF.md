@@ -22,9 +22,9 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 - 같은 대화 `868e0126-a603-481a-9262-4ecef0023e9d`, run `e6259675-650a-48d7-b08a-7d726ef6bd4b`,
   Host transaction `588463c0-11fe-4748-a8e1-0b2639df1a05`, MCP transaction
-  `1f4710c8-797e-476a-85f2-aa972ff137c7`를 유지한다. 상태는 `QUARANTINED`, journal seq `33`,
-  active session `3c6409a1-5ce9-43bf-a796-0c3d9b64585a`, lease
-  `58daa3e4-79ac-4a53-a979-491ce4052420`다. M30 적용·저장·독립 재열기·XG-SIM·Keep은 미완료다.
+  `1f4710c8-797e-476a-85f2-aa972ff137c7`를 유지한다. 상태는 `QUARANTINED`, journal seq `35`,
+  active session `3a589247-df07-4869-b67c-cb28cb1e8c60`, lease
+  `2f073711-8661-4601-b1f5-ebf1d8d16396`다. M30 적용·독립 재열기 최종 readback·XG-SIM·Keep은 미완료다.
 - MCP `508fff0` / `9921075`의 collapsed dock 펼침을 반영한 정상 웹 복구는
   `f36ba0df-d4ce-4e76-b9dd-d0549cfa072b/7b2a576cbdd0/error.json`에서 끝났다.
   `cli_timeout_seconds=30.0`, `program_check_phase=check_fresh_transition`,
@@ -42,8 +42,27 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   최신 캡처는 MainProgram의 11개 IL 명령이 전체 선택된 상태다. 성공한 5012… 기록은
   LD roundtrip의 최종 LD 보기 직후였다. 기존 toolbar helper에 있던 LD 전환/포커스 준비가
   direct command 경로에는 없는 점을 조사 중이며, 이것을 아직 실증된 원인이나 해결로 기록하지 않는다.
-- 실행 중인 Host는 PID `14500`, MCP `99b3358`, CLI `deb2078`, Agent `efc42a9`, Web `0e6a8d9`다.
-  XG5000은 PID `12492` 한 개 그대로이며 UAC, 강제 종료, 중복 실행은 하지 않았다.
+- MCP `105e104`은 기존 LD 전환·정확한 editor focus 준비를 재사용한 뒤 MainRes 876을 보낸다.
+  이를 반영한 14:57 KST 정상 웹 복구는 Program Check와 save의 반환 조건을 통과하고 독립 재열기로
+  진행했다. `rollback_program_replacement`의 순서는 baseline readback → Program Check →
+  post-check readback → save → `_verify_reopen`이다. 그러나 최종 예외로 단계별 반환 receipt와
+  `ROLLED_BACK` 전이는 생성되지 않았으므로 전체 원복 성공으로 기록하지 않는다.
+- 새 실패는 `3a589247-df07-4869-b67c-cb28cb1e8c60/c45e4646638f/error.json`의
+  `XG5000_PROGRAMS_NOT_FOUND`다. 기존 PID `12492`는 정상 close 경로에서 사라졌고 새
+  PID `13884` / HWND `3803514` 한 개가 같은 프로젝트 제목으로 열렸다. 현재 journal의
+  active PID/HWND는 여전히 이전 값이다. 웹의 창 목록 갱신은 새 PID를 표시하며 미선택 상태다.
+- 실제 실패 호출자는 CLI가 아니라 rollback에 남아 있던 MCP 경로다:
+  `server._rollback_mne_executor` → `_mne_reopen_project` → `program_replacement._verify_reopen`
+  → `resolve_exact_program_target` → `list_ld_programs`. apply는 이미 `_mne_fresh_reopen_project`로
+  standalone CLI를 사용하지만 rollback은 아직 별도 catalog 좌표 탐색을 사용했다.
+  CLI `_select_reopen_program`에도 중복 catalog 탐색이 있으나 그 수정만으로 현재 원복 오류를
+  해결했다고 주장하면 안 된다. 원복도 기존 CLI 재열기 경계로 통일하고 baseline 기대값을 결속한다.
+- MCP `bb57cfa`와 CLI `b3cc0c8`은 toolbar 진단 버튼을 정상 Program Check 실행 증거로 수용하던
+  분기를 제거했다. 별도 toolbar 진단과 임시 phase trace는 유지한다. 이 두 커밋 및 후속 selector
+  수정은 다음 정상 웹 코드 재로드에서 함께 반영한다. 재열기 실패 뒤 새 PID/저장 후 파일 hash의
+  정상 recovery 결속도 확인하며 journal 값을 수동 수정하지 않는다.
+- 보호된 source 파일 SHA256은 여전히
+  `16248471e9a7131623b65ea6ad7b43f59fa6a78dcccf462d88687fbc8442f13e`다.
 - 사용자 화면에 웹을 열었다고 주장하지 않는다. `127.0.0.1:8767` 서버와 내부 tab 5의 정상 웹은
   확인했지만, 표시 요청은 `queued`이고 visibility는 `set(true)` 뒤에도 `false`다.
   Windows 창 확인도 timeout이었다. 내부 탭의 DOM/스크린샷은 사용자 화면 표시 증거가 아니다.
