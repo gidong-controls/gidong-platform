@@ -4734,12 +4734,12 @@ class LaunchIdleXG5000AttentionV1(ApiModel):
 class ReviewedNoSaveCloseRequestV1(ApiModel):
     """Explicit user-confirmed close; it never implies opening another workspace."""
 
-    session_id: str = Field(min_length=1, max_length=256)
     pid: int = Field(gt=0)
     hwnd: int = Field(gt=0)
     process_create_time: float = Field(gt=0)
-    project_path: str = Field(min_length=1, max_length=32_768)
-    project_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    session_id: str | None = Field(default=None, min_length=1, max_length=256)
+    project_path: str | None = Field(default=None, min_length=1, max_length=32_768)
+    project_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     confirm_no_save: Literal[True]
     timeout_seconds: float = Field(default=45, gt=0, le=60)
 

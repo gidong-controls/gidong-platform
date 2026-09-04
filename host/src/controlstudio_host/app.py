@@ -14631,55 +14631,26 @@ def create_app(
 
         nonlocal active_engineering_session
         session = active_engineering_session
-        if not _engineering_session_read_ready(session):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="no read-ready XG5000 session is available for reviewed close",
-            )
-        assert isinstance(session, dict)
-        try:
-            same_path = Path(str(session["project_path"])).resolve() == Path(body.project_path).resolve()
-            same_identity = (
-                body.session_id == str(session["session_id"])
-                and body.pid == int(session["pid"])
-                and body.hwnd == int(session["hwnd"])
-                and body.project_hash == str(session["project_hash"]).casefold()
-                and same_path
-            )
-        except (KeyError, TypeError, ValueError, OSError):
-            same_identity = False
-        if not same_identity:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="reviewed close identity no longer matches the active XG5000 session",
-            )
-        metadata = session.get("metadata") if isinstance(session.get("metadata"), dict) else {}
-        proofs = [
-            metadata.get("project_identity_proof"),
-            metadata.get("controlled_open_read_proof"),
-        ]
-        proof_times = [
-            float(proof["process_create_time"])
-            for proof in proofs
-            if isinstance(proof, dict)
-            and isinstance(proof.get("process_create_time"), (int, float))
-            and not isinstance(proof.get("process_create_time"), bool)
-        ]
-        if not proof_times or not any(abs(value - body.process_create_time) < 0.001 for value in proof_times):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="reviewed close requires the active session process-lifetime proof",
-            )
         arguments = {
-            "session_id": body.session_id,
             "pid": body.pid,
             "hwnd": body.hwnd,
             "process_create_time": body.process_create_time,
-            "project_path": str(Path(body.project_path).resolve()),
-            "project_hash": body.project_hash,
             "confirm_no_save": True,
             "timeout_seconds": body.timeout_seconds,
         }
+        for field in ("session_id", "project_path", "project_hash"):
+            value = getattr(body, field)
+            if value is not None:
+                if field == "project_path":
+                    try:
+                        arguments[field] = str(Path(value).resolve())
+                    except (OSError, ValueError) as exc:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail="reviewed close project-path metadata is invalid",
+                        ) from exc
+                else:
+                    arguments[field] = value.strip()
         try:
             raw = await mcp.call_workspace_tool("xg5000.reviewed_no_save_close", arguments)
             receipt_digest = _canonical_json_digest(raw)
@@ -14699,17 +14670,19 @@ def create_app(
             ) from exc
         binding = completed.reviewed_binding
         if (
-            binding.get("session_id") != body.session_id
-            or binding.get("pid") != body.pid
+            binding.get("pid") != body.pid
             or binding.get("hwnd") != body.hwnd
-            or binding.get("project_path") != arguments["project_path"]
-            or binding.get("project_hash") != body.project_hash
             or not isinstance(binding.get("process_create_time"), (int, float))
             or abs(float(binding["process_create_time"]) - body.process_create_time) >= 0.001
         ):
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="MCP reviewed close receipt binding does not match the confirmed target",
+            )
+        if any(binding.get(field) != arguments[field] for field in ("session_id", "project_path", "project_hash") if field in arguments):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="MCP reviewed close receipt context does not match the confirmed target",
             )
         store.append_event(
             event_type="xg5000.reviewed_no_save_closed",
@@ -14721,8 +14694,18 @@ def create_app(
                 "processTerminated": False,
             },
         )
-        active_engineering_session = None
-        execution_broker.clear_agent_session()
+        active_session_lifetime = _engineering_session_process_create_time(session)
+        if (
+            isinstance(session, dict)
+            and session.get("pid") == body.pid
+            and session.get("hwnd") == body.hwnd
+            and (
+                active_session_lifetime is None
+                or abs(active_session_lifetime - body.process_create_time) < 0.001
+            )
+        ):
+            active_engineering_session = None
+            execution_broker.clear_agent_session()
         store.append_event(
             event_type="host.status",
             payload=current_status_v1().model_dump(mode="json", by_alias=True),
