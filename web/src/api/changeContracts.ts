@@ -1154,6 +1154,19 @@ export function hasSupportedChangeRecoveryContract(value: unknown): boolean {
         ].join("\u0000")
     );
   }
+  if (isMneRungPatchPlan(value)) {
+    return (
+      value.verificationScope === "offline_native_reopen_xgsim" &&
+      value.candidate.simulationProfile !== null &&
+      value.validation.join("\u0000") ===
+        [
+          "structural_diff",
+          "xg5000_program_check",
+          "project_save",
+          "project_reopen",
+        ].join("\u0000")
+    );
+  }
   return isLegacyChangePlanV1(value);
 }
 
