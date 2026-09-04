@@ -22,8 +22,8 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 - 같은 대화 `868e0126-a603-481a-9262-4ecef0023e9d`, run `e6259675-650a-48d7-b08a-7d726ef6bd4b`,
   Host transaction `588463c0-11fe-4748-a8e1-0b2639df1a05`, MCP transaction
-  `1f4710c8-797e-476a-85f2-aa972ff137c7`를 유지한다. 상태는 `QUARANTINED`, journal seq `39`,
-  active session `f4da5b69-c70c-4565-94af-43ce04be6aef`, active PID `13884` / HWND `3803514`다.
+  `1f4710c8-797e-476a-85f2-aa972ff137c7`를 유지한다. 상태는 `QUARANTINED`, journal seq `40`,
+  active session `ea856ceb-60dc-4ee2-af2f-ffaa83b4ca36`, active PID `13884` / HWND `3803514`다.
   과거 session/lease 값을 다시 쓰지 말고 현재 journal을 읽는다.
   M30 적용·독립 재열기 최종 readback·XG-SIM·Keep은 미완료다.
 - MCP `508fff0` / `9921075`의 collapsed dock 펼침을 반영한 정상 웹 복구는
@@ -119,11 +119,27 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   artifact `f4da5b69-c70c-4565-94af-43ce04be6aef/75987b6eebdf`의 실제 캡처에는 LD 보기 위에
   `프로그램 검사 - LSPLC` 선택 대화상자가 열려 있다. 같은 자료의 `#32770` HWND `853350`은
   native text가 빈 문자열이다. 명령이 실행되지 않았다는 판정이 아니라 modal 관찰 실패다.
-  현재 열린 이 대화상자를 그대로 둔 채 876 명령이나 editor 복구를 반복하지 않는다.
-  `visible_top_windows`의 cross-process WM_GETTEXT timeout과 `wait_for_new_dialog`의 첫
-  무관한 top-level 후보 조기 반환을 수정 중이다. 정확한 소유 Program Check modal 취소에는
+  이 대화상자를 그대로 둔 채 876 명령이나 editor 복구를 반복하지 않는다.
+  MCP `d5934eb`가 native dialog caption 읽기와 exact predicate 대기를 수정했다.
+  정확한 소유 Program Check modal 취소에는
   `recover_reviewed_save_modal`의 IDCANCEL 경로를 재사용할 수 있다. 이 함수는 XG5000을
   닫지 않으며, 뒤의 별도 `close_reviewed_xg5000_no_save`와 혼동하지 않는다.
+  MCP `854d9f7`이 이 취소를 MNE durable recovery의 editor 읽기 전에 한정해 연결했다.
+- 17:33:23 KST 정상 웹 복구는 UAC 없는 재로드 후 위 두 수정으로 modal 정리·LD 식별·
+  Program Check를 통과해 `project-save`까지 진행했다. 최신 artifact는
+  `ea856ceb-60dc-4ee2-af2f-ffaa83b4ca36/b5d82560232c`이며 오류는
+  `PROJECT_SAVE_TARGET_IDENTITY_UNVERIFIED`다. 검사 창 오류로 다시 설명하지 않는다.
+  실제 캡처의 Program Check는 오류 0개이고, active MDI는 editor commit 후 시스템 변수다.
+  **현재 working의 원래 `.xgwx` 파일은 없다.** 17:34:41 저장 때 생성된
+  `웹LD자~2.XGW_bkx0`와 `웹LD자~2.state`, `~tmp13884`가 남아 있고 XG5000은 여전히 살아 있다.
+  공유 읽기 stream으로 읽은 short-name backup SHA256은
+  `01ce9a5d843c11fbe3438d014ece100e1fac7e09a1b6b792aac60ee2589fc9fc`다. journal current hash
+  `d803e78b85017942286ae05fd39fd3f1e4222f5e5edd2c6f749d0c3f8a394ed8`와 다르므로 임의로
+  같은 파일이라고 수용하거나 복사하지 않는다. 저장 identity 검사 자체를 완화하지 않는다.
+  전체 파일명을 8.3 이름으로 바꾸는 launcher와 positional fresh-open 경로를 수정 중이다.
+  원본/체크포인트 백업의 `162484…`는 보존되어 있다. 기존
+  `change.restore_verified_quarantined_backup` 기능과 정상 no-save close를 통한 복구 경로를
+  조사 중이며, 파일·journal·lease를 수동 수정하거나 추가 저장/재열기는 하지 않았다.
 - 사용자 화면의 일반 Chrome/Edge에 ControlStudio 창을 열었다는 증거는 없다. 현재 조작 중인
   `http://127.0.0.1:8767/`은 Codex 내부 browser tab 5다. 내부 tab visibility 또는 queued 상태의
   `open_in_codex`를 외부 창 표시 성공으로 설명하지 않는다. Windows Computer Use helper의
