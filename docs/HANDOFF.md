@@ -20,6 +20,14 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 ## 2026-09-04 LD 원복과 재열기 — 현재 이어갈 지점
 
+- 20:44 최신: MCP `d20f099`의 표준 IDOK 버튼 선택을 정상 웹 재로딩으로 반영했다.
+  재열기 PID `1808` / session `b65118de-80ba-42f0-9faf-95dc72f26310` 연결은 성공했으나
+  원복에서 `MNE_EDITOR_NOT_OPEN`(hwnd `2361654`)로 종료됐다. journal seq `55`,
+  `QUARANTINED`, saved hash는 `8527f8e6…` 그대로이며 PID `1808`은 살아 있다.
+  같은 session의 `101c64a2bdb1/main_window.png`에는 MainProgram MNE 11행이 실제로
+  열린 모습이 보인다. 프로그램 부재로 단정하지 않고 탐지 시점/선택 조건을 조사한다.
+  기존 창을 유지하며 새 프로젝트·백업 복원·동일 요청 재실행을 하지 않았다.
+
 - 20:36 최신: MCP `b99e6ae`는 외부 프로세스 최상위 창 제목을 `GetWindowText`로 읽어
   창별 WM_GETTEXT 대기를 제거했다(자식 입력 필드 읽기는 유지).
   정상 웹 실행에서 첫 재열기 PID `15684` / session
