@@ -18,7 +18,38 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-04 13:26 KST 이어갈 지점
+## 2026-09-04 13:54 KST 이어갈 지점
+
+- 같은 대화 `868e0126-a603-481a-9262-4ecef0023e9d`와 run
+  `e6259675-650a-48d7-b08a-7d726ef6bd4b`를 유지한다. Host transaction
+  `588463c0-11fe-4748-a8e1-0b2639df1a05`, MCP transaction
+  `1f4710c8-797e-476a-85f2-aa972ff137c7`는 여전히 `QUARANTINED`다.
+  M30 적용·저장·독립 재열기·XG-SIM·Keep 성공은 아직 없다.
+- MCP `4370927`은 정상 Program Check에서 모든 툴바의 remote-memory 조사 대신
+  exact toolbar 59435의 유일한 enabled UIA 버튼을 사용한다. MainRes mapping은
+  `resource_command_id=876`이며 live button-ID를 읽었다고 주장하지 않는다. 이후 실제
+  session `26169e13-dd63-422b-a01f-0ec422ee0ca0/f76101570239`에서도 `CLITimeout`이
+  발생했다. 따라서 이 축소만으로 원인이 해결됐다고 기록하지 않는다.
+- MCP `52b9b8f` / `4a80fbf` / `81e7916`은 다음 실제 timeout의 마지막 함수 단계·경과 ms·
+  outer timeout 숫자만 기록하는 임시 측정이다. Windows CRLF를 처리하며 raw stderr는
+  노출하지 않는다. 원인을 측정해 고친 뒤 이 임시 코드를 제거한다. 제한 시간을 늘리거나
+  재시도 루프를 추가하지 않았다.
+- 정상 웹의 UAC 없는 코드 재로드로 Host PID `9708`, Platform/Web `da4165e`,
+  MCP `81e7916`, Agent `efc42a9`, CLI `8e69032`를 반영했다. XG5000은 기존 PID
+  `12492` / HWND `1901812` 한 개 그대로다. `da4165e`의 MCP-ready 전환 후 read-only
+  대상 목록 갱신은 실제 UI에서 확인했다. 자동 선택·복구는 없으며 수동 새로고침도
+  필요하지 않았다. 외부 Chrome/Edge 창이 열린 증거는 없다. 확인된 웹은 Codex 내부
+  browser tab 5의 `http://127.0.0.1:8767/`이다.
+- 같은 PID로 한 번 실행한 측정 복구는 Program Check 전 `MNE_ROW_COPY_FAILED`로
+  끝났다. 실제 artifact는 session
+  `c9d4d29b-b19c-4fce-88cf-870b49db4032/7a7985977e82/error.json`이며 row index 1,
+  view HWND `8063498`이다. 캡처에는 기존 11개 IL 명령과 선택된 두 번째 행
+  `AND NOT M00020`이 보인다. journal seq `25`, active session은 위 c9d4…,
+  lease `e1b75df0-eebf-453e-9eeb-c7aee7827008`이다. 이 시도에서는 Program Check
+  측정 단계에 도달하지 않았다. 지금은 이 exact row-copy publication 경로를 조사한다.
+  원인 변경 없이 다시 실행하거나 journal을 직접 수정하지 않는다.
+
+## 2026-09-04 13:26 KST 경과 기록
 
 - **현재 우선 상태:** run `e6259675-650a-48d7-b08a-7d726ef6bd4b`의 Host transaction
   `588463c0-11fe-4748-a8e1-0b2639df1a05`, MCP transaction
