@@ -20,6 +20,20 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 ## 2026-09-04 LD 원복과 재열기 — 현재 이어갈 지점
 
+- 19:12 KST 최신 실행: MCP `d65a6af`는 live baseline LD 일치가 확인된 복구에서 private
+  baseline MNE 행 수를 전달해 중복 행별 탐색을 생략한다. 그 후 관측한 END-only 복사를
+  고치기 위해 `f392716`은 범위 선택 뒤 Copy도 같은 SendInput 순서에 한 번만 넣는다.
+  동기 Copy 및 후속 fallback은 없다. 실제 웹 복구에서 attach와 전체 읽기를 통과했고,
+  원복의 Program Check·저장 뒤 CLI 독립 재열기까지 진행됐다. 이전 PID `16168`은 종료됐고
+  현재 XG5000은 PID `15856`(생성 19:12:06.736), 같은 프로젝트 제목으로 실행 중이다.
+- 최종 원복은 아직 실패다: `fresh-reopen-readback`이 `reopened mnemonic source digest
+  differs from the authorized source`를 반환했다. artifact는 session
+  `4ac09d88-5beb-4479-9090-78dd3b02307f/0d788384dfe0/error.json`이다.
+  journal seq `45`, 상태 `QUARANTINED`, active PID/HWND는 이전 `16168/1377718`,
+  current saved hash는 `e01575464a9fcc57d6f4aefca1dd5cfcd3ff6dbc09d88fc58bfe3ddaabd94e8c`다.
+  실제 재열기 내용과 기대 source digest를 비교 중이며, 재생성·재복원·재실행하지 않는다.
+  아래 seq `43`과 이전 오류는 이 실행 전 기록이다.
+
 - Host `bd7b571`로 위 경로 비교 문제를 수정했다. 실제 차이는 작업 파일 경로의 `LD`/`ld`
   대소문자뿐이고 다른 stable identity 필드는 같았다. 기존 `_normalized_workspace_path`로
   경로만 비교한다. UAC 없는 반영 뒤 같은 PID `16168` 복구 요청은 Host 검사를 통과했지만
