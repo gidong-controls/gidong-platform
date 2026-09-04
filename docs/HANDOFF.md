@@ -18,7 +18,21 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-04 12:02 KST 이어갈 지점
+## 2026-09-04 12:12 KST 이어갈 지점
+
+- **현재 우선 상태:** run `e6259675-650a-48d7-b08a-7d726ef6bd4b`의 Host transaction
+  `588463c0-11fe-4748-a8e1-0b2639df1a05`, MCP transaction
+  `1f4710c8-797e-476a-85f2-aa972ff137c7`는 `QUARANTINED`다. fresh candidate
+  `57570bfa-d2b7-5286-9a79-98f1afc518b4`와 승인·snapshot·backup·plan은 성공했다.
+  apply는 `MNE_SELECTOR_VIEW_CHANGED`로 실패했다. CLI legacy-core의 공용 replacement
+  함수가 fresh capture 뒤 IL 보기를 다시 전환하여 certified HWND를 무효화한 것이
+  원인이다. MCP `af119fd`는 이 중복 전환을 제거하며 exact selector 검사는 유지한다.
+  두 호출자(apply/rollback) 모두 직전에 IL 전환·fresh capture를 이미 수행한다.
+- 정상 Web의 격리 복구를 같은 PID/HWND로 1회 실행했다. 이후 오류는 selector가 아니라
+  `PROGRAM_CHECK_FRESH_MODAL_UNVERIFIED`이며 artifact는 session
+  `f7c0fb84-538e-4876-a934-4281b45cd37b/eb2f91b7cb2e/error.json`이다. 검사가 끝나지 않아
+  저장·독립 재열기와 완전한 rollback receipt는 없다. journal을 직접 바꾸거나 새 제안을
+  먼저 적용하지 않는다. 이 ProgramCheck 호출 원인을 수정한 뒤 정상 복구부터 이어간다.
 
 - 현재 대화는 `868e0126-a603-481a-9262-4ecef0023e9d`, workspace는
   `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `7032`, XG5000 PID `12492` /
@@ -135,7 +149,8 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   파일명 목록에 빠져 있었다. MCP `f655f85`는 이 누락을 맞췄다. producer/writer/loader의
   4개 파일명 연결을 확인했고, 정상 Web 결과 확인(event `3924`) 뒤 UAC 없이 반영했다.
   같은 PID/HWND와 대화에 연결하고 XG-SIM 범위를 선택한 뒤 12:02에 정상 재개한 run은
-  `e6259675-650a-48d7-b08a-7d726ef6bd4b`(event `3931`)다. 이 fresh 실행부터 이어간다.
+  `e6259675-650a-48d7-b08a-7d726ef6bd4b`(event `3931`)다. 이후 실패·복구 상태는 위의
+  현재 우선 상태를 따른다.
   실제 LD 적용·저장·독립 재열기·XG-SIM·Keep은 여전히 미실행이다.
   현재 모델은 compiler 인수 생성에 모델 호출을 사용해 앞선 재개에서 약 200초가
   걸렸다. 이는 재개 권한 누락이 아니며, 속도 최적화 코드는 아직 추가하지 않았다.
