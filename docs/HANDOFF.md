@@ -20,6 +20,13 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 ## 2026-09-04 LD 원복과 재열기 — 현재 이어갈 지점
 
+- Host `bd7b571`로 위 경로 비교 문제를 수정했다. 실제 차이는 작업 파일 경로의 `LD`/`ld`
+  대소문자뿐이고 다른 stable identity 필드는 같았다. 기존 `_normalized_workspace_path`로
+  경로만 비교한다. UAC 없는 반영 뒤 같은 PID `16168` 복구 요청은 Host 검사를 통과했지만
+  `xg5000.attach`의 `MNE_EDITOR_READBACK_TIMEOUT` (`Timed out while reading mnemonic rows.`)으로
+  종료됐다. 웹 증거 코드는 `mne_native_status_unavailable`; journal은 여전히 seq `43`이다.
+  이는 `OpenClipboard` 오류 해결의 실기 완료 증거가 아니며, 새 행 읽기 실패를 조사한다.
+
 - MCP `1b22ab2`는 정확 MNE 범위 선택 뒤 물리 Ctrl+C와 후속 native Copy를 중복 보내던
   경로를 단일 동기 `ID_EDIT_COPY`로 바꿨다(15줄 추가/182줄 삭제). MCP `2d77321`은 기존
   정확 모달 분류기를 통해 `OpenClipboard 실패입니다.` 안내만 확인하고 새 복구 읽기를
