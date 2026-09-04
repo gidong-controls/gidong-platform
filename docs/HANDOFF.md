@@ -20,6 +20,22 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 ## 2026-09-04 LD 원복과 재열기 — 현재 이어갈 지점
 
+- 최신 웹 실행: Platform `d421486`/`27987bc`, MCP `5f78a9d`/`dfab29a`, CLI `63197b1`을
+  기존 Host의 `코드 다시 불러오기 (UAC 없음)`으로 반영했다. 내부 브라우저의 복구 화면에서
+  PID `13884` / HWND `3803514` / 생성 시각 `1788501517.2690492`를 선택하고
+  `선택한 창 저장 없이 닫기 검토` → `저장하지 않고 닫기`를 한 번 실행했다.
+  Host가 `offline_change operation 588463c0-11fe-4748-a8e1-0b2639df1a05 is stale and
+  requires explicit recovery`로 거부했다. CLI 종료에는 도달하지 않았으며 같은 창이 남아 있다.
+  일반 target-switch lease가 복구용 종료를 별도 attach로 분류하는 문제를 수정 중이다.
+  수동 lease 삭제나 파일 복원으로 우회하지 않는다.
+- 위 커밋의 구현 내용: 선택한 실제 창의 PID/HWND/생성 시각으로 정상 종료를 요청할 수 있고,
+  사라진 작업 파일은 기존 검증 백업 복원 기능에서 복원할 수 있다. 복원 시 원본 파일이
+  없었다면 보존 receipt는 null이며, 실제 복원 해시를 journal에 기록하되 `QUARANTINED`를
+  유지한다. 네이티브 종료·백업 복원·새 재열기 성공은 아직 확인되지 않았다.
+- 마지막 읽기 확인에서 canonical working `.xgwx`는 없고, 보호 원본과 거래 백업은 모두
+  SHA-256 `16248471e9a7131623b65ea6ad7b43f59fa6a78dcccf462d88687fbc8442f13e`로 보존됐다.
+  사용자 바탕화면 Chrome/Edge를 열었다고 주장하지 않는다. 조작한 것은 Codex 내부 웹 탭이다.
+
 - 같은 대화 `868e0126-a603-481a-9262-4ecef0023e9d`, run `e6259675-650a-48d7-b08a-7d726ef6bd4b`,
   Host transaction `588463c0-11fe-4748-a8e1-0b2639df1a05`, MCP transaction
   `1f4710c8-797e-476a-85f2-aa972ff137c7`를 유지한다. 상태는 `QUARANTINED`, journal seq `40`,
