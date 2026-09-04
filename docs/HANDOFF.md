@@ -18,7 +18,7 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-04 12:25 KST 이어갈 지점
+## 2026-09-04 12:42 KST 이어갈 지점
 
 - **현재 우선 상태:** run `e6259675-650a-48d7-b08a-7d726ef6bd4b`의 Host transaction
   `588463c0-11fe-4748-a8e1-0b2639df1a05`, MCP transaction
@@ -47,12 +47,26 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   `d53272be-da32-4880-8d9d-4cddfa865010`, recovery action은 `rollback_required`다.
   이 session의 artifact 디렉터리는 생성되지 않았다. 따라서 이를 이전 ProgramCheck
   오류의 재발로 단정하지 않는다. 현재는 native 호출 전 복구 연결/자료 로딩 실패를
-  조사 중이다. 추가 native 재시도는 하지 않았다.
+  조사했다. Host `60cc821`은 기존 bounded MCP reject type/message를 private Host log에
+  보존하고 public reconciliation에는 기존 structured type/code만 전달한다. 이 변경 뒤
+  1회 정상 복구에서는 `mne_recovery_identity_unavailable`가 발생했다. 원인은 initial
+  authenticated journal lookup이 이전 lease `45ff…`와 정상 handoff lease `48030…`를
+  비교해 거부한 것이다. 실제 DB+journal pure validation으로 literal 예외를 재현했다.
+  Host `0b2328b`는 해당 lookup에서 기존 `allow_lease_rotation` 경로를 사용한다. 다른
+  transaction/plan/project/hash/PID 검사는 유지한다.
+- 위 lease 수정을 반영한 실제 정상 복구는 bootstrap/attach/status를 통과했다. 이후
+  MCP의 정확한 거부는 `mutation requires a same-COM-object selected-PID project proof`다.
+  `result.reconciliation.rollback_rejection`은 `recovery_identity_requires_same_com_proof`를
+  기록한다. 실패 이후의 최신 복구 진단은 `result.reconciliation`에서 읽는다. 기존
+  `verification.recovery` 14개 키는 과거 기준본이며, 최신 진단이 소실된 것이 아니다.
+  MCP durable recovery proof가 LD 단일 operand 계획만 지원하여 전체 MNE 원복을
+  연결하지 못하는 경로를 조사·수정 중이다. 단순 operation allowlist 추가는 proof가 없어
+  효과 없으므로 적용하지 않았다. 현재 XG5000 저장·재열기·M30 적용 성공은 여전히 없다.
 
 - 현재 대화는 `868e0126-a603-481a-9262-4ecef0023e9d`, workspace는
-  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `9228`, XG5000 PID `12492` /
+  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `12524`, XG5000 PID `12492` /
   HWND `1901812`를 유지한다. 아래 경과 기록의 이전 PID·실패 run으로 돌아가지 않는다.
-- Platform runtime `9e381cb`, Web `6113faf`, MCP `c4a9c6b`, Agent `788a16c`까지
+- Platform runtime `0b2328b`, Web `6113faf`, MCP `c4a9c6b`, Agent `788a16c`까지
   정상 웹의 UAC 없는 Host 재로드로 반영했다. 앞선 Platform `2dcb3b6` / Agent `503f2f1`는
   만료된 후보의 재개 허용 정보가 Host serializer와 Agent sidecar decoder 양쪽에서
   누락되던 문제를 수정했다. 앞선 `bf1295a1-b8e4-426e-873f-5f7abf836e6f`는 잘못된
