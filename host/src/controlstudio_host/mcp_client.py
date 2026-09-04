@@ -721,14 +721,20 @@ class MCPGateway:
             async with self._call_lock:
                 result = await client.call_tool(name, dict(arguments or {}))
         except ToolError as exc:
+            payload = _exact_tool_error_payload(str(exc))
+            _log_bounded_change_rejection(name, payload)
             raise MCPToolRejectedError(
                 f"{name} was rejected by MCP: {exc}",
-                mcp_error_payload=_exact_tool_error_payload(str(exc)),
+                mcp_error_payload=payload,
             ) from exc
         except Exception as exc:
             self._mark_connection_lost(exc)
             raise MCPToolError(f"{name} failed because MCP disconnected") from exc
-        return self._decode_tool_result(name, result)
+        try:
+            return self._decode_tool_result(name, result)
+        except MCPToolRejectedError as exc:
+            _log_bounded_change_rejection(name, exc.mcp_error_payload)
+            raise
 
     async def call_controller_tool(
         self,
