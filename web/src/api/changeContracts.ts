@@ -159,6 +159,14 @@ function containsPrivatePayloadKey(value: unknown): boolean {
   }
   return Object.entries(value).some(([key, item]) => {
     const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const publicBaselineDigest =
+      [
+        "baselinemnesha256",
+        "baselineldsha256",
+        "baselineldcanonicalsha256",
+      ].includes(normalized) &&
+      typeof item === "string" &&
+      SHA256.test(item);
     return (
       key.startsWith("_") ||
       normalized.endsWith("payload") ||
@@ -166,8 +174,8 @@ function containsPrivatePayloadKey(value: unknown): boolean {
       normalized === "privatematerial" ||
       normalized.startsWith("rawmne") ||
       normalized.startsWith("rawld") ||
-      normalized.startsWith("baselinemne") ||
-      normalized.startsWith("baselineld") ||
+      (!publicBaselineDigest && normalized.startsWith("baselinemne")) ||
+      (!publicBaselineDigest && normalized.startsWith("baselineld")) ||
       normalized.startsWith("privatemne") ||
       normalized.startsWith("privateld") ||
       containsPrivatePayloadKey(item)
@@ -833,8 +841,11 @@ function sameMneRungCondition(
 
 function isRungAction(value: unknown): boolean {
   return (
-    isCanonicalMneInstruction(value) &&
     isRecord(value) &&
+    isCanonicalMneInstruction({
+      command: value.command,
+      operand: value.operand,
+    }) &&
     ["OUT", "SET", "RST", "TON"].includes(String(value.command))
   );
 }
