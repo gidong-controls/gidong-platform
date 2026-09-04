@@ -18,7 +18,43 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-04 현재 LD 변경 작업
+## 2026-09-04 10:28 KST 이어갈 지점
+
+- 현재 대화는 `ce6523b3-f02c-47ae-a81e-0a83cb4f6b8d`, workspace는
+  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `15312`, XG5000 PID `12492` /
+  HWND `1901812`를 유지한다. 아래 경과 기록의 이전 PID·실패 run으로 돌아가지 않는다.
+- Platform `2dcb3b6`, Agent `503f2f1`까지 정상 웹의 UAC 없는 Host 재로드로 반영했다.
+  만료된 후보의 재개 허용 정보가 Host serializer와 Agent sidecar decoder 양쪽에서
+  누락되던 문제를 수정했다. 앞선 `bf1295a1-b8e4-426e-873f-5f7abf836e6f`는 잘못된
+  planner keyword 호출, `fe9e8f07-fdc6-4f01-92e1-6d1f69882088`는 누락된 허용 정보로
+  실패한 별도 실행이다. 이 오류들을 권한 거절이나 native 적용 실패로 분류하지 않는다.
+- 수정 뒤 실제 run `f50c184f-819b-44ed-bde6-f5e29996307d`에서 compiler(event `3749`,
+  11초), 새 제안(event `3755`/`3756`)이 성공했다. 현재 run의 후보 근거는
+  `7ddb7db0-b95e-5583-b24e-9ba6e1c437ac`이며 기존 11개 명령을 보존하는 13개 명령과
+  START/STOP만 조작하는 10단계 XG-SIM profile이 실제 웹에 표시됐다.
+- 새 transaction `166a93cd-cfb4-4f3d-9cd5-ab6d47b9f952`의 plan digest는
+  `217c413011902e5ae055f904b8492430f88b5d1717c72322e904ee7c368f8141`다. 웹의 승인
+  버튼으로 10:26:04에 APPROVED(event `3764`), 실행 버튼으로 10:26:32에
+  EXECUTING(event `3766`)에 진입했다. 이어 event `3768`에서 QUARANTINED가 됐다.
+  오류는 `native_change_outcome_uncertain`, 상세는
+  `MNE preparation failed and a no-mutation abort was not proven`이다.
+  저장된 recovery 진단은 `preparation_error_kind=ChangeExecutionPreconditionError`,
+  `abort_error_kind=MCPToolError`, `known_mcp_transaction_id=null`이다. 이 기록만으로
+  native 변경 또는 원복 성공을 단정하지 않는다. 정확한 준비 실패와 복구 경계를 조사한다.
+- 같은 실행 버튼을 반복하지 않는다. 현재 Web 복구 gate도 유효한 rung 계약을 알 수 없는
+  계약으로 표시하는 문제가 있어 수정 중이다. mission revision 12는 승인 결과 대기이며,
+  실제 적용·저장·독립 재열기·XG-SIM·Keep 완료를 뜻하지 않는다.
+- Platform `cd14e0e`는 Web Keep 판정을 고정 3단계 대신 승인된 scenario의 각 관측값에
+  맞췄다. 실제 시뮬레이션 receipt는 아직 없어 실사용 성공 판정 전이다. `cfe2fc6`은 완료된
+  과거 신규 프로젝트 handoff보다 저장된 대화를 복원하도록 했으며, 최신 Host 재로드에서
+  현재 대화 보존을 실제 확인했다. 실행 중인 작업·복구 handoff 우선순위는 유지한다.
+- 작업 웹은 Codex 내부 `http://127.0.0.1:8767/`의 탭 5다. 선택 탭과 visible 상태는
+  확인했지만 Codex 패널 열기는 현재 작업으로 이동한 뒤에도 `queued`였다. 별도
+  Edge/Chrome 창이나 사용자 화면에 웹이 표시됐다고 보고하지 않는다.
+
+## 2026-09-04 LD 변경 경과 기록
+
+아래는 오류 원인과 수정 근거를 보존한 이력이다. 현재 상태는 위 이어갈 지점을 우선한다.
 
 - 현재 반영 묶음은 Platform `2d866d3` / `d700ad1`, MCP `39b2bb0` / `86d7be0`,
   CLI `dd64c94`다. native LD의 확인된 가변 헤더는 공용 canonicalizer로 처리하고,
