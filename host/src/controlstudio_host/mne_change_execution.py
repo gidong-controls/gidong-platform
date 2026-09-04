@@ -3362,11 +3362,17 @@ class MNEChangeExecutionService:
             ValueError,
             TypeError,
         ) as exc:
+            rejection = _public_mcp_rejection(exc)
             return ChangeVerificationResult(
                 state=ChangeTransactionState.QUARANTINED,
                 evidence={
                     **recovery_evidence,
                     "rollback_error_kind": _public_failure_kind(exc),
+                    **(
+                        {"rollback_rejection": rejection}
+                        if rejection is not None
+                        else {}
+                    ),
                 },
                 error_code="explicit_mne_recovery_unproven",
                 error_detail="Explicit MNE rollback could not be proven.",
