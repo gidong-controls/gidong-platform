@@ -4593,6 +4593,8 @@ def create_app(
 
         holder_token = str(uuid.uuid4())
         native_trial_operation: NativeProjectOperation | None = None
+        quarantined_reviewed_close = False
+        allowed_change_transaction_id: str | None = None
         try:
             raw_body = await request.json()
         except (json.JSONDecodeError, RuntimeError):
@@ -4611,13 +4613,75 @@ def create_app(
             request_identity = _native_project_target_lease_identity(
                 native_trial_operation
             )
+        elif request.url.path == "/api/v1/xg5000/reviewed-no-save-close":
+            recovery_authority = store.selected_target_recovery_authority()
+            if (
+                recovery_authority is None
+                or recovery_authority.get("owner_kind") != "offline_change"
+                or recovery_authority.get("state") != ChangeTransactionState.QUARANTINED.value
+            ):
+                owner_kind = "engineering_attach"
+            else:
+                transaction_id = str(recovery_authority.get("operation_id") or "")
+                transaction = store.get_change_transaction(transaction_id)
+                reconciliation = (
+                    transaction.result.get("reconciliation")
+                    if transaction is not None and isinstance(transaction.result, dict)
+                    else None
+                )
+                checkpoint = (
+                    reconciliation.get("status_checkpoint")
+                    if isinstance(reconciliation, dict)
+                    else None
+                )
+                requested_pid = (
+                    raw_body.get("pid") if isinstance(raw_body, dict) else None
+                )
+                requested_hwnd = (
+                    raw_body.get("hwnd") if isinstance(raw_body, dict) else None
+                )
+                workspace_id = (
+                    active_workspace.get("workspace_id")
+                    if isinstance(active_workspace, dict)
+                    else None
+                )
+                if (
+                    transaction is None
+                    or transaction.state is not ChangeTransactionState.QUARANTINED
+                    or not isinstance(checkpoint, dict)
+                    or checkpoint.get("host_transaction_id") != transaction.id
+                    or checkpoint.get("workspace_id") != transaction.target.workspace_id
+                    or checkpoint.get("state") != ChangeTransactionState.QUARANTINED.value
+                    or checkpoint.get("recovery_action") != "rollback_required"
+                    or requested_pid is None
+                    or isinstance(requested_pid, bool)
+                    or not isinstance(requested_pid, int)
+                    or requested_hwnd is None
+                    or isinstance(requested_hwnd, bool)
+                    or not isinstance(requested_hwnd, int)
+                    or checkpoint.get("pid") != requested_pid
+                    or checkpoint.get("hwnd") != requested_hwnd
+                    or workspace_id != transaction.target.workspace_id
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            "reviewed close target does not match the current "
+                            "quarantined change recovery"
+                        ),
+                    )
+                owner_kind = "offline_change"
+                operation_id = transaction.id
+                request_identity = transaction.target.model_dump(mode="json")
+                allowed_change_transaction_id = transaction.id
+                quarantined_reviewed_close = True
         elif request.url.path.endswith("/workspaces/open-local"):
             owner_kind = "workspace_open"
         elif request.url.path.endswith("/resume"):
             owner_kind = "workspace_resume"
         else:
             owner_kind = "engineering_attach"
-        if native_trial_operation is None:
+        if native_trial_operation is None and not quarantined_reviewed_close:
             request_identity = {
                 "route": request.url.path,
                 "request": raw_body if isinstance(raw_body, dict) else {},
@@ -4640,6 +4704,7 @@ def create_app(
                 owner_kind=owner_kind,
                 holder_token=holder_token,
                 target_identity=request_identity,
+                allowed_change_transaction_id=allowed_change_transaction_id,
             )
             lease_acquired = True
         except TargetOperationLeaseConflict as exc:
@@ -4671,6 +4736,12 @@ def create_app(
                         operation_id=operation_id,
                         holder_token=holder_token,
                         reason="native_simulation_trial_requires_decision_or_recovery",
+                    )
+                elif quarantined_reviewed_close:
+                    store.park_target_operation_lease(
+                        operation_id=operation_id,
+                        holder_token=holder_token,
+                        reason="quarantined_reviewed_close_requires_reconciliation",
                     )
                 else:
                     store.release_target_operation_lease(
