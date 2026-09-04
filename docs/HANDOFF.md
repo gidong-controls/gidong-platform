@@ -18,12 +18,12 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-04 11:36 KST 이어갈 지점
+## 2026-09-04 11:54 KST 이어갈 지점
 
 - 현재 대화는 `868e0126-a603-481a-9262-4ecef0023e9d`, workspace는
-  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `14672`, XG5000 PID `12492` /
+  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `1624`, XG5000 PID `12492` /
   HWND `1901812`를 유지한다. 아래 경과 기록의 이전 PID·실패 run으로 돌아가지 않는다.
-- Platform runtime `9e381cb`, Web `6113faf`, MCP `abc3d1c`, Agent `4b7465d`까지
+- Platform runtime `9e381cb`, Web `6113faf`, MCP `174ede3`, Agent `4b7465d`까지
   정상 웹의 UAC 없는 Host 재로드로 반영했다. 앞선 Platform `2dcb3b6` / Agent `503f2f1`는
   만료된 후보의 재개 허용 정보가 Host serializer와 Agent sidecar decoder 양쪽에서
   누락되던 문제를 수정했다. 앞선 `bf1295a1-b8e4-426e-873f-5f7abf836e6f`는 잘못된
@@ -110,7 +110,25 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 - 위 묶음을 정상 Web의 UAC 없는 재로드로 반영한 뒤, 같은 PID/HWND를 연결하고
   오프라인 후보·XG-SIM을 다시 선택했다. 대화 `868e0126…`가 유지된 상태에서
   `결과 확인하고 계속`을 눌러 run `27fbf9b2-5fbf-4448-945b-7ff2c0be8a25`
-  (event `3848`)를 시작했다. 이 재개 실행의 fresh compile·새 제안 결과부터 이어간다.
+  (event `3848`)를 시작했다. 이 재개는 실제 fresh compiler(event `3864`, 10초)와
+  새 제안(event `3871`)에 성공했다. 후보 `f716d973-6349-58d0-b1f0-9d3311fc78d7`의
+  같은 11→13개 명령·10개 시나리오를 검토하고 정상 UI로 승인·실행했다.
+- Host transaction `4ee621a8-832c-4360-8d21-44d651136733`는 snapshot과 backup을
+  통과(event `3883`/`3884`)한 뒤 plan에서 `FAILED/native_change_not_applied`가 됐다.
+  MCP transaction `7b12731a-c07b-4e4e-a113-48d0cc6dbc9b`도 BACKUP_CREATED에서
+  no-mutation abort로 종료됐다. 실제 적용·저장·재열기는 미실행이다. Host의 안전한
+  진단은 `verification.preparation.stage=plan`, `mcp_error_type=SessionError`다.
+  오류 artifact는 `MNE replacement public plan fields are invalid`를 기록했다.
+- 원인은 plan producer가 내보내는 `rollback_ld_canonical_sha256`를 공용 plan digest
+  validator가 누락한 것이다. MCP `174ede3`가 해당 필드를 정확한 규약과 SHA 검사에
+  포함한다. producer와 공용 validator의 16필드 집합, bind/load/승인/apply/rollback의
+  공용 validator 사용, Host plan/apply/verify/reopen 수신 규약을 소스로 확인했다.
+  추가 Host 변경은 없다. 실패 receipt는 정상 UI에서 확인했고 같은 대화가 유지된다.
+- MCP `174ede3`를 UAC 없는 재로드로 반영하고 동일 PID/HWND를 다시 연결한 뒤,
+  같은 대화의 `결과 확인하고 계속`으로 run
+  `f1457eaf-2b84-4e12-9fe6-c6f66f50a5f7`을 시작했다. 이 실행의 새 변경안부터 이어간다.
+  현재 모델은 compiler 인수 생성에 모델 호출을 사용해 앞선 재개에서 약 200초가
+  걸렸다. 이는 재개 권한 누락이 아니며, 속도 최적화 코드는 아직 추가하지 않았다.
 - MCP `8586ffe`는 MNE catalog guard에 남아 있던 target raw LD SHA 동등 비교를
   기존 필수 canonical SHA 동등 비교로 통일한다. raw SHA는 출처 값으로 보존하고,
   canonical 필드 누락/형식 검사는 유지한다. 이는 점검 중 찾은 잔여 비교 수정이며
