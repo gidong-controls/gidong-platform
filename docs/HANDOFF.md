@@ -18,12 +18,12 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-04 11:54 KST 이어갈 지점
+## 2026-09-04 12:02 KST 이어갈 지점
 
 - 현재 대화는 `868e0126-a603-481a-9262-4ecef0023e9d`, workspace는
-  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `1624`, XG5000 PID `12492` /
+  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `7032`, XG5000 PID `12492` /
   HWND `1901812`를 유지한다. 아래 경과 기록의 이전 PID·실패 run으로 돌아가지 않는다.
-- Platform runtime `9e381cb`, Web `6113faf`, MCP `174ede3`, Agent `4b7465d`까지
+- Platform runtime `9e381cb`, Web `6113faf`, MCP `f655f85`, Agent `4b7465d`까지
   정상 웹의 UAC 없는 Host 재로드로 반영했다. 앞선 Platform `2dcb3b6` / Agent `503f2f1`는
   만료된 후보의 재개 허용 정보가 Host serializer와 Agent sidecar decoder 양쪽에서
   누락되던 문제를 수정했다. 앞선 `bf1295a1-b8e4-426e-873f-5f7abf836e6f`는 잘못된
@@ -126,7 +126,17 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   추가 Host 변경은 없다. 실패 receipt는 정상 UI에서 확인했고 같은 대화가 유지된다.
 - MCP `174ede3`를 UAC 없는 재로드로 반영하고 동일 PID/HWND를 다시 연결한 뒤,
   같은 대화의 `결과 확인하고 계속`으로 run
-  `f1457eaf-2b84-4e12-9fe6-c6f66f50a5f7`을 시작했다. 이 실행의 새 변경안부터 이어간다.
+  `f1457eaf-2b84-4e12-9fe6-c6f66f50a5f7`을 시작했다. 새 후보·제안·승인 뒤 snapshot과
+  backup까지 성공했지만 private plan 파일 저장에서 실패했다(event `3922`). Host
+  `7344646a-399c-4557-b843-845a2e2bd4e2`는 `FAILED/native_change_not_applied`, MCP
+  `f332971b-2864-421d-8849-294d09fb55df`는 `ABORTED_NO_MUTATION`이다. 오류는
+  `unsupported private transaction artifact`이며 LD 적용은 시작하지 않았다.
+  `adapter-binding.json`을 plan producer와 loader가 요구하지만 private artifact writer의
+  파일명 목록에 빠져 있었다. MCP `f655f85`는 이 누락을 맞췄다. producer/writer/loader의
+  4개 파일명 연결을 확인했고, 정상 Web 결과 확인(event `3924`) 뒤 UAC 없이 반영했다.
+  같은 PID/HWND와 대화에 연결하고 XG-SIM 범위를 선택한 뒤 12:02에 정상 재개한 run은
+  `e6259675-650a-48d7-b08a-7d726ef6bd4b`(event `3931`)다. 이 fresh 실행부터 이어간다.
+  실제 LD 적용·저장·독립 재열기·XG-SIM·Keep은 여전히 미실행이다.
   현재 모델은 compiler 인수 생성에 모델 호출을 사용해 앞선 재개에서 약 200초가
   걸렸다. 이는 재개 권한 누락이 아니며, 속도 최적화 코드는 아직 추가하지 않았다.
 - MCP `8586ffe`는 MNE catalog guard에 남아 있던 target raw LD SHA 동등 비교를
