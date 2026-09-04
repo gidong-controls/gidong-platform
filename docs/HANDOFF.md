@@ -22,9 +22,9 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 - 같은 대화 `868e0126-a603-481a-9262-4ecef0023e9d`, run `e6259675-650a-48d7-b08a-7d726ef6bd4b`,
   Host transaction `588463c0-11fe-4748-a8e1-0b2639df1a05`, MCP transaction
-  `1f4710c8-797e-476a-85f2-aa972ff137c7`를 유지한다. 상태는 `QUARANTINED`, journal seq `31`,
-  active session `f36ba0df-d4ce-4e76-b9dd-d0549cfa072b`, lease
-  `526a791e-1201-4899-b674-32e05c2d8da9`다. M30 적용·저장·독립 재열기·XG-SIM·Keep은 미완료다.
+  `1f4710c8-797e-476a-85f2-aa972ff137c7`를 유지한다. 상태는 `QUARANTINED`, journal seq `33`,
+  active session `3c6409a1-5ce9-43bf-a796-0c3d9b64585a`, lease
+  `58daa3e4-79ac-4a53-a979-491ce4052420`다. M30 적용·저장·독립 재열기·XG-SIM·Keep은 미완료다.
 - MCP `508fff0` / `9921075`의 collapsed dock 펼침을 반영한 정상 웹 복구는
   `f36ba0df-d4ce-4e76-b9dd-d0549cfa072b/7b2a576cbdd0/error.json`에서 끝났다.
   `cli_timeout_seconds=30.0`, `program_check_phase=check_fresh_transition`,
@@ -35,8 +35,14 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   동일 PID `12492` / HWND `1901812`에서 `resource-proven-mainres-wm-command` `876` 호출 뒤
   새 검사 modal, 모든 프로그램 선택, MainProgram 11-step 검사 로그와 오류 없음이 기록되어 있다.
   메뉴의 `보기`라는 이름만으로 876도 단순 pane toggle이라고 단정하면 안 된다.
-  정상 실행을 이 실제 성공 명령에 연결하고 새 modal·실제 결과 판정을 유지하는 수정이 진행 중이다.
-- 실행 중인 Host는 PID `7688`, MCP `9921075`, CLI `deb2078`, Agent `efc42a9`, Web `0e6a8d9`다.
+  MCP `99b3358`은 정상 실행을 이 실제 성공 명령에 연결하고 새 modal·실제 결과 판정을 유지한다.
+- `99b3358`을 반영한 14:50 KST 정상 웹 복구 한 건도 아직 실패했다. artifact는
+  `3c6409a1-5ce9-43bf-a796-0c3d9b64585a/41f77341fc22/error.json`, 오류는
+  `PROGRAM_CHECK_FRESH_MODAL_UNVERIFIED`, backend는 `resource-proven-mainres-wm-command`다.
+  최신 캡처는 MainProgram의 11개 IL 명령이 전체 선택된 상태다. 성공한 5012… 기록은
+  LD roundtrip의 최종 LD 보기 직후였다. 기존 toolbar helper에 있던 LD 전환/포커스 준비가
+  direct command 경로에는 없는 점을 조사 중이며, 이것을 아직 실증된 원인이나 해결로 기록하지 않는다.
+- 실행 중인 Host는 PID `14500`, MCP `99b3358`, CLI `deb2078`, Agent `efc42a9`, Web `0e6a8d9`다.
   XG5000은 PID `12492` 한 개 그대로이며 UAC, 강제 종료, 중복 실행은 하지 않았다.
 - 사용자 화면에 웹을 열었다고 주장하지 않는다. `127.0.0.1:8767` 서버와 내부 tab 5의 정상 웹은
   확인했지만, 표시 요청은 `queued`이고 visibility는 `set(true)` 뒤에도 `false`다.
