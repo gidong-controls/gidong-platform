@@ -103,6 +103,17 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   구분하도록 했으며 원문 모델 응답이나 자격 증명은 기록하지 않는다.
   코드 반영은 웹의 UAC 없는 재로드(Host PID `13272`)로 수행했고, 같은 대화의
   run `b190fdb9-5a5a-4c11-a7cc-d5ce3056fc31`를 event `3642`에서 실제 재개했다.
+- 이 재개의 compiler도 event `3646`에서 10초 만에 성공했고, 새 근거
+  `36e61049-0dff-5e50-9a7b-551fbe8d06c1`의 후보와 10단계 profile은 이전 성공 후보와
+  동일했다. 다음 local proposal 단계 전후의 event `3656`은 다시 generic
+  `agent_output_contract`로 실패했으며, 앞선 수정만으로 해결됐다고 보지 않는다.
+  Agent `7f87137` / `876eeb8`는 현재 run의 검증된 rung 후보에서 승인 제안을 직접
+  조립하여 두 번째 생성형 인수 작성 단계를 없앴다. 한국어 목표에는 한국어 설명과
+  실제 후보 대상이 표시되고, 승인 후 적용·검사·저장·독립 재열기·요청한 XG-SIM의
+  성공은 미래 완료 조건으로만 기재한다. 실행 권한이나 결과를 만들어내지 않는다.
+  Platform `8587bf5` / `8b3e17d`는 기존 Agent 오류 frame 로그의 정확한 production
+  timestamp/logger prefix 및 함수명/행 번호만 Host에 전달한다. 임의 stderr나 모델
+  원문은 계속 제외한다. 이 묶음을 UAC 없이 Host PID `10404`에 반영했다.
 - 작업 중인 웹은 Codex 내부의 `http://127.0.0.1:8767/` 인증 탭이다. 별도 Edge/Chrome
   창은 확인하지 못했다. 초기 패널 표시 요청은 `queued`였고 선택 탭과 작업 탭도 달랐다.
   07:38에 정상 Launcher `--web-url` handoff로 기존 선택 탭 5를 인증했고, 작업 탭도 5로
