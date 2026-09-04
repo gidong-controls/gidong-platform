@@ -20,6 +20,21 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 ## 2026-09-04 LD 원복과 재열기 — 현재 이어갈 지점
 
+- 18:35 KST 실제 진행: Platform `2e74c5d`를 UAC 없이 반영한 뒤 같은 웹 종료 요청이
+  성공했다. PID `13884`는 정상 종료됐고 종료 receipt digest는
+  `caf152fe2865a94e5b7ef110d07d8c41090d967ae621df1fb34e5b790a4c081d`다.
+  이어 웹의 `검토한 백업 복원 후 XG5000 복구 검증`을 한 번 실행해 canonical 작업 파일을
+  백업 해시 `16248471…`로 복원했고 journal seq `41`에 기록됐다. 새 XG5000 PID `16168` /
+  HWND `1377718`이 같은 프로젝트를 열었다. 현재 session은
+  `1d8bcbd9-f489-4be3-bc3a-8aab2b3ddd0b`, seq `43`, 상태 `QUARANTINED`다.
+  종료·복원·재열기까지는 실제 동작했지만 원복 최종 검사는 실패했다.
+- 새 실패는 위 session의 `286f3a2366a8/error.json`:
+  `MNE_REPLACEMENT_DIALOG_VISIBLE`, phase `capture_before`, dialog_count `1`이다.
+  같은 artifact의 화면은 baseline 11행이 선택된 MNE editor와
+  `XG5000` 제목의 `OpenClipboard 실패입니다.` / `확인` 오류창을 보여준다.
+  Program Check 선택 modal과 구분한다. 원인을 확인하기 전 동일 복구를 반복하지 않는다.
+  아래 seq `40` / PID `13884` 및 최초 종료 거부는 이 성공 이전의 기록이다.
+
 - 최신 웹 실행: Platform `d421486`/`27987bc`, MCP `5f78a9d`/`dfab29a`, CLI `63197b1`을
   기존 Host의 `코드 다시 불러오기 (UAC 없음)`으로 반영했다. 내부 브라우저의 복구 화면에서
   PID `13884` / HWND `3803514` / 생성 시각 `1788501517.2690492`를 선택하고
