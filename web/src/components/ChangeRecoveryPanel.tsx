@@ -326,7 +326,7 @@ export function ChangeRecoveryPanel({
                   }
                 />
                 <span>
-                  현재 파일 전체를 MCP 보존 증거로 먼저 저장한 뒤, 검증된 거래
+                  현재 파일이 있으면 MCP 보존 증거로 먼저 저장한 뒤, 검증된 거래
                   백업으로만 복원하고 실제 XG5000 재열기 검증을 요청합니다.
                 </span>
               </label>

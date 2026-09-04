@@ -2307,8 +2307,6 @@ def _validated_verified_quarantined_backup_restore(
         "host_transaction_id": transaction.id,
         "plan_digest": expected_native_plan_digest.casefold(),
         "workspace_id": transaction.target.workspace_id,
-        "observed_current_project_hash": expected_current_project_hash.casefold(),
-        "preserved_current_project_hash": expected_current_project_hash.casefold(),
         "verified_backup_project_hash": expected_baseline,
         "restored_project_hash": expected_baseline,
     }
@@ -2317,6 +2315,25 @@ def _validated_verified_quarantined_backup_restore(
             "verified backup restoration did not confirm an exact restore"
         )
     if any(value.get(field) != expected for field, expected in required_exact.items()):
+        raise ChangeExecutionPreconditionError(
+            "verified backup restoration receipt differs from the quarantined transaction"
+        )
+    preservation_fields = (
+        "observed_current_project_hash",
+        "preserved_current_project_hash",
+        "preservation_ref",
+        "preservation_digest",
+    )
+    if all(field in value and value[field] is None for field in preservation_fields):
+        # The journal proved that the canonical destination was absent, so no
+        # current bytes existed to preserve before restoring the exact backup.
+        return value
+    if (
+        value.get("observed_current_project_hash")
+        != expected_current_project_hash.casefold()
+        or value.get("preserved_current_project_hash")
+        != expected_current_project_hash.casefold()
+    ):
         raise ChangeExecutionPreconditionError(
             "verified backup restoration receipt differs from the quarantined transaction"
         )
