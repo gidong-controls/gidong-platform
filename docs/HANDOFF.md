@@ -18,12 +18,13 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-04 10:38 KST 이어갈 지점
+## 2026-09-04 10:55 KST 이어갈 지점
 
 - 현재 대화는 `ce6523b3-f02c-47ae-a81e-0a83cb4f6b8d`, workspace는
-  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `4632`, XG5000 PID `12492` /
+  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `3124`, XG5000 PID `12492` /
   HWND `1901812`를 유지한다. 아래 경과 기록의 이전 PID·실패 run으로 돌아가지 않는다.
-- Platform `2dcb3b6`, Agent `503f2f1`까지 정상 웹의 UAC 없는 Host 재로드로 반영했다.
+- Platform runtime `4eb0be6`, Web `2b6211d`, MCP `c386b52`, Agent `503f2f1`까지
+  정상 웹의 UAC 없는 Host 재로드로 반영했다. 앞선 Platform `2dcb3b6` / Agent `503f2f1`는
   만료된 후보의 재개 허용 정보가 Host serializer와 Agent sidecar decoder 양쪽에서
   누락되던 문제를 수정했다. 앞선 `bf1295a1-b8e4-426e-873f-5f7abf836e6f`는 잘못된
   planner keyword 호출, `fe9e8f07-fdc6-4f01-92e1-6d1f69882088`는 누락된 허용 정보로
@@ -53,9 +54,22 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   status 읽기는 성공했다. 상태는 `SNAPSHOT_CREATED`, `mutation_possible=false`,
   `recovery_action=abort_safe`이며 새 세션은 `449c3c40-eec0-40a3-b364-9cd9a1c812c7`다.
   이후 `change.abort`의 `MCPToolError`로 정상 중단은 실패했고 Host 오류는
-  `mne_native_abort_unproven`으로 바뀌었다. 이 호출의 실제 오류를 조사 중이다.
-  같은 변경 실행/복구 버튼을 무작정 반복하지 않는다. 실제 적용·저장·독립 재열기·
-  XG-SIM·Keep은 아직 완료되지 않았다. mission revision 12는 결과 대기 상태다.
+  `mne_native_abort_unproven`으로 바뀌었다. 다음 Host `4eb0be6` 실행은 같은 거부를
+  `SessionError/recovery_identity_requires_same_com_proof`로 정확히 기록했다.
+- 실제 원인은 journal만 닫는 `change.abort`에 native 수정용 same-COM 검사를 적용한
+  분류 오류였다. MCP `c386b52`는 이 live mutation 검사와 앞서 추가한 abort 전용
+  durable/native-file 예외들을 제거했다. 인증된 세션·요청 PID/HWND, journal의 동일
+  session/target/path/hash, 정확한 pre-apply 상태, 미소비 변경 승인, lease와 durable
+  no-mutation evidence 검사는 유지한다. 실제 rollback/save의 권한 검사와 증명은 유지한다.
+- 10:54:53의 정상 Web 복구에서 MCP `167a51a8…`가 `ABORTED_NO_MUTATION`으로
+  종료됐고 lease는 `released`, `mutation_possible=false`다. 새 복구 세션은
+  `a7b19b9e-a1e8-478e-82d3-5aec68ef1ba0`다. Host transaction `166a93cd…`는
+  `ROLLED_BACK / mne_recovery_aborted_before_mutation`으로 확정됐다. 이는 실제 원복
+  편집·저장을 수행했다는 뜻이 아니다. `native_mutation_performed=false`,
+  `executed_checks=[]`이며 실제 적용·검사·저장·재열기·XG-SIM은 미실행이다.
+  Web 복구 패널은 변경 전 중단을 정확히 표시하지만 main card가 원복·저장 성공으로
+  오표시하고 acknowledgement를 비활성화하는 후속 UI 경계를 수정 중이다. 준비 작업
+  종료는 재실행하지 않는다. 결과를 정상 확인한 뒤 같은 프로젝트에 새 변경 제안을 요청한다.
 - Platform `cd14e0e`는 Web Keep 판정을 고정 3단계 대신 승인된 scenario의 각 관측값에
   맞췄다. 실제 시뮬레이션 receipt는 아직 없어 실사용 성공 판정 전이다. `cfe2fc6`은 완료된
   과거 신규 프로젝트 handoff보다 저장된 대화를 복원하도록 했으며, 최신 Host 재로드에서
