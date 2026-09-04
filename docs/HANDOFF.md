@@ -20,6 +20,22 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 ## 2026-09-04 LD 원복과 재열기 — 현재 이어갈 지점
 
+- 20:36 최신: MCP `b99e6ae`는 외부 프로세스 최상위 창 제목을 `GetWindowText`로 읽어
+  창별 WM_GETTEXT 대기를 제거했다(자식 입력 필드 읽기는 유지).
+  정상 웹 실행에서 첫 재열기 PID `15684` / session
+  `a090f090-b474-4435-85c5-99e874d1a1d1` 연결은 성공했다. 이후 원복 독립 재열기는
+  `XG5000_OPEN_DIALOG_BUTTON_NOT_FOUND`, `stage=official_open_ui`로 종료됐다.
+  현재 journal seq `53`, `QUARANTINED`, saved hash
+  `8527f8e61841e995c465fb9f821d2b84f4ba22c16f1b11923f23ecc941fa6bd3`이며 XG5000은 없다.
+  다음 조사 대상은 파일 대화상자의 Open 버튼 선택이다. 같은 요청은 재실행하지 않았다.
+  최상위 caption API 근거: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowtextw
+
+- 이후 실기에서 MCP `359c005` / CLI `0674f94`가 원인 단계
+  `show_open_dialog`를 전달했다. 대화상자 선택 뒤 중복 검사 제거 `1d1b5d0`와
+  실제 입력 필드 검사를 selector에 한 번 보존한 `16bd7e2`를 반영했으나 같은 단계에서
+  시간 초과가 재현됐다. 해결 완료가 아니다. 다음 수정은 최상위 외부 창 제목 열거에서
+  창마다 WM_GETTEXT 응답을 기다리지 않도록 하는 것이다. 자식 입력 필드 읽기와 구분한다.
+
 - 20:12 후속: CLI `0a2bdcd`는 wrapper의 직접 원인 예외에서 고정 XG5000 오류 코드를
   전달한다. 정상 재로딩 후 백업 없는 재열기를 한 번 요청했으나 이번에는 첫
   `xg5000.open_project`가 HTTP 409로 종료됐다. 실제 원인은
