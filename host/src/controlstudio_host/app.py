@@ -1364,9 +1364,10 @@ def _internal_mne_rung_reproposal_callback_permitted(
 
     The old authority remains terminal.  This narrow callback gate only lets
     the Agent compile the current editor baseline and create a new proposal
-    for the exact same durable conversation after approval expiration or a
-    proven pre-mutation failure.  Physical I/O, rejection, uncertain failure,
-    and every other terminal outcome stay outside this route.
+    for the exact same durable conversation after approval expiration, a proven
+    pre-mutation failure, or a verified isolated-recovery rollback. Physical
+    I/O, rejection, ordinary user rollback, uncertain failure, and every other
+    terminal outcome stay outside this route.
     """
 
     if (
@@ -1387,6 +1388,18 @@ def _internal_mne_rung_reproposal_callback_permitted(
             and change_outcome.get("disposition") == "failed"
             and change_outcome.get("errorCode") == "native_change_not_applied"
             and linked_change.state is ChangeTransactionState.FAILED
+        )
+        or (
+            change_outcome.get("state") == "ROLLED_BACK"
+            and change_outcome.get("disposition") == "rolled_back"
+            and change_outcome.get("errorCode") == "explicit_mne_recovery_rolled_back"
+            and isinstance(change_outcome.get("verificationEvidenceDigest"), str)
+            and re.fullmatch(
+                r"[0-9a-f]{64}",
+                change_outcome["verificationEvidenceDigest"],
+            )
+            is not None
+            and linked_change.state is ChangeTransactionState.ROLLED_BACK
         )
     )
     if not retryable_terminal:
@@ -10117,17 +10130,32 @@ def create_app(
                     detail=str(exc),
                 ) from exc
 
+            internal_mne_rung_reproposal_permitted = (
+                change_outcome_transaction_id is not None
+                and _internal_mne_rung_reproposal_callback_permitted(
+                    mission_snapshot,
+                    change_outcome_projection(linked_change),
+                    linked_change,
+                )
+            )
             continuation_prompt = (
                 "Continue the current durable engineering mission from its saved "
-                "checkpoint. Inspect the Host-bound terminal change outcome, bind "
-                "it to the affected mission step, and continue verification or "
-                "close the objective without proposing the same change again."
-                if change_outcome_transaction_id is not None
+                "checkpoint. The Host authorized only the internal-M MNE rung path "
+                "to compile the current baseline and request one newly bound "
+                "proposal; do not revive the terminal approval."
+                if internal_mne_rung_reproposal_permitted
                 else (
                     "Continue the current durable engineering mission from its saved "
-                    "checkpoint. Execute the next justified read-only investigation "
-                    "steps, retain evidence, and stop only at an explicit mission "
-                    "condition."
+                    "checkpoint. Inspect the Host-bound terminal change outcome, bind "
+                    "it to the affected mission step, and continue verification or "
+                    "close the objective without proposing the same change again."
+                    if change_outcome_transaction_id is not None
+                    else (
+                        "Continue the current durable engineering mission from its "
+                        "saved checkpoint. Execute the next justified read-only "
+                        "investigation steps, retain evidence, and stop only at an "
+                        "explicit mission condition."
+                    )
                 )
             )
             try:
