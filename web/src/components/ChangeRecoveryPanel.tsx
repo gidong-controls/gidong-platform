@@ -178,6 +178,10 @@ export function ChangeRecoveryPanel({
     typeof checkpoint?.current_project_hash === "string"
       ? checkpoint.current_project_hash
       : undefined;
+  const journaledCurrentHash =
+    typeof projectHash === "string" && /^[0-9a-f]{64}$/i.test(projectHash)
+      ? projectHash.toLowerCase()
+      : undefined;
   const relaunchTarget = journaledRecoveryRelaunchTarget(
     transaction.targetIdentity,
   );
@@ -304,7 +308,7 @@ export function ChangeRecoveryPanel({
           >
             선택한 창 저장 없이 닫기 검토
           </button>
-          {!hasCurrentHashMismatch && relaunchAvailable && relaunchTarget && (
+          {relaunchAvailable && relaunchTarget && (
             <button
               className="button secondary-button"
               type="button"
@@ -315,7 +319,9 @@ export function ChangeRecoveryPanel({
                 })
               }
             >
-              XG5000에서 작업 복사본 다시 열어 복구
+              {journaledCurrentHash
+                ? "기록된 작업 복사본 다시 열어 복구"
+                : "XG5000에서 작업 복사본 다시 열어 복구"}
             </button>
           )}
           {hasCurrentHashMismatch && relaunchAvailable && relaunchTarget && (

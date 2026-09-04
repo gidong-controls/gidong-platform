@@ -208,9 +208,12 @@ from .knowledge_ingestion import (
 )
 from .mcp_client import AGENT_TOOL_NAMES, MCPGateway, MCPStartupError, MCPToolError
 from .mne_change_execution import (
+    MNE_PLAN_KIND,
     MNE_PATCH_PLAN_CONTRACTS,
     MNE_STRUCTURAL_PLAN_KINDS,
     CompositeChangeExecutionService,
+    _same_path,
+    _transaction_lookup_checkpoint,
     validated_terminal_mne_reopen,
 )
 from .model_connection import (
@@ -2374,6 +2377,57 @@ def _workspace_launch_binding_matches(launch: dict[str, Any], working_path: str)
     )
 
 
+async def _authenticated_recovery_relaunch_working_hash(
+    mcp: MCPGateway,
+    transaction: ChangeTransaction,
+    *,
+    working_path: str,
+) -> str:
+    """Return the current disk hash only from the matching MNE journal checkpoint."""
+
+    try:
+        digest_builder = hashlib.sha256()
+        with Path(working_path).open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest_builder.update(chunk)
+        digest = digest_builder.hexdigest()
+    except OSError as exc:
+        raise ChangeExecutionPreconditionError(
+            "active recovery working-copy file is unavailable"
+        ) from exc
+    checkpoint, terminal_receipt = _transaction_lookup_checkpoint(
+        await mcp.call_recovery_tool(
+            "change.transaction_lookup",
+            {"host_transaction_id": transaction.id},
+        ),
+        host_transaction_id=transaction.id,
+    )
+    if checkpoint is None or terminal_receipt is not None:
+        raise ChangeExecutionPreconditionError(
+            "recovery relaunch requires one nonterminal MNE journal checkpoint"
+        )
+    journal_hash = checkpoint.get("current_project_hash")
+    if (
+        transaction.plan.get("plan_kind") not in MNE_STRUCTURAL_PLAN_KINDS
+        or checkpoint.get("host_transaction_id") != transaction.id
+        or checkpoint.get("workspace_id") != transaction.target.workspace_id
+        or checkpoint.get("plan_kind") != MNE_PLAN_KIND
+        or not _same_path(checkpoint.get("project_path"), transaction.target.project_path)
+        or checkpoint.get("state") != "QUARANTINED"
+        or checkpoint.get("recovery_action") != "rollback_required"
+        or checkpoint.get("mutation_possible") is not True
+        or checkpoint.get("terminal") is not False
+        or checkpoint.get("lease_status") not in {"live", "abandoned"}
+        or not isinstance(journal_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", journal_hash.casefold()) is None
+        or not hmac.compare_digest(digest, journal_hash.casefold())
+    ):
+        raise ChangeExecutionPreconditionError(
+            "active recovery working copy differs from the authenticated MNE journal"
+        )
+    return journal_hash.casefold()
+
+
 async def _relaunch_unavailable_change_recovery_target(
     mcp: MCPGateway,
     transaction: ChangeTransaction,
@@ -2381,7 +2435,7 @@ async def _relaunch_unavailable_change_recovery_target(
     *,
     requested_pid: int,
     requested_hwnd: int,
-) -> ChangeRecoveryTarget:
+) -> tuple[ChangeRecoveryTarget, str]:
     """Open one exact working copy after its journaled XG5000 target has died.
 
     This intentionally does not attach or bind the controlled launch.  The
@@ -2409,11 +2463,21 @@ async def _relaunch_unavailable_change_recovery_target(
         workspace.workspace_id != target.workspace_id
         or workspace.revision_id != target.revision_id
         or active_path != journaled_path
-        or workspace.working_copy.current_sha256.casefold()
-        != target.artifact_hash.casefold()
     ):
         raise ChangeExecutionPreconditionError(
             "active recovery workspace is not the transaction's verified working copy"
+        )
+    if hmac.compare_digest(
+        workspace.working_copy.current_sha256.casefold(),
+        target.artifact_hash.casefold(),
+    ):
+        # Preserve the existing non-MNE/current-baseline relaunch behavior.
+        recovery_working_hash = workspace.working_copy.current_sha256.casefold()
+    else:
+        recovery_working_hash = await _authenticated_recovery_relaunch_working_hash(
+            mcp,
+            transaction,
+            working_path=workspace.working_copy.path,
         )
     try:
         observed = await mcp.call_read_tool("xg5000.instances", {})
@@ -2448,7 +2512,7 @@ async def _relaunch_unavailable_change_recovery_target(
             "xg5000.open_project",
             {
                 "workspace_id": workspace.workspace_id,
-                "expected_working_hash": workspace.working_copy.current_sha256,
+                "expected_working_hash": recovery_working_hash,
                 # Cold XG5000 starts on the engineering workstation have
                 # exposed their exact PID/HWND before the UI thread becomes
                 # responsive. Recovery already owns one bounded launch and
@@ -2486,7 +2550,7 @@ async def _relaunch_unavailable_change_recovery_target(
             and _normalized_workspace_path(str(launch.get("working_path") or ""))
             == active_path
             and str(launch.get("working_hash") or "").casefold()
-            == workspace.working_copy.current_sha256.casefold()
+            == recovery_working_hash
             and launch.get("window_detected") is True
             and isinstance(
                 launch.get("project_identity_verified_against_selected_pid"), bool
@@ -2512,7 +2576,7 @@ async def _relaunch_unavailable_change_recovery_target(
         raise ChangeExecutionPreconditionError(
             "recovery-only XG5000 relaunch receipt is incomplete or mismatched"
         )
-    return ChangeRecoveryTarget(pid=pid, hwnd=hwnd)
+    return ChangeRecoveryTarget(pid=pid, hwnd=hwnd), recovery_working_hash
 
 
 async def _record_native_handoff_after_freshness(
@@ -11354,13 +11418,37 @@ def create_app(
                     raise ChangeExecutionPreconditionError(
                         "active recovery workspace is invalid"
                     ) from exc
-                recovery_target = await _relaunch_unavailable_change_recovery_target(
+                recovery_target, recovery_working_hash = await _relaunch_unavailable_change_recovery_target(
                     mcp,
                     transaction,
                     recovery_workspace,
                     requested_pid=body.pid,
                     requested_hwnd=body.hwnd,
                 )
+                if not isinstance(active_workspace, dict):
+                    raise ChangeExecutionPreconditionError(
+                        "active recovery workspace disappeared after verified relaunch"
+                    )
+                refreshed_workspace = dict(active_workspace)
+                refreshed_working_copy = active_workspace.get("working_copy")
+                if not isinstance(refreshed_working_copy, dict):
+                    raise ChangeExecutionPreconditionError(
+                        "active recovery workspace has no working-copy identity after relaunch"
+                    )
+                refreshed_working_copy = dict(refreshed_working_copy)
+                refreshed_working_copy["current_sha256"] = recovery_working_hash
+                refreshed_working_copy["state"] = (
+                    "clean"
+                    if recovery_working_hash
+                    == str(refreshed_working_copy.get("baseline_sha256") or "").casefold()
+                    else "modified"
+                )
+                refreshed_workspace["working_copy"] = refreshed_working_copy
+                active_engineering_session = None
+                execution_broker.clear_agent_session()
+                active_workspace = refreshed_workspace
+                store.set_host_state("active_workspace", active_workspace)
+                bind_agent_workspace_target(active_workspace)
         except (ChangeExecutionPreconditionError, MCPToolError) as exc:
             store.park_target_operation_lease(
                 operation_id=transaction_id,
