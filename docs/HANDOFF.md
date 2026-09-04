@@ -136,7 +136,9 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   `01ce9a5d843c11fbe3438d014ece100e1fac7e09a1b6b792aac60ee2589fc9fc`다. journal current hash
   `d803e78b85017942286ae05fd39fd3f1e4222f5e5edd2c6f749d0c3f8a394ed8`와 다르므로 임의로
   같은 파일이라고 수용하거나 복사하지 않는다. 저장 identity 검사 자체를 완화하지 않는다.
-  전체 파일명을 8.3 이름으로 바꾸는 launcher와 positional fresh-open 경로를 수정 중이다.
+  MCP `85bf7cf`는 전체 파일명을 8.3 이름으로 바꾸던 helper를 삭제했다. CLI `0d05a68`은
+  MNE/LD 독립 재열기와 compatibility open을 기존 one-shot 공식 Open UI로 통일했다.
+  두 파일의 syntax/diff 확인만 끝났고, 이 launcher 수정 이후 native 재열기·저장은 아직 없다.
   원본/체크포인트 백업의 `162484…`는 보존되어 있다. 기존
   `change.restore_verified_quarantined_backup` 기능과 정상 no-save close를 통한 복구 경로를
   조사 중이며, 파일·journal·lease를 수동 수정하거나 추가 저장/재열기는 하지 않았다.
