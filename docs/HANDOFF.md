@@ -71,13 +71,22 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   새 editor-open 호출의 60초가 MSAA worker의 최대 30초 계약을 위반한 것이다. UAC 실패가 아니다.
   MCP `7f52db5`는 동일한 editor-open 호출 세 곳을 기존 20초 범위로 고쳤다. 제한 확대나
   재시도 추가는 없다. CLI fresh-reopen은 이미 editor open을 최대 20초로 제한하므로 변경하지 않았다.
-- 15:50:14 KST 실제 복구는 위 시간값 검증을 통과한 뒤
-  `XG5000_PROJECT_SEARCH_RESULT_UNVERIFIED`로 끝났다. 15:50:25 MSAA 결과에는 `MainProgram`
-  행이 `[68,377,83,393]`에 있으나 grid는 `[3,199,122,293]`이고 행 상태는 `INVISIBLE|OFFSCREEN`이다.
-  MCP `8d10213`, CLI `0d98248`/`4c7814d`는 이런 정확한 화면 밖 행에도 기존 단일 MSAA 선택을
-  허용하고, 클릭 전 화면 안 위치 재확인은 유지한다. 숨김-only 항목이나 임의 좌표를 허용하지 않는다.
-  [Microsoft 상태 정의](https://learn.microsoft.com/en-us/windows/win32/winauto/object-state-constants)의
-  두 플래그 구분을 따르며, 실제 행 표시 및 terminal 원복 성공은 다음 실행에서 확인해야 한다.
+- 15:50:14 KST 이후 실제 복구는 `XG5000_PROJECT_SEARCH_RESULT_UNVERIFIED`로 끝났다.
+  16:16 KST 실행의 전체 오류 자료
+  `f7c0fb84-538e-4876-a934-4281b45cd37b/1086fb5a5957/error.json`에는 exact matching node가
+  **0개**다. 캡처의 검색어는 MainProgram이 아니라 프로젝트 이름이며 활성 MDI는 시스템 변수다.
+  실제 호출 순서는 `open_program_editor` → `_expand_bound_project_tree_for_program` →
+  프로젝트 루트 exact 선택 → MainProgram 선택이다. 제목에서 얻은 `웹 LD 자기유지 20260903`와
+  live MSAA 루트 표시 `웹 LD 자기유지 20260903 *`가 달라 첫 루트 선택에서 실패했다.
+  앞서 MainProgram의 화면 밖 위치를 이번 오류의 원인으로 설명한 것은 잘못된 추론이었다.
+  이 실행에서는 MainProgram 선택이나 accSelect까지 도달하지 않았으며, 캡처의 native/MSAA
+  grid 사각형도 같으므로 DPI 불일치가 원인이라는 증거는 없다.
+- MCP `8d10213`, CLI `0d98248`/`4c7814d`의 화면 밖 행 선택 변경과 MCP `282bfa5` /
+  CLI `0615b54`의 Project 검색 Edit 포커스 후 Enter 입력 변경은 반영됐지만, 위 루트 표시
+  불일치보다 뒤의 프로그램 선택 성공을 입증하지 못했다. 성공한 수정으로 기록하지 않는다.
+  MCP `a4a75f1`은 durable attach의 기존 오류를 바꾸지 않고 origin session에 기존 오류 bundle을
+  남겨 실제 실패 지점을 확인하게 했다. 프로젝트 루트의 live 표시 라벨을 정확히 해석하는
+  최소 수정을 CLI/MCP에 적용한 뒤 정상 웹에서 한 번 확인한다.
 - 보호된 source 파일 SHA256은 여전히
   `16248471e9a7131623b65ea6ad7b43f59fa6a78dcccf462d88687fbc8442f13e`다.
 - 사용자 화면에 웹을 열었다고 주장하지 않는다. `127.0.0.1:8767` 서버와 내부 tab 5의 정상 웹은
