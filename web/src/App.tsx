@@ -71,6 +71,14 @@ import { ProgramNavigatorPanel } from "./components/ProgramNavigatorPanel";
 
 const CONVERSATION_STORAGE_KEY = "controlstudio.activeConversationId";
 const BROWSER_SESSION_STORAGE_KEY = "controlstudio.browserSession";
+
+interface PendingConversationRefresh {
+  completion: Promise<Conversation>;
+  requestEpoch: number;
+  allowSwitch: boolean;
+  trailingRequested: boolean;
+}
+
 const CONTROLLER_RESTORE_BLOCKER_LABELS: Record<
   ControllerRestorePreflight["blockers"][number],
   string
@@ -1127,6 +1135,9 @@ function App() {
   const missionChangeTransactionIdRef = useRef<string | null>(null);
   const missionChangeRefreshEpochRef = useRef(0);
   const conversationRefreshEpochRef = useRef(0);
+  const pendingConversationRefreshesRef = useRef(
+    new Map<string, PendingConversationRefresh>(),
+  );
   const targetActivationEpochRef = useRef(0);
   const changeRecoveryReplayPinRef = useRef<{
     transactionId: string;
@@ -1298,22 +1309,55 @@ function App() {
     }
   }, [status.host.state, status.releaseChannel]);
 
-  const refreshConversation = useCallback(async (
+  const refreshConversation = useCallback((
     conversationId: string,
     allowSwitch = false,
-  ) => {
+  ): Promise<Conversation> => {
     const requestEpoch = ++conversationRefreshEpochRef.current;
-    const detail = await hostApi.getConversation(conversationId);
-    if (
-      requestEpoch !== conversationRefreshEpochRef.current ||
-      (!allowSwitch && conversationIdRef.current !== conversationId)
-    ) {
-      return detail;
+    const pending = pendingConversationRefreshesRef.current.get(conversationId);
+    if (pending) {
+      // Replay can deliver many durable events in one frame. Keep only one
+      // follow-up read for all events that arrived while the current read ran.
+      pending.requestEpoch = requestEpoch;
+      pending.allowSwitch = allowSwitch;
+      pending.trailingRequested = true;
+      return pending.completion;
     }
-    conversationIdRef.current = detail.conversationId;
-    setConversation(detail);
-    setNewProjectPlanning(planningSessionFromConversation(detail));
-    return detail;
+
+    let next!: PendingConversationRefresh;
+    const completion = Promise.resolve().then(async (): Promise<Conversation> => {
+      try {
+        for (;;) {
+          const refreshEpoch = next.requestEpoch;
+          const refreshAllowsSwitch = next.allowSwitch;
+          next.trailingRequested = false;
+          const detail = await hostApi.getConversation(conversationId);
+          if (
+            refreshEpoch === conversationRefreshEpochRef.current &&
+            (refreshAllowsSwitch || conversationIdRef.current === conversationId)
+          ) {
+            conversationIdRef.current = detail.conversationId;
+            setConversation(detail);
+            setNewProjectPlanning(planningSessionFromConversation(detail));
+          }
+          if (!next.trailingRequested) {
+            return detail;
+          }
+        }
+      } finally {
+        if (pendingConversationRefreshesRef.current.get(conversationId) === next) {
+          pendingConversationRefreshesRef.current.delete(conversationId);
+        }
+      }
+    });
+    next = {
+      completion,
+      requestEpoch,
+      allowSwitch,
+      trailingRequested: false,
+    };
+    pendingConversationRefreshesRef.current.set(conversationId, next);
+    return completion;
   }, []);
 
   const applyHostStatus = useCallback((nextStatus: HostStatusResponse) => {
