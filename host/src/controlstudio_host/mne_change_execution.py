@@ -1785,13 +1785,32 @@ class MNEChangeExecutionService:
                 ),
                 "project.snapshot",
             )
+            # Snapshot creation is the first native journal side effect.  Retain
+            # only a canonical transaction UUID before validating the remaining
+            # receipt so a later semantic-contract rejection can abort that exact
+            # journal instead of treating its identity as unknown.
+            snapshot_transaction_id = _required_text(
+                snapshot, "transaction_id", "project.snapshot"
+            )
+            try:
+                canonical_snapshot_transaction_id = str(
+                    uuid.UUID(snapshot_transaction_id)
+                )
+            except ValueError as exc:
+                raise ChangeExecutionPreconditionError(
+                    "project.snapshot transaction_id must be a canonical UUID"
+                ) from exc
+            if canonical_snapshot_transaction_id != snapshot_transaction_id:
+                raise ChangeExecutionPreconditionError(
+                    "project.snapshot transaction_id must be a canonical UUID"
+                )
+            mcp_transaction_id = snapshot_transaction_id
             snapshot, snapshot_checkpoint = _validate_private_snapshot(
                 snapshot,
                 transaction=transaction,
                 target_program=target_program,
                 approved_baseline=approved_baseline,
             )
-            mcp_transaction_id = _required_text(snapshot, "transaction_id", "project.snapshot")
             snapshot_id = _required_text(snapshot, "snapshot_id", "project.snapshot")
             await self._persist_checkpoint_or_abort(
                 transaction,
