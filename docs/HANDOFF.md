@@ -114,6 +114,25 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   Platform `8587bf5` / `8b3e17d`는 기존 Agent 오류 frame 로그의 정확한 production
   timestamp/logger prefix 및 함수명/행 번호만 Host에 전달한다. 임의 stderr나 모델
   원문은 계속 제외한다. 이 묶음을 UAC 없이 Host PID `10404`에 반영했다.
+- 다음 run `d782f5c4-d1bd-4f2f-ab72-891cb8457cad`에서 compiler(event `3669`) 뒤
+  실제 `change.propose_offline` 호출(event `3675`)까지 진행했으나 Host에서 거부됐다.
+  실제 plan의 `baselineLdCanonicalSha256`가 raw LD payload 차단 규칙에도 걸린 것이
+  원인이며 Platform `cfc928c`는 기존 raw SHA와 같이 canonical SHA identity만 허용한다.
+  raw LD/MNE 내용 공개나 승인 조건 완화는 없다. UAC 없는 reload 후 Host PID는 `14820`이다.
+- run `5c86aa46-398e-49b2-80cc-991d2e838ec5`의 compiler(event `3691`)와
+  `change.propose_offline`(event `3699`)가 실제 성공했다. event `3698`에서 transaction
+  `1dc65e00-9f9b-4ca3-9da1-29523c141538`이 생성됐고 mission revision 10은 정확히
+  `waiting_for_approval / needs_human_approval`에 머문다. 후보만으로 완료 처리하지 않았다.
+  plan digest는 `09665f27bb2ea9b18174188565a739aa4f36505e2bda2e3e13b1e0c9dd8fd8dc`이며
+  승인 만료 시각은 2026-09-04 09:39:33 KST다. DB/만료/승인 권한을 수동 수정하지 않는다.
+  아직 apply/save/fresh reopen/XG-SIM/Keep 실행 성공은 아니다.
+- 승인 제안을 웹에 표시하는 경계에서 inner XG-SIM profile의 native snake_case를
+  camelCase로 기대하던 불일치를 확인했다. Platform `0444e88`는 outer `simulationProfile`을
+  유지하고 digest에 포함된 inner native key를 contracts/parser/panel 전부에서 보존한다.
+  profile/candidate/plan의 실제 digest나 저장된 데이터를 재작성하지 않는다. production
+  build 후 browser-only reload에서도 연결 실패 문구가 남아 추가 응답 계약을 조사 중이다.
+  Host가 살아 있는 상태에서 parser 오류를 네트워크 장애로 표시하는 catch도 별도 수정 중이다.
+  pending approval의 engineering session identity를 보존하려고 Host/XG5000은 재시작하지 않는다.
 - 작업 중인 웹은 Codex 내부의 `http://127.0.0.1:8767/` 인증 탭이다. 별도 Edge/Chrome
   창은 확인하지 못했다. 초기 패널 표시 요청은 `queued`였고 선택 탭과 작업 탭도 달랐다.
   07:38에 정상 Launcher `--web-url` handoff로 기존 선택 탭 5를 인증했고, 작업 탭도 5로
