@@ -327,8 +327,9 @@ export function ChangeRecoveryPanel({
           {hasCurrentHashMismatch && relaunchAvailable && relaunchTarget && (
             <div className="change-recovery-restore" role="alert">
               <p>
-                현재 작업 복사본 해시가 이 거래가 검증한 원본과 다릅니다. 이는
-                이전 네이티브 오류와 별개의 현재 복구 차단 사유입니다.
+                현재 작업 복사본은 최초 거래 백업과 다릅니다. 기록된 최신 저장본을
+                다시 여는 복구는 Host가 MCP journal과 현재 파일 해시를 대조한 뒤에만
+                진행합니다.
               </p>
               <dl className="change-recovery-evidence">
                 <div>
