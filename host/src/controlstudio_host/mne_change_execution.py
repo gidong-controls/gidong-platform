@@ -1744,6 +1744,14 @@ def validated_terminal_mne_reopen(
         rollback_value = simulation_finalization.get("rollback")
         if rollback_value is None:
             rollback_value = simulation_finalization.get("terminal_receipt")
+    if rollback_value is None:
+        reconciliation = transaction.result.get("reconciliation")
+        if isinstance(reconciliation, dict):
+            # Quarantine reconciliation stores its independently validated
+            # rollback receipt separately from the pre-quarantine verification
+            # evidence.  Only use it when that evidence omitted a receipt;
+            # never replace a present receipt that fails strict validation.
+            rollback_value = reconciliation.get("rollback")
     rollback = _validate_rollback_receipt(
         rollback_value,
         transaction=transaction,
