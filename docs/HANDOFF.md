@@ -34,6 +34,10 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   기존 PID `16292` 종료 후 새 PID `1124`를 관측했으나 19:40 현재 XG5000은 없다.
   작업 `.xgwx`는 4264B로 존재한다(19:36:42 저장). 파일 소실로 단정하거나 백업을
   재복원하지 않는다. 같은 요청을 원인 확인 없이 반복하지 않는다.
+  추가 읽기 확인에서 seq `49`의 `current_project_hash`와 실제 작업 파일은 모두
+  `7ced78111c6dfcfc5af67c72e5821662645862d05062a15ab1a9fcc68354d405`였다.
+  웹의 `fefc…`는 직전 cached workspace 값이다. 창 없는 재열기 경로가 최초 artifact
+  해시만 받는 문제와 CLI 오류의 구조화 정보 누락을 별도로 수정 중이다.
   직전 종료 상태는 journal seq `47`, `QUARANTINED`, session
   `bb730655-92ba-497a-af10-d1b31604a746`, 저장 해시
   `fefc0e82a44b66b39b3c8a687da5a1f7d0c6e2064481b2b8eb0e4d0daa68dc73`다.
