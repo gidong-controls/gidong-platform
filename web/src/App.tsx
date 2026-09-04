@@ -2890,7 +2890,8 @@ function App() {
         );
       } else if (
         response.transaction.errorCode ===
-        "explicit_recovery_aborted_before_mutation"
+          "explicit_recovery_aborted_before_mutation" ||
+        response.transaction.errorCode === "mne_recovery_aborted_before_mutation"
       ) {
         setChangeNotice(
           "변경 전에 중단된 사실을 확인했습니다. 제안 변경을 적용하지 않고 작업 잠금을 해제했습니다.",

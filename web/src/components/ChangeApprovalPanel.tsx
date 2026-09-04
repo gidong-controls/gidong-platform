@@ -592,6 +592,33 @@ function objectValue(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function hasProvenNoMutationAbortRecovery(transaction: ChangeTransaction): boolean {
+  const reconciliation = objectValue(transaction.result.reconciliation);
+  const checkpoint = objectValue(reconciliation?.abort_checkpoint);
+  const executedChecks = reconciliation?.executed_checks;
+  const notExecuted = reconciliation?.not_executed;
+  return (
+    transaction.state === "rolled_back" &&
+    transaction.errorCode === "mne_recovery_aborted_before_mutation" &&
+    reconciliation?.native_mutation_performed === false &&
+    Array.isArray(executedChecks) &&
+    executedChecks.length === 0 &&
+    Array.isArray(notExecuted) &&
+    [
+      "structural_diff",
+      "xg5000_program_check",
+      "project_save",
+      "project_reopen",
+    ].every((check) => notExecuted.includes(check)) &&
+    checkpoint?.schema === "controlstudio-change-transaction-checkpoint/v1" &&
+    checkpoint.host_transaction_id === transaction.transactionId &&
+    checkpoint.state === "ABORTED_NO_MUTATION" &&
+    checkpoint.terminal === true &&
+    checkpoint.mutation_possible === false &&
+    checkpoint.lease_status === "released"
+  );
+}
+
 type MneSimulationExpectedPhase = {
   name: string;
   expected: number | Record<string, 0 | 1>;
@@ -1602,11 +1629,14 @@ export function ChangeApprovalPanel({
     isObservingMneSimulationReceipt(
       simulationReceipt,
       rungPatchPlan?.candidate.simulationProfile,
-    );
+  );
   const terminal = TERMINAL_CHANGE_STATES.has(transaction.state);
+  const provenNoMutationAbortRecovery =
+    hasProvenNoMutationAbortRecovery(transaction);
   const successfulOfflineReceipt =
-    transaction.state === "completed" ||
-    transaction.state === "rolled_back";
+    !provenNoMutationAbortRecovery &&
+    (transaction.state === "completed" ||
+      transaction.state === "rolled_back");
   const receiptChecks = executionReceiptChecks(transaction, structuralMnePlan);
   const target = targetLabel(structuralMnePlan, legacyPlan);
   const expiresAt = new Date(transaction.approvalExpiresAt);
@@ -1848,8 +1878,9 @@ export function ChangeApprovalPanel({
           </ul>
           {structuralMnePlan && <MneReceiptReview transaction={transaction} />}
           <p>
-            이 receipt는 오프라인 작업 복사본과 XG5000 프로그램 검사 결과만
-            말합니다. XG-SIM·실제 PLC·설비 동작의 합격 판정은 아닙니다.
+            {provenNoMutationAbortRecovery
+              ? "준비 단계에서 변경을 적용하지 않았고, 종료된 no-mutation journal checkpoint만 확인했습니다. 구조 diff·Program Check·저장·재열기는 실행되지 않았습니다."
+              : "이 receipt는 오프라인 작업 복사본과 XG5000 프로그램 검사 결과만 말합니다. XG-SIM·실제 PLC·설비 동작의 합격 판정은 아닙니다."}
           </p>
           {successfulOfflineReceipt && (
             <label className="change-receipt-acknowledgement">
