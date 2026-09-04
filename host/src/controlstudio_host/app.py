@@ -2412,11 +2412,12 @@ def _reject_private_change_plan_material(value: Any) -> None:
         if not isinstance(key, str):
             raise ValueError("change plan object keys must be text")
         normalized = re.sub(r"[^a-z0-9]", "", key.casefold())
-        # The series-guard compiler exposes only these two SHA-256 identities,
+        # Compiler candidates expose only these baseline SHA-256 identities,
         # never the corresponding baseline source or payload.
         baseline_digest_field = normalized in {
             "baselinemnesha256",
             "baselineldsha256",
+            "baselineldcanonicalsha256",
         }
         if (
             key.startswith("_")
