@@ -1648,9 +1648,9 @@ export function ChangeApprovalPanel({
         <span>
           변경 성격:{" "}
           {transaction.plan.requestScope === "offline_candidate_revision"
-            ? "사용자가 선택한 오프라인 후보 revision · 저장됨 · 자동 원복 없음"
+            ? "사용자가 선택한 오프라인 후보 revision · 승인 뒤 작업 복사본에만 적용·저장 예정 · 실행 결과는 아직 없음"
             : transaction.plan.requestScope === "permanent_offline_revision"
-              ? "영구 오프라인 작업 복사본 revision"
+              ? "영구 오프라인 작업 복사본 revision · 승인 뒤 적용·저장 예정 · 실행 결과는 아직 없음"
               : "이전 계약 형식 · 실행 전 재검증 필요"}
         </span>
         {rungPatchPlan ? (

@@ -141,7 +141,7 @@ const RUN_COPY: Partial<Record<RunState, string>> = {
   waiting_for_approval: "승인 대기",
   executing: "실행 중",
   verifying: "검증 중",
-  completed: "완료",
+  completed: "응답 생성 완료(변경 실행 결과 아님)",
   cancelled: "취소됨",
   failed: "실패",
   quarantined: "격리됨",
