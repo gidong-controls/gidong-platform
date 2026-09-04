@@ -22,9 +22,10 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 - 같은 대화 `868e0126-a603-481a-9262-4ecef0023e9d`, run `e6259675-650a-48d7-b08a-7d726ef6bd4b`,
   Host transaction `588463c0-11fe-4748-a8e1-0b2639df1a05`, MCP transaction
-  `1f4710c8-797e-476a-85f2-aa972ff137c7`를 유지한다. 상태는 `QUARANTINED`, journal seq `35`,
-  active session `3a589247-df07-4869-b67c-cb28cb1e8c60`, lease
-  `2f073711-8661-4601-b1f5-ebf1d8d16396`다. M30 적용·독립 재열기 최종 readback·XG-SIM·Keep은 미완료다.
+  `1f4710c8-797e-476a-85f2-aa972ff137c7`를 유지한다. 상태는 `QUARANTINED`, journal seq `37`,
+  active session `0e56fadb-eb35-4929-bb70-461845348cb9`, active PID `13884` / HWND `3803514`다.
+  과거 session/lease 값을 다시 쓰지 말고 현재 journal을 읽는다.
+  M30 적용·독립 재열기 최종 readback·XG-SIM·Keep은 미완료다.
 - MCP `508fff0` / `9921075`의 collapsed dock 펼침을 반영한 정상 웹 복구는
   `f36ba0df-d4ce-4e76-b9dd-d0549cfa072b/7b2a576cbdd0/error.json`에서 끝났다.
   `cli_timeout_seconds=30.0`, `program_check_phase=check_fresh_transition`,
@@ -102,7 +103,19 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   → 편집기 열기로 바꿨다. 기존 결과가 실제 hidden-only exact 행을 증명할 때만 루트 펼침을
   한 번 수행하며, 전체 제한 시간은 늘리지 않았다. 해당 오류 manifest의
   `current_process_elevated=true`이므로 이 실패를 UAC 미승인으로 설명하지 않는다.
-  16:51:53 KST 정상 웹 복구 실행으로 수정본의 결과를 확인 중이다.
+  16:51:53 KST 정상 웹 복구는 편집기 열기와 durable LD 식별을 통과해 seq36에서 현재 PID로
+  recovery 대상을 재결속했다. 실제 `program.rollback_mne_replacement` 실행의
+  `0e56fadb-eb35-4929-bb70-461845348cb9/56a36faf5c86`는 Program Check 전 dock-close 판정에서
+  실패했고 seq37로 격리를 유지했다. 캡처에는 MainProgram의 기존 11개 명령이 보이지만,
+  rollback 완료·save·fresh reopen receipt는 없다.
+- 그 실패는 닫기 입력 실패가 아니다. 실제 Program Check 체인(pane `32840`, toolbar `1709`)은
+  숨겨졌고 공유 dock에서 찾기 1(pane `32841`, toolbar `1397`)만 보인다. 기존 snapshot의 첫
+  MSAA-label 분기가 남은 제목과 공유 dock 안의 임의 list를 검사 결과로 오인했다.
+  MCP `952d420`은 이 잘못된 MSAA 분기와 반복 전체-MSAA 조회를 제거하고, 기존의 정확한
+  active-tab/native-child 체인을 유일한 판정 경로로 사용한다. 닫기 재시도나 timeout 증가는 없다.
+  반영 후 첫 instances 조회는 503이었으나 한 번의 읽기 전용 새로고침은 200과 동일 XG5000
+  창을 반환했다. 이를 import 오류나 UAC 실패로 설명하지 않는다.
+  17:06:32 KST 정상 웹 복구를 실행 중이다.
 - 보호된 source 파일 SHA256은 여전히
   `16248471e9a7131623b65ea6ad7b43f59fa6a78dcccf462d88687fbc8442f13e`다.
 - 사용자 화면에 웹을 열었다고 주장하지 않는다. `127.0.0.1:8767` 서버와 내부 tab 5의 정상 웹은
