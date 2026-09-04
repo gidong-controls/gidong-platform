@@ -9091,10 +9091,7 @@ def create_app(
                         )
                     return response
 
-                bind_change_planner(
-                    propose_change,
-                    mne_available=mne_change_planner_available,
-                )
+                bind_change_planner(propose_change)
             output = await runtime.run(
                 prompt=prompt,
                 history=history,
