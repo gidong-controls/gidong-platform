@@ -897,18 +897,18 @@ function sameRungActions(left: unknown[], right: unknown[]): boolean {
 
 function isMneRungXgSimProfile(value: unknown, targetRungDigest: unknown): boolean {
   const commonKeys = [
-    "schema", "outputAddresses", "targetRungDigest", "programCount",
-    "catalogDigest", "profileDigest",
+    "schema", "output_addresses", "target_rung_digest", "program_count",
+    "catalog_digest", "profile_digest",
   ];
   if (
     !isRecord(value) ||
     value.schema !== "controlstudio-mne-rung-xgsim-profile/v1" ||
-    value.targetRungDigest !== targetRungDigest || value.programCount !== 1 ||
-    typeof value.catalogDigest !== "string" || !SHA256.test(value.catalogDigest) ||
-    typeof value.profileDigest !== "string" || !SHA256.test(value.profileDigest) ||
-    !Array.isArray(value.outputAddresses) || value.outputAddresses.length === 0 ||
-    new Set(value.outputAddresses).size !== value.outputAddresses.length ||
-    !value.outputAddresses.every((address) => typeof address === "string" && /^[PM]\d{3,4}[0-9A-F]$/.test(address))
+    value.target_rung_digest !== targetRungDigest || value.program_count !== 1 ||
+    typeof value.catalog_digest !== "string" || !SHA256.test(value.catalog_digest) ||
+    typeof value.profile_digest !== "string" || !SHA256.test(value.profile_digest) ||
+    !Array.isArray(value.output_addresses) || value.output_addresses.length === 0 ||
+    new Set(value.output_addresses).size !== value.output_addresses.length ||
+    !value.output_addresses.every((address) => typeof address === "string" && /^[PM]\d{3,4}[0-9A-F]$/.test(address))
   ) return false;
   if (hasExactKeys(value, [...commonKeys, "scenario"])) {
     const scenario = value.scenario;
@@ -921,15 +921,15 @@ function isMneRungXgSimProfile(value: unknown, targetRungDigest: unknown): boole
       const drive = step.drive as Record<string, unknown>;
       const observe = step.observe as Record<string, unknown>;
       const driveKeys = Object.keys(drive);
-      if (driveKeys.length === 0 || Object.keys(observe).length === 0 || !driveKeys.every((address) => /^[PM]\d{3,4}[0-9A-F]$/.test(address) && (drive[address] === 0 || drive[address] === 1)) || !Object.entries(observe).every(([address, bit]) => /^[PM]\d{3,4}[0-9A-F]$/.test(address) && (bit === 0 || bit === 1)) || driveKeys.some((address) => Object.prototype.hasOwnProperty.call(observe, address)) || !(value.outputAddresses as string[]).every((address) => Object.prototype.hasOwnProperty.call(observe, address))) return false;
+      if (driveKeys.length === 0 || Object.keys(observe).length === 0 || !driveKeys.every((address) => /^[PM]\d{3,4}[0-9A-F]$/.test(address) && (drive[address] === 0 || drive[address] === 1)) || !Object.entries(observe).every(([address, bit]) => /^[PM]\d{3,4}[0-9A-F]$/.test(address) && (bit === 0 || bit === 1)) || driveKeys.some((address) => Object.prototype.hasOwnProperty.call(observe, address)) || !(value.output_addresses as string[]).every((address) => Object.prototype.hasOwnProperty.call(observe, address))) return false;
       if (drives === null) drives = driveKeys.sort();
       return drives.length === driveKeys.length && drives.every((address) => Object.prototype.hasOwnProperty.call(drive, address));
     });
   }
   if (!hasExactKeys(value, [
-    ...commonKeys, "normalAssignments", "denyAssignments", "restoreAssignments",
+    ...commonKeys, "normal_assignments", "deny_assignments", "restore_assignments",
   ])) return false;
-  const names = ["normalAssignments", "denyAssignments", "restoreAssignments"] as const;
+  const names = ["normal_assignments", "deny_assignments", "restore_assignments"] as const;
   const assignments = names.map((name) => value[name]);
   if (assignments.some((assignment) => !isRecord(assignment) || Object.keys(assignment).length === 0)) return false;
   const keys = Object.keys(assignments[0] as Record<string, unknown>);
@@ -938,7 +938,7 @@ function isMneRungXgSimProfile(value: unknown, targetRungDigest: unknown): boole
     return Object.keys(record).length === keys.length && keys.every((key) =>
       Object.prototype.hasOwnProperty.call(record, key) && /^[PM]\d{3,4}[0-9A-F]$/.test(key) && (record[key] === 0 || record[key] === 1),
     );
-  }) && !(value.outputAddresses as string[]).some((address) => keys.includes(address));
+  }) && !(value.output_addresses as string[]).some((address) => keys.includes(address));
 }
 
 export function isMneRungPatchPlan(

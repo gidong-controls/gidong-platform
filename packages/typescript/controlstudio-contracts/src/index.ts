@@ -1958,14 +1958,16 @@ export interface MneRungTargetReceipt {
 
 export interface MneRungXgSimSimpleProfile {
   schema: "controlstudio-mne-rung-xgsim-profile/v1";
-  normalAssignments: Record<string, 0 | 1>;
-  denyAssignments: Record<string, 0 | 1>;
-  restoreAssignments: Record<string, 0 | 1>;
-  outputAddresses: string[];
-  targetRungDigest: string;
-  programCount: 1;
-  catalogDigest: string;
-  profileDigest: string;
+  // This is a digest-bound native adapter payload nested in the otherwise
+  // camelCase public candidate receipt. Preserve its native wire spelling.
+  normal_assignments: Record<string, 0 | 1>;
+  deny_assignments: Record<string, 0 | 1>;
+  restore_assignments: Record<string, 0 | 1>;
+  output_addresses: string[];
+  target_rung_digest: string;
+  program_count: 1;
+  catalog_digest: string;
+  profile_digest: string;
 }
 
 export interface MneRungXgSimScenarioStep {
@@ -1977,11 +1979,11 @@ export interface MneRungXgSimScenarioStep {
 export interface MneRungXgSimScenarioProfile {
   schema: "controlstudio-mne-rung-xgsim-profile/v1";
   scenario: { steps: MneRungXgSimScenarioStep[] };
-  outputAddresses: string[];
-  targetRungDigest: string;
-  programCount: 1;
-  catalogDigest: string;
-  profileDigest: string;
+  output_addresses: string[];
+  target_rung_digest: string;
+  program_count: 1;
+  catalog_digest: string;
+  profile_digest: string;
 }
 
 export type MneRungXgSimProfile =

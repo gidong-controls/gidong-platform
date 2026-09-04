@@ -483,13 +483,13 @@ function RungPatchReview({
             </ol>
           ) : (
             <dl>
-              <div><dt>정상 입력</dt><dd><code>{Object.entries(receipt.simulationProfile.normalAssignments).map(([key, value]) => `${key}=${value}`).join(", ")}</code></dd></div>
-              <div><dt>차단 입력</dt><dd><code>{Object.entries(receipt.simulationProfile.denyAssignments).map(([key, value]) => `${key}=${value}`).join(", ")}</code></dd></div>
+              <div><dt>정상 입력</dt><dd><code>{Object.entries(receipt.simulationProfile.normal_assignments).map(([key, value]) => `${key}=${value}`).join(", ")}</code></dd></div>
+              <div><dt>차단 입력</dt><dd><code>{Object.entries(receipt.simulationProfile.deny_assignments).map(([key, value]) => `${key}=${value}`).join(", ")}</code></dd></div>
             </dl>
           )}
           <dl>
-            <div><dt>관찰 OUT</dt><dd><code>{receipt.simulationProfile.outputAddresses.join(", ")}</code></dd></div>
-            <div><dt>프로필 digest</dt><dd><code>{receipt.simulationProfile.profileDigest}</code></dd></div>
+            <div><dt>관찰 OUT</dt><dd><code>{receipt.simulationProfile.output_addresses.join(", ")}</code></dd></div>
+            <div><dt>프로필 digest</dt><dd><code>{receipt.simulationProfile.profile_digest}</code></dd></div>
           </dl>
         </section>
       )}
