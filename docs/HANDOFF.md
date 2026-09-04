@@ -18,7 +18,7 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-04 11:20 KST 이어갈 지점
+## 2026-09-04 11:29 KST 이어갈 지점
 
 - 현재 대화는 `868e0126-a603-481a-9262-4ecef0023e9d`, workspace는
   `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `6552`, XG5000 PID `12492` /
@@ -86,8 +86,25 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   event `3793`에서 생성됐으며 선택이 과거 `ce6523b3…`로 바뀌지 않았다. 정상 메시지
   전송의 새 run은 `8952faca-4ee6-44be-b2ef-fa9debf1f6fd`(event `3798`)다. 기존
   3개 rung을 보존하고 END 직전에 M00010→OUT M00030을 추가하며 10단계 XG-SIM을
-  수행하는 제안을 요청했다. 새 run 결과를 이어서 확인한다. 아직 실제 적용·저장·독립
-  재열기·XG-SIM·Keep 완료를 주장하지 않는다.
+  수행하는 제안을 요청했다. 실제 프로그램 목록(2.6초), LD 읽기(8.5초), 후보 컴파일
+  (10초, event `3821`)과 새 제안(event `3827`)이 성공했다. 후보는
+  `54abd1aa-3e14-5a66-939c-8c14fc2cb55d`이고 UI에서 11→13개 명령·END 앞 추가·10개
+  시나리오를 검토한 뒤 정상 승인/실행 버튼을 눌렀다.
+- 새 Host transaction `39d30b4c-168a-43a4-8716-fc56f3d4aa7a`는 준비 중 실패했다.
+  상태는 `FAILED / native_change_not_applied`, 오류는
+  `MNE preparation failed; MCP proved an exact no-mutation abort`다. 기존 `result_json`
+  은 `{}`여서 원래 preparation 오류를 전달하지 못한다. 정상 UI에서 결과 확인을
+  기록했고 같은 `868e0126…` 대화는 유지된다. 아직 실제 적용·저장·독립 재열기·XG-SIM·
+  Keep은 미실행이다. 실패 결과를 미션 완료로 처리하거나 같은 승인으로 재실행하지 않는다.
+- 정확한 원인은 private snapshot receipt의 producer가 `canonical_sha256`를 포함하지만
+  MCP binder/loader가 이전 6필드 allowlist를 요구한 불일치다. MCP journal
+  `8eb1ceb7-12c8-4530-a42f-5861808e628e`는 유효한 snapshot
+  `b3e49e2b-3934-48e2-8710-f2513dccc02a` 생성 뒤 binder에서 실패했고,
+  `ABORTED_NO_MUTATION`으로 종료됐다. backup/plan/apply는 시작되지 않았다.
+  MCP `abc3d1c`가 모든 해당 binder/loader 필드 규약과 SHA 검사를 맞췄다(아직 미로드).
+  Host·Agent의 기존 만료 후 fresh compile 경로를 정확한 no-mutation FAILED 결과에도
+  적용하는 수정이 진행 중이다. 같은 대화에서 새 baseline 컴파일·새 제안으로 이어갈
+  수 있게 하되 이전 transaction/승인 기록은 되살리지 않는다.
 - MCP `8586ffe`는 MNE catalog guard에 남아 있던 target raw LD SHA 동등 비교를
   기존 필수 canonical SHA 동등 비교로 통일한다. raw SHA는 출처 값으로 보존하고,
   canonical 필드 누락/형식 검사는 유지한다. 이는 점검 중 찾은 잔여 비교 수정이며
