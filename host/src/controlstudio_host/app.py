@@ -11235,11 +11235,19 @@ def create_app(
                 "workspace_id",
                 "revision_id",
                 "source_artifact_hash",
-                "project_path",
                 "vendor",
                 "engineering_system",
             )
-            if any(
+            try:
+                same_project_path = (
+                    _normalized_workspace_path(current_target.project_path)
+                    == _normalized_workspace_path(transaction.target.project_path)
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ChangeExecutionPreconditionError(
+                    "active recovery workspace path is invalid"
+                ) from exc
+            if not same_project_path or any(
                 getattr(current_target, field_name) != getattr(transaction.target, field_name)
                 for field_name in stable_workspace_fields
             ):
