@@ -18,7 +18,7 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-04 13:02 KST 이어갈 지점
+## 2026-09-04 13:11 KST 이어갈 지점
 
 - **현재 우선 상태:** run `e6259675-650a-48d7-b08a-7d726ef6bd4b`의 Host transaction
   `588463c0-11fe-4748-a8e1-0b2639df1a05`, MCP transaction
@@ -71,15 +71,25 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   실제 캡처에는 기존 11개 MNE 명령이 보인다. Program Check의 visible pane 목록과
   zero-area를 제외한 dock baseline 사이의 불일치를 조사한다. 저장·독립 재열기·M30
   적용 성공은 아직 없다. 새 native 복구는 원인이 수정된 뒤 한 번만 수행한다.
+- MCP `42dbf09`는 제목 caption 높이 같은 예외값 대신 실제 결과 목록이 보이는 strict
+  dock snapshot을 모든 pane selector가 공유하도록 했다. MSAA 후보도 visible 결과
+  ListView 하나를 요구한다. 이 변경을 반영한 정상 복구는 baseline 판정을 통과했지만
+  `PROGRAM_CHECK_FRESH_MODAL_UNVERIFIED`로 종료됐다. `before_pane_handles=[]`,
+  `command_backend=resource-proven-mainres-wm-command`, `reused_dock=null`이며 최신
+  artifact는 `6c1747f0-4a1e-4387-a397-0a6857337ab2/035527f59e2e/error.json`이다.
+  현재 journal event는 `17`, lease는 `31f8470d-df0c-41cb-aebe-50a97f10db08`다. 이 결과는
+  원복/저장 성공이 아니다. 메인 창에 WM_COMMAND 876만 보내는 경로 대신 이미 구현된
+  exact primary-toolbar Program Check 버튼 클릭을 실제 실행 경로에 연결하는 중이다.
+  다른 pane에 해당하는 active-MDI 4957을 추측으로 대체하지 않는다.
 - Platform `e34ac97` / Agent `efc42a9`는 검증된 격리 원복 결과
   `ROLLED_BACK / explicit_mne_recovery_rolled_back`에서도 같은 대화의 fresh compiler와
   새 승인 제안을 허용한다. 기존 내부 M 범위 검사를 재사용하며 일반 사용자의 Revert나
   불확실한 원복은 포함하지 않는다. 이 경로는 아직 실제 원복 성공 이후 검증 전이다.
 
 - 현재 대화는 `868e0126-a603-481a-9262-4ecef0023e9d`, workspace는
-  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `11656`, XG5000 PID `12492` /
+  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `4632`, XG5000 PID `12492` /
   HWND `1901812`를 유지한다. 아래 경과 기록의 이전 PID·실패 run으로 돌아가지 않는다.
-- Platform runtime `e34ac97`, Web `6113faf`, MCP `7065bbe`, Agent `efc42a9`까지
+- Platform runtime `9f98fca`, Web `6113faf`, MCP `42dbf09`, Agent `efc42a9`까지
   정상 웹의 UAC 없는 Host 재로드로 반영했다. 앞선 Platform `2dcb3b6` / Agent `503f2f1`는
   만료된 후보의 재개 허용 정보가 Host serializer와 Agent sidecar decoder 양쪽에서
   누락되던 문제를 수정했다. 앞선 `bf1295a1-b8e4-426e-873f-5f7abf836e6f`는 잘못된
