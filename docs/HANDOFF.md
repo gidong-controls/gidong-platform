@@ -20,6 +20,25 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 ## 2026-09-04 LD 원복과 재열기 — 현재 이어갈 지점
 
+- 다음 실행 체크포인트: MCP `e7cb417` / CLI `33f5c3b`는 plaintext source SHA와
+  vendor MNE payload SHA를 서로 다른 필드로 전달·비교하도록 고쳤다. 실제 복구에서
+  CLI 독립 재열기는 성공했지만 MCP가 반환 경로의 `LD`/`ld` 대소문자를 raw 비교해
+  `fresh standalone reopen/readback receipt differs from the authorized target`로 거부했다.
+  MCP `f8b2ab6`는 기존 Windows 경로 비교 함수를 사용한다. 해시 검사는 유지한다.
+  코드 다시 불러오기 후 웹에서 실제 PID `16292` / HWND `1574160`을 조회·선택하고
+  같은 거래의 복구를 한 번 요청했다. 이 요청은 session
+  `9bf51bf1-d186-4632-9ba9-9624d01a5eda/94942f622d80/error.json`에서 CLI
+  `fresh-reopen-readback`의 `WorkspaceError`로 종료됐다. MCP 표시 메시지는
+  `CLI reported a non-displayable workspace diagnostic`이어서 세부 원인을 추적한다.
+  journal seq `49`, `QUARANTINED`이며 최종 원복·M30 적용·XG-SIM·Keep은 미완료다.
+  기존 PID `16292` 종료 후 새 PID `1124`를 관측했으나 19:40 현재 XG5000은 없다.
+  작업 `.xgwx`는 4264B로 존재한다(19:36:42 저장). 파일 소실로 단정하거나 백업을
+  재복원하지 않는다. 같은 요청을 원인 확인 없이 반복하지 않는다.
+  직전 종료 상태는 journal seq `47`, `QUARANTINED`, session
+  `bb730655-92ba-497a-af10-d1b31604a746`, 저장 해시
+  `fefc0e82a44b66b39b3c8a687da5a1f7d0c6e2064481b2b8eb0e4d0daa68dc73`다.
+  아래 19:12 기록은 이전 실패이며 같은 수정을 반복하지 않는다.
+
 - 19:12 KST 최신 실행: MCP `d65a6af`는 live baseline LD 일치가 확인된 복구에서 private
   baseline MNE 행 수를 전달해 중복 행별 탐색을 생략한다. 그 후 관측한 END-only 복사를
   고치기 위해 `f392716`은 범위 선택 뒤 Copy도 같은 SendInput 순서에 한 번만 넣는다.
