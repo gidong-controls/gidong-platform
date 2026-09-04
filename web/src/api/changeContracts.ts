@@ -533,17 +533,26 @@ function isMnePatchCandidateEnvelope(
     "targetProgramDigest", ...(schema === "xg5000.mne-rung-patch-candidate/1.0"
       ? ["simulationProfile"] : []), "candidateDigest",
   ];
+  // The Host's Pydantic response serializer can retain these two defaulted
+  // aliases for a native-only candidate.  They are not candidate material in
+  // that form (the digest omits them), so recognize only the exact inert pair
+  // rather than weakening the public candidate envelope.
+  const inertNativeDefaults = ["hardwareContextDigest", "fieldIoBindings"];
+  const candidateKeyVariants = [
+    candidateKeys,
+    candidateKeys.filter((key) => key !== "baselineLdCanonicalSha256"),
+  ].flatMap((keys) => [keys, [...keys, ...inertNativeDefaults]]);
   if (
     !isRecord(value) ||
-    !(
-      hasExactKeys(value, candidateKeys) ||
-      hasExactKeys(value, candidateKeys.filter(
-        (key) => key !== "baselineLdCanonicalSha256",
-      ))
-    )
+    !candidateKeyVariants.some((keys) => hasExactKeys(value, keys))
   ) {
     return false;
   }
+  if (
+    Object.prototype.hasOwnProperty.call(value, "hardwareContextDigest") &&
+    (value.hardwareContextDigest !== null ||
+      !Array.isArray(value.fieldIoBindings) || value.fieldIoBindings.length !== 0)
+  ) return false;
   return (
     value.schema === schema &&
     typeof value.projectSha256 === "string" &&
@@ -971,7 +980,7 @@ export function isMneRungPatchPlan(
     !["replace_condition", "replace_rung", "insert_before", "delete"].includes(
       String(patch.operation),
     ) ||
-    !isMneInstructionPatchRow(patch.anchor) ||
+    !isMneInstructionPatchRow(patch.anchor, true) ||
     !["OUT", "SET", "RST", "TON", "END"].includes(patch.anchor.command) ||
     patch.anchor.index >= candidate.baselineInstructionCount ||
     (patch.anchorRung !== null &&
