@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import uuid
@@ -1340,7 +1341,7 @@ def _validate_reopen_receipt(
     expected_source_hwnd: int | None = None,
 ) -> dict[str, Any]:
     reopen = _object(value, "MNE independent reopen receipt")
-    expected_keys = {
+    native_expected_keys = {
         "verified",
         "source_pid",
         "source_hwnd",
@@ -1360,6 +1361,28 @@ def _validate_reopen_receipt(
         "ld_canonical_sha256",
         "stable_readback",
     }
+    cli_expected_keys = {
+        "verified",
+        "source_pid",
+        "source_hwnd",
+        "pid",
+        "hwnd",
+        "process_is_independent",
+        "process_create_time",
+        "project_path",
+        "project_sha256",
+        "program_id",
+        "program_name",
+        "payload_sha256",
+        "ld_payload_sha256",
+        "ld_raw_equal",
+        "ld_canonical_sha256",
+        "ld_canonical_equal",
+        "stable_readback",
+        "readback_boundary",
+    }
+    standalone_cli = reopen.get("readback_boundary") == "standalone_cli"
+    expected_keys = cli_expected_keys if standalone_cli else native_expected_keys
     source_pid = (
         transaction.target.engineering_process_id
         if expected_source_pid is None
@@ -1392,6 +1415,16 @@ def _validate_reopen_receipt(
         or (
             expected_ld_canonical_sha256 is not None
             and reopen.get("ld_canonical_sha256") != expected_ld_canonical_sha256
+        )
+        or (
+            standalone_cli
+            and (
+                reopen.get("ld_canonical_equal") is not True
+                or not isinstance(reopen.get("process_create_time"), (int, float))
+                or isinstance(reopen.get("process_create_time"), bool)
+                or not math.isfinite(float(reopen["process_create_time"]))
+                or float(reopen["process_create_time"]) <= 0
+            )
         )
     ):
         raise ChangeExecutionPreconditionError("MNE independent reopen receipt is not exact")
