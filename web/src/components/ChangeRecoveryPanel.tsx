@@ -16,6 +16,7 @@ import { Icon } from "./Icon";
 interface ChangeRecoveryPanelProps {
   transaction: ChangeTransaction;
   busy: boolean;
+  mcpReady: boolean;
   currentWorkspaceHash?: string;
   onReconcile: (
     pid: number,
@@ -100,6 +101,7 @@ function shortHash(value: string): string {
 export function ChangeRecoveryPanel({
   transaction,
   busy,
+  mcpReady,
   currentWorkspaceHash,
   onReconcile,
 }: ChangeRecoveryPanelProps) {
@@ -149,14 +151,19 @@ export function ChangeRecoveryPanel({
   };
 
   useEffect(() => {
-    if (transaction.state === "quarantined" && recoverySupported) {
+    if (
+      transaction.state === "quarantined" &&
+      recoverySupported &&
+      mcpReady
+    ) {
       void loadInstances();
     } else {
       setInstancesLoading(false);
     }
-    // Reloading is explicit after the first recovery-only target scan.
+    // A newly ready MCP may refresh this read-only inventory once. Selection
+    // and reconciliation remain explicit user actions.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [recoverySupported, transaction.transactionId, transaction.state]);
+  }, [mcpReady, recoverySupported, transaction.transactionId, transaction.state]);
 
   const checkpoint = recoveryCheckpoint(transaction);
   const reconciliation = asRecord(transaction.result.reconciliation);

@@ -4771,6 +4771,7 @@ function App() {
               <ChangeRecoveryPanel
                 transaction={primaryChange}
                 busy={changeBusy || canCancelActiveRun}
+                mcpReady={mcpReady}
                 currentWorkspaceHash={status.workspace?.artifactHash}
                 onReconcile={reconcileChange}
               />
