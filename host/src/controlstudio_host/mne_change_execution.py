@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import uuid
@@ -35,6 +36,7 @@ from .mcp_client import MCPGateway, MCPToolError, MCPToolRejectedError
 from .models import ChangeTransaction, ChangeTransactionState
 
 MNE_PLAN_KIND = "mne_full_program_replacement"
+logger = logging.getLogger(__name__)
 
 
 class MnePatchPlanContract(NamedTuple):
@@ -2922,6 +2924,9 @@ class MNEChangeExecutionService:
                 checkpoint=checkpoint,
                 stored=stored,
                 target_program=target_program,
+                # `change.transaction_lookup` reads the authenticated journal after
+                # its recovery owner handoff; that handoff rotates only the lease.
+                allow_lease_rotation=True,
                 allow_terminal_release_pending=True,
             )
             if (
@@ -2974,6 +2979,7 @@ class MNEChangeExecutionService:
             ValueError,
             TypeError,
         ) as exc:
+            logger.warning("MNE recovery bootstrap validation failed: %s", exc)
             return ChangeVerificationResult(
                 state=ChangeTransactionState.QUARANTINED,
                 evidence={"recovery_bootstrap_error_kind": _public_failure_kind(exc)},
