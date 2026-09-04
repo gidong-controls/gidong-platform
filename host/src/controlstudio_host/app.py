@@ -3105,6 +3105,36 @@ def _reconciled_terminal_checkpoint(
     return None
 
 
+def _is_exact_terminal_mne_no_mutation_abort(
+    transaction: ChangeTransaction,
+) -> bool:
+    """Recognize the one MNE terminal outcome that changed no native file state."""
+
+    if (
+        transaction.state is not ChangeTransactionState.ROLLED_BACK
+        or transaction.error_code != "mne_recovery_aborted_before_mutation"
+        or transaction.plan.get("plan_kind") not in MNE_STRUCTURAL_PLAN_KINDS
+    ):
+        return False
+    reconciliation = transaction.result.get("reconciliation")
+    checkpoint = (
+        reconciliation.get("abort_checkpoint")
+        if isinstance(reconciliation, dict)
+        else None
+    )
+    return bool(
+        isinstance(checkpoint, dict)
+        and reconciliation.get("native_mutation_performed") is False
+        and checkpoint.get("host_transaction_id") == transaction.id
+        and checkpoint.get("state") == "ABORTED_NO_MUTATION"
+        and checkpoint.get("mutation_possible") is False
+        and checkpoint.get("terminal") is True
+        and checkpoint.get("recovery_action") == "already_terminal"
+        and checkpoint.get("lease_status") == "released"
+        and checkpoint.get("current_project_hash") == transaction.target.artifact_hash
+    )
+
+
 async def _recover_locked_reconciled_change_session(
     mcp: MCPGateway,
     transaction: ChangeTransaction,
@@ -4398,6 +4428,9 @@ def create_app(
         active_workspace = refreshed_workspace
         store.set_host_state("active_workspace", active_workspace)
 
+        terminal_mne_no_mutation_abort = _is_exact_terminal_mne_no_mutation_abort(
+            transaction
+        )
         terminal_mne_change = bool(
             transaction.plan.get("plan_kind") in MNE_STRUCTURAL_PLAN_KINDS
             and transaction.state
@@ -4405,6 +4438,7 @@ def create_app(
                 ChangeTransactionState.COMPLETED,
                 ChangeTransactionState.ROLLED_BACK,
             }
+            and not terminal_mne_no_mutation_abort
         )
         if not terminal_mne_change:
             try:
@@ -4481,9 +4515,16 @@ def create_app(
 
         session = active_engineering_session
         session_matches = (
-            retain_engineering_session
+            (retain_engineering_session or terminal_mne_no_mutation_abort)
             and isinstance(session, dict)
-            and session.get("session_id") == transaction.target.engineering_session_id
+            and (
+                session.get("session_id") == transaction.target.engineering_session_id
+                or (
+                    terminal_mne_no_mutation_abort
+                    and str(session.get("project_hash") or "").casefold()
+                    == digest.casefold()
+                )
+            )
             and session.get("pid") == transaction.target.engineering_process_id
             and session.get("hwnd") == transaction.target.engineering_window_handle
             and os.path.normcase(str(Path(str(session.get("project_path") or "")).resolve()))
