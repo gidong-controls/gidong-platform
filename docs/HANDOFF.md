@@ -18,7 +18,7 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-04 12:42 KST 이어갈 지점
+## 2026-09-04 13:02 KST 이어갈 지점
 
 - **현재 우선 상태:** run `e6259675-650a-48d7-b08a-7d726ef6bd4b`의 Host transaction
   `588463c0-11fe-4748-a8e1-0b2639df1a05`, MCP transaction
@@ -59,14 +59,27 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   `result.reconciliation.rollback_rejection`은 `recovery_identity_requires_same_com_proof`를
   기록한다. 실패 이후의 최신 복구 진단은 `result.reconciliation`에서 읽는다. 기존
   `verification.recovery` 14개 키는 과거 기준본이며, 최신 진단이 소실된 것이 아니다.
-  MCP durable recovery proof가 LD 단일 operand 계획만 지원하여 전체 MNE 원복을
-  연결하지 못하는 경로를 조사·수정 중이다. 단순 operation allowlist 추가는 proof가 없어
-  효과 없으므로 적용하지 않았다. 현재 XG5000 저장·재열기·M30 적용 성공은 여전히 없다.
+  MCP `7065bbe`는 기존 durable proof를 exact quarantined MNE 원복에 연결했다. private
+  bundle·전체 LD catalog·baseline/target MNE readback을 결속하고 원복 executor에서도
+  같은 proof를 사용한다. 일반 CLI/COM 원복 경로와 apply·물리 PLC 권한은 바꾸지 않는다.
+  단순 operation allowlist 추가만으로 해결하지 않았다.
+- 위 변경을 정상 Web에서 UAC 없이 반영한 뒤 같은 PID `12492`로 복구를 한 번 실행했다.
+  연결 proof와 executor identity를 실제로 통과하고 Program Check까지 도달했다. 현재
+  정확한 오류는 `PROGRAM_CHECK_DOCK_BASELINE_UNVERIFIED`이며 artifact는 session
+  `de00132c-585c-4ebb-b404-566a25bcf7fa/c43ec15e62a7/error.json`이다. journal event는
+  `15`, lease는 `ee8b04a3-469e-4ca6-831e-4ce709c158b2`이고 여전히 `QUARANTINED`다.
+  실제 캡처에는 기존 11개 MNE 명령이 보인다. Program Check의 visible pane 목록과
+  zero-area를 제외한 dock baseline 사이의 불일치를 조사한다. 저장·독립 재열기·M30
+  적용 성공은 아직 없다. 새 native 복구는 원인이 수정된 뒤 한 번만 수행한다.
+- Platform `e34ac97` / Agent `efc42a9`는 검증된 격리 원복 결과
+  `ROLLED_BACK / explicit_mne_recovery_rolled_back`에서도 같은 대화의 fresh compiler와
+  새 승인 제안을 허용한다. 기존 내부 M 범위 검사를 재사용하며 일반 사용자의 Revert나
+  불확실한 원복은 포함하지 않는다. 이 경로는 아직 실제 원복 성공 이후 검증 전이다.
 
 - 현재 대화는 `868e0126-a603-481a-9262-4ecef0023e9d`, workspace는
-  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `12524`, XG5000 PID `12492` /
+  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `11656`, XG5000 PID `12492` /
   HWND `1901812`를 유지한다. 아래 경과 기록의 이전 PID·실패 run으로 돌아가지 않는다.
-- Platform runtime `0b2328b`, Web `6113faf`, MCP `c4a9c6b`, Agent `788a16c`까지
+- Platform runtime `e34ac97`, Web `6113faf`, MCP `7065bbe`, Agent `efc42a9`까지
   정상 웹의 UAC 없는 Host 재로드로 반영했다. 앞선 Platform `2dcb3b6` / Agent `503f2f1`는
   만료된 후보의 재개 허용 정보가 Host serializer와 Agent sidecar decoder 양쪽에서
   누락되던 문제를 수정했다. 앞선 `bf1295a1-b8e4-426e-873f-5f7abf836e6f`는 잘못된
