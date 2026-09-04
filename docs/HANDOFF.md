@@ -18,7 +18,31 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-04 14:21 KST 이어갈 지점
+## 2026-09-04 Program Check 실행 연결 재확인 — 현재 이어갈 지점
+
+- 같은 대화 `868e0126-a603-481a-9262-4ecef0023e9d`, run `e6259675-650a-48d7-b08a-7d726ef6bd4b`,
+  Host transaction `588463c0-11fe-4748-a8e1-0b2639df1a05`, MCP transaction
+  `1f4710c8-797e-476a-85f2-aa972ff137c7`를 유지한다. 상태는 `QUARANTINED`, journal seq `31`,
+  active session `f36ba0df-d4ce-4e76-b9dd-d0549cfa072b`, lease
+  `526a791e-1201-4899-b674-32e05c2d8da9`다. M30 적용·저장·독립 재열기·XG-SIM·Keep은 미완료다.
+- MCP `508fff0` / `9921075`의 collapsed dock 펼침을 반영한 정상 웹 복구는
+  `f36ba0df-d4ce-4e76-b9dd-d0549cfa072b/7b2a576cbdd0/error.json`에서 끝났다.
+  `cli_timeout_seconds=30.0`, `program_check_phase=check_fresh_transition`,
+  `program_check_elapsed_ms=11031`이며, 펼침 함수까지 도달한 증거가 없다.
+- 실제 원인 구분: 현재 UIA의 `프로그램 검사` 버튼은 MainRes mapping `876`을 기록하지만,
+  그 버튼의 실제 command ID를 확인한 것이 아니다. 이 버튼 클릭을 검사 실행으로 취급하지 않는다.
+  반면 과거 실제 artifact `5012a1ed-878a-4a99-895e-c3ece3baf26a/a9d9e275aab0/result.json`에는
+  동일 PID `12492` / HWND `1901812`에서 `resource-proven-mainres-wm-command` `876` 호출 뒤
+  새 검사 modal, 모든 프로그램 선택, MainProgram 11-step 검사 로그와 오류 없음이 기록되어 있다.
+  메뉴의 `보기`라는 이름만으로 876도 단순 pane toggle이라고 단정하면 안 된다.
+  정상 실행을 이 실제 성공 명령에 연결하고 새 modal·실제 결과 판정을 유지하는 수정이 진행 중이다.
+- 실행 중인 Host는 PID `7688`, MCP `9921075`, CLI `deb2078`, Agent `efc42a9`, Web `0e6a8d9`다.
+  XG5000은 PID `12492` 한 개 그대로이며 UAC, 강제 종료, 중복 실행은 하지 않았다.
+- 사용자 화면에 웹을 열었다고 주장하지 않는다. `127.0.0.1:8767` 서버와 내부 tab 5의 정상 웹은
+  확인했지만, 표시 요청은 `queued`이고 visibility는 `set(true)` 뒤에도 `false`다.
+  Windows 창 확인도 timeout이었다. 내부 탭의 DOM/스크린샷은 사용자 화면 표시 증거가 아니다.
+
+## 2026-09-04 14:21 KST 경과 기록
 
 - 같은 대화 `868e0126-a603-481a-9262-4ecef0023e9d`와 run
   `e6259675-650a-48d7-b08a-7d726ef6bd4b`를 유지한다. Host transaction
@@ -66,7 +90,7 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   임시 측정 값은 `program_check_phase=check_result_read`, `program_check_elapsed_ms=14062`,
   `cli_timeout_seconds=30.0`이다. journal seq `29`, active session은 위 6034…,
   lease는 `33527b10-7323-445a-9a80-5c5c2c8f3959`이며 여전히 `QUARANTINED`다.
-  따라서 현재 원인은 toolbar 탐색/권한이 아니라 실제 결과 dock의 collapsed layout이다.
+  이 측정은 result-read 도달만 증명하며 실제 검사 명령의 실행을 증명하지는 않는다.
   controls artifact에서 caption `854680` 높이 1, pane `1312976`(32840)와 list `723156`
   (32849) 높이가 0이다. parser가 hidden/stale 결과를 pass로 수용하지 않는 것은 맞다.
   다음 작업은 동일 결과 dock에 인접한 live horizontal BCGPSlider를 한 번 끌어 실제
