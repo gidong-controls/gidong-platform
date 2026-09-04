@@ -18,12 +18,12 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-04 10:55 KST 이어갈 지점
+## 2026-09-04 11:08 KST 이어갈 지점
 
 - 현재 대화는 `ce6523b3-f02c-47ae-a81e-0a83cb4f6b8d`, workspace는
-  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `3124`, XG5000 PID `12492` /
+  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `15320`, XG5000 PID `12492` /
   HWND `1901812`를 유지한다. 아래 경과 기록의 이전 PID·실패 run으로 돌아가지 않는다.
-- Platform runtime `4eb0be6`, Web `2b6211d`, MCP `c386b52`, Agent `503f2f1`까지
+- Platform runtime `031a52a`, Web `364e4ed`, MCP `c386b52`, Agent `503f2f1`까지
   정상 웹의 UAC 없는 Host 재로드로 반영했다. 앞선 Platform `2dcb3b6` / Agent `503f2f1`는
   만료된 후보의 재개 허용 정보가 Host serializer와 Agent sidecar decoder 양쪽에서
   누락되던 문제를 수정했다. 앞선 `bf1295a1-b8e4-426e-873f-5f7abf836e6f`는 잘못된
@@ -67,9 +67,18 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   `ROLLED_BACK / mne_recovery_aborted_before_mutation`으로 확정됐다. 이는 실제 원복
   편집·저장을 수행했다는 뜻이 아니다. `native_mutation_performed=false`,
   `executed_checks=[]`이며 실제 적용·검사·저장·재열기·XG-SIM은 미실행이다.
-  Web 복구 패널은 변경 전 중단을 정확히 표시하지만 main card가 원복·저장 성공으로
-  오표시하고 acknowledgement를 비활성화하는 후속 UI 경계를 수정 중이다. 준비 작업
-  종료는 재실행하지 않는다. 결과를 정상 확인한 뒤 같은 프로젝트에 새 변경 제안을 요청한다.
+  Web `364e4ed`는 이 결과를 원복·저장 성공과 구분하고, 실제 no-mutation 종료 근거로
+  acknowledgement를 허용한다. 정상 Web 버튼으로 결과 확인까지 성공했다.
+  Host `031a52a`도 이 결과에 존재할 수 없는 저장·독립 재열기 증명을 요구하지 않고
+  같은 PID/경로/파일 해시의 새 분석 연결을 보존한다. 준비 작업 종료는 재실행하지 않는다.
+- 새 엔지니어링 대화 `22465379-be2c-4ec5-b6f0-239ad5082752`가 event `3780`에서
+  생성됐다. 기존 작업공간의 `기존 XG5000 창에 이 작업 연결`로 PID `12492`를 연결하고
+  오프라인 후보·XG-SIM 범위를 정상 선택했다. 그런데 연결/후보 승격 과정 중 Web이
+  새 대화 대신 이전 `ce6523b3…`로 돌아갔다. 새 사용자 요청의 실제 run
+  `c543a380-3c11-40d5-8d2d-a12fd59382ea`가 이전 대화에 연결된 것을 확인하고 정상 취소
+  버튼으로 중단했다(event `3791`, CANCELLED). 이 run은 progress만 있으며 tool 실행이
+  없다. 현재 선택한 새 대화가 attach/promotion/Host 갱신을 거쳐도 보존되도록 수정 중이다.
+  빈 새 대화와 기존 파일/창을 보존하며, 이전 미션의 승인·state를 임의 재활성화하지 않는다.
 - Platform `cd14e0e`는 Web Keep 판정을 고정 3단계 대신 승인된 scenario의 각 관측값에
   맞췄다. 실제 시뮬레이션 receipt는 아직 없어 실사용 성공 판정 전이다. `cfe2fc6`은 완료된
   과거 신규 프로젝트 handoff보다 저장된 대화를 복원하도록 했으며, 최신 Host 재로드에서
