@@ -1481,8 +1481,8 @@ def _safe_trusted_context(
         "change_planner_available": change_planner_available,
         "mne_change_planner_available": mne_change_planner_available,
     }
-    if value.get("expired_internal_mne_rung_reproposal_permitted") is True:
-        context["expired_internal_mne_rung_reproposal_permitted"] = True
+    if value.get("internal_mne_rung_reproposal_permitted") is True:
+        context["internal_mne_rung_reproposal_permitted"] = True
     if value.get("change_request_scope") in {
         "analysis_only",
         "offline_candidate_revision",

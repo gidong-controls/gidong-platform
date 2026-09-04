@@ -1355,29 +1355,41 @@ def _expired_exact_operand_reproposal_callback_permitted(
     return clean_terminal_wait or active_retry
 
 
-def _expired_internal_mne_rung_reproposal_callback_permitted(
+def _internal_mne_rung_reproposal_callback_permitted(
     mission: dict[str, Any] | None,
     change_outcome: dict[str, Any] | None,
     linked_change: ChangeTransaction | None,
 ) -> bool:
-    """Admit one fresh internal-only MNE rung proposal after expiration.
+    """Admit one fresh internal-only MNE rung proposal after a safe terminal stop.
 
     The old authority remains terminal.  This narrow callback gate only lets
     the Agent compile the current editor baseline and create a new proposal
-    for the exact same durable conversation after an approval that was never
-    executed.  Physical I/O, rejection, failure, quarantine, and every
-    non-expired outcome stay outside this route.
+    for the exact same durable conversation after approval expiration or a
+    proven pre-mutation failure.  Physical I/O, rejection, uncertain failure,
+    and every other terminal outcome stay outside this route.
     """
 
     if (
         not isinstance(mission, dict)
         or mission.get("status") not in {"waiting_for_approval", "active"}
         or not isinstance(change_outcome, dict)
-        or change_outcome.get("state") != "EXPIRED"
-        or change_outcome.get("disposition") != "expired"
         or linked_change is None
-        or linked_change.state is not ChangeTransactionState.EXPIRED
     ):
+        return False
+    retryable_terminal = (
+        (
+            change_outcome.get("state") == "EXPIRED"
+            and change_outcome.get("disposition") == "expired"
+            and linked_change.state is ChangeTransactionState.EXPIRED
+        )
+        or (
+            change_outcome.get("state") == "FAILED"
+            and change_outcome.get("disposition") == "failed"
+            and change_outcome.get("errorCode") == "native_change_not_applied"
+            and linked_change.state is ChangeTransactionState.FAILED
+        )
+    )
+    if not retryable_terminal:
         return False
     plan = linked_change.plan
     if not isinstance(plan, dict) or (
@@ -8334,8 +8346,8 @@ def create_app(
                     rejected_reauthorized=rejected_change_reauthorized,
                 )
             )
-            expired_internal_mne_rung_reproposal_permitted = (
-                _expired_internal_mne_rung_reproposal_callback_permitted(
+            internal_mne_rung_reproposal_permitted = (
+                _internal_mne_rung_reproposal_callback_permitted(
                     engineering_mission_snapshot,
                     current_change_outcome,
                     linked_change,
@@ -8880,7 +8892,7 @@ def create_app(
                         current_change_outcome,
                         rejected_reauthorized=rejected_change_reauthorized,
                     )
-                    or expired_internal_mne_rung_reproposal_permitted
+                    or internal_mne_rung_reproposal_permitted
                 )
                 and change_request_scope != "analysis_only"
                 and isinstance(knowledge_workspace_snapshot, dict)
@@ -9147,9 +9159,9 @@ def create_app(
                         "verification_scope": verification_scope,
                         **(
                             {
-                                "expired_internal_mne_rung_reproposal_permitted": True
+                                "internal_mne_rung_reproposal_permitted": True
                             }
-                            if expired_internal_mne_rung_reproposal_permitted
+                            if internal_mne_rung_reproposal_permitted
                             else {}
                         ),
                         **(
@@ -10733,6 +10745,7 @@ def create_app(
                 failed = store.finish_change_execution(
                     transaction_id=transaction_id,
                     state=ChangeTransactionState.FAILED,
+                    verification_evidence=exc.evidence or None,
                     error_code="native_change_not_applied",
                     error_detail=str(exc),
                 )

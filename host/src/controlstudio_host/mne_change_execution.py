@@ -839,6 +839,23 @@ def _public_failure_kind(exc: BaseException) -> str:
     return kind if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", kind) else "RecoveryError"
 
 
+def _public_preparation_failure(
+    *,
+    stage: str,
+    exc: BaseException,
+) -> dict[str, str]:
+    """Project only fixed Host preparation facts into a failed receipt."""
+
+    projected = {
+        "stage": stage,
+        "error_kind": _public_failure_kind(exc),
+    }
+    if rejection := _public_mcp_rejection(exc):
+        projected["mcp_error_type"] = rejection["type"]
+        projected["mcp_error_code"] = rejection["code"]
+    return projected
+
+
 def _transaction_lookup_checkpoint(
     value: object,
     *,
@@ -1810,6 +1827,7 @@ class MNEChangeExecutionService:
         session_scope = self._session_scope(transaction)
         mcp_transaction_id: str | None = None
         project_identity_digest = MCPChangeExecutionService._project_identity_digest(target)
+        preparation_stage = "snapshot"
         try:
             snapshot = _object(
                 await self._gateway.call_change_tool(
@@ -1871,6 +1889,7 @@ class MNEChangeExecutionService:
                 mcp_transaction_id=mcp_transaction_id,
                 expected_mcp_state="SNAPSHOT_CREATED",
             )
+            preparation_stage = "backup"
             backup = _object(
                 await self._gateway.call_change_tool(
                     "project.backup",
@@ -1900,6 +1919,7 @@ class MNEChangeExecutionService:
                 mcp_transaction_id=mcp_transaction_id,
                 expected_mcp_state="BACKUP_CREATED",
             )
+            preparation_stage = "plan"
             plan_arguments = {
                 **session_scope,
                 "transaction_id": mcp_transaction_id,
@@ -2110,7 +2130,13 @@ class MNEChangeExecutionService:
                     },
                 ) from exc
             raise ChangeExecutionFailedSafely(
-                "MNE preparation failed; MCP proved an exact no-mutation abort"
+                "MNE preparation failed; MCP proved an exact no-mutation abort",
+                evidence={
+                    "preparation": _public_preparation_failure(
+                        stage=preparation_stage,
+                        exc=exc,
+                    )
+                },
             ) from exc
 
         apply_arguments = {
@@ -3728,7 +3754,13 @@ class MNEChangeExecutionService:
                 ) from checkpoint_error
             raise ChangeExecutionFailedSafely(
                 "Host MNE checkpoint persistence failed; MCP proved that no native "
-                "mutation occurred and released its lease"
+                "mutation occurred and released its lease",
+                evidence={
+                    "preparation": _public_preparation_failure(
+                        stage=f"checkpoint.{str(checkpoint.get('stage') or 'unknown').lower()}",
+                        exc=checkpoint_error,
+                    )
+                },
             ) from checkpoint_error
 
     async def _abort_preparation_transaction(

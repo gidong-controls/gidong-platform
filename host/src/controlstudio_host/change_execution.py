@@ -125,6 +125,15 @@ class ChangeExecutionPreconditionError(RuntimeError):
 class ChangeExecutionFailedSafely(RuntimeError):
     """Execution failed before the native mutation could have been applied."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        evidence: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.evidence = evidence or {}
+
 
 class ChangeExecutionOutcomeUncertain(RuntimeError):
     """A native mutation may have happened and must be reconciled."""
