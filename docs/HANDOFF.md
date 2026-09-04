@@ -18,7 +18,7 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-04 13:11 KST 이어갈 지점
+## 2026-09-04 13:26 KST 이어갈 지점
 
 - **현재 우선 상태:** run `e6259675-650a-48d7-b08a-7d726ef6bd4b`의 Host transaction
   `588463c0-11fe-4748-a8e1-0b2639df1a05`, MCP transaction
@@ -81,15 +81,29 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   원복/저장 성공이 아니다. 메인 창에 WM_COMMAND 876만 보내는 경로 대신 이미 구현된
   exact primary-toolbar Program Check 버튼 클릭을 실제 실행 경로에 연결하는 중이다.
   다른 pane에 해당하는 active-MDI 4957을 추측으로 대체하지 않는다.
+- MCP `211cc16`은 MainRes 876 mapping을 보존하면서 기존 primary-toolbar의 live UIA /
+  runtime button 교차점을 한 번 클릭하도록 연결했다. 빈 native pane title은 strict
+  결과 목록 snapshot 근거로 처리한다. CLI `8e69032`는 이 semantic backend에 잘못된
+  `visualMenu` 필드를 붙이지 않는다. 실제 실행은 버튼 전 optional project-root search의
+  `XG5000_PROJECT_SEARCH_RESULT_UNVERIFIED`로 실패했다. query readback은 맞지만
+  semantic row가 0개였고 session은 `64db3c9b-aadc-47c8-b6c0-33b5b0aa7a4d`다.
+- MCP `bfb7768`은 정상 검사에서 그 진단용 검색과 historical toolbar 좌표 조건을
+  제거했다. 이미 열린 exact program과 unique live toolbar 59435, enabled UIA /
+  runtime 876 교차점·창 소유권 검사는 유지한다. 그 뒤 정상 복구는 `CLITimeout`으로
+  종료됐다. 최신 artifact는 `83a935a3-5bb6-42ea-bf8e-b497c868b689/c5c8f0073308/error.json`,
+  lease는 `45291269-11e3-4e00-ac67-5d85cb227f93`다. 실제 LD 캡처는 기존 프로그램이며
+  검사 결과 pane은 없다. primary helper가 아직 모든 툴바를 조사하는 diagnostic inventory를
+  호출하고 있으므로 exact toolbar 한 개만 조회하는 실행 경로로 축소 중이다. timeout을
+  늘리거나 같은 코드를 다시 실행하지 않는다. 저장·재열기·XG-SIM·Keep 성공은 아직 없다.
 - Platform `e34ac97` / Agent `efc42a9`는 검증된 격리 원복 결과
   `ROLLED_BACK / explicit_mne_recovery_rolled_back`에서도 같은 대화의 fresh compiler와
   새 승인 제안을 허용한다. 기존 내부 M 범위 검사를 재사용하며 일반 사용자의 Revert나
   불확실한 원복은 포함하지 않는다. 이 경로는 아직 실제 원복 성공 이후 검증 전이다.
 
 - 현재 대화는 `868e0126-a603-481a-9262-4ecef0023e9d`, workspace는
-  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `4632`, XG5000 PID `12492` /
+  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `8212`, XG5000 PID `12492` /
   HWND `1901812`를 유지한다. 아래 경과 기록의 이전 PID·실패 run으로 돌아가지 않는다.
-- Platform runtime `9f98fca`, Web `6113faf`, MCP `42dbf09`, Agent `efc42a9`까지
+- Platform runtime `251abbb`, Web `6113faf`, MCP `bfb7768`, Agent `efc42a9`, CLI `8e69032`까지
   정상 웹의 UAC 없는 Host 재로드로 반영했다. 앞선 Platform `2dcb3b6` / Agent `503f2f1`는
   만료된 후보의 재개 허용 정보가 Host serializer와 Agent sidecar decoder 양쪽에서
   누락되던 문제를 수정했다. 앞선 `bf1295a1-b8e4-426e-873f-5f7abf836e6f`는 잘못된
