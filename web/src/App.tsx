@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { hostApi, HostApiError } from "./api/client";
+import {
+  hostApi,
+  HostApiError,
+  HostResponseContractError,
+} from "./api/client";
 import { isChangeTransaction } from "./api/changeContracts";
 import { ControlStudioEventStream } from "./api/sse";
 import {
@@ -2085,6 +2089,7 @@ function App() {
     changePriorityRefreshEpochRef.current += 1;
     const controller = new AbortController();
     requestAbortRef.current = controller;
+    let bootstrapConnected = false;
 
     setConnectionMessage("ControlStudio Host를 확인하고 있습니다.");
     try {
@@ -2093,6 +2098,7 @@ function App() {
         return;
       }
       const bootstrap = await hostApi.getBootstrap(controller.signal);
+      bootstrapConnected = true;
       setSessionRequired(false);
       hostApi.setCsrfToken(bootstrap.csrfToken);
       applyHostStatus(bootstrap.status);
@@ -2246,24 +2252,30 @@ function App() {
         const authenticationRequired =
           error instanceof HostApiError &&
           (error.status === 401 || error.status === 403);
+        const responseContractFailure =
+          bootstrapConnected && error instanceof HostResponseContractError;
         if (authenticationRequired) {
           clearBrowserSession();
         }
         setSessionRequired(authenticationRequired);
-        applyHostStatus({
-          ...INITIAL_STATUS,
-          host: {
-            state: "unavailable",
-            detail: authenticationRequired
-              ? "Launcher 세션 인증 필요"
-              : "Launcher 또는 Host를 시작해 주세요",
-          },
-        });
+        if (!responseContractFailure) {
+          applyHostStatus({
+            ...INITIAL_STATUS,
+            host: {
+              state: "unavailable",
+              detail: authenticationRequired
+                ? "Launcher 세션 인증 필요"
+                : "Launcher 또는 Host를 시작해 주세요",
+            },
+          });
+        }
         setConnectionMessage(
           error instanceof Error && error.name === "AbortError"
             ? "Host 확인이 취소되었습니다."
             : authenticationRequired
               ? "ControlStudio Launcher에서 다시 열어 세션을 인증해 주세요."
+              : responseContractFailure
+                ? "Host 응답 계약을 읽을 수 없습니다. Host와 웹 앱 버전을 맞춘 뒤 다시 시도해 주세요."
             : "Host에 연결할 수 없습니다. ControlStudio를 다시 시작해 주세요.",
         );
       }

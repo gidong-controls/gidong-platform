@@ -90,6 +90,14 @@ export class HostApiError extends Error {
   }
 }
 
+/** A successful Host response that does not satisfy this web client's contract. */
+export class HostResponseContractError extends Error {
+  constructor() {
+    super("Host returned an unsupported response contract.");
+    this.name = "HostResponseContractError";
+  }
+}
+
 type RequestOptions = Omit<RequestInit, "body"> & {
   body?: unknown;
   operationId?: string;
@@ -102,23 +110,41 @@ function problemMessage(problem: ProblemDetails | undefined, status: number): st
   return problem?.title ?? `Host 요청에 실패했습니다. (${status})`;
 }
 
-function transactionFromEnvelope(value: unknown): ChangeTransaction {
-  if (!isRecord(value)) {
-    throw new Error("Host returned a malformed change transaction response.");
+function parseHostResponseContract<T>(
+  value: unknown,
+  parse: (value: unknown) => T,
+): T {
+  try {
+    return parse(value);
+  } catch (error) {
+    if (error instanceof HostResponseContractError) {
+      throw error;
+    }
+    throw new HostResponseContractError();
   }
-  return parseChangeTransaction(value.transaction);
+}
+
+function transactionFromEnvelope(value: unknown): ChangeTransaction {
+  return parseHostResponseContract(value, (response) => {
+    if (!isRecord(response)) {
+      throw new Error("Host returned a malformed change transaction response.");
+    }
+    return parseChangeTransaction(response.transaction);
+  });
 }
 
 function reconciliationFromEnvelope(
   value: unknown,
 ): ChangeReconciliationResponse {
-  if (!isRecord(value) || typeof value.reconciled !== "boolean") {
-    throw new Error("Host returned a malformed change reconciliation response.");
-  }
-  return {
-    transaction: parseChangeTransaction(value.transaction),
-    reconciled: value.reconciled,
-  };
+  return parseHostResponseContract(value, (response) => {
+    if (!isRecord(response) || typeof response.reconciled !== "boolean") {
+      throw new Error("Host returned a malformed change reconciliation response.");
+    }
+    return {
+      transaction: parseChangeTransaction(response.transaction),
+      reconciled: response.reconciled,
+    };
+  });
 }
 
 export class HostApiClient {
@@ -738,7 +764,7 @@ export class HostApiClient {
     return this.request<unknown>(
       `/api/v1/change-transactions/${encodeURIComponent(transactionId)}`,
       { signal },
-    ).then(parseChangeTransaction);
+    ).then((value) => parseHostResponseContract(value, parseChangeTransaction));
   }
 
   restartHost(): Promise<HostRestartResponse> {
@@ -783,7 +809,9 @@ export class HostApiClient {
     return this.request<unknown>(
       `/api/v1/change-transactions?${query.toString()}`,
       { signal },
-    ).then(parseChangeTransactionList);
+    ).then((value) =>
+      parseHostResponseContract(value, parseChangeTransactionList),
+    );
   }
 
   decideChangeTransaction(
