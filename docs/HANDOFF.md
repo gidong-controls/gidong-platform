@@ -20,6 +20,15 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
 
 ## 2026-09-04 LD 원복과 재열기 — 현재 이어갈 지점
 
+- 20:54 최신: MCP `5942e12`는 IL 화면 전환 뒤 같은 program ID/name의 새 MDI/editor
+  descriptor를 조회·활성화해 capture에 전달한다. 기존 PID `1808` 웹 복구에서 편집기
+  단계를 넘어 새 PID `3752` 독립 재열기까지 진행했으나 `show_open_dialog` 시간 초과로
+  종료됐다. 현재 XG5000은 없다. journal seq `57`, session
+  `0233917c-2793-4fd4-a511-f557bb886744`, saved hash
+  `8d2d044037be7c915c1fc39e9b34a5e8835a9c33147b61f9aefdd03631cf4e66`다.
+  launcher의 caller deadline 외에 중복된 Open UI 30초 cap을 제거하고 기존 남은 예산과
+  post-binding reserve를 사용하도록 수정 중이다. outer timeout/재시도는 늘리지 않는다.
+
 - 20:44 최신: MCP `d20f099`의 표준 IDOK 버튼 선택을 정상 웹 재로딩으로 반영했다.
   재열기 PID `1808` / session `b65118de-80ba-42f0-9faf-95dc72f26310` 연결은 성공했으나
   원복에서 `MNE_EDITOR_NOT_OPEN`(hwnd `2361654`)로 종료됐다. journal seq `55`,
