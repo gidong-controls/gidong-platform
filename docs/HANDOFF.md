@@ -18,7 +18,7 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-04 Program Check 실행 연결 재확인 — 현재 이어갈 지점
+## 2026-09-04 LD 원복과 재열기 — 현재 이어갈 지점
 
 - 같은 대화 `868e0126-a603-481a-9262-4ecef0023e9d`, run `e6259675-650a-48d7-b08a-7d726ef6bd4b`,
   Host transaction `588463c0-11fe-4748-a8e1-0b2639df1a05`, MCP transaction
@@ -56,16 +56,34 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   → `resolve_exact_program_target` → `list_ld_programs`. apply는 이미 `_mne_fresh_reopen_project`로
   standalone CLI를 사용하지만 rollback은 아직 별도 catalog 좌표 탐색을 사용했다.
   CLI `_select_reopen_program`에도 중복 catalog 탐색이 있으나 그 수정만으로 현재 원복 오류를
-  해결했다고 주장하면 안 된다. 원복도 기존 CLI 재열기 경계로 통일하고 baseline 기대값을 결속한다.
+  해결했다고 주장하면 안 된다. MCP `c132f5a`는 원복도 기존 CLI 재열기 경계로 통일하고
+  baseline 기대값을 결속했다. CLI `7107d8d`까지 exact named editor 재사용을 반영했다.
 - MCP `bb57cfa`와 CLI `b3cc0c8`은 toolbar 진단 버튼을 정상 Program Check 실행 증거로 수용하던
-  분기를 제거했다. 별도 toolbar 진단과 임시 phase trace는 유지한다. 이 두 커밋 및 후속 selector
-  수정은 다음 정상 웹 코드 재로드에서 함께 반영한다. 재열기 실패 뒤 새 PID/저장 후 파일 hash의
-  정상 recovery 결속도 확인하며 journal 값을 수동 수정하지 않는다.
+  분기를 제거했다. 임시 phase trace는 MCP `93b57ee`로 제거했고 별도 toolbar 진단만 남는다.
+  Host `561fd8f`/`1714d67`은 reconciliation rollback receipt와 standalone-CLI reopen variant를
+  기존 검증 경계에 연결했다. 이 변경들은 정상 웹 재로드로 반영됐지만 terminal 원복 성공은 아직 없다.
+- MCP `11b61db`는 durable recovery에서 journaled target editor를 먼저 연 뒤 기존 catalog를
+  읽게 했다. 15:29 KST 실제 복구는 `mne_native_status_unavailable`로 끝났으며 seq/lease는
+  바뀌지 않았다. 이 오류를 과거 `XG5000_PROGRAMS_NOT_FOUND`로 추정하면 안 된다.
+- Host `54d6759`는 recovery gateway도 기존 private MCP 오류 logger를 재사용하게 했다.
+  15:45:23 KST 정상 웹 확인에서 실제 오류가 기록됐다:
+  `xg5000.attach / ValueError / timeout must be between 0 and 30.0 seconds`.
+  새 editor-open 호출의 60초가 MSAA worker의 최대 30초 계약을 위반한 것이다. UAC 실패가 아니다.
+  MCP `7f52db5`는 동일한 editor-open 호출 세 곳을 기존 20초 범위로 고쳤다. 제한 확대나
+  재시도 추가는 없다. CLI fresh-reopen은 이미 editor open을 최대 20초로 제한하므로 변경하지 않았다.
+- 15:50:14 KST 실제 복구는 위 시간값 검증을 통과한 뒤
+  `XG5000_PROJECT_SEARCH_RESULT_UNVERIFIED`로 끝났다. 15:50:25 MSAA 결과에는 `MainProgram`
+  행이 `[68,377,83,393]`에 있으나 grid는 `[3,199,122,293]`이고 행 상태는 `INVISIBLE|OFFSCREEN`이다.
+  MCP `8d10213`, CLI `0d98248`/`4c7814d`는 이런 정확한 화면 밖 행에도 기존 단일 MSAA 선택을
+  허용하고, 클릭 전 화면 안 위치 재확인은 유지한다. 숨김-only 항목이나 임의 좌표를 허용하지 않는다.
+  [Microsoft 상태 정의](https://learn.microsoft.com/en-us/windows/win32/winauto/object-state-constants)의
+  두 플래그 구분을 따르며, 실제 행 표시 및 terminal 원복 성공은 다음 실행에서 확인해야 한다.
 - 보호된 source 파일 SHA256은 여전히
   `16248471e9a7131623b65ea6ad7b43f59fa6a78dcccf462d88687fbc8442f13e`다.
 - 사용자 화면에 웹을 열었다고 주장하지 않는다. `127.0.0.1:8767` 서버와 내부 tab 5의 정상 웹은
-  확인했지만, 표시 요청은 `queued`이고 visibility는 `set(true)` 뒤에도 `false`다.
-  Windows 창 확인도 timeout이었다. 내부 탭의 DOM/스크린샷은 사용자 화면 표시 증거가 아니다.
+  확인했지만, 표시 요청은 계속 `queued`다. 후속 조회에서 visibility는 `true`로 읽혔지만 이것만으로
+  사용자 화면 표시를 증명하지 않는다. Windows 창 확인 도구는 timeout이고, read-only 프로세스
+  조회에는 Firefox `세션 복원` 창만 있었다. 외부 정상 브라우저를 띄웠다고 주장하지 않는다.
 
 ## 2026-09-04 14:21 KST 경과 기록
 
