@@ -538,17 +538,23 @@ function conversationMissionMatchesCurrentTarget(
   );
 }
 
+function isEmptyUnboundEngineeringDraft(conversation: Conversation): boolean {
+  return (
+    conversation.workflow === "engineering" &&
+    !conversation.engineeringTarget &&
+    !conversation.engineeringHandoff &&
+    !conversation.engineeringMission &&
+    conversation.messages.length === 0
+  );
+}
+
 function isReusableUnboundDraft(
   conversation: Conversation,
   status: HostStatusResponse,
 ): boolean {
   return (
     currentEngineeringTarget(status) === null &&
-    conversation.workflow === "engineering" &&
-    !conversation.engineeringTarget &&
-    !conversation.engineeringHandoff &&
-    !conversation.engineeringMission &&
-    conversation.messages.length === 0
+    isEmptyUnboundEngineeringDraft(conversation)
   );
 }
 
@@ -1881,6 +1887,7 @@ function App() {
         targetActivationEpoch !== targetActivationEpochRef.current);
     const restoreIfMatching = async (
       conversationId: string,
+      allowSelectedUnboundDraft = false,
     ): Promise<Conversation | null> => {
       const detail = await hostApi.getConversation(conversationId);
       if (stale()) {
@@ -1889,27 +1896,64 @@ function App() {
       if (
         !conversationMatchesCurrentTarget(detail, currentStatus) &&
         !conversationMissionMatchesCurrentTarget(detail, currentStatus) &&
-        !isReusableUnboundDraft(detail, currentStatus)
+        !isReusableUnboundDraft(detail, currentStatus) &&
+        !(allowSelectedUnboundDraft && isEmptyUnboundEngineeringDraft(detail))
       ) {
         return null;
       }
-      conversationIdRef.current = detail.conversationId;
-      setConversation(detail);
-      setNewProjectPlanning(planningSessionFromConversation(detail));
       return detail;
     };
 
+    const selectConversation = (detail: Conversation) => {
+      conversationIdRef.current = detail.conversationId;
+      setConversation(detail);
+      setNewProjectPlanning(planningSessionFromConversation(detail));
+    };
+
     const storedId = readStoredConversationId();
-    if (storedId) {
+    // The in-memory selection records a deliberate choice made after this page
+    // loaded; storage carries that same choice across a reload.  Consult either
+    // before target-history recovery so attaching a workspace cannot silently
+    // replace a newly selected, still-empty engineering conversation.
+    const selectedConversationId = conversationIdRef.current ?? storedId;
+    if (selectedConversationId) {
       try {
-        const restored = await restoreIfMatching(storedId);
+        const restored = await restoreIfMatching(selectedConversationId, true);
         if (stale()) {
           return null;
         }
         if (restored) {
+          if (
+            currentEngineeringTarget(currentStatus) &&
+            isEmptyUnboundEngineeringDraft(restored)
+          ) {
+            // An empty conversation created before the XG5000 target became
+            // read-ready cannot be rebound in place.  Promote that explicit
+            // choice through the normal create endpoint instead of falling
+            // back to an older conversation for the newly attached target.
+            const promoted = await hostApi.createConversation({
+              title: restored.title,
+              workflow: "engineering",
+            });
+            if (stale()) {
+              return null;
+            }
+            if (!conversationMatchesCurrentTarget(promoted, currentStatus)) {
+              throw new Error(
+                "Host did not bind the selected engineering conversation to the current target.",
+              );
+            }
+            storeConversationId(promoted.conversationId);
+            selectConversation(promoted);
+            return promoted;
+          }
+          storeConversationId(restored.conversationId);
+          selectConversation(restored);
           return restored;
         }
-        clearStoredConversationId();
+        if (storedId === selectedConversationId) {
+          clearStoredConversationId();
+        }
       } catch (error) {
         if (stale()) {
           return null;
@@ -1917,7 +1961,9 @@ function App() {
         if (!(error instanceof HostApiError) || error.status !== 404) {
           throw error;
         }
-        clearStoredConversationId();
+        if (storedId === selectedConversationId) {
+          clearStoredConversationId();
+        }
       }
     }
 
@@ -1942,6 +1988,7 @@ function App() {
           }
           if (restored) {
             storeConversationId(restored.conversationId);
+            selectConversation(restored);
             return restored;
           }
         } catch (error) {
@@ -1964,8 +2011,7 @@ function App() {
       return null;
     }
     storeConversationId(created.conversationId);
-    conversationIdRef.current = created.conversationId;
-    setConversation(created);
+    selectConversation(created);
     return created;
   }, []);
 
@@ -2103,24 +2149,14 @@ function App() {
       hostApi.setCsrfToken(bootstrap.csrfToken);
       applyHostStatus(bootstrap.status);
       const activeOperation = bootstrap.status.activeOperation;
-      const storedConversationId = readStoredConversationId();
-      // The Host may surface an accepted, completed native-build handoff merely
-      // as a future engineering convenience.  It is not an in-flight recovery,
-      // so it must not replace an explicit browser conversation choice.
-      const completedNativeHandoffFallback = Boolean(
-        storedConversationId &&
-          activeOperation?.kind === "native_project_create" &&
-          activeOperation.state === "completed" &&
-          activeOperation.label ===
-            "accepted_native_project_engineering_handoff_pending",
-      );
-      const operationConversationId = completedNativeHandoffFallback
-        ? undefined
-        : activeOperation?.conversationId;
+      // `activeOperation` is Host authority for an actual in-flight handoff or
+      // recovery. Completed durable handoffs are not exposed here; ordinary
+      // selected-conversation restoration stays centralized in
+      // `ensureConversation` below.
+      const operationConversationId = activeOperation?.conversationId;
       const targetAtBootstrap = currentEngineeringTarget(bootstrap.status);
       let operationConversation: Conversation | null = null;
-      let restoreActiveOperation =
-        !operationConversationId && !completedNativeHandoffFallback;
+      let restoreActiveOperation = !operationConversationId;
       if (operationConversationId) {
         try {
           operationConversation = await hostApi.getConversation(
