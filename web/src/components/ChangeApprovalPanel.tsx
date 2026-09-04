@@ -592,13 +592,50 @@ function objectValue(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+type MneSimulationExpectedPhase = {
+  name: string;
+  expected: number | Record<string, 0 | 1>;
+};
+
+function expectedMneSimulationPhases(
+  profile: MneRungPatchCandidateReceipt["simulationProfile"] | null | undefined,
+): MneSimulationExpectedPhase[] {
+  if (profile && "scenario" in profile) {
+    return profile.scenario.steps.map((step) => ({
+      name: step.name,
+      expected: step.observe,
+    }));
+  }
+  return [
+    { name: "normal", expected: 1 },
+    { name: "deny", expected: 0 },
+    { name: "restore", expected: 1 },
+  ];
+}
+
+function matchesMneSimulationExpectation(
+  actual: unknown,
+  expected: number | Record<string, 0 | 1>,
+): boolean {
+  if (typeof expected === "number") return actual === expected;
+  const actualValues = objectValue(actual);
+  const expectedEntries = Object.entries(expected);
+  return Boolean(
+    actualValues &&
+      Object.keys(actualValues).length === expectedEntries.length &&
+      expectedEntries.every(([address, bit]) => actualValues[address] === bit),
+  );
+}
+
 function isObservingMneSimulationReceipt(
   receipt: Record<string, unknown> | undefined,
+  profile: MneRungPatchCandidateReceipt["simulationProfile"] | null | undefined,
 ): boolean {
   const stop = objectValue(receipt?.stop);
   const restore = receipt?.restore;
   const observation = objectValue(receipt?.observation);
   const phases = observation?.observations;
+  const expectedPhases = expectedMneSimulationPhases(profile);
   return Boolean(
     receipt?.schema === "controlstudio-mne-rung-xgsim-receipt/v1" &&
       receipt.controller_connected === false &&
@@ -607,11 +644,13 @@ function isObservingMneSimulationReceipt(
       stop.verified === true &&
       Array.isArray(restore) && restore.length > 0 &&
       restore.every((item) => objectValue(item)?.matched === true) &&
-      Array.isArray(phases) && phases.length === 3 &&
+      Array.isArray(phases) && phases.length === expectedPhases.length &&
       phases.every((item, index) => {
         const phase = objectValue(item);
-        return phase?.phase === ["normal", "deny", "restore"][index] &&
-          phase.expected === [1, 0, 1][index] && phase.matched === true;
+        const expected = expectedPhases[index];
+        return phase?.phase === expected.name &&
+          matchesMneSimulationExpectation(phase.expected, expected.expected) &&
+          phase.matched === true;
       }),
   );
 }
@@ -1560,7 +1599,10 @@ export function ChangeApprovalPanel({
   const observingSimulation =
     transaction.state === "observing" &&
     simulationReceiptDigest !== null &&
-    isObservingMneSimulationReceipt(simulationReceipt);
+    isObservingMneSimulationReceipt(
+      simulationReceipt,
+      rungPatchPlan?.candidate.simulationProfile,
+    );
   const terminal = TERMINAL_CHANGE_STATES.has(transaction.state);
   const successfulOfflineReceipt =
     transaction.state === "completed" ||
@@ -1912,7 +1954,11 @@ export function ChangeApprovalPanel({
       {observingSimulation && (
         <section className="change-verification-boundary" aria-label="XG-SIM observing receipt">
           <h3>XG-SIM 검증 완료 · Keep 또는 Revert 선택 필요</h3>
-          <p>정상→차단→복원 OUT 관찰, CPU 정지와 입력 바이트 원복이 receipt에 기록됐습니다. PLC 연결·쓰기 없음.</p>
+          <p>
+            {xgSimScenarioStepCount !== null
+              ? `컴파일된 ${xgSimScenarioStepCount}단계 시나리오의 예상 관찰값, CPU 정지와 입력 바이트 원복이 receipt에 기록됐습니다.`
+              : "정상→차단→복원 OUT 관찰, CPU 정지와 입력 바이트 원복이 receipt에 기록됐습니다."} PLC 연결·쓰기 없음.
+          </p>
           <dl>
             <div><dt>Receipt digest</dt><dd><code>{simulationReceiptDigest}</code></dd></div>
             <div><dt>STOP</dt><dd>{objectValue(simulationReceipt?.stop)?.verified === true ? "verified" : "unverified"}</dd></div>
