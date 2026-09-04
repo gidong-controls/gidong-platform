@@ -18,7 +18,7 @@
 2026-08-16 10:20 KST의 GitHub 443 거부와 당시 push 재시도는 역사적 기록이다. 이후
 push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결정하며, 다음 세션의 자동 작업이 아니다.
 
-## 2026-09-04 12:12 KST 이어갈 지점
+## 2026-09-04 12:25 KST 이어갈 지점
 
 - **현재 우선 상태:** run `e6259675-650a-48d7-b08a-7d726ef6bd4b`의 Host transaction
   `588463c0-11fe-4748-a8e1-0b2639df1a05`, MCP transaction
@@ -32,12 +32,27 @@ push 여부는 사용자별 권한과 원격 상태를 확인한 뒤에만 결�
   `PROGRAM_CHECK_FRESH_MODAL_UNVERIFIED`이며 artifact는 session
   `f7c0fb84-538e-4876-a934-4281b45cd37b/eb2f91b7cb2e/error.json`이다. 검사가 끝나지 않아
   저장·독립 재열기와 완전한 rollback receipt는 없다. journal을 직접 바꾸거나 새 제안을
-  먼저 적용하지 않는다. 이 ProgramCheck 호출 원인을 수정한 뒤 정상 복구부터 이어간다.
+  먼저 적용하지 않는다. 실제 controls artifact에서 Program Check bar(32840)가
+  `visible=true`이지만 711×0, 결과 ListView(32849)가 709×0이었다. MCP `c4a9c6b`는
+  접힌 zero-area dock을 열린 결과로 오인하지 않도록 공용 pane/snapshot/result selector를
+  맞춘다. 실제 펼쳐진 reused dock의 ListView text hash도 기존 state hash에 포함하고,
+  실패 시 기존 CLI details의 전후 상태와 command backend를 private artifact에 보존한다.
+- 위 수정과 Agent `788a16c`를 정상 Web에서 UAC 없이 재로드했다. Agent 변경은 Host가
+  허용한 정확한 pre-apply 실패/만료 재제안에서 기존 verified compiler intent를 재사용하여
+  모델 인수 재생성 지연을 제거한다. 현재 compiler 호출·새 후보·새 승인은 그대로이며,
+  기존 typed schema validator를 사용한다. 실제 e625 checkpoint의 read-only 확인에서
+  동일 program과 10단계 scenario가 투영됐다. 실제 재개 성능은 아직 확인하지 않았다.
+- 재로드 뒤 같은 PID로 정상 복구를 1회 더 요청했지만 `explicit_mne_recovery_unproven`이
+  유지됐다. journal event 12는 소유권 이전이며 새 session은
+  `d53272be-da32-4880-8d9d-4cddfa865010`, recovery action은 `rollback_required`다.
+  이 session의 artifact 디렉터리는 생성되지 않았다. 따라서 이를 이전 ProgramCheck
+  오류의 재발로 단정하지 않는다. 현재는 native 호출 전 복구 연결/자료 로딩 실패를
+  조사 중이다. 추가 native 재시도는 하지 않았다.
 
 - 현재 대화는 `868e0126-a603-481a-9262-4ecef0023e9d`, workspace는
-  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `7032`, XG5000 PID `12492` /
+  `fccdf3ec-34e4-4dae-9009-1a8c1e58497d`다. Host PID `9228`, XG5000 PID `12492` /
   HWND `1901812`를 유지한다. 아래 경과 기록의 이전 PID·실패 run으로 돌아가지 않는다.
-- Platform runtime `9e381cb`, Web `6113faf`, MCP `f655f85`, Agent `4b7465d`까지
+- Platform runtime `9e381cb`, Web `6113faf`, MCP `c4a9c6b`, Agent `788a16c`까지
   정상 웹의 UAC 없는 Host 재로드로 반영했다. 앞선 Platform `2dcb3b6` / Agent `503f2f1`는
   만료된 후보의 재개 허용 정보가 Host serializer와 Agent sidecar decoder 양쪽에서
   누락되던 문제를 수정했다. 앞선 `bf1295a1-b8e4-426e-873f-5f7abf836e6f`는 잘못된
