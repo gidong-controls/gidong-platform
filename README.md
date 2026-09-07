@@ -1,5 +1,11 @@
 # 기동 Platform
 
+2026-09-08: 제품 방향과 인계를 갱신했다. 기본 화면은 채팅이며 Agent가 도구를 선택하고
+실제 결과로 작업을 이어간다. 선택·실행·완료·실패를 같은 대화에 표시하는 것이 핵심이다.
+기존 loop/broker/SSE를 재사용하고 고정 mission·반복 승인·검증 중심의 정상 경로를 단순화한다.
+문서 전환이 애플리케이션 구현 완료를 뜻하지 않는다. 다음 작업은
+[최신 핸드오프](docs/HANDOFF.md)와 [파일별 구현 계획](docs/AGENT_PRODUCT_PLAN.md)을 따른다.
+
 기동(GIDONG)은 근거 중심 PLC 엔지니어링 제품이다. 이 저장소는 공개 가능한
 Platform 경계인 Web/PWA, Windows Launcher, FastAPI Host, 공개 계약과 패키징
 조립 규칙을 담는다.
@@ -25,7 +31,7 @@ CLI 분리는 벤더별 창·COM·프로젝트 형식의 구현을 Agent와 공�
 
 ## 현재 제품 경계
 
-- Web은 엔지니어링 대화, 구조화 분석, 계획 검토, 변경 승인과 복구 상태를 표시한다.
+- Web은 대화와 실제 도구 진행/결과를 기본으로 표시한다. 분석·계획·변경/복구 상세는 필요한 보조 화면으로 전환 중이다.
 - Host는 SQLite 원본 기록, Evidence Store, ExecutionBroker와 sidecar 수명주기를 소유한다.
 - Agent는 도구 호출을 제안할 수 있지만 MCP나 PLC에 직접 연결하지 않는다.
 - PLC MCP는 XG5000/XG-SIM 작업을 수행하고 exact readback과 변경 journal을 반환한다.

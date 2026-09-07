@@ -1,5 +1,104 @@
 # Development handoff
 
+## 2026-09-08 새 채팅 시작점 — 제품 방향 재정리
+
+이번 변경은 **코드/계획 점검과 문서 갱신**이다. 앱 수정·실행·UAC·XG5000 편집·복구는
+수행하지 않았다. 제품 완료가 아니다. 아래 과거 날짜 절의 “현재/다음/최우선”은 당시 기록이며
+새 작업 지시가 아니다. 다음 채팅은 이 절과 [구현 계획](AGENT_PRODUCT_PLAN.md)을 먼저 읽는다.
+
+### 확정 제품 방향
+
+간단한 채팅 UI에서 Agent가 요청을 받아 도구를 선택하고, 실제 결과/오류로 다음 행동을
+결정하며 끝까지 일한다. 선택·실행·완료·실패를 같은 대화에 즉시 표시한다. 검증·복구·승인
+관리 화면이 주 제품이 아니다. 모든 요청을 M30→재열기→XG-SIM→Keep→COMMITTED에 보내는
+이전 계획을 폐기한다. M30은 대표 변경 사례 하나이고 전체 제품 완료선이 아니다.
+
+대상 확인·작업 사본 보호·불명확한 변경의 중복 실행 방지는 도구 내부에 남긴다. 명확히
+요청한 작업 사본 수정·저장은 요청 범위 안에서 이어간다. 불필요한 per-step approval,
+전역 차단, 고정 mission/verification gate는 실제 호출 경로에서 단순화한다. 화면만 숨기지 않는다.
+물리 PLC는 없으므로 online I/O는 로드맵이며 현재 blocker가 아니다.
+
+### 코드 점검 결론
+
+- 모델/도구 루프가 없는 상태는 아니다. Agent `runtime.py`의 `PydanticAIAgentRuntime.run`,
+  `sidecar.py`의 `tool.request/tool.result`가 존재하지만 고정 선택·mission 완료 제한이 남는다.
+- Host `execution_broker.py`는 started/completed/failed를 보내고 Web `App.tsx`는 SSE와
+  timeline을 처리한다. 이 경로를 재사용하여 선택/실제 시작을 구분하고 채팅 기본 화면으로 정리한다.
+- 현재 `analysis_only` 요청과 offline candidate 준비를 구분한다. 모든 읽기가 전역 격리에
+  막힌다는 주장은 하지 않는다. Keep/Revert도 특정 XG-SIM 변경 흐름의 현재 구현이다.
+- CLI Git/process/JSON 분리는 존재한다. process/app helper·wire·catalog·LD reader/editor는
+  CLI 소유지만 `open_project_entry.py`/`legacy.py`의 MCP native 역의존이 남는다.
+- 파일·함수·탐색 행 번호·변경 목적·완료 조건은 [구현 계획 §3–4](AGENT_PRODUCT_PLAN.md)에 있다.
+
+### 점검 시점 Git 기준 (문서 커밋 전)
+
+| 저장소 | 브랜치 | HEAD | 로컬 origin 추적 ref 대비 |
+| --- | --- | --- | --- |
+| gidong-platform | dev | a6037e1 | ahead 302 |
+| gidong-agent | dev | efc42a9 | ahead 70 |
+| gidong-plc-mcp | dev | c5311c8 | ahead 236 |
+| controlstudio-xg5000-cli | main | 0674f94 | ahead 35 |
+
+점검 시작 시 tracked 변경은 없었다. 위 ahead는 fetch 없이 로컬 tracking ref와 비교한 값으로,
+현재 GitHub 서버 상태를 다시 확인한 수치가 아니다. 문서 커밋 후 HEAD/ahead는 달라진다.
+CLI origin은 `https://github.com/gidong-controls/controlstudio-ls-xg5000-cli.git`다.
+Git sandbox 소유권 경고는 해당 저장소에만 `git -c safe.directory=<absolute-repo> -C <repo> ...`
+를 사용해 조회했다. 전역 trust 설정을 바꾸지 않았다.
+
+### 실행 상태와 기존 미확정 작업
+
+2026-09-08 읽기 전용 조회에서 XG5000 프로세스와 8767 LISTEN 항목은 반환되지 않았다.
+사용자 데스크톱·브라우저 화면을 직접 관측하거나 앱의 현재 기능을 재실행한 것은 아니다.
+실제 로드된 모듈 경로도 이번에는 확인하지 않았다.
+
+아래는 **2026-09-04 기록**이며 이번에 저널/작업 사본을 재판독한 결과가 아니다.
+
+- 마지막 저널: seq 57, `QUARANTINED`, session `0233917c-2793-4fd4-a511-f557bb886744`.
+- recorded saved hash: `8d2d044037be7c915c1fc39e9b34a5e8835a9c33147b61f9aefdd03631cf4e66`.
+- editor rebind 수정 후 독립 재열기까지 갔으나 `show_open_dialog`에서 timeout.
+- 후속 MCP `c5311c8`의 중복 Open 30초 cap 제거는 커밋돼 있다. 실제 해결 여부는 미확인.
+- M30 변경의 최종 확정/현재 XG-SIM/Keep 성공은 확인되지 않았다. 현재 파일을 읽지 않고
+  “M30이 전혀 적용되지 않았다”, “원복 완료”라고 단정하지 않는다.
+
+기존 사본·백업·저널을 보존하고 실제 내용을 확인해 해당 작업을 처리한다. 상태값 초기화나
+강제 terminal 처리로 새 작업을 열지 않는다. 이 한 건의 복구를 모든 Agent/UI 개발의
+선행 조건으로 삼지도 않는다.
+
+### 다음 채팅에서 바로 할 일
+
+1. 이 절 → [구현 계획](AGENT_PRODUCT_PLAN.md) → 필요한 코드부터 읽는다. 전체 과거 로그를
+   다시 감사하거나 똑같은 계획 문서를 추가하는 것으로 시작하지 않는다.
+2. P0a 모델 도구 선택/결과 전달과 P0b 채팅 이벤트/화면을 병렬 구현한다. 이미 있는 loop/SSE를 살린다.
+3. P1에서 요청 범위의 편집·검사·저장을 연결하고 강제 승인/재열기/SIM/Keep 분기를 정리한다.
+4. 실제 필요한 Open/read 제어 오류는 별도 담당자가 기본 명령에서 확인한다. XG5000 실동작은
+   한 작업자만 수행한다. 완료하지 않은 최신 timeout 수정을 성공으로 가정하지 않는다.
+5. 일반 웹에서 설명, 후보만 작성, 수정·저장, 요청한 XG-SIM, 신규 LD 생성의 대표 작업을 확인한다.
+   이후 CLI native 추출·죽은 코드 정리·배포 작업을 이어간다.
+
+개발 진입점: `gidong-platform/scripts/Start-ControlStudio-Development.ps1 -Web`.
+`-WebUrl`은 기존 인증 handoff를 위한 옵션이며 발급 URL/token을 문서·로그에 복사하지 않는다.
+PWA/웹과 Codex 내부 탭이 실제 사용자 화면에서 열린 것인지는 따로 관측한다.
+필요한 UAC는 정상 호출하고, 실제 거부/취소일 때만 해당 승격을 멈춘다. 승인된 Host의 권한을
+작업마다 새로 요구하지 않는다. 이번 문서 작업에서는 UAC를 요청하지 않았다.
+
+작업자는 기존 사용자 선호인 Terra High를 사용하고 독립 파일 작업을 병렬 배정한다.
+코드/문서 변경은 해당 저장소에 작게 커밋한다. 새로운 검증 시스템·테스트 파일 대량 생성·
+전체 백업 절차를 개발 선행 조건으로 추가하지 않는다. 사용자 프로젝트/백업 삭제 권한으로
+“과설계 코드 정리”를 해석하지 않는다.
+
+### 문서 읽기 순서
+
+- [PRD](../PRD.md): 현재 제품 요구·오프라인 완료 범위.
+- [구현 계획](AGENT_PRODUCT_PLAN.md): 실제 파일/함수와 P0/P1/P2 작업.
+- [GUI](CONTROLSTUDIO_GUI_HANDOFF.md), [사용자 흐름](ENGINEERING_COLLABORATION_WORKFLOWS.md),
+  [아키텍처](PRODUCT_ARCHITECTURE.md): 목표와 현재 구현의 차이.
+- [벤치마크](CODING_AGENT_BENCHMARK.md): 실제 사용자 시나리오와 과거 조사 구분.
+- `docs/history/`와 아래 기록: 특정 실패를 추적할 때만 참고할 역사 자료.
+
+## 아래는 2026-09-04까지의 역사 기록
+
+당시의 다음 작업/승인/완료 판정 지시는 위 2026-09-08 방향을 대체하지 않는다.
+
 이 문서는 새 세션이 현재 `dev` 상태에서 바로 이어가기 위한 운영 기준이다. 제품 요구의
 최상위 권위는 [PRD](../PRD.md)이며, 이 문서는 구현 상태와 다음 검증 순서만 기록한다.
 

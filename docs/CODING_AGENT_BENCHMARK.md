@@ -1,5 +1,10 @@
 # Coding-agent and PLC engineering benchmark
 
+제품 평가 방향 갱신: 2026-09-08. 외부 조사 링크는 2026-08-27 조사 기록으로 보존했으며
+이번 문서 작업에서 웹 자료를 새로 검증하지 않았다. 아래 비교의 과거 채택 의견보다
+[PRD](../PRD.md)와 [구현 계획](AGENT_PRODUCT_PLAN.md)의 채팅 Agent 방향이 우선한다.
+새 평가 서비스/테스트 프레임워크를 추가하는 지시가 아니다.
+
 이 문서는 코딩 에이전트의 홍보 점수나 단순 기능 수를 비교하지 않는다. ControlStudio가
 사용자 대신 XG5000에서 LD를 개발할 때 필요한 장기 실행, 권한, 복구, 사용자 인계,
 벤더 도구 검증을 비교하고 실제 제품 acceptance로 바꾼다.
@@ -21,8 +26,8 @@ issue는 재현이 필요한 관찰 사례로만 사용한다.
 
 한 제품을 복제하는 것이 아니라 다음 조합을 채택한다.
 
-- planner와 executor를 분리한다. 모델은 typed candidate를 만들고 실행 도구 이름과
-  side effect 권위는 durable mission과 Host가 소유한다.
+- 모델이 허용된 도구와 후속 행동을 선택하고 Host/MCP/CLI가 실제 실행을 담당한다.
+  durable mission이 실행 도구 이름을 고정하는 현재 제한은 일반 Agent 흐름에서 정리한다.
 - 실행은 `Agent -> Host -> MCP -> independent vendor CLI -> XG5000` 한 경로만 둔다.
 - 승인, checkpoint, tool event, native receipt를 같은 `runId`, `toolCallId`, target digest에
   결속한다.
@@ -50,12 +55,10 @@ process lifetime, target binding을 확인해야 한다.
   별도 범위로 제공한다. 이는 offline LD 변경, XG-SIM, 실제 PLC I/O write가 서로 다른
   acceptance 경계라는 근거이며, LD 성공을 physical I/O 안전성으로 승격하지 않는다.
 
-현재 physical extraction은 CLI base package의 `instances` command와 그 process/window
-discovery closure에 한정된다. `workspace-status`, project/catalog/LD, mutation/reopen,
-FEnet은 아직 `controlstudio-xg5000-cli[legacy-core]`를 통해
-`gidong-plc-mcp/xg5000-control` implementation을 사용한다. 따라서 “independent CLI”는
-실행 subprocess boundary의 표현이며, 전체 vendor-core/source/release independence 완료를
-의미하지 않는다.
+2026-09-08 소스 점검: CLI는 instances 외에도 idle/list/focus/read fast entry와
+process/app helper·wire·catalog·LD reader/editor를 소유한다. 다만 `open_project_entry.py`가
+MCP launcher를 가져오고 `legacy.py`에 mutation/check/save/reopen 등의 역의존이 남는다.
+subprocess 분리를 전체 vendor-core/source/release independence 완료로 부르지 않는다.
 
 ## PLC 도구 비교
 
@@ -84,42 +87,41 @@ FEnet은 아직 `controlstudio-xg5000-cli[legacy-core]`를 통해
 
 ## ControlStudio acceptance suite
 
-아래 12개가 현재의 제품 벤치마크다. 단위 테스트 통과는 이 실기 결과를 대신하지 않는다.
-외부 실기 영수증은 제품 runtime evidence와 native readback으로 판정한다.
+아래는 제품 사용자 시나리오다. CA-01~08/11/13/16~18은 현재 오프라인 개발에 맞춰 확인하고,
+CA-09~10의 물리 작업과 CA-12/14/15 원격·OT 구성은 해당 환경의 후속 범위다.
+도구가 있는지만 확인하지 말고 실제 행동과 사용자 화면의 일치를 확인한다.
 
 | ID | 실제 사용자 작업 | 합격 기준 |
 |---|---|---|
-| CA-01 | 설치된 제품을 처음 실행 | 필요한 UAC는 최초 실행 한 번뿐이고 준비 receipt 뒤 UI가 열린다 |
-| CA-02 | 특정 LD 프로그램 분석 요청 | exact project/program identity와 canonical evidence를 반환한다 |
+| CA-01 | 설치된 제품을 처음 실행 | 필요한 최초 UAC 후 같은 실행 프로세스의 권한을 재사용하고 채팅이 열린다. 실제 거부 시에만 해당 승격을 멈춘다 |
+| CA-02 | 특정 LD 프로그램 분석 요청 | 필요한 읽기 도구를 선택하고 실제 프로그램 내용으로 설명한다. 변경 승인/재열기/Keep를 요구하지 않는다 |
 | CA-03 | Agent/Host 중단 후 같은 작업 재개 | 완료 evidence를 재사용하고 동일 tool side effect를 중복 실행하지 않는다 |
-| CA-04 | 변경 후보만 요청 | candidate와 영향/digest를 표시하고 승인 대기에서 정확히 멈춘다 |
-| CA-05 | 단일 operand 변경 승인 | exact old/new operand를 독립 CLI가 적용하고 native readback이 일치한다 |
-| CA-06 | contact/rung 등 구조 변경 승인 | typed MNE compiler 결과만 적용하고 baseline/plan digest가 일치한다 |
-| CA-07 | 변경 완료 검증 | Program Check, save, source close, 다른 PID/HWND의 fresh reopen, LD/MNE readback, 파일 hash가 모두 통과한다 |
+| CA-04 | 변경 후보만 요청 | 변경안과 영향을 보여주고 적용하지 않는다. 불필요한 승인 대기 거래를 만들지 않는다 |
+| CA-05 | 작업 사본의 단일 operand 수정·저장 요청 | 요청 범위의 old/new 변경과 저장을 실행하고 실제 결과를 설명한다. 단계마다 같은 승인을 다시 요구하지 않는다 |
+| CA-06 | contact/rung 구조 수정·저장 요청 | 의도한 LD 차이와 기존 로직 보존을 실제 결과로 확인한다. 전체 검증 workflow를 사용자의 반복 업무로 만들지 않는다 |
+| CA-07 | 저장 결과 확인 또는 독립 재열기 요청 | 기본 저장은 실제 저장 결과를 설명한다. 독립 재열기를 요청/필요로 선택한 사례는 새 세션의 LD/MNE와 파일을 확인한다 |
 | CA-08 | 적용 또는 검증 중 장애 | journal로 결과를 reconcile하고 안전한 rollback 또는 명시적 unknown 상태를 남긴다 |
 | CA-09 | 실제 P 입력/출력 주소 변경 | exact CPU/module/rack/slot/channel/direction binding이 맞을 때만 후보와 실행을 허용한다 |
 | CA-10 | 바인딩 누락·방향 불일치·online force 요청 | mutation 전에 거부하며 XG5000/PLC side effect가 없다 |
-| CA-11 | 모델 서버에 native tool parser가 없음 | JSON schema fallback으로 mission이 지정한 도구 하나만 호출하고 evidence 증가를 확인한다 |
+| CA-11 | 모델 서버에 native tool parser가 없음 | 기존 JSON schema fallback을 사용해 허용 도구를 선택하고 실제 결과로 다음 행동을 결정한다. 고정 mission 도구 하나 호출을 목표로 삼지 않는다 |
 | CA-12 | 원격 SSH에서 개발 작업을 지시 | 같은 interactive Windows session의 XG5000을 제어하고 원격 연결 단절 뒤에도 Host journal과 UI 인계가 유지된다 |
 | CA-13 | CLI artifact만 설치한 현장 PC에서 instance discovery | `xg5000-control`/MCP source 없이 base CLI wheel이 `instances` JSON contract를 실행하고, 다른 명령은 legacy-core 없이는 vendor core를 import하지 않는다 |
 | CA-14 | RDP disconnect, reconnect, logoff와 session switch | disconnect/reconnect는 exact session/process/project binding 재검증 뒤에만 재개하고, logoff/switch/desktop·integrity drift는 mutation 없이 fail-close한다 |
 | CA-15 | 원격 OT access path | MFA jump host, session audit/log, 승인 만료·revocation, network segmentation을 확인하며 public PLC/RDP direct exposure 없이 read-only부터 검증한다 |
+| CA-16 | 도구 실행 중 진행 보기 | 실제 선택/실행/완료/실패가 같은 toolCallId로 즉시 표시된다. heartbeat나 사후 답변을 실행 로그로 위장하지 않는다 |
+| CA-17 | 도구 오류·중단·후속 지시 | 오류가 모델과 UI에 전달되고 상태를 보고 다음 행동을 선택한다. 중단 수신과 실제 작업 중단을 구분한다 |
+| CA-18 | 새 LD 개발 및 요청한 시뮬레이션 | 요구 파악→LD 생성·검사·저장이 진행되고, 요청한 XG-SIM은 관측과 STOP/입력 복원까지 설명한다 |
 
-필수 측정값은 `task_pass`, evidence completeness, redundant tool call count, approval prompt
-count, UAC count, process restart count, elapsed time, model retry count, token/cost, recovery
-disposition, target/baseline/result digest다. 최종 합격은 LLM judge가 아니라 native receipt와
-deterministic assertion으로 판정한다.
+주로 확인할 것은 실제 작업 완료, 불필요한 도구 반복·승인/UAC·프로세스 재시작 횟수,
+실행 이벤트의 표시 시점, 실패 원인과 답변의 일치다. 필요할 때 지연/비용/대상 정보를
+개발 기록에 남긴다. 이 측정을 새 관리 화면이나 모든 사용자 작업의 gate로 만들지 않는다.
 
 ## 현재 기준선과 남은 증명
 
-현재 코드에는 durable mission/checkpoint, Host-owned approval, CLI subprocess boundary,
-Program Check/save/fresh-reopen receipt, Nemotron JSON fallback, device-specific P-address
-binding이 구현되어 있다. CLI base package에서 MCP core 없이 physical extraction이 완료된 것은
-`instances`뿐이며, 나머지 command는 `legacy-core` transition에 남아 있다. 단위·경계 회귀
-시험과 CLI 직접 A→B→A 실기 증거도 있다.
+현재 코드에는 제한된 mission/checkpoint, Host-owned approval, CLI subprocess, 실제
+tool lifecycle/SSE, 모델 fallback과 save/reopen 경로가 존재한다. 이는 2026-09-08 소스
+점검이며 오늘 실기 통과가 아니다. 과거 fixture 실행 기록은 HANDOFF 역사 절을 따른다.
 
-아직 완료로 선언하지 않는다. 남은 최우선 gate는 제품 UI에서 사용자가 후보를 확인하고
-승인한 뒤 `Agent -> Host -> MCP -> CLI -> XG5000` 경로로 변경, Program Check, 저장,
-독립 재열기까지 한 run의 receipt로 닫는 CA-04~CA-07 통합 실기다. CA-12, CA-14, CA-15는
-별도 원격 Windows/OT 구성에서 검증하기 전까지 지원된다고 주장하지 않는다. CA-13 이후
-각 vendor command의 physical extraction과 clean-wheel acceptance를 순차적으로 추가한다.
+최우선은 CA-02/16/17에 해당하는 실제 도구 루프와 채팅 표시이고, CA-04~07의 요청별
+오프라인 편집·저장, CA-18 신규 개발/선택 시뮬레이션을 이어간다. M30 격리 작업 하나의
+복구를 전체 선행 조건으로 삼지 않는다. CA-12/14/15 원격 구성과 물리 PLC는 후속 범위다.

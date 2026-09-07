@@ -2,12 +2,20 @@
 
 | 항목 | 내용 |
 | --- | --- |
-| 문서 상태 | 제품 기준선 v1 · Living PRD |
-| 최종 갱신 | 2026-08-31 |
+| 문서 상태 | 채팅 중심 PLC 개발 에이전트 기준선 · 구현 전환 중 |
+| 최종 갱신 | 2026-09-08 |
 | 제품 상태 | 개발 중 · production release 아님 |
 | 제품 브랜드 | 기동 / GIDONG |
 | 제품 형태 | 단일 설치·단일 실행 진입점, 내부적으로 격리된 멀티프로세스 sidecar |
 | 소스 구조 | 공개 `gidong-platform`, 비공개 `gidong-agent`·`gidong-plc-mcp`, 별도 vendor repository `controlstudio-xg5000-cli` |
+
+2026-09-08 방향 결정: 사용자는 채팅으로 일을 맡기고, Agent는 필요한 도구를 선택하여
+실제 결과를 받은 뒤 다음 도구 또는 답변을 결정한다. 선택·실행·완료·실패는 같은 대화에
+즉시 표시한다. 검증·복구·승인 관리 화면을 운영하는 것이 제품의 주 기능이 아니다.
+아래 요구는 목표이며, 기존 구현이 이미 이 요구를 만족한다는 뜻이 아니다.
+현재 코드 위치와 전환 순서는 [구현 계획](docs/AGENT_PRODUCT_PLAN.md), 새 채팅 시작점은
+[핸드오프](docs/HANDOFF.md)다. 이 결정은 이전의 모든 요청에 고정 거래 절차를 요구하던
+설계와 “M30 → Keep → COMMITTED가 최우선 제품 완료선”이라는 계획을 대체한다.
 
 ## 0. 이 문서의 목적과 판정 규칙
 
@@ -60,13 +68,12 @@ PLC·IDE와 상호작용하는 기능은 지원 환경에서의 실제 증거가
 
 기동의 핵심 약속은 다음과 같다.
 
-> 에이전트는 설계·분석·산출물을 만들고, 권한 있는 도구로 작업을 실행한다.
-> 사용자는 목적·위험·결과를 함께 판단하며, Platform과 PLC MCP는 실제 변경의
-> 대상·권한·결과를 결속한다.
+> 사용자가 채팅으로 PLC 개발·분석·수정을 맡기면, 에이전트가 도구를 선택하고 실제
+> 결과를 보고 작업을 이어간다. 사용자는 현재 행동과 결과를 바로 보고 개입할 수 있다.
 
-기동은 단순 챗봇, 범용 코드 생성기, XG5000 화면 자동화 도구가 아니다. 사용자가
-어떤 근거로 무엇을 승인하고 실제 대상에 어떤 변화가 생겼는지 끝까지 확인할 수
-있는 엔지니어링 제품이어야 한다.
+기본 화면은 간단한 채팅이다. 개발 에이전트의 실행 루프가 주 기능이고, 변경 내역과
+상세 도구 결과는 대화에서 필요한 만큼 펼쳐 본다. 대상 확인과 작업 사본 보호는
+실행 도구가 담당하며 PID/HWND·해시·저널을 사용자의 기본 업무로 만들지 않는다.
 
 ### 제품이 해결하는 문제
 
@@ -107,8 +114,8 @@ Mitsubishi와 Rockwell 등 다른 벤더는 같은 상위 사용자 경험과 �
    경로로 제공한다.
 3. 프로그램 구조, 신호, 인터록, 시퀀스, 알람과 인과관계를 근거와 함께 설명한다.
 4. 진단 결과 하나를 단정하지 않고 가설, 반증 근거, 대안과 예상 영향을 비교한다.
-5. 선택한 변경은 적용 뒤 readback·검사·저장·재열기·필요한 시험과 rollback으로
-   결과를 확인한다.
+5. 요청한 변경·저장 결과를 실제 도구 반환으로 확인하고, 재열기·시뮬레이션·원복은
+   요청이나 실패 원인에 필요할 때 선택한다. 모든 저장에 고정 절차를 강제하지 않는다.
 6. 사용자의 원본과 작업공간을 보존하면서 모델과 파생 인덱스는 교체 가능하게 한다.
 7. 벤더가 달라도 사용자 흐름과 안전 규칙은 유지하고 실제 실행만 adapter로 분리한다.
 8. 일반 사용자에게는 저장소나 sidecar가 아니라 하나의 기동 제품만 제공한다.
@@ -169,20 +176,24 @@ device value, 상태 변화, trace와 알람의 읽기 관찰은 알려진 대�
 현재 상태로 단정하지 않으며, 실제 변경은 진행하지 않는다. 기동은 관측 사실,
 추론, 가설과 확인되지 않은 부분을 구분하고 필요한 추가 관측을 제안한다.
 
-### 4.5 승인된 변경
-
-분석, 설계 초안과 되돌릴 수 있는 local working-copy 작업은 사용 가능한 근거로
-반복할 수 있다. 프로젝트 또는 controller에 적용하는 변경은 다음
-순서로 결과를 닫는다.
+### 4.5 채팅과 도구 실행
 
 ```text
-대상 재확인 → 백업 → 변경 계획·diff → 사용자 승인
-→ 최소 변경 → native readback → vendor check → 저장
-→ 재열기·재추출 → 시뮬레이션/시험 → commit 또는 rollback → 감사 기록
+요청 → 모델의 도구 선택 → Host/MCP/CLI의 실행 → 결과·오류를 모델에 전달
+     ← 필요한 다음 도구 선택 또는 결과 설명
 ```
 
-대상, 계획, 인자 또는 권한이 승인 뒤 바뀌면 승인은 무효다. 결과가 불명확하면
-성공으로 표시하거나 자동 재시도하지 않고 격리·reconciliation한다.
+- 설명 요청은 읽기·검색과 설명으로 끝낼 수 있다. 변경 거래를 만들 필요가 없다.
+- 후보만 요청하면 후보를 보여주고 적용하지 않는다.
+- 지정 작업 사본을 수정·저장하라는 명확한 요청은 그 범위의 실행 권한이다.
+  Host가 범위를 기록하며 도구마다 같은 승인을 다시 요구하지 않는다. 범위가 달라지거나
+  되돌리기 어려운 별도 작업이 필요할 때만 구체적인 확인을 받는다.
+- 시뮬레이션을 요청하면 XG-SIM 도구를 선택하고 입력·결과·STOP/입력 복원을 확인한다.
+- 도구 실패는 같은 대화에 표시하고 모델에도 반환한다. 원인을 보고 안전한 다음 행동을
+  선택한다. 변경 여부가 불명확한 작업은 중복 실행하지 않고 해당 대상부터 확인한다.
+- 한 대상의 미확정 변경 때문에 일반 대화·문서 분석·다른 안전한 읽기까지 막지 않는다.
+- UAC가 필요하면 정상 실행 경로에서 요청한다. 사용자가 거부한 경우에만 해당 승격을
+  멈추고 재요청을 기다린다. 승인 뒤 유지되는 프로세스 권한을 작업마다 다시 요구하지 않는다.
 
 ## 5. 제품 요구사항
 
@@ -206,18 +217,18 @@ device value, 상태 변화, trace와 알람의 읽기 관찰은 알려진 대�
 | ENG-04 | 대안을 비교한다. | 각 대안의 영향, 위험, 필요한 변경, 검증 방법과 rollback을 보여 준다. |
 | ENG-05 | PLC 작업 지식에 출처를 연결한다. | 검색·기억·모델 답변이 권한이나 target identity를 만들지 않으며 사용한 source를 추적할 수 있다. |
 
-### 5.3 실행·승인·감사
+### 5.3 에이전트 실행과 결과
 
 | ID | 요구사항 | 합격 기준 |
 | --- | --- | --- |
-| EXE-01 | Agent의 자율 실행과 실행 권한을 분리한다. | Agent는 `ExternalToolRequest`로 권한 있는 도구 실행을 요청하고 raw MCP connection을 소유하지 않는다. |
-| EXE-02 | Platform이 실행을 중계한다. | `ExecutionBroker`만 allowlist, schema, capability, target과 approval을 확인하고 MCP를 호출한다. |
-| EXE-03 | 변경 권한을 정확한 실행에 결속한다. | project 또는 controller mutation의 권한에는 actor, run, target digest, tool, arguments/plan digest, capability, expiry와 single-use nonce가 포함된다. 분석·초안·로컬 탐색에는 이 mutation 권한을 요구하지 않는다. |
-| EXE-04 | MCP가 독립 검증한다. | MCP가 target·precondition·approval을 다시 확인하고 operation journal을 먼저 기록한다. |
-| EXE-05 | 실제 결과를 readback으로 확정한다. | apply 응답만으로 성공 처리하지 않고 native readback, check, save/reopen과 evidence를 검증한다. |
-| EXE-06 | 실패와 불명확한 결과를 안전하게 처리한다. | 자동 중복 실행 없이 rollback, `ABORTED_NO_MUTATION`, `ROLLED_BACK_SAVED`, `COMMITTED` 또는 `QUARANTINED`로 reconciliation한다. |
-| EXE-07 | 감사 연결성을 보장한다. | conversation, run, tool call, operation, approval와 target ID를 Platform audit와 MCP journal 사이에서 추적한다. |
-| EXE-08 | 신규 PLC 설계와 build 권한을 분리한다. | Agent는 요구와 근거에서 설계를 만들고, build는 선택한 scope와 최신 brief·source revision에 결속한 사용자 권한으로 실행한다. 미결 사항은 가정으로 남기며 해당 범위를 실제 적용하지 않는다. |
+| EXE-01 | Agent가 사용 가능한 도구를 선택한다. | 실제 결과·오류가 다음 모델 호출에 들어가며 다음 도구 또는 답변을 결정한다. raw MCP 연결은 Host가 소유한다. |
+| EXE-02 | 기존 Host broker가 실행을 중계한다. | 같은 도구의 대상·스키마·실행 결과를 한 경로로 처리한다. 새 planner/mission 서비스는 추가하지 않는다. |
+| EXE-03 | 사용자 요청의 실행 범위를 유지한다. | 후보 전용 요청과 수정·저장 요청을 구분하며 승인된 범위 안의 단계마다 재승인을 요구하지 않는다. |
+| EXE-04 | 벤더 실행 경계를 한 경로로 관리한다. | 이관된 명령은 CLI process/JSON 경계를 사용하고, 아직 이관되지 않은 명령은 MCP adapter가 명시적으로 소유한다. 어느 경우든 MCP는 도구 계약을 제공하고 결과·구조화 오류를 Host와 Agent에 반환하며, 창 탐색·대기를 여러 계층에서 반복하지 않는다. |
+| EXE-05 | 성공 표현이 실제 결과와 맞는다. | 읽기·변경·저장·시뮬레이션 각각의 결과만 주장한다. 저장 성공에 항상 독립 재열기·XG-SIM·Keep를 요구하지 않는다. |
+| EXE-06 | 실패 범위를 해당 작업에 제한한다. | 미확정 변경은 중복 실행하지 않고 보존·확인한다. 다른 대화와 안전한 읽기는 계속 가능하다. |
+| EXE-07 | 실제 실행 이벤트를 연결한다. | 같은 toolCallId의 선택·시작·완료·실패가 실행 중 전송되고 모델과 UI가 같은 결과를 받는다. |
+| EXE-08 | 신규 개발을 대화로 진행한다. | 요구를 읽고 필요한 질문·설계·LD 생성·검사·저장을 수행한다. 미결 항목은 그 항목에 의존하는 실행만 보류한다. |
 
 ### 5.4 사용자 제품과 배포
 
@@ -225,6 +236,8 @@ device value, 상태 변화, trace와 알람의 읽기 관찰은 알려진 대�
 | --- | --- | --- |
 | UX-01 | 하나의 사용자 제품으로 제공한다. | 일반 사용자가 설치 파일, 실행 진입점과 시작 메뉴 항목을 각각 하나만 본다. |
 | UX-02 | 내부 구성요소를 자동 관리한다. | Platform이 Agent/MCP를 시작·health check·종료하고 독립 실패를 사용자에게 설명한다. |
+| UX-03 | 채팅 안에 실행 과정을 표시한다. | 도구 역할·대상·상태·경과 시간·짧은 결과를 표시한다. 선택과 실제 시작을 구분하고 상세 인자·원문은 접는다. |
+| UX-04 | 사용자가 개입할 수 있다. | 중단과 후속 지시를 같은 대화에서 처리한다. 중단 요청 수신과 실제 동작 정지는 구분한다. |
 | REL-01 | private source를 소비자 설치와 분리한다. | installer가 private Git repository를 clone하거나 source-control credential을 요구하지 않는다. |
 | REL-02 | 정확한 조합만 실행한다. | BOM이 Platform, Agent, MCP, contracts의 exact version, contract set, hash와 signature metadata를 고정한다. |
 | REL-03 | 전체 조합을 검증·업데이트한다. | 컴포넌트 하나가 바뀌어도 새 product release와 BOM을 만들고 packaged runtime handshake·readback을 다시 확인한다. |
@@ -313,13 +326,27 @@ packaged runtime handshake와 사용자 경로 readback을 다시 검증한다. 
 실행 파일과 package namespace의 최종 GIDONG 전환은 별도 호환성 마이그레이션과
 회귀 검증을 거쳐야 한다.
 
-## 9. 현재 상태 — 2026-08-31
+## 9. 현재 상태 — 2026-09-08
+
+9.1~9.3의 상세 기능 기록은 **2026-08-31 당시 구현·과거 실행 범위**이며 현재 제품
+요구나 새 실기 통과 주장으로 사용하지 않는다. 표 안의 당시 mission/approval/reopen/
+XG-SIM 절차도 그 과거 제한 경로의 기록이지, 모든 채팅 요청에 적용하는 현행 규범이 아니다.
+2026-09-08은 코드·문서 점검만 수행했다.
+최신 코드에서 모델/Host continuation과 SSE 경로는 존재하지만, 도구 선택 범위·mission
+완료 조건·오프라인 승인/복구 UI에 과도한 제약이 남아 있다. 구체적인 위치는
+[구현 계획](docs/AGENT_PRODUCT_PLAN.md)을 따른다.
+
+직전 M30 작업은 최종 확정되지 않았다. 마지막 기록은 2026-09-04 저널 seq 57의
+`QUARANTINED`, 독립 재열기의 `show_open_dialog` timeout이다. MCP `c5311c8`은 이후
+Open의 중복 시간제한을 수정했지만 실제 성공은 미확인이다. 현재 파일을 재판독하지
+않았으므로 “M30 미반영” 또는 “원복 완료”를 단정하지 않는다.
 
 ### 9.1 저장소와 실행 경계
 
 Platform·Agent·MCP의 core service 경계와 별도 vendor CLI repository가 존재한다.
-CLI가 이관된 명령의 process/JSON 경계를 제공해도 native backend 전체가 MCP에서
-물리적으로 분리됐다는 뜻은 아니다. 이 경계는 제품 전체나 실제
+**당시 기록상** CLI가 이관된 명령의 process/JSON 경계를 제공했지만 native backend 전체가 MCP에서
+물리적으로 분리됐다는 뜻은 아니다. CLI가 모든 벤더 실행을 단독으로 소유한다는 현재 주장도 아니다.
+이 경계는 제품 전체나 실제
 PLC online 기능이 완료됐다는 뜻이 아니다.
 
 | 항목 | 상태 | 확인된 내용 |
@@ -350,13 +377,13 @@ PLC 연결·쓰기, 현재 controller runtime과 XG-SIM 시나리오는 이 재�
 | 단일 Launcher→Host→Web/PWA 사용자 흐름 | 부분 완료·runtime 검증 | planning conversation, workspace 상태와 sidecar lifecycle의 vertical slice |
 | 로컬 프로젝트·불변 원본·working copy | 부분 완료·과거 실제 증거 | 지정 XG5000 working copy 열기, 저장된 workspace 재개와 원본 hash 보존 |
 | 프로그램 목록·LD 추출·제한 분석 | 부분 완료·과거 실제 증거 | 지정 실제 XG5000 프로젝트 복사본의 제한된 read/analysis |
-| 제한된 오프라인 LD 변경·원복 | 구현 확장 완료·구조 변경 실기 수락 미완료 | 지정 복사본의 한 operand 변경과 typed 13-command 전체 교체 외에, 검토 evidence에서 유일한 action/contact를 anchor로 삼은 한 행 insert/replace/delete, 2–16개 batch, 완전 rung 삽입·조건 교체·조건과 shared action 전체 원자 교체·삭제를 구현했다. 완전 rung 경로는 operand 기반 `contact`/`all_of`/`any_of` AST와 private baseline의 stack-validated condition slice 및 연속 shared action 1–16개를 결속하며, shared action 그룹을 쪼개지 않는다. 구조 후보는 MCP가 private baseline에서 컴파일하고 anchor·bounded context/slice·count·digest만 공개하며, 적용 직전 같은 baseline에서 재현되지 않으면 중단한다. 모든 MNE 변경은 project backup·signed capability·사람의 일회성 승인·lease generation과 exact readback·Program Check·저장 hash·독립 XG5000 PID 재열기를 공유한다. PLC write·online edit·controller 검증은 포함하지 않는다. `mne_rung_patch` V6만 사용자가 미리 선택한 `offline_native_reopen_xgsim` 범위에서 compiler가 증명한 단일-program·단일-writer P/M 출력 profile을 XG-SIM에서 정상/deny/restore로 관찰하고, `SIM_STOPPED → OBSERVING → Keep(COMMITTED)/Revert(ROLLED_BACK_SAVED)` 결정을 같은 transaction에 결속한다. 이 구조 변경과 XG-SIM 결정 경로의 실제 production acceptance는 아직 남아 있다. 현재 P0020 vertical은 이 과거 fixture evidence를 재실행하거나 일반화하지 않았다. |
+| 제한된 오프라인 LD 변경·원복 | 구현 확장 완료·구조 변경 실기 수락 미완료 | 지정 복사본의 한 operand 변경과 typed 13-command 전체 교체 외에, 검토 evidence에서 유일한 action/contact를 anchor로 삼은 한 행 insert/replace/delete, 2–16개 batch, 완전 rung 삽입·조건 교체·조건과 shared action 전체 원자 교체·삭제를 구현했다. 완전 rung 경로는 operand 기반 `contact`/`all_of`/`any_of` AST와 private baseline의 stack-validated condition slice 및 연속 shared action 1–16개를 결속하며, shared action 그룹을 쪼개지 않는다. 구조 후보는 MCP가 private baseline에서 컴파일하고 anchor·bounded context/slice·count·digest만 공개하며, 적용 직전 같은 baseline에서 재현되지 않으면 중단한다. **이 과거 MNE 경로에서는** project backup·signed capability·사람의 일회성 승인·lease generation과 exact readback·Program Check·저장 hash·독립 XG5000 PID 재열기를 공유했다. 이는 현재 모든 오프라인 변경에 단계별 승인·재열기·XG-SIM 또는 Keep를 강제하는 요구가 아니다. PLC write·online edit·controller 검증은 포함하지 않는다. `mne_rung_patch` V6만 사용자가 미리 선택한 `offline_native_reopen_xgsim` 범위에서 compiler가 증명한 단일-program·단일-writer P/M 출력 profile을 XG-SIM에서 정상/deny/restore로 관찰하고, `SIM_STOPPED → OBSERVING → Keep(COMMITTED)/Revert(ROLLED_BACK_SAVED)` 결정을 같은 transaction에 결속했다. 이 구조 변경과 XG-SIM 결정 경로의 실제 production acceptance는 아직 남아 있다. 현재 P0020 vertical은 이 과거 fixture evidence를 재실행하거나 일반화하지 않았다. |
 | XG-SIM 시운전 경로 | 구현 완료·다중 실기 수락 미완료 | 신규 build의 reviewed 전체 network profile과 제한된 기존-project V6 rung patch의 compiler-derived P/M profile을 각각 RUN/STOP·입력 원복 receipt로 검증한다. 기존-project 경로는 PLC 연결·쓰기를 수행하지 않고, STOP·입력 원복이 확인된 뒤에만 사람이 저장 변경 유지 또는 exact baseline 원복을 결정한다. |
 | 계획·지식·RAG | 구현·실제 모델 수락 검증 | 실제 model capability 5종과 sidecar lifecycle을 검증했다. 완전한 신규 요구 브리프에서 narrative/native 계획과 progress event를 거쳐 55초 안에 I/O·mode·network·timer·sequence·alarm·recovery·safety 8개 설계 컬렉션, 미결정 0건의 reviewed-plan 후보를 생성했다. |
 | 신규 XG5000 제어 프로그램 | 부분 완료·과거 실제 XG5000 fixture 검증 | 프로젝트 이름·PLC 시리즈·CPU·첫 프로그램·LD 언어·설명을 계획의 사람 검토 항목으로 고정해 기술 설정 화면에 exact 자동 인계하고, reviewed typed I/O·mode·STEP sequence·TON timer·latched alarm·recovery·process interlock을 signed `engineered_control_program` bundle로 컴파일해 실제 XGK-CPUE fixture의 mnemonic readback·LD 변환·Program Check·저장 receipt에 결합함. 단순 control network와 `TON 1개 → timer ON permit → OUT` 지연 출력 설계는 Agent adapter가 canonical TON/OUT rung을 review 전에 materialize하며, 사람에게 표시된 rung만 build authority가 된다. sequence·alarm·recovery, step-bound logic 또는 복수 timer는 scan-order 정책을 임의로 만들지 않고 계속 explicit ordered rung을 요구한다. 다중 named program/task 생성은 vendor program-add primitive가 없어 아직 지원하지 않는다. 이 과거 fixture evidence는 현재 P0020 vertical의 실제 acceptance를 대체하지 않는다. |
 | 독립 재열기 | 완료·과거 실제 XG5000 fixture 검증 | 보호 working copy를 생성 PID와 다른 새 XG5000 PID에서 열고 exact 29개 mnemonic·LD 최종 화면·Program Check 0 error·파일 hash 불변을 `REOPEN_VERIFIED` receipt로 결합함. 이 증거는 해당 fixture의 과거 run에 한정하며, 현재 P0020 vertical은 재실행하지 않았다. |
 | XG-SIM acceptance | 구현 완료·다중 실기 수락 미완료 | 신규 build의 simulation receipt v4는 reviewed ladder IR의 모든 control network와 출력에 대해 ordered `networkRungs`를 재계산하고, simulator mutation 전에 전체 network·process interlock profile과 보호할 출력 byte를 검증한다. 한 번의 RUN/STOP·baseline 수명주기 안에서 network별 정상·deny·restore와 적용 가능한 mode·sequence·alarm·recovery·interlock 시나리오를 순차 실행하며, 일부 network만 성공한 receipt는 승인하지 않는다. 실제 수락 증거는 XGB `XBC-DN/DP64H` 단일 control network build의 receipt v3 5개 시나리오, exact rung IR/program digest, 공식 program write, vendor STOP 상태 3회 연속 관측, 입력 baseline 원복과 Host SQLite의 digest-bound `OBSERVING → ACCEPTED` 결정까지다. 이 실제 plan의 mode·timer·sequence·alarm·recovery collection은 명시적 N/A였다. 기존 프로젝트에서는 V6 완전-rung patch 한정으로 승인 target·재열기 receipt·compiler profile과 XG-SIM 정상/deny/restore 관찰을 결속하고 사용자가 Keep/Revert를 결정하는 수명주기가 구현됐다. 실제 PLC는 연결하거나 쓰지 않았고, 대표 복수 control network build와 이 제한된 기존-project 경로를 포함한 실제 수락은 아직 남아 있다. |
-| 일반 기존 프로젝트 분석·진단 | 부분 구현·실제 acceptance 미완료 | `Engineering Analysis v4`는 Host evidence에 연결된 exact observation, program·network/rung·visual row·token 위치, relation과 full causal device chain, 영역별 coverage·truncation·limitations를 구조화한다. 진단 가설은 확인 계획뿐 아니라 `open/verified/rejected`, 실제 outcome과 현재 run의 verification evidence를 가지며 open 가설이 남은 mission은 완료할 수 없다. Web은 위치의 프로그램명이 현재 catalog에서 정확히 하나와 일치할 때만 `XG5000에서 열기`를 제공한다. `project.behavior_report`는 bounded write·physical·sequence·timer/counter·multiple-writer·APPLICATION inventory를 반환하며 미지원 `APPLICATION` 의미론은 `partial`로 남긴다. 실제 XGWX에서 관측한 `MOV literal→D`와 `DMOV literal/direct-D→direct-D`는 source read와 1/2-word destination write로 구조화한다. Direct-D `INC/DEC` signed/unsigned 16/32-bit 계열은 in-place read/write로 구조화하고 `P` variant는 rising-edge 실행으로 기록하며 double-word variant는 연속 두 D word를 포함한다. Non-D·간접 형식과 non-D destination `DMOV`는 계속 `partial`이다. 이는 정적 관측 구조이며 현재 PLC runtime, field wiring 또는 프로그램 목적의 증명이 아니다. 다중 LD 프로그램의 exact value token·network/rung digest·multiple writer·물리 P 출력 후보와 `xg5000.project.hardware-context/1.0`의 canonical `context_digest`를 Host 영수증에 결속한다. 실제 대동 XGWX에서 XBC-DN/DP64H, `T0-T499=100ms`·`T500-T999=10ms`·`T1000-T1023=1ms`, 비활성 100us `0..0` sentinel, XBC-DN/DP64H·XBE-DC08A module inventory와 전역 DI/DO/AI/AO offset을 확인했다. 또한 exact XBC-H CPU와 XML slot에만 LS 공식 고정 4-word profile을 적용해 slot 1을 `P00040-P0007F`의 `documented` reservation으로 결속한다. 이는 project-observed point range가 아니며 다른 CPU family, terminal point, 외부 배선·module health·현재 PLC runtime은 미관측이므로 물리 P 입출력 영향 후보는 계속 fail-closed다. 내부/타이머 후보도 해당 `required_context`가 닫힐 때만 가능하고 대표 production 프로젝트의 분석·승인 변경 end-to-end acceptance는 아직 없음 |
+| 일반 기존 프로젝트 분석·진단 | 부분 구현·실제 acceptance 미완료 | `Engineering Analysis v4`는 Host evidence에 연결된 exact observation, program·network/rung·visual row·token 위치, relation과 full causal device chain, 영역별 coverage·truncation·limitations를 구조화한다. 당시 durable engineering mission은 진단 가설에 `open/verified/rejected`, 실제 outcome과 현재 run의 verification evidence를 붙였고 open 가설이 남으면 그 **검증 mission**을 완료하지 못하게 했다. 이는 일반 채팅이 열린 가설·불확실성을 설명하며 답변하는 것을 막는 현행 제품 요구가 아니다. Web은 위치의 프로그램명이 현재 catalog에서 정확히 하나와 일치할 때만 `XG5000에서 열기`를 제공한다. `project.behavior_report`는 bounded write·physical·sequence·timer/counter·multiple-writer·APPLICATION inventory를 반환하며 미지원 `APPLICATION` 의미론은 `partial`로 남긴다. 실제 XGWX에서 관측한 `MOV literal→D`와 `DMOV literal/direct-D→direct-D`는 source read와 1/2-word destination write로 구조화한다. Direct-D `INC/DEC` signed/unsigned 16/32-bit 계열은 in-place read/write로 구조화하고 `P` variant는 rising-edge 실행으로 기록하며 double-word variant는 연속 두 D word를 포함한다. Non-D·간접 형식과 non-D destination `DMOV`는 계속 `partial`이다. 이는 정적 관측 구조이며 현재 PLC runtime, field wiring 또는 프로그램 목적의 증명이 아니다. 다중 LD 프로그램의 exact value token·network/rung digest·multiple writer·물리 P 출력 후보와 `xg5000.project.hardware-context/1.0`의 canonical `context_digest`를 Host 영수증에 결속한다. 실제 대동 XGWX에서 XBC-DN/DP64H, `T0-T499=100ms`·`T500-T999=10ms`·`T1000-T1023=1ms`, 비활성 100us `0..0` sentinel, XBC-DN/DP64H·XBE-DC08A module inventory와 전역 DI/DO/AI/AO offset을 확인했다. 또한 exact XBC-H CPU와 XML slot에만 LS 공식 고정 4-word profile을 적용해 slot 1을 `P00040-P0007F`의 `documented` reservation으로 결속한다. 이는 project-observed point range가 아니며 다른 CPU family, terminal point, 외부 배선·module health·현재 PLC runtime은 미관측이므로 물리 P 입출력 영향 후보는 계속 fail-closed다. 내부/타이머 후보도 해당 `required_context`가 닫힐 때만 가능하고 대표 production 프로젝트의 분석·승인 변경 end-to-end acceptance는 아직 없음 |
 | LS FEnet online observe | 구현·실장비 미검증 | 사용자 지정 사설망 endpoint의 status/device read와 최대 30초 bounded trace가 존재한다. trace는 1~16개 변수의 샘플·전이·최소/최대·변화 횟수와 전후 CPU 상태를 한 receipt로 반환하지만 실제 장비 identity와 online project 일치 증거는 없음 |
 | 실제 PLC write·run edit·force·mode·download | 미구현 또는 미검증 | 활성화하거나 완료로 주장하지 않음 |
 | Mitsubishi·Rockwell adapter | 미구현 | 멀티벤더 상위 계약만 존재함 |
@@ -384,8 +411,28 @@ PLC 연결·쓰기, 현재 controller runtime과 XG-SIM 시나리오는 이 재�
 
 ## 10. 남은 제품 로드맵과 승격 게이트
 
-로드맵의 순서는 기능을 켜는 순서이며 날짜 약속이 아니다. 앞 단계의 증거가 없는
-고위험 기능을 뒤 단계에서 먼저 활성화하지 않는다.
+현재 개발 순서는 아래 P0~P2와 [구현 계획](docs/AGENT_PRODUCT_PLAN.md)이다.
+G0~G5는 배포·기능 확장의 범위 구분이며 채팅 에이전트를 만들기 전에 모두 통과해야 하는
+선행 절차가 아니다. 날짜나 완료율은 아직 확정하지 않는다.
+
+### P0 — 채팅에서 실제 도구 실행이 보이는 에이전트
+
+- 기존 모델 루프와 Host continuation을 연결하고 도구 오류를 모델에 되돌린다.
+- 실제 이벤트의 선택·시작·완료·실패를 같은 대화에 표시하고 중단을 처리한다.
+- 설명·읽기 요청의 정상 경로를 변경 승인·복구·Keep에서 분리한다.
+
+### P1 — 요청 범위 안의 오프라인 LD 개발
+
+- 기존 작업 사본의 수정·검사·저장을 대화에서 이어서 수행한다.
+- 사용자 요청 범위의 권한을 유지하고 불필요한 단계별 승인·전역 차단을 제거한다.
+- 재열기와 XG-SIM은 요청/필요에 맞게 선택한다. 실제 제어 오류는 담당 CLI 경로에서 고친다.
+- M30은 대표 사례 하나다. 이 사례만으로 신규 구축·일반 편집·제품 완료를 선언하지 않는다.
+
+### P2 — 신규 LD 개발과 배포 정리
+
+- 서로 다른 기존 프로젝트 요청과 신규 LD 생성·검사·저장을 실제 웹에서 확인한다.
+- CLI의 남은 native dependency를 추출하고 독립 설치 경로를 완성한다.
+- 사용하지 않는 gate/API/UI/호환 코드는 소비자와 함께 제거한다. 사용자 파일·백업은 보존한다.
 
 ### G0 — 공개·배포 기반 확정
 
@@ -469,14 +516,15 @@ pilot 전에 대표 LS 프로젝트와 실제 사용자 작업 집합을 고정�
 3. 세 packaged artifact의 exact BOM 조합으로 사용자 경로와 readback이 끝까지 동작한다.
 4. IDE·simulator·PLC 기능이면 지정 실제 환경의 replay 가능한 evidence가 있다.
 5. target mismatch, stale state, crash, timeout, tamper와 denial 경로가 fail-closed다.
-6. mutation이면 승인, journal, readback, save/reopen, rollback과 reconciliation이
-   끝까지 증명된다.
+6. 요청한 변경·저장과 필요한 검사의 실제 결과가 확인된다. 독립 재열기·시뮬레이션은
+   해당 기능의 검증 사례에서 확인하며, 모든 사용자 요청에 강제하지 않는다.
 7. 사용자에게 구현·runtime 검증·실제 검증·미검증 상태가 정확히 표시된다.
 8. documentation, audit, migration과 support matrix가 해당 release와 함께 고정된다.
 
-전체 제품 완료는 신규 구축, 기존 프로젝트 이해, online observe, 승인된 변경과
-단일 production 배포가 지원 범위에서 위 조건을 모두 통과했을 때만 선언한다.
-현재는 이 조건을 충족하지 않았다.
+오프라인 제품 완료는 채팅에서 신규 LD 개발·기존 프로젝트 이해·수정·저장·요청한
+XG-SIM 작업을 수행하고 실제 실행 과정을 표시할 수 있을 때 판단한다. production 배포
+완료는 별도의 서명·설치·업데이트 조건도 충족해야 한다. 물리 online observe/write는
+현재 완료 조건에서 제외한다. 현재는 오프라인 제품도 완료되지 않았다.
 
 ## 13. 확정 결정과 남은 결정
 

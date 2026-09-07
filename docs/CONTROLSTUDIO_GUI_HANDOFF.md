@@ -1,8 +1,9 @@
 # ControlStudio 사용자 GUI 및 실행 아키텍처
 
-최종 갱신: 2026-08-31
+최종 갱신: 2026-09-08
 
-결정 상태: 제품 구현 기준 확정, 읽기·분석과 제한된 오프라인 작업 UI 구현
+결정 상태: chat-first 제품 방향 확정. 현재 저장소의 target-first/mission-first
+화면은 이 방향으로 수렴시키는 구현 현황이지, 모든 사용자 요청의 필수 절차가 아니다.
 
 이 문서는 [루트 PRD](../PRD.md)의 사용자 제품을 어떤 형태로 제공할지 고정한다.
 기능 범위와 안전 정책은 PRD가 우선하며, 현재 Agent·Platform·MCP 실행 계약은
@@ -11,6 +12,11 @@
 신규 구축과 기존 설비 부분 수정의 실제 화면·검토 순서는
 [ENGINEERING_COLLABORATION_WORKFLOWS.md](ENGINEERING_COLLABORATION_WORKFLOWS.md)를
 따른다.
+
+2026-09-08의 제품 우선순위와 범위는
+[AGENT_PRODUCT_PLAN.md](AGENT_PRODUCT_PLAN.md), 현재 구현·운영 인수인계는
+[HANDOFF.md](HANDOFF.md)를 함께 따른다. 둘 중 일반 대화의 시작점·표시에 관해
+충돌하는 과거 설명은 이 문서의 chat-first 결정을 적용한다.
 
 ## 1. 결정 요약
 
@@ -75,25 +81,30 @@ capability로 추가한다.
 
 ### 2.1 화면 전환 원칙
 
-시작 선택, 대상 설정, 신규 프로젝트 계획, 엔지니어링 작업공간은 한 페이지에
-동시에 쌓지 않는다. 사용자는 항상 현재 단계와 다음 행동 하나를 명확히 볼 수
-있어야 한다.
+기본 화면은 한 개의 간단한 대화 화면이다. 사용자는 target, 계획, 검증, 복구를
+먼저 통과하지 않아도 질문을 보내고 모델 결과와 실시간 도구 타임라인을 볼 수
+있어야 한다. 대상 선택·신규 프로젝트 brief·계획 검토·변경 계약은 대화의 문맥상
+필요할 때 여는 보조 panel 또는 명시적 작업이며, 일반 읽기·분석 요청의 선행
+절차가 아니다.
 
 ```text
-START
-  ├─ 기존 프로젝트 → TARGET SETUP → ENGINEERING WORKSPACE
-  └─ 새 프로젝트 → REQUIREMENTS → PLAN REVIEW
-                                  → TECHNICAL SETUP
-                                  → BUILD / CHECK / SIMULATE
+CHAT (기본)
+  ├─ 일반 질문/읽기·분석 → 모델 결과 + tool timeline
+  ├─ 대상이 필요한 질문 → 대화 안에서 target 선택을 제안
+  ├─ 새 프로젝트 의도 → brief/plan 보조 흐름
+  └─ 실제 변경 의도 → proposal → 필요한 승인·실행·검증·복구
 ```
 
-- target이 없을 때 과거 대화만으로 빈 작업공간을 시작 화면 아래에 표시하지 않는다.
-- 설정 화면을 연 동안 기존 채팅을 같은 화면 아래에 계속 표시하지 않는다.
-- 확인되지 않은 workspace는 작업공간으로 취급하지 않고 복구 또는 대상 선택으로
-  돌린다.
+- target이 없거나 확인되지 않았다는 이유만으로 대화 surface를 숨기지 않는다.
+  대신 가능한 범위와 target이 필요한 다음 행동을 명확히 말한다.
+- 설정 panel을 열어도 대화와 현재 run/timeline은 유지한다. panel은 대화를
+  대체하는 전체 화면 단계가 아니다.
+- 대상·workspace 결속은 그 대상에서 실행하는 tool 또는 mutation에만 적용한다.
+  순수 대화, 저장된 evidence 설명, target 불필요 분석까지 일괄 차단하지 않는다.
 - 대화, 근거, 실행 상태와 변경 계약은 대상 또는 신규 설계 세션에 귀속한다.
   대상이 바뀌면 이전 맥락을 새 대상의 현재 맥락처럼 보여 주지 않는다.
-- 완료·거절·만료된 변경 계약은 주 화면을 점유하지 않고 작업 이력으로 축소한다.
+- 완료·거절·만료된 변경 계약, recovery, Keep/Revert는 주 대화 화면을 점유하지
+  않고 해당 change의 필요 시점 또는 작업 이력으로 축소한다.
 - 구현되지 않은 PLC 전체 업로드·복원은 첫 화면의 비활성 카드로 노출하지 않는다.
   실제 capability가 생긴 뒤 진입 경로를 추가한다.
 - 온라인 읽기 전용 관찰은 capability가 있을 때만 접힌 `다른 연결 방법`에
@@ -101,8 +112,9 @@ START
 
 ### 2.2 신규 프로젝트 사용자 여정
 
-신규 프로젝트는 CPU와 경로를 먼저 요구하는 폼이나 빈 채팅으로 시작하지 않는다.
-짧은 guided brief와 자연어 대화를 결합한다.
+신규 프로젝트도 일반 대화에서 시작한다. 짧은 guided brief는 모델이 구조화된
+계획을 만들기 위해 필요한 정보를 수집하는 선택적 보조물이며, CPU·경로·계획 검토
+화면을 채팅보다 먼저 강제하지 않는다.
 
 ```text
 1. 요구사항 브리프
@@ -129,7 +141,8 @@ START
 
 4. 사람의 계획 검토
    - 대화로 보완하거나 브리프를 수정
-   - 계획이 검토 준비 상태가 된 뒤에만 기술 설정으로 이동
+   - native project 생성으로 진행하려는 경우에만 계획이 검토 준비 상태가 된 뒤
+     기술 설정으로 이동
 
 5. 벤더 기술 설정
    - vendor·CPU·project path·language 같은 생성 필드 확정
@@ -143,7 +156,8 @@ START
    - online download/run edit는 각각 별도 capability와 승인
 ```
 
-계획 검토 완료는 프로젝트 생성 또는 PLC 작업 승인이 아니다. 아직 지원되지 않는
+계획 검토 완료는 프로젝트 생성 또는 PLC 작업 승인이 아니다. 이는 신규 native
+project 생성 의도의 gate일 뿐, 일반 대화·읽기·분석을 막지 않는다. 아직 지원되지 않는
 단계는 버튼을 비활성화하고 정확한 이유를 표시하며, 계획이나 기본 조합 프로그램을
 독립 재열기·simulation까지 끝난 완성품이라고 부르지 않는다.
 
@@ -298,7 +312,9 @@ PWA는 사용자 경험상 독립 Windows 앱 창을 제공하지만 실행 권�
 
 ## 6. 사용자 화면의 필수 상태
 
-채팅보다 먼저 현재 대상을 확인할 수 있어야 한다.
+채팅이 기본이고, 현재 대상·권한·연결 상태는 작고 항상 보이는 context strip 또는
+접을 수 있는 상세로 제공한다. 일반 사용자에게 PID/HWND·raw JSON·내부 journal을
+먼저 요구하지 않는다.
 
 ```text
 Host                  READY / DEGRADED / STOPPING
@@ -314,6 +330,9 @@ Active operation      operation_id, 단계, 시작 사용자
 사용자에게 PID/HWND나 raw JSON을 기본 화면에 노출하지 않는다. 대신 프로젝트명,
 벤더, CPU, 연결과 일치 여부, 읽기/변경 권한을 사람이 이해할 수 있게 표시한다.
 기술 식별자는 개발자 상세 화면과 감사 증거에 남긴다.
+
+다음 정보는 **실제 변경 승인**에만 최소한 보여준다. 질문, 읽기, 분석, 일반
+모델 결과에 이 승인 card나 verification/recovery/Keep 절차를 붙이지 않는다.
 
 변경 승인은 최소한 다음을 보여준다.
 
@@ -424,24 +443,22 @@ API가 인증됐다는 사실은 MCP capability를 대신하지 않는다. Host�
 
 ### 사용자 작업
 
-- 새 프로젝트와 기존 프로젝트를 두 핵심 선택으로, 복원·온라인 관찰·복구를
-  보조 작업으로 구분
-- 최초 진입에는 시작 선택만 표시하고 과거 대화 작업공간을 함께 쌓지 않음
-- 기존 프로젝트·온라인 관찰은 읽기 준비가 확인된 target 이후에만 엔지니어링
-  대화를 표시
-- 신규 프로젝트는 target이 없어도 별도의 `new_project_planning` 대화를
-  허용하되 MCP·프로젝트 변경 도구 없이 계획만 작성
-- 요구사항, 계획 검토, 기술 설정, 생성·검사·시뮬레이션 단계를 한 화면에
-  동시에 표시하지 않음
-- 계획 상태가 `ready_for_review`이고 사용자가 명시적으로 검토 완료를 선택한
-  뒤에만 지원되는 벤더 기술 설정으로 이동
-- 계획에서 항목별로 검토한 프로젝트 이름·PLC 시리즈·CPU·프로그램·언어·설명은
-  기술 설정 화면에 그대로 인계하고 다시 입력하거나 바꾸게 하지 않음
+- 최초 진입과 재접속의 기본 surface는 대화이며, 사용자는 즉시 자연어 요청을
+  보낼 수 있음
+- 각 run에서 선택된 도구가 `selected → running → completed/failed`로 바뀌는
+  timeline과 모델 결과가 같은 대화 문맥에 실시간 표시됨
+- 일반 질문·읽기·분석은 plan review, verification, recovery, Keep/Revert 또는
+  target setup을 선행 조건으로 만들지 않음. 특정 tool에 target/evidence가
+  필요하면 그 tool만 정확한 이유와 선택 동작을 제시함
+- 새 프로젝트 brief/plan, 기존 프로젝트 선택, 온라인 관찰은 대화에서 시작할 수
+  있는 보조 흐름임. 계획 검토는 native project 생성 전에, 변경 승인은 해당
+  mutation 전에만 요구함
 - 계획 검토와 native project 생성, 로직 변경, 검사·시뮬레이션, 온라인 작업의
   승인을 서로 재사용하지 않음
 - 자연어 요청에서 실제 MCP 읽기 도구와 결과까지 연결
 - 관련 위치를 벤더 IDE에서 열 수 있음
-- 증거·가설·대안·위험·검증을 함께 표시
+- 증거·가설·대안·위험·검증은 결과에 관련된 경우 표시하고, 모든 답변의 필수
+  checklist로 만들지 않음
 - 정확한 변경 계약에 대해서만 승인 요청
 - 새로고침·재연결·복수 클라이언트에서 동일 run 상태 유지
 
@@ -472,7 +489,15 @@ API가 인증됐다는 사실은 MCP capability를 대신하지 않는다. Host�
 현재 제품 slice에는 다음이 구현됐다.
 
 - React·TypeScript 제품 GUI와 PWA manifest; service worker는 의도적으로 없음
-- 대상 선택 전 시작 화면과 target 확보 후 에이전트 작업공간을 분리한 진입 흐름
+- **현재 구현과 목표의 차이:** 저장소는 아직 대상 선택 전 시작 화면과 target 확보
+  후 agent workspace를 분리하고, mission/review/recovery panel을 대화보다 앞세울
+  수 있다. 이것은 위 chat-first 기본 화면의 완료 상태가 아니라 교체 대상이다.
+- Host API/SSE는 이미 chat-first에 필요한 서버 소유 conversation/run/event와
+  sequence 재생을 제공한다. MCP tool event는 tool 이름·call ID·상태만 사용자
+  activity로 보이며, web은 시작/완료/실패를 running/completed/failed로 갱신한다.
+- 보통 run은 취소 API가 있으나, 승인 후 실제 mutation 실행·검증 상태는 실제
+  engineering state reconciliation 전 취소하지 않는다. Keep/Revert와 recovery는
+  XG-SIM observing 또는 `QUARANTINED` change에 한정된 예외 흐름이다.
 - 사용자 호출형 Windows Launcher와 브라우저 app-mode 실행
 - HMAC Host challenge, origin별 browser session과 인증된 API/event stream
 - ControlStudio Host/FastAPI, 서버 권위 conversation/run/event 저장소

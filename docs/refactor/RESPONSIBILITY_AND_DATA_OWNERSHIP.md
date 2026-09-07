@@ -1,6 +1,6 @@
 # 책임과 데이터 소유권
 
-최종 갱신: 2026-08-31
+최종 갱신: 2026-09-08
 
 이 문서는 [제품 아키텍처](../PRODUCT_ARCHITECTURE.md)와
 [제품 배포·버전 정책](PRODUCT_DISTRIBUTION_AND_VERSIONING.md)의 실행 경계를
@@ -36,7 +36,16 @@ Platform은 Product Contract manifest에서 tool schema digest, required capabil
 risk/side-effect, target-binding/approval requirement를 확인한다. MCP도 동일
 precondition을 스스로 확인하므로 Platform만 통과해도 mutation이 허용되지 않는다.
 
-## 승인과 대상 결속
+## 요청 권한과 대상 결속
+
+목표 제품에서는 명확히 요청한 작업 사본 수정·저장의 범위를 Host가 보존하고 후속
+도구 실행에 전달한다. 후보만 요청하면 적용하지 않는다. 새로운 범위나 되돌리기 어려운
+작업에 필요한 추가 확인과 기존 범위의 반복 승인 요청을 구분한다. 정상 대화·읽기는
+변경 거래/Keep/복구의 선행 조건을 갖지 않는다. 실제 전환 파일은
+[구현 계획](../AGENT_PRODUCT_PLAN.md)을 따른다.
+
+아래는 **현재 legacy mutation 구현의 내부 계약**이다. 호환 경로를 다룰 때 참조하되
+모든 요청에 새 사용자 승인 화면을 요구하라는 제품 지시로 사용하지 않는다.
 
 1. Agent는 run-scoped `ExternalToolRequest`(alias, arguments, request/tool-call ID)를
    Platform에 보낸다.
@@ -53,9 +62,10 @@ precondition을 스스로 확인하므로 Platform만 통과해도 mutation이 �
    검증한 뒤 journal을 기록하고 실행한다. 불일치, stale target, 소모된 nonce,
    애매한 readback은 fail-closed다.
 
-approval 뒤 target·plan·arguments가 하나라도 바뀌면 새 승인이 필요하다. Agent는
-secret/signature를 저장하거나 받을 수 없다. `confirm: true` 같은 caller flag는
-승인을 대체하지 않는다.
+기존 legacy approval 뒤 target·plan·arguments가 바뀌면 그 기존 claim을 재사용할 수 없다.
+요청 범위 내 후속 동작의 내부 권한 전달과 사용자에게 새로 확인할 상황은 전환 구현에서
+구분한다. Agent는 secret/signature를 보유하거나 권한을 임의 생성하지 않는다.
+`confirm: true` 같은 caller flag로 실제 권한을 대신하지 않는다.
 
 ## journal과 상관관계 ID
 
