@@ -1,5 +1,89 @@
 # Development handoff
 
+## 2026-09-08 구현 결과 — 채팅 루프와 직접 오프라인 저장
+
+최신 제품 방향의 P0a/P0b와 P1 소스 변경을 `gidong-agent`, `gidong-platform`,
+`gidong-plc-mcp`에 반영했다. 실제 XG5000·XG-SIM·UAC 실행은 하지 않았으므로 제품 완료나
+실기 통과 기록이 아니다. 아래 “새 채팅 시작점”의 앱 수정 미실행 표기는 이 구현 직전 기록이다.
+
+### 소스 체크포인트 (이 절의 문서 커밋 전)
+
+| 저장소 | 브랜치 | 소스 HEAD | 상태 |
+| --- | --- | --- | --- |
+| `gidong-platform` | `dev` | `2c19f0f` | Host와 Web/contracts 코드 커밋 완료, 이 문서 변경만 대기 |
+| `gidong-agent` | `dev` | `4ebdbe6` | clean |
+| `gidong-plc-mcp` | `dev` | `4698f74` | clean |
+| `controlstudio-xg5000-cli` | `main` | `518e389` | 이번 구현 변경 없음, clean |
+
+### 반영한 동작
+
+- Agent는 Host가 준 현재 tool catalog에서 다음 도구를 선택하고 실제 성공 또는 정제된 실패를
+  다음 cycle에 전달한다. 실패 직후 같은 tool/args의 맹목 재시도를 거부하며, 일반 설명은 열린
+  가설을 한계로 밝히고 완료할 수 있다. 대상 없는 일반 질문은 외부 도구와 변경 callback 없이
+  별도 안전 경로에서 답한다.
+- Host는 모델 선택 시 `tool.selected`, 실제 dispatch 직전에 `tool.started`, 반환 시
+  `tool.completed`/`tool.failed`를 기존 event/SSE 경로로 기록한다. Web은 같은 tool call의 상태와
+  경과 시간을 한 채팅 카드로 갱신하며, conversation의 `request_message_id`와 run을 다시 결합해
+  새로고침/reconnect 뒤에도 해당 요청 메시지(Host 재개 SYSTEM 포함) 아래에 표시한다. 카드에는
+  Host가 정한 역할·논리
+  대상·짧은 결과만 보이며 raw 인자·경로·endpoint·모델 추론은 넣지 않는다. 모든 도구의 Agent 결과는
+  민감 필드 제거, JSON 직렬화, wire 크기를 완료 기록 전에 검증하고, 구조 분석은 추가로 bounded
+  projection만 전달한다. 구조 근거는 같은 conversation/run/session/project와 실제 요청의
+  program/query/device/cache/pagination/path/scenario에 정확히 결속된 Host 저널 receipt만 사용하며,
+  selector drift와 여분 필드를 거부한다. `tool.completed`와 `evidence.added`는 한 DB transaction에
+  기록한다. Host/Agent protocol은 `NaN`/`±Infinity`를 양방향으로 거부하고 개행을 포함한 exact
+  frame limit을 적용한다.
+- 사용자가 `permanent_offline_revision`을 고르면 그 한 요청을 정확한 작업 사본의 수정 권한으로
+  사용한다. Host가 동일 actor/run/target/plan digest를 확인하고 기존 transaction executor를
+  호출한다. 성공 경로는 구조 diff→XG5000 Program Check→저장까지만 수행하며 독립 재열기,
+  XG-SIM, Keep/Revert를 강제하지 않는다. 생략된 verification scope도 이 범위에서만
+  `offline_native_check_only`로 정규화하고, 명시적으로 충돌하는 scope는 거부한다. 직접 권한은 같은
+  actor의 승인으로 생성과 함께 원자 기록해 승인 대기 이벤트나 결정 race를 만들지 않는다. 실제
+  실행 전 실패는 무변경 `FAILED` 영수증으로 닫고, 변경 거래가 mutation 단계인 동안 Agent run의
+  HTTP 취소는 409로 거부한다. 검증 실패·원복은 UI에 `tool.failed`로 남긴다. Agent에는 재시도
+  판단에 필요한 정식 terminal transaction을 `status=completed` protocol delivery로 반환하되,
+  `state=FAILED`/`ROLLED_BACK`을 성공 변경으로 해석하지 않게 한다.
+- `offline_candidate_revision`은 계속 승인 대기 후보만 만들며 callback에서 실행하지 않는다.
+  `offline_native_reopen_xgsim`은 사용자가 별도로 선택한 V6 OUT rung 후보에만 허용하고, 승인 뒤
+  기존 reopen/XG-SIM/Keep·Revert 경로를 사용한다. 다른 후보 형식은 이를 거부한다.
+- SYSTEM mission 재개는 항상 `analysis_only`로 강등해 이전 요청의 직접 변경 권한을 재발급하지
+  않는다. 이미 terminal이 된 정확한 candidate transaction과 재제안 조건이 함께 일치할 때만
+  별도 candidate-only 재제안 권한을 복원하며, 새 직접 실행은 명시적인 USER 요청에서만 가능하다.
+- 새 메시지는 위의 엄격한 범위 조합을 따르지만, 이미 저장된 과거 `permanent+reopen` 또는
+  `candidate+check-only` 거래·미션은 승인·실행·재개 화면에서 계속 복구할 수 있다. 영구 변경을
+  보낸 Web 선택은 성공·오류·응답 불명확 여부와 관계없이 즉시 읽기·분석으로 되돌아간다. 메시지
+  전송·재개 성공 응답도 run id, operation id, state를 검사하므로 손상된 2xx를 성공으로 표시하거나
+  자동 재시도하지 않는다.
+- MCP의 operand/MNE 정상 검증은 check/save-only 계약에서 재열기 callback을 호출하지 않는다.
+  단, 검증 실패 원복·명시적 reconciliation은 복구 증명을 위해 독립 재열기를 수행할 수 있다.
+  Program Check와 저장 receipt를 확인한 뒤에만 transaction을 끝내며, 저장으로 바뀐 파일 hash는
+  같은 PID/HWND/process lifetime/workspace/plan에 결속된 새 controlled-read identity로 회전한다.
+  결과가 불명확한 변경은 격리하고 자동 재실행하지 않는다. 물리 I/O 분석이 hardware context
+  digest를 재사용할 때는 첫 MCP dispatch 전 현재 conversation/run의 Host 저널 receipt와 project
+  hash가 일치해야 하며, MCP process cache만 남은 관측은 근거 권한으로 사용하지 않는다.
+  변경 receipt는 계획의 canonical target과 apply→diff→validation→save의 raw/canonical after hash,
+  target/program identity를 연쇄 검증하며, 새 canonical 필드가 빠지거나 달라도 거부한다.
+
+### 이번 검증과 남은 일
+
+- Platform Python compile 및 Ruff F/E9/I, Agent compile 및 Ruff F/E9/I, MCP 전체 compile과 변경
+  파일 Ruff, TypeScript contracts와 Web typecheck/build, 세 저장소 `git diff --check`를 통과했다.
+  요청 범위, 원자 직접 승인/실행 전 실패, 단일 도구 terminal, 완료·근거 원자 기록을 별도 스모크로
+  확인했다. oversized Agent 결과 선차단, camelCase 민감 필드 제거, 비저널 hardware context digest의
+  MCP dispatch 전 거부도 스모크로 확인했다.
+- MCP whole-repo Ruff F/E9/I에는 이번 변경 파일 밖의 기존 진단 12건이 남아 있다. 이번에 바꾼
+  `server.py`와 `change_transactions.py`는 전체 Ruff 규칙을 통과했으며, 무관한 파일을 함께 고치지 않았다.
+- `scripts/contracts/contract_guard.py`의 read-only 검사는 현재 FastAPI OpenAPI v1 snapshot drift와
+  generated TypeScript operation marker drift로 실패한다. `--write`도 snapshot을 쓰기 전에, 이번
+  diff 이전 HEAD에 이미 required였던 `EngineeringConversationHandoffV1.reopenReceiptDigest`와
+  `reopenReceiptSchemaVersion`의 major 변경을 감지해 중단된다. 이 작업에서 API major를 임의로
+  올리거나 guard를 우회하지 않았다.
+- 실제 XG5000을 실행하지 않았으므로 P1-control의 Open/read/save 실기와 `c5311c8` timeout 수정은
+  여전히 미확인이다. 과거 격리 transaction·백업·작업 사본은 건드리지 않았다.
+- 다음은 정상 개발 기동에서 대상 없는 일반 설명과 후보만 작성 흐름을 먼저 확인한다. XG5000에
+  의존하는 P1-control Open/read/save와 직접 수정·검사·저장 흐름은 같은 실기 작업자가 이어서
+  확인한다. 그 뒤 V6 XG-SIM 대표 흐름과 P2 CLI native 역의존 폐쇄·신규 LD 흐름을 진행한다.
+
 ## 2026-09-08 새 채팅 시작점 — 제품 방향 재정리
 
 이번 변경은 **코드/계획 점검과 문서 갱신**이다. 앱 수정·실행·UAC·XG5000 편집·복구는
