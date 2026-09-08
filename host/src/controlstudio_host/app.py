@@ -12,7 +12,7 @@ import re
 import secrets
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
@@ -41,11 +41,10 @@ from .agent_runtime import (
     ModelCapabilityResult,
 )
 from .api_models import (
+    MNE_COMPILER_CANDIDATE_REQUIRED_COVERAGE_AREAS,
     AgentStatusV1,
     AttachXG5000RequestV1,
     AttachXG5000ResponseV1,
-    PrepareOfflineCandidateSessionRequestV1,
-    PrepareOfflineCandidateSessionResponseV1,
     BootstrapV1,
     BrowserSessionV1,
     ChangeApprovalV1,
@@ -65,9 +64,9 @@ from .api_models import (
     ChangeTargetIdentityV1,
     ChangeTransactionCreatedV1,
     ChangeTransactionV1,
+    CloseIdleXG5000InstanceAttentionV1,
     CloseIdleXG5000InstanceRequestV1,
     CloseIdleXG5000InstanceResponseV1,
-    CloseIdleXG5000InstanceAttentionV1,
     ConfirmKnowledgeMemoryRequestV1,
     ConnectLSControllerRequestV1,
     ControllerRestoreBeginRequestV1,
@@ -128,7 +127,6 @@ from .api_models import (
     MneFullProgramBaselineBindingV2,
     MneInstructionBatchPatchCandidateV5,
     MneInstructionPatchCandidateV4,
-    MNE_COMPILER_CANDIDATE_REQUIRED_COVERAGE_AREAS,
     MneRungPatchCandidateV6,
     MneSeriesGuardCandidateV3,
     ModelCapabilityFlagsV1,
@@ -144,6 +142,8 @@ from .api_models import (
     OfflineOperandMissionV1,
     OpenLocalWorkspaceRequestV1,
     OpenLocalWorkspaceResponseV1,
+    PrepareOfflineCandidateSessionRequestV1,
+    PrepareOfflineCandidateSessionResponseV1,
     ProductFeatureStatusV1,
     ProjectBriefV1,
     ProjectPlanArtifactV1,
@@ -154,8 +154,8 @@ from .api_models import (
     ReadLSControllerRequestV1,
     ReconcileChangeTransactionRequestV1,
     ReconcileNativeProjectRequestV1,
-    ResumeNativeProjectRequestV1,
     ResumeLocalWorkspaceRequestV1,
+    ResumeNativeProjectRequestV1,
     ReviewedNoSaveCloseRequestV1,
     ReviewedNoSaveCloseResponseV1,
     RunCancellationV1,
@@ -178,6 +178,7 @@ from .change_execution import (
     ChangeExecutionService,
     ChangeRecoveryTarget,
     calculate_plan_digest,
+    has_valid_terminal_ld_receipt,
     validated_terminal_ld_reopen,
 )
 from .change_outcome import (
@@ -208,12 +209,14 @@ from .knowledge_ingestion import (
 )
 from .mcp_client import AGENT_TOOL_NAMES, MCPGateway, MCPStartupError, MCPToolError
 from .mne_change_execution import (
-    MNE_PLAN_KIND,
     MNE_PATCH_PLAN_CONTRACTS,
+    MNE_PLAN_KIND,
     MNE_STRUCTURAL_PLAN_KINDS,
     CompositeChangeExecutionService,
     _same_path,
     _transaction_lookup_checkpoint,
+    has_valid_terminal_mne_no_mutation_abort,
+    has_valid_terminal_mne_receipt,
     validated_terminal_mne_reopen,
 )
 from .model_connection import (
@@ -689,12 +692,6 @@ _AGENT_TOOL_EVIDENCE: dict[str, tuple[str, str, str, str]] = {
         "변경을 시작하지 않는 읽기 전용 프로젝트 스냅샷을 확보했습니다.",
         "confirmed",
     ),
-    "evidence.get": (
-        "artifact",
-        "MCP 증거 조회",
-        "MCP 안전 코어가 보존한 증거 항목을 조회했습니다.",
-        "confirmed",
-    ),
     "controller.ls.status": (
         "runtime_observation",
         "LS PLC 연결 상태",
@@ -714,6 +711,194 @@ _AGENT_TOOL_EVIDENCE: dict[str, tuple[str, str, str, str]] = {
         "confirmed",
     ),
 }
+
+# Tool activity is a deliberately smaller projection than Agent/MCP results.
+# Keep every value Host-authored and tied to the same explicit tool allowlist
+# used for verified evidence; model arguments, paths, endpoints, and raw result
+# text must never enter the durable activity event.
+_AGENT_TOOL_ACTIVITY_ROLE: dict[str, str] = {
+    "xg5000.session_status": "상태 확인",
+    "sim.target_status": "안전 확인",
+    "project.list_programs": "프로젝트 읽기",
+    "program.focus": "프로그램 탐색",
+    "program.read_ld": "래더 읽기",
+    "project.hardware_context": "하드웨어 분석",
+    "workspace.compare": "작업 사본 비교",
+    "workspace.hardware_context": "하드웨어 분석",
+    "workspace.structure_index": "구조 분석",
+    "workspace.search": "근거 검색",
+    "project.structure_index": "구조 분석",
+    "project.search": "근거 검색",
+    "program.change_target_analysis": "변경 영향 분석",
+    "program.compile_mne_series_guard_candidate": "변경 준비",
+    "program.compile_mne_instruction_patch_candidate": "변경 준비",
+    "program.compile_mne_instruction_batch_patch_candidate": "변경 준비",
+    "program.compile_mne_rung_patch_candidate": "변경 준비",
+    "program.logic_graph": "논리 분석",
+    "program.state_model": "상태 분석",
+    "device.causal_impact": "영향 분석",
+    "device.references": "참조 분석",
+    "project.behavior_report": "동작 분석",
+    "project.snapshot": "읽기 스냅샷",
+    "controller.ls.status": "온라인 읽기",
+    "controller.ls.read": "온라인 읽기",
+    "controller.ls.trace": "온라인 추적",
+}
+_AGENT_TOOL_ACTIVITY_TARGET: dict[str, str] = {
+    **{
+        tool_name: "현재 작업 사본"
+        for tool_name in {
+            "workspace.compare",
+            "workspace.hardware_context",
+            "workspace.structure_index",
+            "workspace.search",
+        }
+    },
+    **{
+        tool_name: "연결된 LS PLC"
+        for tool_name in {
+            "controller.ls.status",
+            "controller.ls.read",
+            "controller.ls.trace",
+        }
+    },
+    "xg5000.session_status": "현재 XG5000 세션",
+    "sim.target_status": "현재 XG5000 세션",
+    **{
+        tool_name: "현재 XG5000 프로젝트"
+        for tool_name in {
+            "project.list_programs",
+            "program.focus",
+            "program.read_ld",
+            "project.hardware_context",
+            "project.structure_index",
+            "project.search",
+            "program.change_target_analysis",
+            "program.compile_mne_series_guard_candidate",
+            "program.compile_mne_instruction_patch_candidate",
+            "program.compile_mne_instruction_batch_patch_candidate",
+            "program.compile_mne_rung_patch_candidate",
+            "program.logic_graph",
+            "program.state_model",
+            "device.causal_impact",
+            "device.references",
+            "project.behavior_report",
+            "project.snapshot",
+        }
+    },
+}
+
+_AGENT_TOOL_FAILURE_REASON_BY_CODE: dict[str, str] = {
+    "cancelled": "선택한 도구 실행이 취소되었습니다.",
+    "tool_rejected": "Host가 선택한 도구 요청을 거부했습니다.",
+    "transport_error": "도구 실행 서비스와 통신하지 못했습니다.",
+    "host_policy": "Host 안전 정책이 선택한 도구 실행을 허용하지 않았습니다.",
+    "change_verification_rolled_back": (
+        "변경 검증에 실패했으며 작업 사본을 원복했습니다."
+    ),
+    "change_preflight_failed_before_mutation": (
+        "실행 사전조건을 충족하지 못해 작업 사본을 변경하지 않았습니다."
+    ),
+    "change_execution_failed": "직접 변경 transaction이 실패 상태로 종료되었습니다.",
+}
+_AGENT_TOOL_FAILURE_REASON_BY_KIND: dict[str, str] = {
+    "tool_error": "도구가 요청을 처리하지 못했습니다.",
+    "host_policy": "Host 안전 정책이 도구 실행을 허용하지 않았습니다.",
+    "transport": "도구 실행 서비스와 통신하지 못했습니다.",
+    "cancelled": "도구 실행이 취소되었습니다.",
+}
+
+
+def _agent_tool_failure_projection(payload: Mapping[str, Any]) -> dict[str, str]:
+    """Project current and historical failures without replaying raw diagnostics."""
+
+    reason_code = payload.get("reason_code")
+    if isinstance(reason_code, str) and reason_code in _AGENT_TOOL_FAILURE_REASON_BY_CODE:
+        return {
+            "failure_reason": _AGENT_TOOL_FAILURE_REASON_BY_CODE[reason_code],
+            "reason_code": reason_code,
+        }
+    failure_kind = payload.get("failure_kind")
+    return {
+        "failure_reason": _AGENT_TOOL_FAILURE_REASON_BY_KIND.get(
+            str(failure_kind),
+            "도구 실행을 완료하지 못했습니다.",
+        )
+    }
+
+
+def _bounded_tool_activity_text(value: str, *, maximum: int = 180) -> str:
+    return " ".join(value.split())[:maximum]
+
+
+def _agent_tool_activity_projection(
+    *,
+    tool_name: str,
+    event_type: str,
+    change_request_scope: str,
+    change_outcome_state: str | None,
+    simulator_target_status: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Return the Host-owned compact-card fields for one durable tool event."""
+
+    canonical_tool_name = AGENT_TOOL_NAMES.get(tool_name, tool_name)
+    if canonical_tool_name == "change.propose_offline":
+        if change_request_scope == "permanent_offline_revision":
+            result = {
+                "COMPLETED": "작업 사본 수정·검사·저장을 완료했습니다.",
+                "ROLLED_BACK": "변경 검증 뒤 작업 사본을 원복했습니다.",
+                "FAILED": "변경 transaction이 실패 상태로 끝났습니다.",
+            }.get(change_outcome_state, "수정·검사·저장 결과를 확정했습니다.")
+            projection = {
+                "activity_label": "작업 사본 수정·검사·저장",
+                "activity_role": "오프라인 변경 실행",
+                "activity_target": "현재 작업 사본",
+            }
+        elif change_request_scope == "offline_candidate_revision":
+            result = "승인할 오프라인 변경 후보를 만들었습니다."
+            projection = {
+                "activity_label": "승인용 오프라인 변경 후보 준비",
+                "activity_role": "변경 제안",
+                "activity_target": "후보 작업 사본",
+            }
+        else:
+            result = "오프라인 변경 요청 처리를 마쳤습니다."
+            projection = {
+                "activity_label": "오프라인 변경 요청 처리",
+                "activity_role": "변경 요청",
+                "activity_target": "현재 작업 사본",
+            }
+        if event_type == "tool.completed":
+            projection["activity_result"] = result
+        return projection
+
+    definition = _AGENT_TOOL_EVIDENCE.get(canonical_tool_name)
+    role = _AGENT_TOOL_ACTIVITY_ROLE.get(canonical_tool_name)
+    target = _AGENT_TOOL_ACTIVITY_TARGET.get(canonical_tool_name)
+    if definition is None or role is None or target is None:
+        return {}
+
+    projection = {
+        "activity_role": role,
+        "activity_target": target,
+    }
+    if event_type == "tool.completed":
+        result = definition[2]
+        if canonical_tool_name == "sim.target_status":
+            if simulator_target_status == {
+                "verified": True,
+                "classification": "SIMULATOR_TARGET",
+            }:
+                result = "현재 세션이 XG-SIM 대상임을 확인했습니다."
+            elif simulator_target_status == {
+                "verified": False,
+                "classification": "NOT_SIMULATOR_TARGET",
+            }:
+                result = "현재 세션은 XG-SIM 대상으로 확인되지 않았습니다."
+        projection["activity_result"] = _bounded_tool_activity_text(result)
+    return projection
+
+
 _STATIC_WORKSPACE_EVIDENCE_TOOLS = frozenset(
     {"workspace.structure_index", "workspace.search"}
 )
@@ -896,6 +1081,7 @@ def _agent_tool_evidence_ref(
     conversation_id: str,
     run_id: str,
     tool_name: str,
+    request_id: str,
     tool_call_id: str | None,
     evidence_contract: dict[str, Any] | None = None,
     evidence_context: dict[str, Any] | None = None,
@@ -906,7 +1092,7 @@ def _agent_tool_evidence_ref(
     if definition is None:
         return None
     kind, title, summary, confidence = definition
-    call_identity = tool_call_id or str(uuid.uuid4())
+    call_identity = tool_call_id or request_id
     evidence_id = str(
         uuid.uuid5(
             uuid.NAMESPACE_URL,
@@ -918,6 +1104,7 @@ def _agent_tool_evidence_ref(
     )
     evidence = {
         "evidenceId": evidence_id,
+        "requestId": request_id,
         "title": title,
         "kind": kind,
         "toolName": canonical_tool_name,
@@ -946,6 +1133,9 @@ def _agent_tool_evidence_ref(
                 "않았습니다. 이는 XG-SIM offline 판정이 아닙니다."
             )
     receipt_schema = {
+        "xg5000.session_status": (
+            "controlstudio-xg5000-session-status-evidence/v1"
+        ),
         "program.read_ld": "controlstudio-program-read-ld-evidence/v1",
         "project.hardware_context": "controlstudio-hardware-context-evidence/v1",
         "workspace.compare": "controlstudio-workspace-compare-evidence/v1",
@@ -1465,6 +1655,76 @@ def _internal_mne_rung_reproposal_callback_permitted(
     )
 
 
+def _terminal_candidate_reproposal_matches_authority(
+    *,
+    linked_change: ChangeTransaction | None,
+    request_scope: Any,
+    verification_scope: Any,
+    exact_operand_reproposal_permitted: bool,
+    internal_mne_rung_reproposal_permitted: bool,
+) -> bool:
+    """Keep a SYSTEM resume read-only except for a proven candidate retry."""
+
+    if linked_change is None or not isinstance(linked_change.plan, dict):
+        return False
+    plan = linked_change.plan
+    return bool(
+        request_scope == "offline_candidate_revision"
+        and verification_scope
+        in {
+            "offline_native_check_only",
+            "offline_native_reopen",
+            "offline_native_reopen_xgsim",
+        }
+        and plan.get("request_scope", plan.get("requestScope")) == request_scope
+        and plan.get("verification_scope", plan.get("verificationScope"))
+        == verification_scope
+        and (
+            exact_operand_reproposal_permitted
+            or internal_mne_rung_reproposal_permitted
+        )
+    )
+
+
+def _explicit_user_direct_change_authority(
+    *,
+    request_message_role: MessageRole | None,
+    engineering_mission_continue: bool,
+    change_request_scope: str,
+    verification_scope: str,
+) -> bool:
+    """Return true only for the exact user-authored run carrying direct authority."""
+
+    return bool(
+        request_message_role is MessageRole.USER
+        and not engineering_mission_continue
+        and change_request_scope == "permanent_offline_revision"
+        and verification_scope == "offline_native_check_only"
+    )
+
+
+def _proposal_scopes_for_run(
+    *,
+    change_request_scope: str,
+    verification_scope: str,
+    terminal_candidate_reproposal_authorized: bool,
+    terminal_candidate_reproposal_verification_scope: Any,
+) -> tuple[str, str]:
+    """Separate ordinary run authority from the narrow terminal candidate path."""
+
+    if terminal_candidate_reproposal_authorized:
+        assert terminal_candidate_reproposal_verification_scope in {
+            "offline_native_check_only",
+            "offline_native_reopen",
+            "offline_native_reopen_xgsim",
+        }
+        return (
+            "offline_candidate_revision",
+            str(terminal_candidate_reproposal_verification_scope),
+        )
+    return change_request_scope, verification_scope
+
+
 def _acknowledged_terminal_source_run_change(
     mission: EngineeringMission,
     transactions: list[ChangeTransaction],
@@ -1785,6 +2045,13 @@ def _matching_change_outcome_supplemental_evidence(
 
 
 def _event_frame_v1(event: StoredEvent) -> str:
+    event_payload = dict(event.payload)
+    if event.event_type == "tool.failed":
+        # Older Host versions persisted raw exception text in failure_reason.
+        # Re-project every replay so a new compact card never exposes that
+        # historical path, endpoint, or provider diagnostic.
+        event_payload.pop("failure_reason", None)
+        event_payload.update(_agent_tool_failure_projection(event.payload))
     payload = {
         "eventId": f"event-{event.sequence}",
         "sequence": event.sequence,
@@ -1793,7 +2060,7 @@ def _event_frame_v1(event: StoredEvent) -> str:
         "runId": event.run_id,
         "eventType": event.event_type,
         "payloadSchemaVersion": "1",
-        "payload": event.payload,
+        "payload": event_payload,
     }
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return f"id: {event.sequence}\ndata: {data}\n\n"
@@ -1899,6 +2166,11 @@ def _conversation_v1(
     project_plan_authority_digests: tuple[str, str] | None = None,
     engineering_mission: EngineeringMission | None = None,
 ) -> ConversationV1:
+    request_run_ids = {
+        run.request_message_id: run.id
+        for run in detail.runs
+        if run.request_message_id is not None
+    }
     messages = [
         ConversationMessageV1(
             message_id=item.id,
@@ -1908,7 +2180,7 @@ def _conversation_v1(
             run_id=(
                 str(item.metadata["run_id"])
                 if isinstance(item.metadata.get("run_id"), str)
-                else None
+                else request_run_ids.get(item.id)
             ),
             operation_id=(
                 str(item.metadata["operation_id"])
@@ -2662,6 +2934,50 @@ def _parse_change_plan(value: Any) -> ChangePlanContract:
     raise ValueError(f"unsupported change plan kind: {plan_kind}")
 
 
+def _public_change_error_detail(value: ChangeTransaction) -> str | None:
+    """Expose only Host-authored failure categories, including on old rows."""
+
+    error_code = value.error_code
+    if error_code is None:
+        return None
+    if error_code == "change_preflight_failed_before_mutation":
+        return "Native preflight failed before execution; no mutation was attempted."
+    if error_code in {
+        "native_change_outcome_uncertain",
+        "unexpected_apply_failure",
+        "verification_outcome_uncertain",
+    }:
+        return (
+            "The native outcome is uncertain; inspect the durable recovery "
+            "state before any retry."
+        )
+    if "rolled_back" in error_code or "rollback" in error_code:
+        return "Verification did not pass; consult the durable rollback receipt."
+    return "The change transaction did not complete successfully."
+
+
+def _public_change_result_projection(value: Any) -> Any:
+    """Suppress legacy free-text diagnostics without changing durable receipts."""
+
+    if isinstance(value, Mapping):
+        projected: dict[Any, Any] = {}
+        for key, item in value.items():
+            if (
+                isinstance(key, str)
+                and (key.casefold() == "error" or key.casefold().endswith("_error"))
+                and isinstance(item, str)
+            ):
+                projected[key] = "private diagnostic suppressed"
+            else:
+                projected[key] = _public_change_result_projection(item)
+        return projected
+    if isinstance(value, list):
+        return [_public_change_result_projection(item) for item in value]
+    if isinstance(value, tuple):
+        return [_public_change_result_projection(item) for item in value]
+    return value
+
+
 def _change_transaction_v1(value: ChangeTransaction) -> ChangeTransactionV1:
     approval = value.approval
     return ChangeTransactionV1(
@@ -2688,9 +3004,9 @@ def _change_transaction_v1(value: ChangeTransaction) -> ChangeTransactionV1:
             if approval is not None
             else None
         ),
-        result=value.result,
+        result=_public_change_result_projection(value.result),
         error_code=value.error_code,
-        error_detail=value.error_detail,
+        error_detail=_public_change_error_detail(value),
         created_at=value.created_at,
         updated_at=value.updated_at,
         execution_started_at=value.execution_started_at,
@@ -3214,31 +3530,22 @@ def _reconciled_terminal_checkpoint(
 def _is_exact_terminal_mne_no_mutation_abort(
     transaction: ChangeTransaction,
 ) -> bool:
-    """Recognize the one MNE terminal outcome that changed no native file state."""
+    """Recognize the one fully bound MNE outcome with no native mutation."""
 
-    if (
-        transaction.state is not ChangeTransactionState.ROLLED_BACK
-        or transaction.error_code != "mne_recovery_aborted_before_mutation"
-        or transaction.plan.get("plan_kind") not in MNE_STRUCTURAL_PLAN_KINDS
-    ):
+    return has_valid_terminal_mne_no_mutation_abort(transaction)
+
+
+def _has_valid_terminal_change_receipt(transaction: ChangeTransaction) -> bool:
+    """Require the canonical successful receipt before recording user review."""
+
+    if transaction.state not in {
+        ChangeTransactionState.COMPLETED,
+        ChangeTransactionState.ROLLED_BACK,
+    }:
         return False
-    reconciliation = transaction.result.get("reconciliation")
-    checkpoint = (
-        reconciliation.get("abort_checkpoint")
-        if isinstance(reconciliation, dict)
-        else None
-    )
-    return bool(
-        isinstance(checkpoint, dict)
-        and reconciliation.get("native_mutation_performed") is False
-        and checkpoint.get("host_transaction_id") == transaction.id
-        and checkpoint.get("state") == "ABORTED_NO_MUTATION"
-        and checkpoint.get("mutation_possible") is False
-        and checkpoint.get("terminal") is True
-        and checkpoint.get("recovery_action") == "already_terminal"
-        and checkpoint.get("lease_status") == "released"
-        and checkpoint.get("current_project_hash") == transaction.target.artifact_hash
-    )
+    if transaction.plan.get("plan_kind") in MNE_STRUCTURAL_PLAN_KINDS:
+        return has_valid_terminal_mne_receipt(transaction)
+    return has_valid_terminal_ld_receipt(transaction)
 
 
 async def _recover_locked_reconciled_change_session(
@@ -3444,6 +3751,67 @@ async def _rebind_terminal_mne_session(
             "terminal MNE attach did not prove the independently reopened target"
         )
     return dict(session)
+
+
+async def _rebind_terminal_check_only_session(
+    mcp: MCPGateway,
+    transaction: ChangeTransaction,
+    workspace: dict[str, Any],
+    *,
+    expected_project_path: Path,
+    expected_project_hash: str,
+) -> dict[str, Any] | None:
+    """Revalidate the saved check-only target without claiming a reopen."""
+
+    if transaction.plan.get("verification_scope") != "offline_native_check_only":
+        return None
+    workspace_id = workspace.get("workspace_id")
+    session_id = transaction.target.engineering_session_id
+    pid = transaction.target.engineering_process_id
+    hwnd = transaction.target.engineering_window_handle
+    if (
+        not isinstance(workspace_id, str)
+        or not workspace_id
+        or not isinstance(session_id, str)
+        or not session_id
+        or not isinstance(pid, int)
+        or isinstance(pid, bool)
+        or pid <= 0
+        or not isinstance(hwnd, int)
+        or isinstance(hwnd, bool)
+        or hwnd <= 0
+    ):
+        return None
+
+    retained = await _revalidate_exact_engineering_session(
+        mcp,
+        session_id=session_id,
+        pid=pid,
+        hwnd=hwnd,
+        project_path=str(expected_project_path),
+        project_hash=expected_project_hash,
+    )
+    if retained is not None:
+        return retained
+
+    attached = await mcp.call_read_tool(
+        "xg5000.attach",
+        {
+            "pid": pid,
+            "hwnd": hwnd,
+            "access_profile": "analysis",
+            "project_path": str(expected_project_path),
+            "project_hash": expected_project_hash,
+            "workspace_id": workspace_id,
+        },
+    )
+    return _validated_engineering_session_result(
+        attached,
+        pid=pid,
+        hwnd=hwnd,
+        project_path=str(expected_project_path),
+        project_hash=expected_project_hash,
+    )
 
 
 def _agent_runtime_user_message(diagnostic: AgentRuntimeDiagnostic) -> str:
@@ -4521,6 +4889,12 @@ def create_app(
         terminal_mne_no_mutation_abort = _is_exact_terminal_mne_no_mutation_abort(
             transaction
         )
+        terminal_check_only = bool(
+            transaction.plan.get("verification_scope")
+            == "offline_native_check_only"
+            and transaction.state is ChangeTransactionState.COMPLETED
+            and not terminal_mne_no_mutation_abort
+        )
         terminal_mne_change = bool(
             transaction.plan.get("plan_kind") in MNE_STRUCTURAL_PLAN_KINDS
             and transaction.state
@@ -4528,8 +4902,43 @@ def create_app(
                 ChangeTransactionState.COMPLETED,
                 ChangeTransactionState.ROLLED_BACK,
             }
+            and not terminal_check_only
             and not terminal_mne_no_mutation_abort
         )
+        if terminal_check_only:
+            try:
+                retained_session = await _rebind_terminal_check_only_session(
+                    mcp,
+                    transaction,
+                    refreshed_workspace,
+                    expected_project_path=expected_path,
+                    expected_project_hash=digest,
+                )
+                if retained_session is None:
+                    raise ChangeExecutionPreconditionError(
+                        "terminal check-only target could not be revalidated"
+                    )
+            except (
+                MCPToolError,
+                ChangeExecutionPreconditionError,
+                OSError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                logger.warning(
+                    "terminal check-only target could not be rebound "
+                    "(transaction=%s, kind=%s)",
+                    transaction.id,
+                    type(exc).__name__,
+                )
+                active_engineering_session = None
+                bind_agent_workspace_target(active_workspace)
+                return False
+            active_engineering_session = retained_session
+            broker_session = dict(retained_session)
+            broker_session.update(workspace_agent_binding(refreshed_workspace))
+            execution_broker.bind_agent_session(broker_session)
+            return True
         if not terminal_mne_change:
             try:
                 reopened_session = validated_terminal_ld_reopen(transaction)
@@ -6228,6 +6637,7 @@ def create_app(
         approval_ttl_seconds: int,
         conversation_id: str | None = None,
         run_id: str | None = None,
+        initial_approval_actor_id: str | None = None,
     ) -> tuple[ChangeTransaction, bool]:
         target = current_change_target()
         if (
@@ -6292,9 +6702,17 @@ def create_app(
             approval_expires_at=(
                 datetime.now(timezone.utc) + timedelta(seconds=approval_ttl_seconds)
             ),
+            initial_approval_actor_id=initial_approval_actor_id,
         )
         if created:
-            publish_change_event("approval.requested", transaction)
+            publish_change_event(
+                (
+                    "approval.resolved"
+                    if initial_approval_actor_id is not None
+                    else "approval.requested"
+                ),
+                transaction,
+            )
         return transaction, created
 
     @asynccontextmanager
@@ -8097,6 +8515,54 @@ def create_app(
             if detail is None:
                 raise AgentRunPreconditionError("대화 기록을 찾을 수 없습니다.")
             workflow = detail.workflow
+            history = [item for item in detail.messages if item.id != request_message_id]
+            request_message = next(
+                (item for item in detail.messages if item.id == request_message_id),
+                None,
+            )
+            change_request_scope = (
+                str(request_message.metadata["change_request_scope"])
+                if request_message is not None
+                and request_message.metadata.get("change_request_scope")
+                in {
+                    "analysis_only",
+                    "offline_candidate_revision",
+                    "permanent_offline_revision",
+                }
+                else "analysis_only"
+            )
+            verification_scope = (
+                str(request_message.metadata["verification_scope"])
+                if request_message is not None
+                and request_message.metadata.get("verification_scope")
+                in {
+                    "offline_native_check_only",
+                    "offline_native_reopen",
+                    "offline_native_reopen_xgsim",
+                }
+                else "offline_native_reopen"
+            )
+            expected_engineering_target = (
+                current_engineering_conversation_target()
+                if workflow == "engineering"
+                else None
+            )
+            stored_target_values = (
+                detail.workspace_id,
+                detail.revision_id,
+                detail.engineering_session_id,
+            )
+            stored_engineering_target = (
+                tuple(str(item) for item in stored_target_values)
+                if all(isinstance(item, str) and item for item in stored_target_values)
+                else None
+            )
+            targetless_analysis_run = bool(
+                workflow == "engineering"
+                and change_request_scope == "analysis_only"
+                and expected_engineering_target is None
+                and all(item is None for item in stored_target_values)
+            )
             if (
                 workflow == "engineering"
                 and isinstance(detail.workspace_id, str)
@@ -8111,19 +8577,19 @@ def create_app(
                     raise AgentRunPreconditionError(
                         "the bound LS controller could not be revalidated"
                     ) from exc
-            if workflow == "engineering" and not engineering_conversation_matches_current_target(
-                detail
+            if (
+                workflow == "engineering"
+                and stored_engineering_target != expected_engineering_target
             ):
                 raise AgentRunPreconditionError(
                     "이 대화가 생성된 XG5000 대상과 현재 대상이 다릅니다. "
                     "현재 대상에서 새 엔지니어링 대화를 시작해 주세요."
                 )
-            expected_engineering_target = (
-                current_engineering_conversation_target()
-                if workflow == "engineering"
-                else None
-            )
-            if workflow == "engineering" and expected_engineering_target is None:
+            if (
+                workflow == "engineering"
+                and expected_engineering_target is None
+                and not targetless_analysis_run
+            ):
                 raise AgentRunPreconditionError(
                     "the engineering run has no verified target binding"
                 )
@@ -8148,15 +8614,22 @@ def create_app(
                 raise AgentRunPreconditionError(
                     "저장된 모델 연결의 에이전트 기능 검사가 필요합니다."
                 )
-            history = [item for item in detail.messages if item.id != request_message_id]
-            request_message = next(
-                (item for item in detail.messages if item.id == request_message_id),
-                None,
-            )
             engineering_mission_continue = bool(
                 request_message is not None
                 and request_message.role is MessageRole.SYSTEM
                 and request_message.metadata.get("engineering_mission_continue") is True
+            )
+            terminal_candidate_reproposal_scope = (
+                request_message.metadata.get("terminal_candidate_reproposal_scope")
+                if engineering_mission_continue and request_message is not None
+                else None
+            )
+            terminal_candidate_reproposal_verification_scope = (
+                request_message.metadata.get(
+                    "terminal_candidate_reproposal_verification_scope"
+                )
+                if engineering_mission_continue and request_message is not None
+                else None
             )
             if (
                 request_message is not None
@@ -8171,31 +8644,6 @@ def create_app(
                 if request_message is not None
                 and isinstance(request_message.metadata.get("actor_id"), str)
                 else f"agent-run:{run_id}"
-            )
-            workflow = (
-                str(request_message.metadata["workflow"])
-                if request_message is not None
-                and request_message.metadata.get("workflow")
-                in {"engineering", "new_project_planning"}
-                else "engineering"
-            )
-            change_request_scope = (
-                str(request_message.metadata["change_request_scope"])
-                if request_message is not None
-                and request_message.metadata.get("change_request_scope")
-                in {
-                    "analysis_only",
-                    "offline_candidate_revision",
-                    "permanent_offline_revision",
-                }
-                else "analysis_only"
-            )
-            verification_scope = (
-                str(request_message.metadata["verification_scope"])
-                if request_message is not None
-                and request_message.metadata.get("verification_scope")
-                in {"offline_native_reopen", "offline_native_reopen_xgsim"}
-                else "offline_native_reopen"
             )
             offline_operand_mission: dict[str, Any] | None = None
             if request_message is not None and isinstance(
@@ -8249,16 +8697,23 @@ def create_app(
                     )
             knowledge_workspace_snapshot = (
                 deepcopy(active_workspace)
-                if workflow == "engineering" and isinstance(active_workspace, dict)
+                if workflow == "engineering"
+                and not targetless_analysis_run
+                and isinstance(active_workspace, dict)
                 else None
             )
             engineering_session_snapshot = (
                 deepcopy(active_engineering_session)
                 if workflow == "engineering"
+                and not targetless_analysis_run
                 and _engineering_session_read_ready(active_engineering_session)
                 else None
             )
-            if workflow == "engineering" and mcp.status.status != "ready":
+            if (
+                workflow == "engineering"
+                and not targetless_analysis_run
+                and mcp.status.status != "ready"
+            ):
                 raise AgentRunPreconditionError("MCP 안전 코어가 준비되지 않았습니다.")
 
             stored_engineering_mission = (
@@ -8266,6 +8721,10 @@ def create_app(
                 if workflow == "engineering"
                 else None
             )
+            if targetless_analysis_run and stored_engineering_mission is not None:
+                raise AgentRunPreconditionError(
+                    "대상 없는 분석 대화에는 대상 결속 mission을 재사용할 수 없습니다."
+                )
             engineering_mission_snapshot: dict[str, Any] | None = None
             engineering_agent_checkpoint: dict[str, Any] | None = None
             historical_evidence_bundle: dict[str, Any] | None = None
@@ -8274,7 +8733,7 @@ def create_app(
             linked_terminal_change_state: ChangeTransactionState | None = None
             current_change_outcome: dict[str, Any] | None = None
             current_change_outcome_evidence: dict[str, Any] | None = None
-            fresh_completed_analysis_objective = False
+            fresh_terminal_objective = False
             if stored_engineering_mission is not None:
                 if (
                     stored_engineering_mission.workspace_id != detail.workspace_id
@@ -8410,10 +8869,10 @@ def create_app(
                     raise AgentRunPreconditionError(
                         "mission continuation change outcome binding changed"
                     )
-                fresh_completed_analysis_objective = (
+                fresh_terminal_objective = (
                     not engineering_mission_continue
-                    and change_request_scope == "analysis_only"
-                    and engineering_mission_snapshot.get("status") == "completed"
+                    and engineering_mission_snapshot.get("status")
+                    in {"completed", "blocked"}
                 )
             if engineering_mission_continue and engineering_mission_snapshot is None:
                 raise AgentRunPreconditionError(
@@ -8457,11 +8916,11 @@ def create_app(
                 raise AgentRunPreconditionError(
                     "approval-waiting mission no longer matches its pending change"
                 )
-            if fresh_completed_analysis_objective:
-                # A completed analysis-only mission may be followed by a new
-                # analysis objective in the same conversation.  The previous
-                # mission/checkpoint and its evidence remain journaled; this
-                # run starts a normal new durable mission instead of resuming it.
+            if fresh_terminal_objective:
+                # A completed or blocked mission may be followed by a new
+                # explicit objective in the same conversation, regardless of
+                # scope. The previous checkpoint and evidence remain journaled;
+                # this run starts a new durable mission instead of resuming it.
                 engineering_mission_snapshot = None
                 engineering_agent_checkpoint = None
                 historical_evidence_bundle = None
@@ -8518,6 +8977,48 @@ def create_app(
                     linked_change,
                 )
             )
+            terminal_candidate_reproposal_requested = bool(
+                terminal_candidate_reproposal_scope is not None
+                or terminal_candidate_reproposal_verification_scope is not None
+            )
+            terminal_candidate_reproposal_authorized = bool(
+                engineering_mission_continue
+                and request_message is not None
+                and request_message.role is MessageRole.SYSTEM
+                and _terminal_candidate_reproposal_matches_authority(
+                    linked_change=linked_change,
+                    request_scope=terminal_candidate_reproposal_scope,
+                    verification_scope=(
+                        terminal_candidate_reproposal_verification_scope
+                    ),
+                    exact_operand_reproposal_permitted=(
+                        exact_operand_reproposal_permitted
+                    ),
+                    internal_mne_rung_reproposal_permitted=(
+                        internal_mne_rung_reproposal_permitted
+                    ),
+                )
+            )
+            if (
+                terminal_candidate_reproposal_requested
+                and not terminal_candidate_reproposal_authorized
+            ):
+                raise AgentRunPreconditionError(
+                    "terminal candidate reproposal authority is invalid"
+                )
+            (
+                proposal_change_request_scope,
+                proposal_verification_scope,
+            ) = _proposal_scopes_for_run(
+                change_request_scope=change_request_scope,
+                verification_scope=verification_scope,
+                terminal_candidate_reproposal_authorized=(
+                    terminal_candidate_reproposal_authorized
+                ),
+                terminal_candidate_reproposal_verification_scope=(
+                    terminal_candidate_reproposal_verification_scope
+                ),
+            )
 
             latest_mission_checkpoint: tuple[
                 dict[str, Any],
@@ -8528,6 +9029,9 @@ def create_app(
                 str,
                 str | None,
             ] | None = None
+            agent_tool_event_observed = False
+            evidence_free_general_analysis_completion = False
+            direct_change_prior_evidence_ids: set[str] | None = None
 
             async def publish_token(delta: str) -> None:
                 store.append_event(
@@ -8556,6 +9060,7 @@ def create_app(
                 agent_checkpoint: dict[str, Any],
                 agent_checkpoint_digest: str,
             ) -> None:
+                nonlocal evidence_free_general_analysis_completion
                 nonlocal latest_mission_checkpoint
                 if workflow != "engineering":
                     raise AgentOutputContractError(
@@ -8647,6 +9152,10 @@ def create_app(
                     )
                     and evidence_id
                 }
+                if direct_change_prior_evidence_ids is not None:
+                    current_run_target_evidence_refs.difference_update(
+                        direct_change_prior_evidence_ids
+                    )
                 if progression_base is not None:
                     try:
                         prior_evidence_events = store.resolve_conversation_evidence(
@@ -8726,10 +9235,28 @@ def create_app(
                     for evidence_ref in step.get("evidenceRefs", [])
                 }
                 if mission_status == "completed":
-                    if not completed_evidence_refs:
+                    allow_evidence_free_general_completion = bool(
+                        change_request_scope == "analysis_only"
+                        and not engineering_mission_continue
+                        and engineering_mission_snapshot is None
+                        and not agent_tool_event_observed
+                        and not current_run_evidence_refs
+                        and proposed_change_authority is None
+                        and initial_pending_change_authority is None
+                        and current_change_outcome is None
+                        and target_live_change_transaction is None
+                    )
+                    if (
+                        not completed_evidence_refs
+                        and not allow_evidence_free_general_completion
+                    ):
                         raise AgentOutputContractError(
                             "completed engineering mission has no Host-bound evidence"
                         )
+                    evidence_free_general_analysis_completion = (
+                        not completed_evidence_refs
+                        and allow_evidence_free_general_completion
+                    )
                     if (
                         linked_terminal_change_state
                         in {
@@ -8806,12 +9333,23 @@ def create_app(
                     )
                 if (
                     mission_status == "completed"
-                    and change_request_scope == "offline_candidate_revision"
-                    and linked_terminal_change_state is None
+                    and (
+                        change_request_scope
+                        in {
+                            "offline_candidate_revision",
+                            "permanent_offline_revision",
+                        }
+                        or (
+                            engineering_mission_continue
+                            and mission_change_transaction_id is not None
+                        )
+                    )
+                    and linked_terminal_change_state
+                    is not ChangeTransactionState.COMPLETED
                 ):
                     raise AgentOutputContractError(
-                        "offline candidate mission completion requires an exact "
-                        "terminal Host change outcome"
+                        "offline change mission completion requires an exact "
+                        "successfully completed Host change outcome"
                     )
                 if cycle_disposition == "continue" and (
                     mission_status != "active" or stop_reason != "continuing"
@@ -8938,12 +9476,18 @@ def create_app(
                 event_type: str,
                 payload: dict[str, Any],
             ) -> dict[str, Any] | None:
+                nonlocal agent_tool_event_observed
                 if event_type not in {
+                    "tool.selected",
                     "tool.started",
                     "tool.completed",
                     "tool.failed",
+                    "tool.completion_preflight",
                 }:
                     raise ValueError("unsupported agent tool event type")
+                completion_preflight = event_type == "tool.completion_preflight"
+                if not completion_preflight:
+                    agent_tool_event_observed = True
                 safe_payload: dict[str, Any] = {}
                 tool_name = payload.get("tool_name")
                 if not isinstance(tool_name, str) or not tool_name:
@@ -8964,9 +9508,11 @@ def create_app(
                     "transport",
                 }:
                     safe_payload["failure_kind"] = failure_kind
-                failure_reason = payload.get("failure_reason")
-                if isinstance(failure_reason, str) and failure_reason:
-                    safe_payload["failure_reason"] = failure_reason[:1_000]
+                if event_type == "tool.failed":
+                    # Never persist exception/provider text. The optional code
+                    # is a closed Host vocabulary; the fallback is the closed
+                    # failure_kind vocabulary above.
+                    safe_payload.update(_agent_tool_failure_projection(payload))
                 evidence_contract = payload.get("evidence_contract")
                 if evidence_contract is not None and not isinstance(
                     evidence_contract,
@@ -8984,17 +9530,44 @@ def create_app(
                     simulator_target_status, dict
                 ):
                     raise ValueError("simulator target status must be an object")
-                store.append_event(
-                    event_type=event_type,
-                    conversation_id=conversation_id,
-                    run_id=run_id,
-                    payload=safe_payload,
+                change_outcome_state = (
+                    current_change_outcome.get("state")
+                    if isinstance(current_change_outcome, dict)
+                    and isinstance(current_change_outcome.get("state"), str)
+                    else None
                 )
+                safe_payload.update(
+                    _agent_tool_activity_projection(
+                        tool_name=tool_name,
+                        event_type=(
+                            "tool.completed" if completion_preflight else event_type
+                        ),
+                        change_request_scope=change_request_scope,
+                        change_outcome_state=change_outcome_state,
+                        simulator_target_status=simulator_target_status,
+                    )
+                )
+                if completion_preflight:
+                    return _agent_tool_evidence_ref(
+                        conversation_id=conversation_id,
+                        run_id=run_id,
+                        tool_name=tool_name,
+                        request_id=request_id,
+                        tool_call_id=(
+                            tool_call_id
+                            if isinstance(tool_call_id, str) and tool_call_id
+                            else None
+                        ),
+                        evidence_contract=evidence_contract,
+                        evidence_context=evidence_context,
+                        simulator_target_status=simulator_target_status,
+                    )
                 if event_type == "tool.completed":
                     evidence = _agent_tool_evidence_ref(
                         conversation_id=conversation_id,
                         run_id=run_id,
                         tool_name=tool_name,
+                        request_id=request_id,
                         tool_call_id=(
                             tool_call_id if isinstance(tool_call_id, str) and tool_call_id else None
                         ),
@@ -9002,14 +9575,19 @@ def create_app(
                         evidence_context=evidence_context,
                         simulator_target_status=simulator_target_status,
                     )
-                    if evidence is not None:
-                        store.append_event(
-                            event_type="evidence.added",
-                            conversation_id=conversation_id,
-                            run_id=run_id,
-                            payload=evidence,
-                        )
-                        return evidence
+                    store.append_tool_completion(
+                        conversation_id=conversation_id,
+                        run_id=run_id,
+                        tool_payload=safe_payload,
+                        evidence_payload=evidence,
+                    )
+                    return evidence
+                store.append_event(
+                    event_type=event_type,
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    payload=safe_payload,
+                )
                 return None
 
             if workflow == "engineering" and historical_evidence_bundle is not None:
@@ -9059,44 +9637,78 @@ def create_app(
                     )
                     or internal_mne_rung_reproposal_permitted
                 )
-                and change_request_scope != "analysis_only"
+                and proposal_change_request_scope != "analysis_only"
                 and isinstance(knowledge_workspace_snapshot, dict)
                 and _engineering_session_identity_verified(engineering_session_snapshot)
                 and target_live_change_transaction is None
             ):
-                # Candidate compilation and the approval-only contract are safe
-                # offline planning operations.  Keep them available when the
-                # developer-certified execution bundle is absent; execute still
-                # performs the independent valid-bundle preflight below.
+                # Candidate compilation and transaction creation are safe offline
+                # planning operations. Execution, when explicitly requested by the
+                # permanent check-only scope, still performs the independent
+                # valid-bundle preflight below.
                 mne_change_planner_available = offline_mutation_ready()
 
                 async def propose_change(**values: Any) -> dict[str, Any]:
+                    nonlocal current_change_outcome
+                    nonlocal current_change_outcome_evidence
+                    nonlocal detail
+                    nonlocal direct_change_prior_evidence_ids
+                    nonlocal expected_engineering_target
+                    nonlocal linked_change
+                    nonlocal linked_terminal_change_state
                     nonlocal proposed_change_authority
                     if not engineering_conversation_matches_current_target(detail):
                         raise AgentRunPreconditionError(
                             "변경 계약을 만들기 전에 대상이 바뀌었습니다. "
                             "현재 대상에서 새 엔지니어링 대화를 시작해 주세요."
                         )
+                    direct_execution_requested = (
+                        _explicit_user_direct_change_authority(
+                            request_message_role=(
+                                request_message.role
+                                if request_message is not None
+                                else None
+                            ),
+                            engineering_mission_continue=engineering_mission_continue,
+                            change_request_scope=change_request_scope,
+                            verification_scope=verification_scope,
+                        )
+                    )
+                    if (
+                        direct_execution_requested
+                        and direct_change_prior_evidence_ids is None
+                    ):
+                        direct_change_prior_evidence_ids = {
+                            str(event.payload["evidenceId"])
+                            for event in store.list_run_evidence(
+                                conversation_id=conversation_id,
+                                run_id=run_id,
+                            )
+                            if isinstance(event.payload.get("evidenceId"), str)
+                            and event.payload["evidenceId"]
+                        }
                     try:
                         _reject_private_change_plan_material(values)
                         plan_kind = values.get("plan_kind")
                         patch_contract = MNE_PATCH_PLAN_CONTRACTS.get(plan_kind)
                         if plan_kind in MNE_STRUCTURAL_PLAN_KINDS and values.get(
                             "verification_scope"
-                        ) != verification_scope:
+                        ) != proposal_verification_scope:
                             raise ValueError(
                                 "MNE proposal verification_scope must equal the explicit user selection"
                             )
                         if (
                             plan_kind not in MNE_STRUCTURAL_PLAN_KINDS
                             and values.get("verification_scope")
-                            != "offline_native_reopen"
+                            != proposal_verification_scope
                         ):
                             raise ValueError(
-                                "legacy operand proposal verification scope is fixed"
+                                "legacy operand proposal verification_scope must equal "
+                                "the explicit user selection"
                             )
                         if (
-                            verification_scope == "offline_native_reopen_xgsim"
+                            proposal_verification_scope
+                            == "offline_native_reopen_xgsim"
                             and (patch_contract is None or not patch_contract.supports_xgsim)
                         ):
                             raise ValueError(
@@ -9142,7 +9754,7 @@ def create_app(
                             plan: ChangePlanContract = ChangePlanV2(
                                 plan_kind=plan_kind,
                                 change_mode=values["change_mode"],
-                                request_scope=change_request_scope,
+                                request_scope=proposal_change_request_scope,
                                 target_program=target_program,
                                 impact=values["impact"],
                                 risks=values["risks"],
@@ -9177,7 +9789,7 @@ def create_app(
                             plan = patch_contract.plan_model(
                                 plan_kind=plan_kind,
                                 change_mode=values["change_mode"],
-                                request_scope=change_request_scope,
+                                request_scope=proposal_change_request_scope,
                                 candidate=candidate,
                                 candidate_evidence_id=values["candidate_evidence_id"],
                                 impact=values["impact"], risks=values["risks"],
@@ -9200,7 +9812,7 @@ def create_app(
                                 )
                             plan = ChangePlanV1(
                                 change_mode=values["change_mode"],
-                                request_scope=change_request_scope,
+                                request_scope=proposal_change_request_scope,
                                 target=values["target"],
                                 current=values["current"],
                                 proposed=values["proposed"],
@@ -9232,21 +9844,93 @@ def create_app(
                         raise AgentRunPreconditionError(
                             f"Agent change proposal is invalid: {exc}"
                         ) from exc
-                    try:
-                        transaction, created = create_server_change_transaction(
-                            operation_id=f"agent-change:{run_id}",
-                            actor_id=request_actor_id,
-                            conversation_id=conversation_id,
-                            run_id=run_id,
-                            intent=str(values["intent"]),
-                            risk_level=str(values["risk_level"]),
-                            plan=plan,
-                            approval_ttl_seconds=900,
-                        )
-                    except ChangeExecutionPreconditionError as exc:
+                    operation_id = f"agent-change:{run_id}"
+                    existing_transaction = next(
+                        (
+                            item
+                            for item in store.list_change_transactions(
+                                conversation_id=conversation_id,
+                                limit=100,
+                            )
+                            if item.operation_id == operation_id
+                        ),
+                        None,
+                    )
+                    if existing_transaction is not None:
+                        try:
+                            requested_risk = ChangeRiskLevel(
+                                str(values["risk_level"]).upper()
+                            )
+                            stored_plan = _parse_change_plan(
+                                existing_transaction.plan
+                            )
+                            recomputed_digest = calculate_plan_digest(
+                                target=existing_transaction.target,
+                                risk_level=existing_transaction.risk_level,
+                                intent=existing_transaction.intent,
+                                plan=stored_plan.model_dump(mode="json"),
+                            )
+                        except (KeyError, TypeError, ValueError) as exc:
+                            raise AgentRunPreconditionError(
+                                "기존 변경 계약을 안전하게 다시 확인할 수 없습니다."
+                            ) from exc
+                        proposed_plan_data = plan.model_dump(mode="json")
+                        stored_plan_data = stored_plan.model_dump(mode="json")
+                        if getattr(plan, "plan_kind", None) in MNE_STRUCTURAL_PLAN_KINDS:
+                            proposed_plan_data.pop("baseline_binding", None)
+                            stored_plan_data.pop("baseline_binding", None)
+                        if (
+                            existing_transaction.run_id != run_id
+                            or existing_transaction.requested_by_actor_id
+                            != request_actor_id
+                            or existing_transaction.intent != str(values["intent"])
+                            or existing_transaction.risk_level != requested_risk
+                            or proposed_plan_data != stored_plan_data
+                            or not hmac.compare_digest(
+                                recomputed_digest,
+                                existing_transaction.plan_digest,
+                            )
+                        ):
+                            raise AgentRunPreconditionError(
+                                "같은 실행의 기존 변경 계약이 현재 제안과 정확히 "
+                                "일치하지 않습니다."
+                            )
+                        transaction, created = existing_transaction, False
+                    else:
+                        try:
+                            transaction, created = create_server_change_transaction(
+                                operation_id=operation_id,
+                                actor_id=request_actor_id,
+                                conversation_id=conversation_id,
+                                run_id=run_id,
+                                intent=str(values["intent"]),
+                                risk_level=str(values["risk_level"]),
+                                plan=plan,
+                                approval_ttl_seconds=900,
+                                initial_approval_actor_id=(
+                                    request_actor_id
+                                    if direct_execution_requested
+                                    else None
+                                ),
+                            )
+                        except ChangeExecutionPreconditionError as exc:
+                            raise AgentRunPreconditionError(
+                                f"변경 계약을 만들 수 없습니다: {exc}"
+                            ) from exc
+                    if (
+                        transaction.conversation_id != conversation_id
+                        or transaction.run_id != run_id
+                        or transaction.target != current_change_target()
+                        or transaction.plan.get("request_scope")
+                        != proposal_change_request_scope
+                        or transaction.plan.get("verification_scope")
+                        != proposal_verification_scope
+                        or transaction.requested_by_actor_id != request_actor_id
+                    ):
                         raise AgentRunPreconditionError(
-                            f"변경 계약을 만들 수 없습니다: {exc}"
-                        ) from exc
+                            "저장된 변경 계약의 actor, run, 대상 또는 선택 범위가 현재 "
+                            "요청과 일치하지 않습니다."
+                        )
                     returned_authority = (transaction.id, transaction.plan_digest)
                     if (
                         proposed_change_authority is not None
@@ -9256,6 +9940,15 @@ def create_app(
                             "변경 계약 callback이 같은 run에서 다른 권한을 반환했습니다."
                         )
                     proposed_change_authority = returned_authority
+                    if (
+                        not direct_execution_requested
+                        and transaction.state
+                        is not ChangeTransactionState.PENDING_APPROVAL
+                    ):
+                        raise AgentRunPreconditionError(
+                            "승인 후보 callback은 승인 대기 상태의 변경 계약만 "
+                            "반환할 수 있습니다."
+                        )
                     response = {
                         "transaction_id": transaction.id,
                         "state": transaction.state.value,
@@ -9265,6 +9958,167 @@ def create_app(
                         "execution_permitted": False,
                         "next_action": "human_approval_required",
                     }
+                    if direct_execution_requested:
+                        try:
+                            approved, approval_recorded = (
+                                store.decide_change_transaction(
+                                    transaction_id=transaction.id,
+                                    decision=ApprovalDecision.APPROVE,
+                                    expected_plan_digest=transaction.plan_digest,
+                                    actor_id=request_actor_id,
+                                )
+                            )
+                        except ChangeStoreConflict as exc:
+                            raise AgentRunPreconditionError(
+                                "직접 변경의 일회성 승인 권한을 확인할 수 없습니다."
+                            ) from exc
+                        if approved is None:
+                            raise AgentRunPreconditionError(
+                                "직접 변경 transaction을 다시 확인할 수 없습니다."
+                            )
+                        if approval_recorded:
+                            publish_change_event("approval.resolved", approved)
+                        if approved.state is ChangeTransactionState.EXPIRED:
+                            raise AgentRunPreconditionError(
+                                "직접 변경 권한의 유효 시간이 만료되었습니다."
+                            )
+
+                        terminal = approved
+                        if terminal.state is ChangeTransactionState.APPROVED:
+                            try:
+                                await _execute_change_transaction_internal(
+                                    transaction.id,
+                                    ExecuteChangeTransactionRequestV1(
+                                        expected_plan_digest=transaction.plan_digest
+                                    ),
+                                    terminalize_preflight_failure=True,
+                                )
+                            except Exception as exc:
+                                terminal = (
+                                    store.get_change_transaction(transaction.id)
+                                    or terminal
+                                )
+                                if terminal.state in {
+                                    ChangeTransactionState.COMPLETED,
+                                    ChangeTransactionState.ROLLED_BACK,
+                                    ChangeTransactionState.FAILED,
+                                }:
+                                    pass
+                                elif terminal.state in {
+                                    ChangeTransactionState.EXECUTING,
+                                    ChangeTransactionState.VERIFYING,
+                                    ChangeTransactionState.OBSERVING,
+                                    ChangeTransactionState.QUARANTINED,
+                                }:
+                                    raise AgentRunPreconditionError(
+                                        "직접 변경 결과를 안전하게 확정할 수 없습니다. "
+                                        "저장된 transaction을 복구 화면에서 확인해 주세요."
+                                    ) from exc
+                                else:
+                                    raise AgentRunPreconditionError(
+                                        "직접 변경의 안전 실행 사전조건을 충족하지 "
+                                        "못했습니다."
+                                    ) from exc
+                            else:
+                                terminal = (
+                                    store.get_change_transaction(transaction.id)
+                                    or terminal
+                                )
+
+                        if terminal.state in {
+                            ChangeTransactionState.EXECUTING,
+                            ChangeTransactionState.VERIFYING,
+                            ChangeTransactionState.OBSERVING,
+                            ChangeTransactionState.QUARANTINED,
+                        }:
+                            raise AgentRunPreconditionError(
+                                "직접 변경 결과를 안전하게 확정할 수 없습니다. "
+                                "저장된 transaction을 복구 화면에서 확인해 주세요."
+                            )
+                        if terminal.state not in {
+                            ChangeTransactionState.COMPLETED,
+                            ChangeTransactionState.ROLLED_BACK,
+                            ChangeTransactionState.FAILED,
+                        }:
+                            raise AgentRunPreconditionError(
+                                "직접 변경 transaction이 허용된 종료 상태에 도달하지 "
+                                "못했습니다."
+                            )
+
+                        refreshed_conversation_target = (
+                            current_engineering_conversation_target()
+                        )
+                        if (
+                            refreshed_conversation_target is not None
+                            and expected_engineering_target is not None
+                            and refreshed_conversation_target[:2]
+                            == expected_engineering_target[:2]
+                        ):
+                            try:
+                                detail = store.rebind_engineering_conversation_session(
+                                    conversation_id=conversation_id,
+                                    workspace_id=refreshed_conversation_target[0],
+                                    revision_id=refreshed_conversation_target[1],
+                                    engineering_session_id=(
+                                        refreshed_conversation_target[2]
+                                    ),
+                                    # This rebind also has to work before the first
+                                    # durable mission checkpoint.  The existing
+                                    # preparation reason is the deliberately narrow
+                                    # path that permits that case while still
+                                    # enforcing the exact workspace/revision pair.
+                                    reason="offline_candidate_preparation",
+                                )
+                            except EngineeringMissionConflict:
+                                logger.warning(
+                                    "terminal direct change conversation session could "
+                                    "not be rebound (transaction=%s)",
+                                    terminal.id,
+                                )
+                            else:
+                                expected_engineering_target = (
+                                    refreshed_conversation_target
+                                )
+                        linked_change = terminal
+                        linked_terminal_change_state = terminal.state
+                        current_change_outcome = change_outcome_projection(terminal)
+                        current_change_outcome_evidence = change_outcome_evidence(
+                            current_change_outcome
+                        )
+                        outcome_evidence_id = str(
+                            current_change_outcome_evidence["evidenceId"]
+                        )
+                        if not any(
+                            event.payload.get("evidenceId") == outcome_evidence_id
+                            for event in store.list_run_evidence(
+                                conversation_id=conversation_id,
+                                run_id=run_id,
+                            )
+                        ):
+                            store.append_event(
+                                event_type="evidence.added",
+                                conversation_id=conversation_id,
+                                run_id=run_id,
+                                payload=current_change_outcome_evidence,
+                            )
+                        response.update(
+                            {
+                                "state": terminal.state.value,
+                                "execution_permitted": True,
+                                "next_action": {
+                                    ChangeTransactionState.COMPLETED: (
+                                        "change_execution_completed"
+                                    ),
+                                    ChangeTransactionState.ROLLED_BACK: (
+                                        "change_verification_failed_rolled_back"
+                                    ),
+                                    ChangeTransactionState.FAILED: (
+                                        "change_execution_failed"
+                                    ),
+                                }[terminal.state],
+                                "change_outcome": current_change_outcome,
+                            }
+                        )
                     if isinstance(plan, ChangePlanV2):
                         response.update(
                             {
@@ -9313,15 +10167,20 @@ def create_app(
                     else {
                         "workflow": "engineering",
                         **(
+                            {"targetless_analysis": True}
+                            if targetless_analysis_run
+                            else {}
+                        ),
+                        **(
                             engineering_session_snapshot
                             if _engineering_session_read_ready(
                                 engineering_session_snapshot
                             )
                             else {}
                         ),
-                        "change_request_scope": change_request_scope,
+                        "change_request_scope": proposal_change_request_scope,
                         "mne_change_planner_available": mne_change_planner_available,
-                        "verification_scope": verification_scope,
+                        "verification_scope": proposal_verification_scope,
                         **(
                             {
                                 "internal_mne_rung_reproposal_permitted": True
@@ -9369,47 +10228,79 @@ def create_app(
                 on_token=publish_token,
                 on_tool_event=publish_tool_event,
                 on_progress=publish_progress,
-                on_mission_checkpoint=persist_mission_checkpoint,
+                on_mission_checkpoint=(
+                    None if targetless_analysis_run else persist_mission_checkpoint
+                ),
             )
             final_mission: dict[str, Any] | None = None
             if workflow == "engineering":
-                if (
-                    output.engineering_mission is None
-                    or output.digest is None
-                    or output.cycle_disposition is None
-                    or latest_mission_checkpoint is None
-                ):
-                    raise AgentOutputContractError(
-                        "engineering run did not return a durable mission checkpoint"
+                if targetless_analysis_run:
+                    mission_fields = (
+                        output.engineering_mission,
+                        output.digest,
+                        output.cycle_disposition,
                     )
-                try:
-                    final_mission, final_mission_digest = (
-                        _canonical_engineering_mission(output.engineering_mission)
-                    )
-                except (TypeError, ValueError) as exc:
-                    raise AgentOutputContractError(
-                        "Agent final engineering mission is invalid"
-                    ) from exc
-                if final_mission_digest != output.digest:
-                    raise AgentOutputContractError(
-                        "Agent final engineering mission digest does not match"
-                    )
-                if output.cycle_disposition != "respond":
-                    raise AgentOutputContractError(
-                        "Agent final engineering mission must stop its cycle loop"
-                    )
-                if (
-                    final_mission,
-                    output.digest,
-                    output.cycle_disposition,
-                ) != (
-                    latest_mission_checkpoint[0],
-                    latest_mission_checkpoint[1],
-                    latest_mission_checkpoint[3],
-                ):
-                    raise AgentOutputContractError(
-                        "Agent final engineering mission differs from its last checkpoint"
-                    )
+                    if any(item is not None for item in mission_fields):
+                        if any(item is None for item in mission_fields):
+                            raise AgentOutputContractError(
+                                "targetless analysis returned incomplete mission state"
+                            )
+                        try:
+                            final_mission, final_mission_digest = (
+                                _canonical_engineering_mission(
+                                    output.engineering_mission
+                                )
+                            )
+                        except (TypeError, ValueError) as exc:
+                            raise AgentOutputContractError(
+                                "Agent final engineering mission is invalid"
+                            ) from exc
+                        if final_mission_digest != output.digest:
+                            raise AgentOutputContractError(
+                                "Agent final engineering mission digest does not match"
+                            )
+                        if output.cycle_disposition != "respond":
+                            raise AgentOutputContractError(
+                                "Agent final engineering mission must stop its cycle loop"
+                            )
+                else:
+                    if (
+                        output.engineering_mission is None
+                        or output.digest is None
+                        or output.cycle_disposition is None
+                        or latest_mission_checkpoint is None
+                    ):
+                        raise AgentOutputContractError(
+                            "engineering run did not return a durable mission checkpoint"
+                        )
+                    try:
+                        final_mission, final_mission_digest = (
+                            _canonical_engineering_mission(output.engineering_mission)
+                        )
+                    except (TypeError, ValueError) as exc:
+                        raise AgentOutputContractError(
+                            "Agent final engineering mission is invalid"
+                        ) from exc
+                    if final_mission_digest != output.digest:
+                        raise AgentOutputContractError(
+                            "Agent final engineering mission digest does not match"
+                        )
+                    if output.cycle_disposition != "respond":
+                        raise AgentOutputContractError(
+                            "Agent final engineering mission must stop its cycle loop"
+                        )
+                    if (
+                        final_mission,
+                        output.digest,
+                        output.cycle_disposition,
+                    ) != (
+                        latest_mission_checkpoint[0],
+                        latest_mission_checkpoint[1],
+                        latest_mission_checkpoint[3],
+                    ):
+                        raise AgentOutputContractError(
+                            "Agent final engineering mission differs from its last checkpoint"
+                        )
             elif (
                 output.engineering_mission is not None
                 or output.digest is not None
@@ -9473,7 +10364,9 @@ def create_app(
                     )
                     ProjectPlanRevisionDeltaV1.model_validate(plan_revision)
             engineering_analysis, engineering_analysis_digest = (
-                validate_engineering_analysis_artifact(
+                (None, None)
+                if targetless_analysis_run
+                else validate_engineering_analysis_artifact(
                     output.engineering_analysis,
                     output.engineering_analysis_digest,
                     conversation_id=conversation_id,
@@ -9483,6 +10376,40 @@ def create_app(
                     current_outcome_evidence=current_change_outcome_evidence,
                 )
             )
+            if evidence_free_general_analysis_completion:
+                if (
+                    change_request_scope != "analysis_only"
+                    or engineering_mission_continue
+                    or agent_tool_event_observed
+                    or store.list_run_evidence(
+                        conversation_id=conversation_id,
+                        run_id=run_id,
+                    )
+                    or proposed_change_authority is not None
+                    or current_change_outcome is not None
+                ):
+                    raise AgentOutputContractError(
+                        "evidence-free completion exceeded the general analysis boundary"
+                    )
+                structured_target_fields = (
+                    "observations",
+                    "inferences",
+                    "hypotheses",
+                    "alternatives",
+                    "locations",
+                    "relations",
+                    "coverage",
+                    "projectStructure",
+                    "evidenceRefs",
+                )
+                if engineering_analysis is not None and any(
+                    engineering_analysis.get(field)
+                    for field in structured_target_fields
+                ):
+                    raise AgentOutputContractError(
+                        "evidence-free general analysis returned target-specific "
+                        "structured claims"
+                    )
             assistant_message_metadata = {
                     "run_id": run_id,
                     "status": "complete",
@@ -9536,11 +10463,13 @@ def create_app(
                     ),
                     **(
                         {"engineering_mission_digest": output.digest}
-                        if workflow == "engineering" and output.digest is not None
+                        if workflow == "engineering"
+                        and not targetless_analysis_run
+                        and output.digest is not None
                         else {}
                     ),
                 }
-            if workflow == "engineering":
+            if workflow == "engineering" and not targetless_analysis_run:
                 assert final_mission is not None
                 assert output.digest is not None
                 assert latest_mission_checkpoint is not None
@@ -9590,6 +10519,27 @@ def create_app(
             store.update_run_state(run_id=run_id, state=RunState.CANCELLED)
             raise
         except Exception as exc:  # noqa: BLE001 - sanitize every provider/runtime failure
+            retained_direct_transaction = (
+                store.get_change_transaction(proposed_change_authority[0])
+                if proposed_change_authority is not None
+                else None
+            )
+            retained_direct_change_outcome = bool(
+                retained_direct_transaction is not None
+                and proposed_change_authority is not None
+                and retained_direct_transaction.plan_digest
+                == proposed_change_authority[1]
+                and retained_direct_transaction.plan.get("request_scope")
+                == "permanent_offline_revision"
+                and retained_direct_transaction.plan.get("verification_scope")
+                == "offline_native_check_only"
+                and retained_direct_transaction.state
+                in {
+                    ChangeTransactionState.COMPLETED,
+                    ChangeTransactionState.ROLLED_BACK,
+                    ChangeTransactionState.FAILED,
+                }
+            )
             if isinstance(exc, AgentRunPreconditionError):
                 logger.warning("agent run %s failed a product precondition", run_id)
                 user_message = str(exc)
@@ -9601,7 +10551,13 @@ def create_app(
                     proposed_change_authority is not None
                 )
                 if diagnostic is None:
-                    if retained_current_run_change_contract:
+                    if retained_direct_change_outcome:
+                        logger.warning(
+                            "agent run %s failed final structured output processing; "
+                            "a terminal direct change outcome from this run was retained",
+                            run_id,
+                        )
+                    elif retained_current_run_change_contract:
                         logger.warning(
                             "agent run %s failed final structured output processing; "
                             "a Host approval-pending change contract from this run "
@@ -9623,7 +10579,20 @@ def create_app(
                         + issue.error_type
                         for issue in diagnostic.validation_errors
                     )
-                    if retained_current_run_change_contract:
+                    if retained_direct_change_outcome:
+                        logger.warning(
+                            "agent run %s failed final structured output processing "
+                            "after a terminal direct change outcome from this run was "
+                            "retained (stage=%s, exception_kind=%s, reason_code=%s, "
+                            "validator_code=%s, validation_errors=%s)",
+                            run_id,
+                            diagnostic.stage,
+                            diagnostic.exception_kind,
+                            diagnostic.reason_code,
+                            diagnostic.validator_code,
+                            validation_codes or "none",
+                        )
+                    elif retained_current_run_change_contract:
                         logger.warning(
                             "agent run %s failed final structured output processing "
                             "after a Host approval-pending change contract from this run "
@@ -9649,7 +10618,13 @@ def create_app(
                             diagnostic.validator_code,
                             validation_codes or "none",
                         )
-                if retained_current_run_change_contract:
+                if retained_direct_change_outcome:
+                    user_message = (
+                        "Host의 직접 변경 transaction은 종료 상태로 안전하게 "
+                        "기록되었습니다. 다만 모델의 최종 근거·응답 계약 처리에는 "
+                        "실패했습니다. 변경 실행 기록에서 정확한 결과를 확인해 주세요."
+                    )
+                elif retained_current_run_change_contract:
                     user_message = (
                         "Host가 이 실행에서 만든 승인 대기 변경 계약은 유지됩니다. "
                         "다만 최종 응답의 근거·안전 출력 계약 처리에는 실패했습니다. "
@@ -9672,14 +10647,20 @@ def create_app(
                     )
                 error_code = "agent_output_contract"
                 error_detail = (
-                    "Final response processing failed the structured evidence/safety "
-                    "contract after the Host created an approval-pending change contract "
-                    "for this run; the retained contract was not invalidated. No execution "
-                    "or mutation outcome is implied."
-                    if retained_current_run_change_contract
+                    "Final response processing failed after the Host retained a "
+                    "canonical terminal direct change outcome for this run; the durable "
+                    "transaction remains authoritative."
+                    if retained_direct_change_outcome
                     else (
-                        "Model output failed the structured evidence/safety contract; "
-                        "no model-authored plan or mutation was accepted."
+                        "Final response processing failed the structured evidence/safety "
+                        "contract after the Host created an approval-pending change contract "
+                        "for this run; the retained contract was not invalidated. No execution "
+                        "or mutation outcome is implied."
+                        if retained_current_run_change_contract
+                        else (
+                            "Model output failed the structured evidence/safety contract; "
+                            "no model-authored plan or mutation was accepted."
+                        )
                     )
                 )
                 if diagnostic is not None:
@@ -9744,6 +10725,19 @@ def create_app(
                 error_detail = (
                     "Agent dependency request failed; provider detail was suppressed "
                     f"({type(exc).__name__})."
+                )
+            if retained_direct_change_outcome and not isinstance(
+                exc,
+                AgentOutputContractError,
+            ):
+                user_message = (
+                    "Host의 직접 변경 transaction은 종료 상태로 안전하게 "
+                    "기록되었습니다. 이후 에이전트 응답 생성에 실패했으므로 변경 "
+                    "실행 기록에서 정확한 결과를 확인해 주세요."
+                )
+                error_detail += (
+                    " A canonical terminal direct change transaction was retained; "
+                    "its durable receipt remains authoritative."
                 )
             store.append_message(
                 conversation_id=conversation_id,
@@ -9823,6 +10817,21 @@ def create_app(
             detail = store.get_conversation(conversation_id)
             if detail is None:
                 raise HTTPException(status_code=404, detail="conversation not found")
+            targetless_engineering_conversation = bool(
+                detail.workflow == "engineering"
+                and current_engineering_conversation_target() is None
+                and detail.workspace_id is None
+                and detail.revision_id is None
+                and detail.engineering_session_id is None
+            )
+            if (
+                targetless_engineering_conversation
+                and effective_change_request_scope != "analysis_only"
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="targetless engineering conversations permit analysis_only requests",
+                )
             if (
                 detail.workflow == "engineering"
                 and isinstance(detail.workspace_id, str)
@@ -9860,14 +10869,14 @@ def create_app(
                             status_code=status.HTTP_409_CONFLICT,
                             detail="stored engineering mission digest does not match",
                         )
-                    allows_fresh_completed_analysis = (
+                    allows_fresh_terminal_objective = (
                         body.workflow == "engineering"
-                        and effective_change_request_scope == "analysis_only"
-                        and terminal_snapshot["status"] == "completed"
+                        and terminal_snapshot["status"]
+                        in {"completed", "blocked"}
                     )
                     if (
                         terminal_snapshot["status"] in {"completed", "blocked"}
-                        and not allows_fresh_completed_analysis
+                        and not allows_fresh_terminal_objective
                     ):
                         raise HTTPException(
                             status_code=status.HTTP_409_CONFLICT,
@@ -9939,7 +10948,7 @@ def create_app(
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=(
-                        "offline candidate work requires an exact source-preserving "
+                        "offline change work requires an exact source-preserving "
                         "workspace and strong selected-PID XG5000 binding"
                     ),
                 )
@@ -10183,6 +11192,7 @@ def create_app(
                 )
             mission_status = mission_snapshot["status"]
             change_outcome_transaction_id: str | None = None
+            linked_change: ChangeTransaction | None = None
             if mission_status == "waiting_for_approval":
                 linked_change = (
                     store.get_change_transaction(mission.change_transaction_id)
@@ -10233,9 +11243,13 @@ def create_app(
                 mission_scope = mission_request_message.metadata.get(
                     "change_request_scope"
                 )
-            continuation_scope = (
-                "offline_candidate_revision"
-                if mission_scope == "offline_candidate_revision"
+            mission_scope = (
+                str(mission_scope)
+                if mission_scope
+                in {
+                    "offline_candidate_revision",
+                    "permanent_offline_revision",
+                }
                 else "analysis_only"
             )
             mission_verification_scope = (
@@ -10251,12 +11265,29 @@ def create_app(
                 mission_verification_scope = mission_request_message.metadata.get(
                     "verification_scope"
                 )
-            verification_scope = (
+            mission_verification_scope = (
                 str(mission_verification_scope)
                 if mission_verification_scope
-                in {"offline_native_reopen", "offline_native_reopen_xgsim"}
+                in {
+                    "offline_native_check_only",
+                    "offline_native_reopen",
+                    "offline_native_reopen_xgsim",
+                }
                 else "offline_native_reopen"
             )
+            # Mission metadata predates the stricter new-message matrix and may
+            # legitimately carry permanent+reopen or candidate+check-only.
+            # Preserve those values only while validating a narrow terminal
+            # recovery/reproposal. A SYSTEM continuation never inherits the
+            # original user message's general mutation authority.
+            if (
+                mission_verification_scope == "offline_native_reopen_xgsim"
+                and mission_scope != "offline_candidate_revision"
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="stored XG-SIM mission request scope is invalid",
+                )
 
             current_target = current_engineering_conversation_target()
             if current_target is None:
@@ -10290,6 +11321,28 @@ def create_app(
                     linked_change,
                 )
             )
+            exact_operand_reproposal_permitted = bool(
+                change_outcome_transaction_id is not None
+                and _expired_exact_operand_reproposal_callback_permitted(
+                    mission_snapshot,
+                    change_outcome_projection(linked_change),
+                )
+            )
+            terminal_candidate_reproposal_permitted = bool(
+                _terminal_candidate_reproposal_matches_authority(
+                    linked_change=linked_change,
+                    request_scope=mission_scope,
+                    verification_scope=mission_verification_scope,
+                    exact_operand_reproposal_permitted=(
+                        exact_operand_reproposal_permitted
+                    ),
+                    internal_mne_rung_reproposal_permitted=(
+                        internal_mne_rung_reproposal_permitted
+                    ),
+                )
+            )
+            continuation_scope = "analysis_only"
+            continuation_verification_scope = "offline_native_reopen"
             continuation_prompt = (
                 "Continue the current durable engineering mission from its saved "
                 "checkpoint. The Host authorized only the internal-M MNE rung path "
@@ -10320,7 +11373,19 @@ def create_app(
                     run_metadata={
                         "engineering_mission_continue": True,
                         "change_request_scope": continuation_scope,
-                        "verification_scope": verification_scope,
+                        "verification_scope": continuation_verification_scope,
+                        **(
+                            {
+                                "terminal_candidate_reproposal_scope": (
+                                    "offline_candidate_revision"
+                                ),
+                                "terminal_candidate_reproposal_verification_scope": (
+                                    mission_verification_scope
+                                ),
+                            }
+                            if terminal_candidate_reproposal_permitted
+                            else {}
+                        ),
                         **(
                             {
                                 "change_outcome_transaction_id": (
@@ -10336,8 +11401,20 @@ def create_app(
                         "actor_id": _request_actor_id(request),
                         "workflow": "engineering",
                         "change_request_scope": continuation_scope,
-                        "verification_scope": verification_scope,
+                        "verification_scope": continuation_verification_scope,
                         "engineering_mission_continue": True,
+                        **(
+                            {
+                                "terminal_candidate_reproposal_scope": (
+                                    "offline_candidate_revision"
+                                ),
+                                "terminal_candidate_reproposal_verification_scope": (
+                                    mission_verification_scope
+                                ),
+                            }
+                            if terminal_candidate_reproposal_permitted
+                            else {}
+                        ),
                         **(
                             {
                                 "change_outcome_transaction_id": (
@@ -10411,11 +11488,32 @@ def create_app(
                 idempotent=True,
                 detail="run was already terminal",
             )
-        if run.state in {
-            RunState.APPROVED_PENDING_EXECUTION,
-            RunState.EXECUTING,
-            RunState.VERIFYING,
-        }:
+        durable_mutation_stage = store.get_mutation_stage_change_for_run(run.id)
+        active_change_execution = next(
+            (
+                transaction
+                for transaction_id in tuple(active_change_executions)
+                if (transaction := store.get_change_transaction(transaction_id))
+                is not None
+                and transaction.run_id == run.id
+            ),
+            None,
+        )
+        if (
+            run.state
+            in {
+                RunState.APPROVED_PENDING_EXECUTION,
+                RunState.EXECUTING,
+                RunState.VERIFYING,
+            }
+            or durable_mutation_stage is not None
+            # finish_change_execution durably terminalizes before the exact
+            # target identity refresh and callback tool terminal are recorded.
+            # Keep cancellation closed throughout that in-memory execution
+            # boundary as well, even though the durable transaction is already
+            # COMPLETED/ROLLED_BACK/FAILED for a short interval.
+            or active_change_execution is not None
+        ):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
@@ -10759,6 +11857,25 @@ def create_app(
         request: Request,
         _csrf: None = Depends(require_browser_csrf),
     ) -> ChangeReceiptAcknowledgementV1:
+        current = store.get_change_transaction(transaction_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="change transaction not found")
+        if (
+            current.state
+            in {
+                ChangeTransactionState.COMPLETED,
+                ChangeTransactionState.ROLLED_BACK,
+            }
+            and not _is_exact_terminal_mne_no_mutation_abort(current)
+            and not _has_valid_terminal_change_receipt(current)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "terminal change receipt is incomplete or does not match "
+                    "the recorded verification contract"
+                ),
+            )
         try:
             transaction, recorded = store.acknowledge_change_receipt(
                 transaction_id=transaction_id,
@@ -10836,28 +11953,46 @@ def create_app(
             decision_recorded=recorded,
         )
 
-    @app.post(
-        "/api/v1/change-transactions/{transaction_id}/execute",
-        response_model=ChangeExecutionResponseV1,
-    )
-    async def execute_change_transaction_v1(
+    async def _execute_change_transaction_internal(
         transaction_id: str,
         body: ExecuteChangeTransactionRequestV1,
-        _run_guard: None = Depends(engineering_target_run_guard),
+        *,
+        terminalize_preflight_failure: bool = False,
     ) -> ChangeExecutionResponseV1:
+        def terminal_preflight_response() -> ChangeExecutionResponseV1:
+            try:
+                failed, recorded = store.fail_approved_change_preflight(
+                    transaction_id=transaction_id,
+                    expected_plan_digest=body.expected_plan_digest,
+                )
+            except ChangeStoreConflict as conflict:
+                raise HTTPException(status_code=409, detail=str(conflict)) from conflict
+            if failed is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="change transaction not found",
+                )
+            if recorded:
+                publish_change_event("change.transaction.updated", failed)
+            return ChangeExecutionResponseV1(
+                transaction=_change_transaction_v1(failed),
+                execution_started=False,
+            )
+
         transaction = store.get_change_transaction(transaction_id)
         if transaction is None:
             raise HTTPException(status_code=404, detail="change transaction not found")
         if transaction.plan_digest != body.expected_plan_digest:
             raise HTTPException(status_code=409, detail="plan digest does not match")
         try:
-            _parse_change_plan(transaction.plan)
             validate_executable_plan_data(
                 transaction.plan,
                 conversation_id=transaction.conversation_id,
                 run_id=transaction.run_id,
             )
         except ChangeExecutionPreconditionError as exc:
+            if terminalize_preflight_failure:
+                return terminal_preflight_response()
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         holder_token = str(uuid.uuid4())
         try:
@@ -10869,7 +12004,19 @@ def create_app(
                 allowed_change_transaction_id=transaction_id,
             )
         except TargetOperationLeaseConflict as exc:
+            if terminalize_preflight_failure:
+                return terminal_preflight_response()
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            if terminalize_preflight_failure:
+                logger.error(
+                    "direct change transaction %s could not acquire its target lease "
+                    "(exception_type=%s)",
+                    transaction_id,
+                    type(exc).__name__,
+                )
+                return terminal_preflight_response()
+            raise
         try:
             if current_change_target() != transaction.target:
                 raise ChangeExecutionPreconditionError(
@@ -10882,7 +12029,33 @@ def create_app(
                 holder_token=holder_token,
                 reason="change_preflight_failed",
             )
+            if terminalize_preflight_failure:
+                return terminal_preflight_response()
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except asyncio.CancelledError:
+            store.release_target_operation_lease(
+                operation_id=transaction_id,
+                holder_token=holder_token,
+                reason="change_preflight_interrupted",
+            )
+            if terminalize_preflight_failure:
+                terminal_preflight_response()
+            raise
+        except Exception as exc:
+            store.release_target_operation_lease(
+                operation_id=transaction_id,
+                holder_token=holder_token,
+                reason="change_preflight_interrupted",
+            )
+            if terminalize_preflight_failure:
+                logger.error(
+                    "direct change transaction %s failed before native execution "
+                    "(exception_type=%s)",
+                    transaction_id,
+                    type(exc).__name__,
+                )
+                return terminal_preflight_response()
+            raise
         except BaseException:
             store.release_target_operation_lease(
                 operation_id=transaction_id,
@@ -10902,6 +12075,8 @@ def create_app(
                 holder_token=holder_token,
                 reason="durable_mutation_lease_conflict",
             )
+            if terminalize_preflight_failure:
+                return terminal_preflight_response()
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -10914,7 +12089,24 @@ def create_app(
                 holder_token=holder_token,
                 reason="change_execution_not_started",
             )
+            if terminalize_preflight_failure:
+                return terminal_preflight_response()
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            store.release_target_operation_lease(
+                operation_id=transaction_id,
+                holder_token=holder_token,
+                reason="change_execution_not_started",
+            )
+            if terminalize_preflight_failure:
+                logger.error(
+                    "direct change transaction %s could not enter execution "
+                    "(exception_type=%s)",
+                    transaction_id,
+                    type(exc).__name__,
+                )
+                return terminal_preflight_response()
+            raise
         assert executing is not None
         publish_change_event("change.transaction.updated", executing)
         active_change_executions.add(transaction_id)
@@ -10927,7 +12119,10 @@ def create_app(
                     state=ChangeTransactionState.FAILED,
                     verification_evidence=exc.evidence or None,
                     error_code="native_change_not_applied",
-                    error_detail=str(exc),
+                    error_detail=(
+                        "Native change execution failed before an application "
+                        "could be proven; private provider detail was suppressed."
+                    ),
                 )
                 assert failed is not None
                 publish_change_event("change.transaction.updated", failed)
@@ -10944,7 +12139,10 @@ def create_app(
                     state=ChangeTransactionState.QUARANTINED,
                     verification_evidence={"recovery": recovery_evidence},
                     error_code="native_change_outcome_uncertain",
-                    error_detail=str(exc),
+                    error_detail=(
+                        "Native change execution ended with an uncertain outcome; "
+                        "private provider detail was suppressed."
+                    ),
                 )
                 assert quarantined is not None
                 publish_change_event("change.transaction.updated", quarantined)
@@ -10959,11 +12157,18 @@ def create_app(
                     transaction_id=transaction_id,
                     state=ChangeTransactionState.QUARANTINED,
                     error_code="unexpected_apply_failure",
-                    error_detail=f"{type(exc).__name__}: {exc}",
+                    error_detail=(
+                        "Native apply failed unexpectedly; private provider detail "
+                        f"was suppressed ({type(exc).__name__})."
+                    ),
                 )
                 assert quarantined is not None
                 publish_change_event("change.transaction.updated", quarantined)
-                logger.exception("change transaction %s apply failed", transaction_id)
+                logger.error(
+                    "change transaction %s apply failed (exception_type=%s)",
+                    transaction_id,
+                    type(exc).__name__,
+                )
                 return ChangeExecutionResponseV1(
                     transaction=_change_transaction_v1(quarantined),
                     execution_started=True,
@@ -10989,15 +12194,19 @@ def create_app(
                     transaction_id=transaction_id,
                     state=ChangeTransactionState.QUARANTINED,
                     error_code="verification_outcome_uncertain",
-                    error_detail=f"{type(exc).__name__}: {exc}",
+                    error_detail=(
+                        "Native verification ended without a certain outcome; private "
+                        f"provider detail was suppressed ({type(exc).__name__})."
+                    ),
                 )
                 assert quarantined is not None
                 publish_change_event("change.transaction.updated", quarantined)
                 if isinstance(exc, asyncio.CancelledError):
                     raise
-                logger.exception(
-                    "change transaction %s verification failed",
+                logger.error(
+                    "change transaction %s verification failed (exception_type=%s)",
                     transaction_id,
+                    type(exc).__name__,
                 )
                 return ChangeExecutionResponseV1(
                     transaction=_change_transaction_v1(quarantined),
@@ -11029,6 +12238,17 @@ def create_app(
             )
         finally:
             active_change_executions.discard(transaction_id)
+
+    @app.post(
+        "/api/v1/change-transactions/{transaction_id}/execute",
+        response_model=ChangeExecutionResponseV1,
+    )
+    async def execute_change_transaction_v1(
+        transaction_id: str,
+        body: ExecuteChangeTransactionRequestV1,
+        _run_guard: None = Depends(engineering_target_run_guard),
+    ) -> ChangeExecutionResponseV1:
+        return await _execute_change_transaction_internal(transaction_id, body)
 
     @app.post(
         "/api/v1/change-transactions/{transaction_id}/simulation-decision",
@@ -11473,9 +12693,10 @@ def create_app(
                     )
                     raise
                 outcome = None
-                logger.exception(
-                    "change transaction %s reconciliation failed",
+                logger.error(
+                    "change transaction %s reconciliation failed (exception_type=%s)",
                     transaction_id,
+                    type(exc).__name__,
                 )
             if outcome is not None and restoration_receipt is not None:
                 outcome.evidence["working_copy_restore"] = restoration_receipt

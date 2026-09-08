@@ -49,6 +49,16 @@ AMBIGUOUS_STRUCTURAL_SCOPE_LIMITATION = (
 _FACT_COUNT_LIMIT = 200
 _MODEL_CONTEXT_ITEM_LIMIT = 32
 _PAYLOAD_BINDING_LIMIT = 200
+_LOGIC_CONTEXT_NETWORK_LIMIT = 1_024
+_LOGIC_CONTEXT_SOURCE_RUNG_LIMIT = 10_000
+_LOGIC_CONTEXT_VISUAL_ROW_LIMIT = 256
+_LOGIC_CONTEXT_OUTPUT_LIMIT = 64
+_LOGIC_CONTEXT_CONDITION_DEPTH_LIMIT = 32
+_LOGIC_CONTEXT_CONDITION_TERM_LIMIT = 64
+_LOGIC_CONTEXT_CONDITION_NODE_LIMIT = 512
+_LOGIC_CONTEXT_EXPRESSION_LIMIT = 16_000
+_LOGIC_CONTEXT_OPERAND_LIMIT = 512
+_LOGIC_CONTEXT_BYTE_LIMIT = 750_000
 _LOCATION_FACT_BYTE_LIMIT = 80_000
 _RELATION_FACT_BYTE_LIMIT = 120_000
 _STRUCTURE_FACT_BYTE_LIMIT = 48_000
@@ -568,14 +578,13 @@ def _relation_fact(
     normalized_source = _text(source, "structural relation source")
     normalized_target = _text(target, "structural relation target")
     normalized_chain = [_device(item, "causal path device") for item in device_chain]
-    if relation_kind == "causal_path":
-        if (
-            len(normalized_chain) < 2
-            or normalized_chain[0] != normalized_source
-            or normalized_chain[-1] != normalized_target
-            or direct != (len(normalized_chain) == 2)
-        ):
-            raise MCPToolError("causal path relation is not a canonical source-to-target chain")
+    if relation_kind == "causal_path" and (
+        len(normalized_chain) < 2
+        or normalized_chain[0] != normalized_source
+        or normalized_chain[-1] != normalized_target
+        or direct != (len(normalized_chain) == 2)
+    ):
+        raise MCPToolError("causal path relation is not a canonical source-to-target chain")
     if semantic_status not in {"structured", "partial"}:
         raise MCPToolError("structural relation semantic status is invalid")
     fact = {
@@ -826,6 +835,176 @@ def _validated_result(result: Any, raw_name: str) -> Mapping[str, Any]:
     ):
         raise MCPToolError(f"{raw_name} project hash changed during analysis")
     return value
+
+
+def _validate_structural_result_binding(
+    raw_name: str,
+    result: Any,
+    contract: Mapping[str, Any],
+    *,
+    expected_session_identity: Mapping[str, Any] | None,
+    request_arguments: Mapping[str, Any] | None,
+) -> None:
+    """Bind one structural receipt to the Host target and exact Agent request."""
+
+    arguments = request_arguments if isinstance(request_arguments, Mapping) else {}
+    allowed_arguments = {
+        "program.logic_graph": {"schema_version", "program_id", "use_cache"},
+        "program.state_model": {"schema_version", "program_id", "use_cache"},
+        "device.references": {
+            "schema_version",
+            "device",
+            "offset",
+            "limit",
+            "use_cache",
+        },
+        "device.causal_impact": {
+            "schema_version",
+            "device",
+            "direction",
+            "max_depth",
+            "max_paths",
+            "use_cache",
+        },
+        "project.behavior_report": {"schema_version", "use_cache"},
+        "project.search": {
+            "schema_version",
+            "query",
+            "program_id",
+            "offset",
+            "limit",
+        },
+    }.get(raw_name)
+    if allowed_arguments is None:
+        raise MCPToolError(f"{raw_name} has no structural request binding")
+    if (
+        set(arguments) - allowed_arguments
+        or arguments.get("schema_version", "1.0") != "1.0"
+    ):
+        raise MCPToolError(f"{raw_name} request shape is invalid")
+
+    if expected_session_identity is not None:
+        envelope = _mapping(result, f"{raw_name} result")
+        expected_session_id = expected_session_identity.get("session_id")
+        expected_project_hash = expected_session_identity.get("project_hash")
+        if (
+            not isinstance(expected_session_id, str)
+            or not expected_session_id
+            or re.fullmatch(r"[0-9a-f]{64}", str(expected_project_hash)) is None
+            or envelope.get("session_id") != expected_session_id
+            or str(envelope.get("project_hash_before") or "").casefold()
+            != expected_project_hash
+            or str(envelope.get("project_hash_after") or "").casefold()
+            != expected_project_hash
+        ):
+            raise MCPToolError(f"{raw_name} result is not bound to the active Host session")
+
+    scope = _mapping(contract.get("scope"), f"{raw_name} structural scope")
+    query = _mapping(scope.get("query"), f"{raw_name} structural query")
+    cache_reused = scope.get("cacheReused")
+    requested_cache = arguments.get("use_cache")
+    if requested_cache is not None and type(requested_cache) is not bool:
+        raise MCPToolError(f"{raw_name} cache request is invalid")
+    if requested_cache is False and cache_reused is not False:
+        raise MCPToolError(f"{raw_name} reused a cache disabled by its request")
+
+    if raw_name in {"program.logic_graph", "program.state_model"}:
+        program_value = arguments.get("program_id")
+        requested_program = (
+            program_value.strip()
+            if isinstance(program_value, str) and program_value.strip()
+            else None
+        )
+        if (
+            requested_program is None
+            or _CANONICAL_LD_PROGRAM_ID.fullmatch(requested_program) is None
+            or query != {"programId": requested_program}
+        ):
+            raise MCPToolError(f"{raw_name} result differs from its program request")
+        return
+
+    if raw_name == "device.references":
+        device_value = arguments.get("device")
+        requested_device = _device(device_value, "device.references request device")
+        offset = arguments.get("offset", 0)
+        limit = arguments.get("limit", 100)
+        if (
+            requested_device is None
+            or isinstance(offset, bool)
+            or not isinstance(offset, int)
+            or offset < 0
+            or isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 500
+            or query
+            != {"device": requested_device, "offset": offset, "limit": limit}
+        ):
+            raise MCPToolError("device.references result differs from its request")
+        return
+
+    if raw_name == "device.causal_impact":
+        device_value = arguments.get("device")
+        requested_device = _device(device_value, "device.causal_impact request device")
+        direction_value = arguments.get("direction", "both")
+        direction = (
+            direction_value.strip().lower()
+            if isinstance(direction_value, str)
+            else None
+        )
+        max_depth = arguments.get("max_depth", 8)
+        max_paths = arguments.get("max_paths", 200)
+        if (
+            requested_device is None
+            or direction not in {"downstream", "upstream", "both"}
+            or isinstance(max_depth, bool)
+            or not isinstance(max_depth, int)
+            or not 1 <= max_depth <= 16
+            or isinstance(max_paths, bool)
+            or not isinstance(max_paths, int)
+            or not 1 <= max_paths <= 500
+            or query
+            != {
+                "device": requested_device,
+                "direction": direction,
+                "maxDepth": max_depth,
+                "maxPaths": max_paths,
+            }
+        ):
+            raise MCPToolError("device.causal_impact result differs from its request")
+        return
+
+    if raw_name == "project.search":
+        query_value = arguments.get("query")
+        requested_query = query_value.strip() if isinstance(query_value, str) else None
+        program_value = arguments.get("program_id")
+        requested_program = (
+            program_value.strip()
+            if isinstance(program_value, str) and program_value.strip()
+            else None
+        )
+        offset = arguments.get("offset", 0)
+        limit = arguments.get("limit", 50)
+        if (
+            not requested_query
+            or len(requested_query) > 256
+            or requested_program is not None
+            and _CANONICAL_LD_PROGRAM_ID.fullmatch(requested_program) is None
+            or isinstance(offset, bool)
+            or not isinstance(offset, int)
+            or offset < 0
+            or isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 100
+            or query.get("literal") != requested_query
+            or query.get("programId") != requested_program
+            or query.get("offset") != offset
+            or query.get("limit") != limit
+        ):
+            raise MCPToolError("project.search result differs from its request")
+        return
+
+    if raw_name == "project.behavior_report" and query != {}:
+        raise MCPToolError("project.behavior_report result has an invalid request scope")
 
 
 def _payload_scope(
@@ -2919,7 +3098,7 @@ def _structure_index_contract(
     )
     if not isinstance(expected_session_identity, Mapping) or set(
         expected_session_identity
-    ) != set(("session_id", "pid", "hwnd", "project_path", "project_hash")):
+    ) != {"session_id", "pid", "hwnd", "project_path", "project_hash"}:
         raise MCPToolError("project structure index has no Host-bound session identity")
     expected_project_sha256 = _raw_sha256(
         expected_session_identity.get("project_hash"),
@@ -3913,16 +4092,40 @@ def build_structural_evidence_contract(
     result: Any,
     *,
     expected_session_identity: Mapping[str, Any] | None = None,
+    request_arguments: Mapping[str, Any] | None = None,
     allow_workspace_static_identity: bool = False,
 ) -> dict[str, Any] | None:
     """Build a common bounded receipt for the structural analysis tools."""
 
     if raw_name == "project.structure_index":
-        return _structure_index_contract(
+        contract = _structure_index_contract(
             result,
             expected_session_identity=expected_session_identity,
             allow_workspace_static_identity=allow_workspace_static_identity,
         )
+        arguments = request_arguments if isinstance(request_arguments, Mapping) else {}
+        if (
+            set(arguments) - {"schema_version", "offset", "limit"}
+            or arguments.get("schema_version", "1.0") != "1.0"
+        ):
+            raise MCPToolError("project.structure_index request shape is invalid")
+        query = _mapping(
+            _mapping(contract.get("scope"), "project structure scope").get("query"),
+            "project structure query",
+        )
+        offset = arguments.get("offset", 0)
+        limit = arguments.get("limit", 500)
+        if (
+            isinstance(offset, bool)
+            or not isinstance(offset, int)
+            or offset < 0
+            or isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 2_000
+            or query != {"offset": offset, "limit": limit}
+        ):
+            raise MCPToolError("project.structure_index result differs from its request")
+        return contract
     builders = {
         "project.search": _project_search_contract,
         "program.logic_graph": _logic_graph_contract,
@@ -3932,7 +4135,17 @@ def build_structural_evidence_contract(
         "project.behavior_report": _behavior_contract,
     }
     builder = builders.get(raw_name)
-    return builder(result) if builder is not None else None
+    if builder is None:
+        return None
+    contract = builder(result)
+    _validate_structural_result_binding(
+        raw_name,
+        result,
+        contract,
+        expected_session_identity=expected_session_identity,
+        request_arguments=request_arguments,
+    )
+    return contract
 
 
 def state_model_context(result: Any) -> dict[str, Any] | None:
@@ -4073,6 +4286,282 @@ def state_model_context(result: Any) -> dict[str, Any] | None:
     return context
 
 
+_LOGIC_GRAPH_FIELDS = {
+    "schema",
+    "program",
+    "semantic_status",
+    "network_count",
+    "node_count",
+    "edge_count",
+    "networks",
+}
+_LOGIC_NETWORK_FIELDS = {
+    "network_index",
+    "network_id",
+    "network_digest",
+    "visual_rows",
+    "semantic_status",
+    "nodes",
+    "edges",
+    "rungs",
+    "unparsed_tokens",
+}
+_LOGIC_RUNG_FIELDS = {
+    "rung_id",
+    "visual_rows",
+    "condition",
+    "condition_expression",
+    "outputs",
+    "semantic_status",
+    "confidence",
+}
+_LOGIC_SOURCE_FIELDS = {
+    "program",
+    "visual_row",
+    "column",
+    "coordinate",
+    "token_offset",
+    "value_token_offset",
+    "token_count",
+}
+_LOGIC_OUTPUT_FIELDS = {"node_id", "action", "operand", "source"}
+_LOGIC_NODE_ID = re.compile(r"^node:[0-9a-f]{16}$")
+_LOGIC_RUNG_ID = re.compile(r"^rung:[0-9a-f]{16}$")
+
+
+def _logic_source_projection(value: Any, *, expected_program: str) -> dict[str, Any]:
+    source = _exact_raw_mapping(value, "logic graph source span", _LOGIC_SOURCE_FIELDS)
+    program = _text(source["program"], "logic graph source program")
+    if program != expected_program:
+        raise MCPToolError("logic graph source span disagrees with its program")
+    return {
+        "program": program,
+        "visual_row": _integer(
+            source["visual_row"],
+            "logic graph source visual row",
+            maximum=1_000_000,
+        ),
+        "column": _optional_integer(
+            source["column"],
+            "logic graph source column",
+            maximum=1_000_000,
+        ),
+        "coordinate": _optional_integer(
+            source["coordinate"],
+            "logic graph source coordinate",
+            maximum=100_000_000,
+        ),
+        "token_offset": _integer(
+            source["token_offset"],
+            "logic graph source token offset",
+            maximum=100_000_000,
+        ),
+        "value_token_offset": _integer(
+            source["value_token_offset"],
+            "logic graph source value token offset",
+            maximum=100_000_000,
+        ),
+        "token_count": _integer(
+            source["token_count"],
+            "logic graph source token count",
+            maximum=1_000_000,
+        ),
+    }
+
+
+def _logic_condition_projection(
+    value: Any,
+    *,
+    semantic_status: str,
+    expected_program: str,
+    depth: int = 0,
+    node_budget: list[int] | None = None,
+) -> dict[str, Any]:
+    if depth > _LOGIC_CONTEXT_CONDITION_DEPTH_LIMIT:
+        raise MCPToolError("logic graph condition exceeds its depth bound")
+    budget = node_budget if node_budget is not None else [0]
+    budget[0] += 1
+    if budget[0] > _LOGIC_CONTEXT_CONDITION_NODE_LIMIT:
+        raise MCPToolError("logic graph condition exceeds its node bound")
+
+    condition = _mapping(value, "logic graph condition")
+    operator = _text(
+        condition.get("operator"),
+        "logic graph condition operator",
+        maximum=16,
+    ).upper()
+    if operator == "DEVICE":
+        condition = _exact_raw_mapping(
+            condition,
+            "logic graph device condition",
+            {"operator", "device", "contact", "source"},
+        )
+        contact = condition["contact"]
+        if contact not in {"NO", "NC", "P_EDGE", "N_EDGE"}:
+            raise MCPToolError("logic graph device contact is invalid")
+        return {
+            "operator": "DEVICE",
+            "device": _device(condition["device"], "logic graph condition device"),
+            "contact": contact,
+            "source": _logic_source_projection(
+                condition["source"], expected_program=expected_program
+            ),
+        }
+    if operator == "COMPARE":
+        expected_fields = {"operator", "expression", "source"}
+        if "comparison" in condition:
+            expected_fields.add("comparison")
+        condition = _exact_raw_mapping(
+            condition,
+            "logic graph comparison condition",
+            expected_fields,
+        )
+        expression = _text(
+            condition["expression"],
+            "logic graph comparison expression",
+            maximum=_LOGIC_CONTEXT_OPERAND_LIMIT,
+        )
+        validated = _validated_comparison(
+            {**condition, "expression": expression},
+            semantic_status=semantic_status,
+        )
+        projected: dict[str, Any] = {
+            "operator": "COMPARE",
+            "expression": expression,
+            "source": _logic_source_projection(
+                condition["source"], expected_program=expected_program
+            ),
+        }
+        if validated is not None:
+            _, comparison = validated
+            projected["comparison"] = comparison
+        return projected
+    if operator == "NOT":
+        condition = _exact_raw_mapping(
+            condition,
+            "logic graph NOT condition",
+            {"operator", "term"},
+        )
+        return {
+            "operator": "NOT",
+            "term": _logic_condition_projection(
+                condition["term"],
+                semantic_status=semantic_status,
+                expected_program=expected_program,
+                depth=depth + 1,
+                node_budget=budget,
+            ),
+        }
+    if operator in {"AND", "OR"}:
+        condition = _exact_raw_mapping(
+            condition,
+            "logic graph grouped condition",
+            {"operator", "terms"},
+        )
+        terms = _items(condition["terms"], "logic graph condition terms")
+        if not terms or len(terms) > _LOGIC_CONTEXT_CONDITION_TERM_LIMIT:
+            raise MCPToolError("logic graph condition term count is invalid")
+        return {
+            "operator": operator,
+            "terms": [
+                _logic_condition_projection(
+                    term,
+                    semantic_status=semantic_status,
+                    expected_program=expected_program,
+                    depth=depth + 1,
+                    node_budget=budget,
+                )
+                for term in terms
+            ],
+        }
+    if operator == "TRUE":
+        _exact_raw_mapping(condition, "logic graph TRUE condition", {"operator"})
+        return {"operator": "TRUE"}
+    if operator == "UNKNOWN":
+        condition = _exact_raw_mapping(
+            condition,
+            "logic graph UNKNOWN condition",
+            {"operator", "reason"},
+        )
+        if condition["reason"] != "branch contains no predicate":
+            raise MCPToolError("logic graph unknown-condition reason is invalid")
+        return {
+            "operator": "UNKNOWN",
+            "reason": "branch contains no predicate",
+        }
+    raise MCPToolError("logic graph condition operator is unsupported")
+
+
+def _logic_condition_expression(
+    condition: Mapping[str, Any],
+    parent_precedence: int = 0,
+) -> str | None:
+    precedence = {
+        "OR": 1,
+        "AND": 2,
+        "NOT": 3,
+        "DEVICE": 4,
+        "COMPARE": 4,
+        "TRUE": 4,
+    }
+    operator = str(condition["operator"])
+    own_precedence = precedence.get(operator)
+    if own_precedence is None:
+        return None
+    if operator == "DEVICE":
+        device = str(condition["device"])
+        contact = condition["contact"]
+        if contact == "NO":
+            text = device
+        elif contact == "NC":
+            text = f"NOT {device}"
+        else:
+            return None
+    elif operator == "COMPARE":
+        text = str(condition["expression"])
+    elif operator == "TRUE":
+        text = "TRUE"
+    elif operator == "NOT":
+        rendered = _logic_condition_expression(condition["term"], own_precedence)
+        if rendered is None:
+            return None
+        text = f"NOT {rendered}"
+    else:
+        rendered_terms = [
+            _logic_condition_expression(term, own_precedence)
+            for term in condition["terms"]
+        ]
+        if any(term is None for term in rendered_terms):
+            return None
+        text = f" {operator} ".join(str(term) for term in rendered_terms)
+    return f"({text})" if own_precedence < parent_precedence else text
+
+
+def _logic_output_projection(value: Any, *, expected_program: str) -> dict[str, Any]:
+    output = _exact_raw_mapping(value, "logic graph output", _LOGIC_OUTPUT_FIELDS)
+    node_id = _text(output["node_id"], "logic graph output node id", maximum=21)
+    action = _text(output["action"], "logic graph output action", maximum=16).upper()
+    if _LOGIC_NODE_ID.fullmatch(node_id) is None or action not in {
+        "OUTPUT",
+        "SET",
+        "RESET",
+        "APPLICATION",
+    }:
+        raise MCPToolError("logic graph output identity or action is invalid")
+    return {
+        "node_id": node_id,
+        "action": action,
+        "operand": _text(
+            output["operand"],
+            "logic graph output operand",
+            maximum=_LOGIC_CONTEXT_OPERAND_LIMIT,
+        ),
+        "source": _logic_source_projection(
+            output["source"], expected_program=expected_program
+        ),
+    }
+
+
 def logic_graph_context(result: Any) -> dict[str, Any] | None:
     """Keep the verified graph rung AST available for bounded Agent analysis."""
 
@@ -4081,47 +4570,118 @@ def logic_graph_context(result: Any) -> dict[str, Any] | None:
     # existing validator before exposing the same source-derived structure.
     _logic_graph_contract(result)
     envelope = _validated_result(result, "program.logic_graph")
-    graph = _mapping(envelope.get("graph"), "logic graph")
+    graph = _exact_raw_mapping(
+        envelope.get("graph"),
+        "logic graph",
+        _LOGIC_GRAPH_FIELDS,
+    )
+    program = _text(graph["program"], "logic graph program")
+    networks = _items(graph["networks"], "logic graph networks")
+    if len(networks) > _LOGIC_CONTEXT_NETWORK_LIMIT:
+        raise MCPToolError("logic graph network count exceeds its model-context bound")
+
     rungs: list[dict[str, Any]] = []
-    for network_value in _items(graph.get("networks"), "logic graph networks"):
-        network = _mapping(network_value, "logic graph network")
+    total_count = 0
+    for network_value in networks:
+        network = _exact_raw_mapping(
+            network_value,
+            "logic graph network",
+            _LOGIC_NETWORK_FIELDS,
+        )
         network_index = _integer(
-            network.get("network_index"),
+            network["network_index"],
             "logic graph network index",
             maximum=1_000_000,
         )
-        for rung_value in _items(network.get("rungs"), "logic graph rungs"):
-            rung = _mapping(rung_value, "logic graph rung")
-            condition = _mapping(rung.get("condition"), "logic graph condition")
-            projected: dict[str, Any] = {
-                "network_index": network_index,
-                "rung_id": _text(rung.get("rung_id"), "logic graph rung id"),
-                "visual_rows": _items(rung.get("visual_rows"), "logic graph visual rows"),
-                # Clone only JSON data: the nested AST and its source spans stay exact.
-                "condition": json.loads(json.dumps(condition, ensure_ascii=False)),
-                "outputs": json.loads(
-                    json.dumps(_items(rung.get("outputs"), "logic graph outputs"), ensure_ascii=False)
-                ),
-                "semantic_status": _semantic(
-                    rung.get("semantic_status"), "logic graph rung"
-                ),
-                "confidence": _text(
-                    rung.get("confidence"), "logic graph rung confidence", maximum=100
-                ),
-            }
-            expression = rung.get("condition_expression")
-            if expression is not None:
-                projected["condition_expression"] = _text(
-                    expression, "logic graph condition expression", maximum=8_000
+        network_rungs = _items(network["rungs"], "logic graph rungs")
+        total_count += len(network_rungs)
+        if total_count > _LOGIC_CONTEXT_SOURCE_RUNG_LIMIT:
+            raise MCPToolError("logic graph rung count exceeds its model-context bound")
+        for rung_value in network_rungs:
+            rung = _exact_raw_mapping(
+                rung_value,
+                "logic graph rung",
+                _LOGIC_RUNG_FIELDS,
+            )
+            semantic_status = _semantic(
+                rung["semantic_status"],
+                "logic graph rung",
+            )
+            condition = _logic_condition_projection(
+                rung["condition"],
+                semantic_status=semantic_status,
+                expected_program=program,
+            )
+            visual_rows = _items(rung["visual_rows"], "logic graph visual rows")
+            if not visual_rows or len(visual_rows) > _LOGIC_CONTEXT_VISUAL_ROW_LIMIT:
+                raise MCPToolError("logic graph visual-row count is invalid")
+            projected_visual_rows = [
+                _integer(row, "logic graph visual row", maximum=1_000_000)
+                for row in visual_rows
+            ]
+            if projected_visual_rows != sorted(set(projected_visual_rows)):
+                raise MCPToolError("logic graph visual rows are not unique and ordered")
+
+            output_values = _items(rung["outputs"], "logic graph outputs")
+            if not output_values or len(output_values) > _LOGIC_CONTEXT_OUTPUT_LIMIT:
+                raise MCPToolError("logic graph output count is invalid")
+            outputs = [
+                _logic_output_projection(output, expected_program=program)
+                for output in output_values
+            ]
+            if not {
+                output["source"]["visual_row"] for output in outputs
+            }.issubset(set(projected_visual_rows)):
+                raise MCPToolError("logic graph output source is outside its rung")
+
+            supplied_expression = rung["condition_expression"]
+            if supplied_expression is not None:
+                supplied_expression = _raw_text(
+                    supplied_expression,
+                    "logic graph condition expression",
+                    maximum=_LOGIC_CONTEXT_EXPRESSION_LIMIT,
+                    allow_empty=False,
                 )
-            rungs.append(projected)
+            condition_expression = _logic_condition_expression(condition)
+            if supplied_expression != condition_expression:
+                raise MCPToolError("logic graph condition expression disagrees with its AST")
+
+            rung_id = _text(rung["rung_id"], "logic graph rung id", maximum=21)
+            if _LOGIC_RUNG_ID.fullmatch(rung_id) is None:
+                raise MCPToolError("logic graph rung id is invalid")
+            confidence = rung["confidence"]
+            if confidence not in {"coordinate-derived", "observed-serial"}:
+                raise MCPToolError("logic graph rung confidence is invalid")
+            projected_rung: dict[str, Any] = {
+                "network_index": network_index,
+                "rung_id": rung_id,
+                "visual_rows": projected_visual_rows,
+                "condition": condition,
+                "outputs": outputs,
+                "semantic_status": semantic_status,
+                "confidence": confidence,
+            }
+            if condition_expression is not None:
+                projected_rung["condition_expression"] = condition_expression
+            if len(rungs) < _MODEL_CONTEXT_ITEM_LIMIT:
+                rungs.append(projected_rung)
+
     if not rungs:
         return None
-    return {
-        "rungs": rungs[:_MODEL_CONTEXT_ITEM_LIMIT],
-        "rungCount": len(rungs),
-        "truncated": len(rungs) > _MODEL_CONTEXT_ITEM_LIMIT,
+    context = {
+        "rungs": rungs,
+        "rungCount": total_count,
+        "truncated": total_count > len(rungs),
     }
+    encoded = json.dumps(
+        context,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    if len(encoded) > _LOGIC_CONTEXT_BYTE_LIMIT:
+        raise MCPToolError("logic graph model context exceeds its byte bound")
+    return context
 
 
 def _validate_location_fact(value: Any) -> dict[str, Any]:

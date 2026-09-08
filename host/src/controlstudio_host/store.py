@@ -208,6 +208,8 @@ _NATIVE_CHECKPOINT_IMMUTABLE_FIELDS = frozenset(
         "token_offset",
         "expected",
         "replacement",
+        "native_replacement",
+        "payload_canonical_sha256_planned",
     }
 )
 
@@ -3079,6 +3081,33 @@ class HostStore:
         assert row is not None
         return self._event_from_row(row)
 
+    def append_tool_completion(
+        self,
+        *,
+        conversation_id: str,
+        run_id: str,
+        tool_payload: dict[str, Any],
+        evidence_payload: dict[str, Any] | None,
+    ) -> None:
+        """Atomically record one completed tool and its optional evidence."""
+
+        with self._connection() as connection, connection:
+            self._insert_event(
+                connection,
+                conversation_id=conversation_id,
+                run_id=run_id,
+                event_type="tool.completed",
+                payload=tool_payload,
+            )
+            if evidence_payload is not None:
+                self._insert_event(
+                    connection,
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    event_type="evidence.added",
+                    payload=evidence_payload,
+                )
+
     def list_events(
         self,
         *,
@@ -3211,13 +3240,26 @@ class HostStore:
         approval_expires_at: datetime,
         conversation_id: str | None = None,
         run_id: str | None = None,
+        initial_approval_actor_id: str | None = None,
     ) -> tuple[ChangeTransaction, bool]:
         """Create one immutable approval contract, idempotent by operation id."""
 
+        if (
+            initial_approval_actor_id is not None
+            and initial_approval_actor_id != requested_by_actor_id
+        ):
+            raise ChangeStoreConflict(
+                "initial approval actor must equal the requesting actor"
+            )
         transaction_id = str(uuid.uuid4())
         timestamp = _utc_now()
         expires_at = _utc_text(approval_expires_at)
         target_json = _json_dump(target.model_dump(mode="json"))
+        initial_state = (
+            ChangeTransactionState.APPROVED
+            if initial_approval_actor_id is not None
+            else ChangeTransactionState.PENDING_APPROVAL
+        )
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
@@ -3289,7 +3331,7 @@ class HostStore:
                         verification_started_at, completed_at
                     )
                     VALUES (
-                        ?, ?, ?, ?, 'PENDING_APPROVAL',
+                        ?, ?, ?, ?, ?,
                         ?, ?, ?, ?, ?, ?, ?, ?, '{}', NULL, NULL, ?, ?, NULL, NULL, NULL
                     )
                     """,
@@ -3298,6 +3340,7 @@ class HostStore:
                         operation_id,
                         conversation_id,
                         run_id,
+                        initial_state.value,
                         target_json,
                         mutation_scope,
                         risk_level.value,
@@ -3310,10 +3353,25 @@ class HostStore:
                         timestamp,
                     ),
                 )
+                if initial_approval_actor_id is not None:
+                    connection.execute(
+                        """
+                        INSERT INTO change_approvals(
+                            transaction_id, decision, plan_digest, actor_id, decided_at
+                        )
+                        VALUES (?, 'APPROVE', ?, ?, ?)
+                        """,
+                        (
+                            transaction_id,
+                            plan_digest,
+                            initial_approval_actor_id,
+                            timestamp,
+                        ),
+                    )
                 event_payload = {
                     "transaction_id": transaction_id,
                     "operation_id": operation_id,
-                    "state": ChangeTransactionState.PENDING_APPROVAL.value,
+                    "state": initial_state.value,
                     "mutation_scope": mutation_scope,
                     "risk_level": risk_level.value,
                     "plan_digest": plan_digest,
@@ -3330,12 +3388,13 @@ class HostStore:
                     "SELECT * FROM change_transactions WHERE id = ?",
                     (transaction_id,),
                 ).fetchone()
+                approval = self._approval_row(connection, transaction_id)
                 connection.commit()
             except BaseException:
                 connection.rollback()
                 raise
         assert row is not None
-        return self._change_transaction_from_row(row, None), True
+        return self._change_transaction_from_row(row, approval), True
 
     def get_change_transaction(
         self,
@@ -3383,6 +3442,31 @@ class HostStore:
                 for row in rows
             ]
         return values
+
+    def get_mutation_stage_change_for_run(
+        self,
+        run_id: str,
+    ) -> ChangeTransaction | None:
+        """Return a durable change whose native lifecycle still owns this run."""
+
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM change_transactions
+                WHERE run_id = ?
+                  AND state IN (
+                    'APPROVED', 'EXECUTING', 'VERIFYING',
+                    'OBSERVING', 'QUARANTINED'
+                  )
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            approval = self._approval_row(connection, str(row["id"]))
+        return self._change_transaction_from_row(row, approval)
 
     def live_change_approval_transaction(
         self,
@@ -3816,6 +3900,114 @@ class HostStore:
                 raise
         assert updated is not None
         return self._change_transaction_from_row(updated, approval)
+
+    def fail_approved_change_preflight(
+        self,
+        *,
+        transaction_id: str,
+        expected_plan_digest: str,
+    ) -> tuple[ChangeTransaction | None, bool]:
+        """Terminalize a direct approval that failed before native execution."""
+
+        timestamp = _utc_now()
+        error_code = "change_preflight_failed_before_mutation"
+        error_detail = (
+            "Native change preflight failed before execution began; "
+            "no mutation was attempted."
+        )
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    "SELECT * FROM change_transactions WHERE id = ?",
+                    (transaction_id,),
+                ).fetchone()
+                if row is None:
+                    connection.rollback()
+                    return None, False
+                if str(row["plan_digest"]) != expected_plan_digest:
+                    raise ChangeStoreConflict(
+                        "plan digest does not match the approved contract"
+                    )
+                state = ChangeTransactionState(str(row["state"]))
+                approval = self._approval_row(connection, transaction_id)
+                if (
+                    state is ChangeTransactionState.FAILED
+                    and str(row["error_code"] or "") == error_code
+                ):
+                    transaction = self._change_transaction_from_row(row, approval)
+                    connection.rollback()
+                    return transaction, False
+                if state is not ChangeTransactionState.APPROVED:
+                    raise ChangeStoreConflict(
+                        "only an approved, not-yet-started change can fail preflight"
+                    )
+                if (
+                    approval is None
+                    or str(approval["decision"]) != ApprovalDecision.APPROVE.value
+                    or str(approval["plan_digest"]) != expected_plan_digest
+                ):
+                    raise ChangeStoreConflict(
+                        "transaction has no matching durable approval"
+                    )
+
+                plan = _json_load(str(row["plan_json"]))
+                validation = plan.get("validation")
+                not_executed = (
+                    list(validation)
+                    if isinstance(validation, list)
+                    and all(isinstance(item, str) for item in validation)
+                    else []
+                )
+                result = _json_load(str(row["result_json"]))
+                result["preflight"] = {
+                    "status": "failed_before_execution",
+                    "native_execution_started": False,
+                    "mutation_attempted": False,
+                    "executed_checks": [],
+                    "not_executed": not_executed,
+                }
+                connection.execute(
+                    """
+                    UPDATE change_transactions
+                    SET state = 'FAILED', result_json = ?, error_code = ?,
+                        error_detail = ?, updated_at = ?, completed_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        _json_dump(result),
+                        error_code,
+                        error_detail,
+                        timestamp,
+                        timestamp,
+                        transaction_id,
+                    ),
+                )
+                self._insert_event(
+                    connection,
+                    conversation_id=row["conversation_id"],
+                    run_id=row["run_id"],
+                    event_type="change.execution_finished",
+                    payload={
+                        "transaction_id": transaction_id,
+                        "previous_state": state.value,
+                        "state": ChangeTransactionState.FAILED.value,
+                        "error_code": error_code,
+                        "lease_released": True,
+                        "native_execution_started": False,
+                        "mutation_attempted": False,
+                    },
+                )
+                updated = connection.execute(
+                    "SELECT * FROM change_transactions WHERE id = ?",
+                    (transaction_id,),
+                ).fetchone()
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        assert updated is not None
+        return self._change_transaction_from_row(updated, approval), True
 
     def mark_change_verifying(
         self,

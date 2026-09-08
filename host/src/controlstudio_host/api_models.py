@@ -1583,16 +1583,24 @@ class SendMessageRequestV1(ApiModel):
         Literal[
             "analysis_only",
             "offline_candidate_revision",
+            "permanent_offline_revision",
         ]
         | None
     ) = None
     verification_scope: Literal[
-        "offline_native_reopen", "offline_native_reopen_xgsim"
+        "offline_native_check_only",
+        "offline_native_reopen",
+        "offline_native_reopen_xgsim",
     ] = "offline_native_reopen"
     offline_operand_mission: OfflineOperandMissionV1 | None = None
 
     @model_validator(mode="after")
     def validate_project_brief_workflow(self) -> SendMessageRequestV1:
+        if (
+            self.change_request_scope == "permanent_offline_revision"
+            and "verification_scope" not in self.model_fields_set
+        ):
+            self.verification_scope = "offline_native_check_only"
         if self.workflow == "engineering" and self.project_brief is not None:
             raise ValueError("projectBrief is only valid for new_project_planning")
         if self.workflow == "new_project_planning" and self.change_request_scope is not None:
@@ -1608,6 +1616,20 @@ class SendMessageRequestV1(ApiModel):
         ):
             raise ValueError(
                 "offline_native_reopen_xgsim requires offline_candidate_revision"
+            )
+        if (
+            self.verification_scope == "offline_native_check_only"
+            and self.change_request_scope != "permanent_offline_revision"
+        ):
+            raise ValueError(
+                "offline_native_check_only requires permanent_offline_revision"
+            )
+        if (
+            self.change_request_scope == "permanent_offline_revision"
+            and self.verification_scope != "offline_native_check_only"
+        ):
+            raise ValueError(
+                "permanent_offline_revision requires offline_native_check_only"
             )
         if self.offline_operand_mission is not None and (
             self.workflow != "engineering"
@@ -1733,6 +1755,11 @@ OFFLINE_NATIVE_VALIDATION_STEPS = (
     "xg5000_program_check",
     "project_save",
     "project_reopen",
+)
+OFFLINE_NATIVE_CHECK_ONLY_VALIDATION_STEPS = (
+    "structural_diff",
+    "xg5000_program_check",
+    "project_save",
 )
 MNE_FULL_PROGRAM_VALIDATION_STEPS = (
     "structural_diff",
@@ -1899,12 +1926,15 @@ class ChangePlanV1(ApiModel):
         if not isinstance(proposed_value, str) or not proposed_value:
             raise ValueError("plan.proposed.value is required")
         if (
-            self.verification_scope != "offline_native_reopen"
-            or tuple(self.validation) != OFFLINE_NATIVE_VALIDATION_STEPS
+            tuple(self.validation)
+            != (
+                OFFLINE_NATIVE_CHECK_ONLY_VALIDATION_STEPS
+                if self.verification_scope == "offline_native_check_only"
+                else OFFLINE_NATIVE_VALIDATION_STEPS
+            )
         ):
             raise ValueError(
-                "offline_native_reopen must execute structural_diff, "
-                "xg5000_program_check, project_save, and project_reopen in that order"
+                f"{self.verification_scope} has an invalid native validation sequence"
             )
         return self
 
@@ -2673,7 +2703,9 @@ class MneSeriesGuardCandidateV3(ApiModel):
     hardware_context_digest: str | None = Field(
         default=None, pattern=r"^[0-9a-f]{64}$"
     )
-    field_io_bindings: list[MneFieldIoBindingV1] = Field(default_factory=list)
+    field_io_bindings: list[MneFieldIoBindingV1] = Field(
+        default_factory=list, max_length=64
+    )
     candidate_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_serializer(mode="wrap")
@@ -2804,7 +2836,9 @@ class MneInstructionPatchCandidateV4(ApiModel):
     hardware_context_digest: str | None = Field(
         default=None, pattern=r"^[0-9a-f]{64}$"
     )
-    field_io_bindings: list[MneFieldIoBindingV1] = Field(default_factory=list)
+    field_io_bindings: list[MneFieldIoBindingV1] = Field(
+        default_factory=list, max_length=64
+    )
     candidate_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_serializer(mode="wrap")
@@ -2876,7 +2910,9 @@ class MneInstructionBatchPatchCandidateV5(ApiModel):
     hardware_context_digest: str | None = Field(
         default=None, pattern=r"^[0-9a-f]{64}$"
     )
-    field_io_bindings: list[MneFieldIoBindingV1] = Field(default_factory=list)
+    field_io_bindings: list[MneFieldIoBindingV1] = Field(
+        default_factory=list, max_length=64
+    )
     candidate_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_serializer(mode="wrap")
@@ -3128,7 +3164,9 @@ class MneRungPatchCandidateV6(ApiModel):
     hardware_context_digest: str | None = Field(
         default=None, pattern=r"^[0-9a-f]{64}$"
     )
-    field_io_bindings: list[MneFieldIoBindingV1] = Field(default_factory=list)
+    field_io_bindings: list[MneFieldIoBindingV1] = Field(
+        default_factory=list, max_length=64
+    )
     candidate_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_serializer(mode="wrap")
@@ -3338,10 +3376,14 @@ def _validate_mne_plan_common(
             )
     if plan.blocking_unknowns:
         raise ValueError("plan.blockingUnknowns must be empty before transaction creation")
-    if tuple(plan.validation) != MNE_FULL_PROGRAM_VALIDATION_STEPS:
+    expected_validation = (
+        OFFLINE_NATIVE_CHECK_ONLY_VALIDATION_STEPS
+        if plan.verification_scope == "offline_native_check_only"
+        else MNE_FULL_PROGRAM_VALIDATION_STEPS
+    )
+    if tuple(plan.validation) != expected_validation:
         raise ValueError(
-            "offline_native_reopen must execute structural_diff, "
-            "xg5000_program_check, project_save, and project_reopen in that order"
+            f"{plan.verification_scope} has an invalid native validation sequence"
         )
     coverage_by_area = {item.area: item for item in plan.coverage}
     if (
@@ -3376,9 +3418,9 @@ class ChangePlanV2(ApiModel):
         min_length=len(REQUIRED_CHANGE_COVERAGE_AREAS),
         max_length=len(REQUIRED_CHANGE_COVERAGE_AREAS),
     )
-    verification_scope: Literal["offline_native_reopen"]
+    verification_scope: VerificationScope
     validation: list[MneFullProgramValidationStepV2] = Field(
-        min_length=4,
+        min_length=3,
         max_length=4,
     )
     manual_follow_up: list[str] = Field(min_length=1, max_length=200)
@@ -3420,11 +3462,8 @@ class MneCandidateChangePlanBase(ApiModel):
         min_length=len(MNE_COMPILER_CANDIDATE_REQUIRED_COVERAGE_AREAS),
         max_length=len(REQUIRED_CHANGE_COVERAGE_AREAS),
     )
-    verification_scope: Literal[
-        "offline_native_reopen",
-        "offline_native_reopen_xgsim",
-    ]
-    validation: list[MneFullProgramValidationStepV2] = Field(min_length=4, max_length=4)
+    verification_scope: VerificationScope
+    validation: list[MneFullProgramValidationStepV2] = Field(min_length=3, max_length=4)
     manual_follow_up: list[str] = Field(min_length=1, max_length=200)
     rollback: list[str] = Field(min_length=1, max_length=200)
 
@@ -3515,6 +3554,11 @@ class ChangePlanV6(MneCandidateChangePlanBase):
     """Approval contract for one compiler-resolved complete-rung patch."""
 
     plan_kind: Literal["mne_rung_patch"]
+    verification_scope: Literal[
+        "offline_native_check_only",
+        "offline_native_reopen",
+        "offline_native_reopen_xgsim",
+    ]
     candidate: MneRungPatchCandidateV6
 
     @model_validator(mode="after")
@@ -3557,6 +3601,24 @@ class CreateChangeTransactionRequestV1(ApiModel):
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", value):
             raise ValueError("operation_id contains invalid characters")
         return value
+
+    @model_validator(mode="after")
+    def validate_new_transaction_scope(self) -> CreateChangeTransactionRequestV1:
+        scope_pair = (
+            self.plan.request_scope,
+            self.plan.verification_scope,
+        )
+        allowed_scope_pairs = {
+            ("offline_candidate_revision", "offline_native_reopen"),
+            ("offline_candidate_revision", "offline_native_reopen_xgsim"),
+            ("permanent_offline_revision", "offline_native_check_only"),
+        }
+        if scope_pair not in allowed_scope_pairs:
+            raise ValueError(
+                "new change transactions require candidate+reopen(/XG-SIM) "
+                "or permanent+check-only scope"
+            )
+        return self
 
 
 class ChangeDecisionRequestV1(ApiModel):

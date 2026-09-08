@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -274,6 +275,10 @@ _MNE_CANDIDATE_TOOL_ALIASES = frozenset(
         "compile_series_guard_candidate",
     }
 )
+_SAFE_MNE_COMPILER_REJECTION_MESSAGE = (
+    "MNE candidate compiler rejected the request; correct candidate "
+    "structure, operands, or simulation scenario."
+)
 
 
 def _safe_mne_candidate_rejection_error(
@@ -296,8 +301,19 @@ def _safe_mne_candidate_rejection_error(
         or not isinstance(payload["error"].get("message"), str)
     ):
         return None
-    assert_agent_safe_payload(payload)
-    return payload
+    # MCP ValueError text can contain private baseline instructions, local
+    # paths, or other target material.  The Agent gets only this Host-authored
+    # correction category until MCP exposes a closed diagnostic-code contract.
+    safe_payload = {
+        "schema_version": "1.0",
+        "status": "error",
+        "error": {
+            "type": "ValueError",
+            "message": _SAFE_MNE_COMPILER_REJECTION_MESSAGE,
+        },
+    }
+    assert_agent_safe_payload(safe_payload)
+    return safe_payload
 
 
 _STRUCTURAL_TOOL_RESULT_PROJECTION_SCHEMA = (
@@ -965,17 +981,27 @@ class SubprocessAgentClient:
         on_progress: ProgressCallback | None = None,
         on_mission_checkpoint: MissionCheckpointCallback | None = None,
     ) -> AgentRunOutput:
+        targetless_analysis = bool(
+            isinstance(trusted_context, dict)
+            and trusted_context.get("targetless_analysis") is True
+            and trusted_context.get("change_request_scope") == "analysis_only"
+        )
         if self._knowledge_snapshot_callback is not None:
             # Sync before every run: deletion/update and a restarted sidecar
             # cannot retain stale Agent-derived index entries.
             documents = await self._knowledge_snapshot_callback()
             await self._supervisor.sync_knowledge(documents)
-        tools = await self._broker.agent_tool_catalog(
-            conversation_id=conversation_id,
-            run_id=run_id,
+        tools = (
+            []
+            if targetless_analysis
+            else await self._broker.agent_tool_catalog(
+                conversation_id=conversation_id,
+                run_id=run_id,
+            )
         )
         mne_change_planner_available = (
-            self._change_plan_callback is not None
+            not targetless_analysis
+            and self._change_plan_callback is not None
             and isinstance(trusted_context, dict)
             and trusted_context.get("mne_change_planner_available") is True
         )
@@ -989,7 +1015,9 @@ class SubprocessAgentClient:
         safe_trusted_context = _safe_trusted_context(
             trusted_context,
             knowledge_search_available=self._knowledge_snapshot_callback is not None,
-            change_planner_available=self._change_plan_callback is not None,
+            change_planner_available=(
+                self._change_plan_callback is not None and not targetless_analysis
+            ),
             mne_change_planner_available=mne_change_planner_available,
         ) or {}
         historical_evidence = safe_trusted_context.pop(
@@ -1036,6 +1064,7 @@ class SubprocessAgentClient:
         last_progress: tuple[str, int] | None = None
         last_mission_cycle = 0
         last_mission_disposition: str | None = None
+        handled_tool_identities: set[str] = set()
 
         async def handle(message: AgentProtocolMessage) -> None:
             nonlocal last_mission_cycle, last_mission_disposition
@@ -1122,6 +1151,14 @@ class SubprocessAgentClient:
                 return
             if message.type == "tool.request":
                 request = _tool_request_from_message(message, conversation_id, run_id)
+                identities = {request.request_id}
+                if request.tool_call_id is not None:
+                    identities.add(request.tool_call_id)
+                if not identities.isdisjoint(handled_tool_identities):
+                    raise AgentProtocolError(
+                        "Agent repeated an external tool request identity"
+                    )
+                handled_tool_identities.update(identities)
                 await self._dispatch_tool_request(
                     request,
                     catalog=catalog,
@@ -1176,58 +1213,182 @@ class SubprocessAgentClient:
         catalog: set[str],
         on_tool_event: ToolEventCallback | None,
     ) -> None:
-        evidence_ref: dict[str, Any] | None = None
+        completed_tool_result: dict[str, Any] | None = None
 
         async def capture_event(
             event_type: str,
             payload: dict[str, Any],
         ) -> None:
-            nonlocal evidence_ref
             if on_tool_event is None:
                 return
-            returned = await on_tool_event(event_type, payload)
-            if event_type == "tool.completed" and isinstance(returned, Mapping):
-                evidence_id = returned.get("evidenceId")
-                if isinstance(evidence_id, str) and evidence_id:
-                    evidence_ref = dict(returned)
+            await on_tool_event(event_type, payload)
 
-        callback_event_payload: dict[str, Any] | None = None
+        event_payload: dict[str, Any] = {
+            "tool_name": request.tool_name,
+            "request_id": request.request_id,
+        }
+        if request.tool_call_id is not None:
+            event_payload["tool_call_id"] = request.tool_call_id
+        broker_owns_terminal_event = request.tool_name in catalog
+        callback_terminal_event_recorded = False
 
-        async def send_failure(failure_kind: str) -> None:
-            if callback_event_payload is not None:
+        async def send_failure(
+            failure_kind: str,
+            *,
+            failure_reason: str | None = None,
+            reason_code: str | None = None,
+            stage: str | None = None,
+        ) -> None:
+            nonlocal callback_terminal_event_recorded
+            diagnostic_by_kind = {
+                "cancelled": ("cancelled", "dispatch"),
+                "tool_error": ("tool_rejected", "dispatch"),
+                "transport": ("transport_error", "dispatch"),
+                "host_policy": ("host_policy", "preflight"),
+            }
+            default_reason_code, default_stage = diagnostic_by_kind.get(
+                failure_kind,
+                ("tool_failed", "dispatch"),
+            )
+            reason_code = reason_code or default_reason_code
+            stage = stage or default_stage
+            if not broker_owns_terminal_event and not callback_terminal_event_recorded:
+                failure_payload = {**event_payload, "failure_kind": failure_kind}
+                if failure_reason:
+                    failure_payload["failure_reason"] = failure_reason
+                failure_payload["reason_code"] = reason_code
                 await capture_event(
                     "tool.failed",
-                    {**callback_event_payload, "failure_kind": failure_kind},
+                    failure_payload,
                 )
-            await self._supervisor.send_tool_result(
-                {
-                    "request_id": request.request_id,
-                    "status": "failed",
-                    "failure_kind": failure_kind,
-                }
+                callback_terminal_event_recorded = True
+            tool_result = {
+                "request_id": request.request_id,
+                "status": "failed",
+                "failure_kind": failure_kind,
+                "reason_code": reason_code,
+                "stage": stage,
+            }
+            if failure_reason:
+                # This text is selected by Host code at the call sites below;
+                # raw exception text, request arguments, and tool results never
+                # cross into the Agent protocol.
+                tool_result["failure_reason"] = failure_reason
+            await self._supervisor.send_tool_result(tool_result)
+
+        async def validate_tool_completion(
+            completed_payload: dict[str, Any],
+            raw_result: Any,
+        ) -> None:
+            nonlocal completed_tool_result
+            preview_evidence = (
+                await on_tool_event(
+                    "tool.completion_preflight",
+                    completed_payload,
+                )
+                if on_tool_event is not None
+                else None
             )
+            if request.tool_name in _STRUCTURAL_ANALYSIS_TOOL_ALIASES:
+                completed_tool_result = _structural_tool_result_payload(
+                    request_id=request.request_id,
+                    tool_alias=request.tool_name,
+                    evidence_ref=preview_evidence,
+                    raw_result=raw_result,
+                )
+            else:
+                completed_tool_result = _completed_tool_result_payload(
+                    request_id=request.request_id,
+                    raw_result=raw_result,
+                    evidence_ref=preview_evidence,
+                )
 
         try:
+            # This is the first Host-owned observation of the model's choice.
+            # Execution starts later, after the broker/callback preconditions.
+            await capture_event("tool.selected", event_payload)
             if request.tool_name in catalog:
                 sink = capture_event
-                value = await self._broker.execute_external_tool_request(request, sink=sink)
+                value = await self._broker.execute_external_tool_request(
+                    request,
+                    sink=sink,
+                    completion_gate=validate_tool_completion,
+                )
             elif (
                 request.tool_name == "change.propose_offline"
                 and self._change_plan_callback is not None
             ):
-                callback_event_payload = {
-                    "tool_name": request.tool_name,
-                    "request_id": request.request_id,
-                }
-                if request.tool_call_id is not None:
-                    callback_event_payload["tool_call_id"] = request.tool_call_id
-                await capture_event("tool.started", callback_event_payload)
+                await capture_event("tool.started", event_payload)
                 value = await self._change_plan_callback(**request.arguments)
-                await capture_event("tool.completed", callback_event_payload)
+                outcome_state = (
+                    str(value.get("state") or "")
+                    if isinstance(value, Mapping)
+                    else ""
+                )
+                if outcome_state in {"FAILED", "ROLLED_BACK"}:
+                    outcome = (
+                        value.get("change_outcome")
+                        if isinstance(value, Mapping)
+                        and isinstance(value.get("change_outcome"), Mapping)
+                        else {}
+                    )
+                    preflight_failed = (
+                        outcome_state == "FAILED"
+                        and outcome.get("errorCode")
+                        == "change_preflight_failed_before_mutation"
+                    )
+                    failure_reason = (
+                        "변경 검증에 실패했으며 작업 사본을 원복했습니다."
+                        if outcome_state == "ROLLED_BACK"
+                        else (
+                            "실행 사전조건을 충족하지 못해 작업 사본을 변경하지 않았습니다."
+                            if preflight_failed
+                            else "직접 변경 transaction이 실패 상태로 종료되었습니다."
+                        )
+                    )
+                    reason_code = (
+                        "change_verification_rolled_back"
+                        if outcome_state == "ROLLED_BACK"
+                        else (
+                            "change_preflight_failed_before_mutation"
+                            if preflight_failed
+                            else "change_execution_failed"
+                        )
+                    )
+                    # The activity failed at the engineering layer, but the
+                    # canonical terminal transaction is still a successful
+                    # protocol return that the Agent must use for its next
+                    # decision. Sending a failed frame here would discard that
+                    # Host-owned outcome and invite an uninformed retry.
+                    await capture_event(
+                        "tool.failed",
+                        {
+                            **event_payload,
+                            "failure_kind": "tool_error",
+                            "failure_reason": failure_reason,
+                            "reason_code": reason_code,
+                            "stage": (
+                                "verification"
+                                if outcome_state == "ROLLED_BACK"
+                                else "preflight" if preflight_failed else "execution"
+                            ),
+                        },
+                    )
+                    callback_terminal_event_recorded = True
+                completed_tool_result = _completed_tool_result_payload(
+                    request_id=request.request_id,
+                    raw_result=value,
+                    evidence_ref=None,
+                )
+                if outcome_state not in {"FAILED", "ROLLED_BACK"}:
+                    await capture_event("tool.completed", event_payload)
             else:
                 raise AgentSidecarError("Agent requested a disallowed Host callback")
         except asyncio.CancelledError:
-            await send_failure("cancelled")
+            await send_failure(
+                "cancelled",
+                failure_reason="선택한 도구 실행이 취소되었습니다.",
+            )
             raise
         except MCPToolRejectedError as exc:
             compiler_error = _safe_mne_candidate_rejection_error(request, exc)
@@ -1235,69 +1396,42 @@ class SubprocessAgentClient:
                 # The broker already recorded a failed tool event.  This is not
                 # evidence or success.  Preserve the normal failed frame, with
                 # the safe compiler detail needed for model-side correction.
-                await self._supervisor.send_tool_result(
-                    {
-                        "request_id": request.request_id,
-                        "status": "failed",
-                        "failure_kind": "tool_error",
-                        "error": compiler_error,
-                    }
-                )
+                compiler_result = {
+                    "request_id": request.request_id,
+                    "status": "failed",
+                    "failure_kind": "tool_error",
+                    "error": compiler_error,
+                }
+                assert_agent_safe_payload(compiler_result)
+                encode_message("tool.result", compiler_result)
+                await self._supervisor.send_tool_result(compiler_result)
                 return
-            await send_failure("tool_error")
+            await send_failure(
+                "tool_error",
+                failure_reason="Host가 선택한 도구 요청을 거부했습니다.",
+            )
             return
         except MCPTransportError:
-            await send_failure("transport")
+            await send_failure(
+                "transport",
+                failure_reason="도구 실행 서비스와 통신하지 못했습니다.",
+            )
             return
         except MCPToolError:
-            await send_failure("host_policy")
+            await send_failure(
+                "host_policy",
+                failure_reason="Host 안전 정책이 선택한 도구 실행을 허용하지 않았습니다.",
+            )
             return
         except Exception:  # noqa: BLE001 - never expose Host callback diagnostics to Agent
-            await send_failure("host_policy")
+            await send_failure(
+                "host_policy",
+                failure_reason="Host가 선택한 도구를 실행하지 못했습니다.",
+            )
             return
-        if request.tool_name in _STRUCTURAL_ANALYSIS_TOOL_ALIASES:
-            try:
-                completed_payload = _structural_tool_result_payload(
-                    request_id=request.request_id,
-                    tool_alias=request.tool_name,
-                    evidence_ref=evidence_ref,
-                    raw_result=value,
-                )
-            except (AgentProtocolError, MCPToolError):
-                logger.warning(
-                    "Host withheld an invalid structural-analysis Agent result frame"
-                )
-                await self._supervisor.send_tool_result(
-                    {
-                        "request_id": request.request_id,
-                        "status": "failed",
-                        "failure_kind": "host_policy",
-                    }
-                )
-                return
-            await self._supervisor.send_tool_result(completed_payload)
-            return
-
-        safe_result = scrub_agent_tool_result(value)
-        if evidence_ref is not None:
-            safe_evidence_ref = scrub_agent_tool_result(evidence_ref)
-            if isinstance(safe_result, dict):
-                safe_result = {
-                    **safe_result,
-                    "_controlstudio_evidence": safe_evidence_ref,
-                }
-            else:
-                safe_result = {
-                    "result": safe_result,
-                    "_controlstudio_evidence": safe_evidence_ref,
-                }
-        await self._supervisor.send_tool_result(
-            {
-                "request_id": request.request_id,
-                "status": "completed",
-                "result": safe_result,
-            }
-        )
+        if completed_tool_result is None:
+            raise AgentProtocolError("Tool completion was not prevalidated")
+        await self._supervisor.send_tool_result(completed_tool_result)
 
     async def test_capabilities(self) -> ModelCapabilityResult:
         request_id = str(uuid.uuid4())
@@ -1481,6 +1615,13 @@ def _safe_trusted_context(
         "change_planner_available": change_planner_available,
         "mne_change_planner_available": mne_change_planner_available,
     }
+    if (
+        value.get("targetless_analysis") is True
+        and value.get("change_request_scope") == "analysis_only"
+    ):
+        # This flag grants no tool authority.  It tells the Agent that the Host
+        # deliberately supplied an empty external catalog for a general chat.
+        context["targetless_analysis"] = True
     if value.get("internal_mne_rung_reproposal_permitted") is True:
         context["internal_mne_rung_reproposal_permitted"] = True
     if value.get("change_request_scope") in {
@@ -1490,6 +1631,7 @@ def _safe_trusted_context(
     }:
         context["change_request_scope"] = value["change_request_scope"]
     if value.get("verification_scope") in {
+        "offline_native_check_only",
         "offline_native_reopen",
         "offline_native_reopen_xgsim",
     }:
@@ -1740,6 +1882,30 @@ def _structural_evidence_projection(
     return safe_evidence_ref, validated_receipt
 
 
+def _nonstructural_evidence_projection(
+    evidence_ref: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project a Host receipt without misrepresenting its private source digest."""
+
+    safe_evidence_ref = scrub_agent_tool_result(evidence_ref)
+    if not isinstance(safe_evidence_ref, dict):
+        raise AgentProtocolError("Evidence is not Agent-safe")
+    raw_receipt = evidence_ref.get("receipt")
+    safe_receipt = safe_evidence_ref.get("receipt")
+    if isinstance(raw_receipt, Mapping) and isinstance(safe_receipt, dict):
+        if dict(raw_receipt) != safe_receipt:
+            projected_receipt = {
+                **safe_receipt,
+                "targetIdentityOmitted": True,
+            }
+            projected_receipt["projectionDigest"] = canonical_digest(
+                projected_receipt
+            )
+            safe_evidence_ref["receipt"] = projected_receipt
+    assert_agent_safe_payload(safe_evidence_ref)
+    return safe_evidence_ref
+
+
 def project_historical_evidence(evidence_ref: Mapping[str, Any]) -> dict[str, Any]:
     """Project a journaled receipt exactly as it was exposed in its source run."""
 
@@ -1752,11 +1918,7 @@ def project_historical_evidence(evidence_ref: Mapping[str, Any]) -> dict[str, An
             evidence_ref=evidence_ref,
         )
         return projected
-    safe_evidence_ref = scrub_agent_tool_result(evidence_ref)
-    if not isinstance(safe_evidence_ref, dict):
-        raise AgentProtocolError("Historical evidence is not Agent-safe")
-    assert_agent_safe_payload(safe_evidence_ref)
-    return safe_evidence_ref
+    return _nonstructural_evidence_projection(evidence_ref)
 
 
 def _structural_tool_result_payload(
@@ -1813,11 +1975,78 @@ def _structural_tool_result_payload(
         "status": "completed",
         "result": result,
     }
+    _assert_strict_tool_result_json(payload)
     assert_agent_safe_payload(payload)
     encoded = encode_message("tool.result", payload)
     if len(encoded) > _STRUCTURAL_TOOL_RESULT_FRAME_MAX_BYTES:
         raise AgentProtocolError("Structural analysis result projection exceeds its wire budget")
     return payload
+
+
+def _completed_tool_result_payload(
+    *,
+    request_id: str,
+    raw_result: Any,
+    evidence_ref: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Build and wire-validate an Agent-safe result before durable completion."""
+
+    safe_result = scrub_agent_tool_result(raw_result)
+    if evidence_ref is not None:
+        safe_evidence_ref = _nonstructural_evidence_projection(evidence_ref)
+        if isinstance(safe_result, dict):
+            safe_result = {
+                **safe_result,
+                "_controlstudio_evidence": safe_evidence_ref,
+            }
+        else:
+            safe_result = {
+                "result": safe_result,
+                "_controlstudio_evidence": safe_evidence_ref,
+            }
+    payload = {
+        "request_id": request_id,
+        "status": "completed",
+        "result": safe_result,
+    }
+    _assert_strict_tool_result_json(payload)
+    assert_agent_safe_payload(payload)
+    # JSON serialization and the exact NDJSON frame-size limit must succeed
+    # before the Host journals tool.completed and its evidence atomically.
+    encode_message("tool.result", payload)
+    return payload
+
+
+def _assert_strict_tool_result_json(value: Any) -> None:
+    """Reject values that JSON framing would coerce or cannot represent."""
+
+    def visit(item: Any) -> None:
+        if isinstance(item, Mapping):
+            if any(not isinstance(key, str) for key in item):
+                raise AgentProtocolError("Agent tool result JSON keys must be text")
+            for nested in item.values():
+                visit(nested)
+            return
+        if isinstance(item, list):
+            for nested in item:
+                visit(nested)
+            return
+        if item is None or isinstance(item, (str, bool, int)):
+            return
+        if isinstance(item, float) and math.isfinite(item):
+            return
+        raise AgentProtocolError("Agent tool result is not strict JSON")
+
+    visit(value)
+    try:
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError) as exc:
+        raise AgentProtocolError("Agent tool result is not strict JSON") from exc
 
 
 def _output_contract_diagnostic_from_payload(

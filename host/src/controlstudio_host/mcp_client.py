@@ -72,7 +72,6 @@ AGENT_TOOL_NAMES: dict[str, str] = {
     "find_device_references": "device.references",
     "build_project_behavior_report": "project.behavior_report",
     "capture_project_snapshot": "project.snapshot",
-    "get_session_evidence": "evidence.get",
     "get_ls_controller_status": "controller.ls.status",
     "read_ls_controller_devices": "controller.ls.read",
     "trace_ls_controller_devices": "controller.ls.trace",
@@ -200,7 +199,6 @@ AGENT_TOOL_REQUIRED_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
     "device.references": SESSION_IDENTITY_FIELDS,
     "project.behavior_report": SESSION_IDENTITY_FIELDS,
     "project.snapshot": SESSION_IDENTITY_FIELDS,
-    "evidence.get": ("session_id",),
 }
 CONTROLLER_ENDPOINT_FIELDS = ("host", "port", "timeout_seconds")
 
@@ -425,6 +423,13 @@ class MCPGateway:
 
         identity = self._active_session_identity
         return dict(identity) if identity is not None else None
+
+    @property
+    def controller_endpoint_snapshot(self) -> dict[str, Any] | None:
+        """Return a copy of the Host-owned endpoint used for controller tools."""
+
+        endpoint = self._active_controller_endpoint
+        return dict(endpoint) if endpoint is not None else None
 
     def bind_agent_session(self, session: dict[str, Any]) -> None:
         missing = [

@@ -8,7 +8,7 @@ import math
 import os
 import re
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -32,6 +32,7 @@ from .change_execution import (
     ChangeVerificationResult,
     MCPChangeExecutionService,
     NativeCheckpointCallback,
+    calculate_plan_digest,
 )
 from .mcp_client import MCPGateway, MCPToolError, MCPToolRejectedError
 from .models import ChangeTransaction, ChangeTransactionState
@@ -103,6 +104,7 @@ MNE_STRUCTURAL_PLAN_KINDS = frozenset((MNE_PLAN_KIND, *MNE_PATCH_PLAN_KINDS))
 MNE_TARGET_PROGRAM_SCHEMA = "controlstudio-mne-target-program/v1"
 MNE_PROGRAM_DESIGN_SCHEMA = "controlstudio-mne-program-design/v1"
 MNE_APPROVED_BASELINE_SCHEMA = "controlstudio-mne-approved-baseline/v1"
+MNE_CHECK_ONLY_VERIFICATION_SCOPE = "offline_native_check_only"
 MNE_VERIFICATION_SCOPE = "offline_native_reopen"
 MNE_XGSIM_VERIFICATION_SCOPE = "offline_native_reopen_xgsim"
 MNE_VALIDATION_STEPS = (
@@ -111,6 +113,7 @@ MNE_VALIDATION_STEPS = (
     "project_save",
     "project_reopen",
 )
+MNE_CHECK_ONLY_VALIDATION_STEPS = MNE_VALIDATION_STEPS[:-1]
 MNE_NOT_EXECUTED_VALIDATION_TIERS = (
     "xg_sim",
     "runtime_or_online_validation",
@@ -122,6 +125,9 @@ MNE_VERIFICATION_SCHEMA = "xg5000.program-replacement-verification/1.0"
 MNE_ROLLBACK_SCHEMA = "xg5000.program-replacement-rollback/1.0"
 MNE_PRIVATE_SNAPSHOT_SCHEMA = "controlstudio-mne-private-digest-snapshot/v1"
 MNE_MCP_SCHEMA_VERSION = "1.0"
+_MNE_HARDWARE_OUTER_FIELDS = frozenset(
+    {"hardware_context_digest", "field_io_bindings"}
+)
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MNE_PUBLIC_RECEIPT_LIMIT = 2 * 1024 * 1024
 
@@ -343,6 +349,32 @@ def _typed_target_program(transaction: ChangeTransaction) -> dict[str, Any]:
     if not hmac.compare_digest(target_digest, _digest(unsigned)):
         raise ChangeExecutionPreconditionError("plan.target_program digest is invalid")
     return dict(target)
+
+
+def _hardware_outer_fields(
+    target_program: Mapping[str, Any],
+) -> set[str] | None:
+    if "hardware_context_digest" not in target_program:
+        return None
+    return set(_MNE_HARDWARE_OUTER_FIELDS)
+
+
+def _validate_hardware_outer_binding(
+    value: Mapping[str, Any],
+    *,
+    target_program: Mapping[str, Any],
+    label: str,
+) -> None:
+    if "hardware_context_digest" not in target_program:
+        return
+    if (
+        value.get("hardware_context_digest")
+        != target_program.get("hardware_context_digest")
+        or value.get("field_io_bindings") != target_program.get("field_io_bindings")
+    ):
+        raise ChangeExecutionPreconditionError(
+            f"{label} lost its approved hardware terminal binding"
+        )
 
 
 def _approved_baseline_binding(transaction: ChangeTransaction) -> dict[str, str]:
@@ -618,17 +650,23 @@ def _validate_verification_contract(transaction: ChangeTransaction) -> None:
     if transaction.plan.get("plan_kind") not in MNE_STRUCTURAL_PLAN_KINDS:
         raise ChangeExecutionPreconditionError("unsupported full-program plan kind")
     if transaction.plan.get("verification_scope") not in {
+        MNE_CHECK_ONLY_VERIFICATION_SCOPE,
         MNE_VERIFICATION_SCOPE,
         MNE_XGSIM_VERIFICATION_SCOPE,
     }:
         raise ChangeExecutionPreconditionError(
-            "full-program replacement requires offline_native_reopen verification"
+            "full-program replacement verification_scope is unsupported"
         )
+    scope = transaction.plan.get("verification_scope")
+    expected_steps = (
+        MNE_CHECK_ONLY_VALIDATION_STEPS
+        if scope == MNE_CHECK_ONLY_VERIFICATION_SCOPE
+        else MNE_VALIDATION_STEPS
+    )
     validation = transaction.plan.get("validation")
-    if not isinstance(validation, list) or tuple(validation) != MNE_VALIDATION_STEPS:
+    if not isinstance(validation, list) or tuple(validation) != expected_steps:
         raise ChangeExecutionPreconditionError(
-            "full-program replacement requires structural diff, Program Check, save, "
-            "and independent reopen in that order"
+            f"{scope} requires " + ", ".join(expected_steps) + " in that order"
         )
     manual = transaction.plan.get("manual_follow_up")
     if not isinstance(manual, list) or any(
@@ -642,11 +680,18 @@ def _validate_verification_contract(transaction: ChangeTransaction) -> None:
 def _verification_evidence(
     transaction: ChangeTransaction,
     *,
-    executed_checks: tuple[str, ...] = MNE_VALIDATION_STEPS,
+    executed_checks: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     _validate_verification_contract(transaction)
+    scope = str(transaction.plan["verification_scope"])
+    if executed_checks is None:
+        executed_checks = (
+            MNE_CHECK_ONLY_VALIDATION_STEPS
+            if scope == MNE_CHECK_ONLY_VERIFICATION_SCOPE
+            else MNE_VALIDATION_STEPS
+        )
     return {
-        "verification_scope": transaction.plan["verification_scope"],
+        "verification_scope": scope,
         "executed_checks": list(executed_checks),
         "not_executed": [
             *(check for check in MNE_VALIDATION_STEPS if check not in executed_checks),
@@ -774,6 +819,7 @@ _PUBLIC_CHECKPOINT_EVIDENCE_FIELDS = (
     "active_session_id",
     "pid",
     "hwnd",
+    "project_path",
     "current_project_hash",
     "state",
     "program_id",
@@ -1542,19 +1588,38 @@ def _validate_verification_receipt(
         _object(plan.get("target_mne"), "MNE plan target receipt").get("payload_sha256"),
         "MNE target hash",
     )
-    reopen = _validate_reopen_receipt(
-        verification.get("reopen"),
-        transaction=transaction,
-        plan=plan,
-        expected_mne_sha256=target_hash,
+    check_save_only = (
+        transaction.plan.get("verification_scope")
+        == MNE_CHECK_ONLY_VERIFICATION_SCOPE
     )
+    reopen: dict[str, Any] | None = None
+    if check_save_only:
+        if verification.get("reopen") is not None:
+            raise ChangeExecutionPreconditionError(
+                "check/save-only MNE verification returned unexpected reopen evidence"
+            )
+        _sha256(
+            verification.get("project_sha256_after"),
+            "MNE check/save-only project hash",
+        )
+    else:
+        reopen = _validate_reopen_receipt(
+            verification.get("reopen"),
+            transaction=transaction,
+            plan=plan,
+            expected_mne_sha256=target_hash,
+        )
     if (
         verification.get("verified") is not True
         or verification.get("program_check_verified") is not True
         or verification.get("save_verified") is not True
         or verification.get("plan_digest") != plan.get("plan_digest")
         or verification.get("application_digest") != application.get("application_digest")
-        or verification.get("project_sha256_after") != reopen.get("project_sha256")
+        or (
+            reopen is not None
+            and verification.get("project_sha256_after")
+            != reopen.get("project_sha256")
+        )
     ):
         raise ChangeExecutionPreconditionError(
             "MNE verification receipt is not bound to the exact application"
@@ -1719,6 +1784,82 @@ def _validated_persisted_apply_receipts(
     return baseline, plan, application
 
 
+def _validated_persisted_apply_chain(
+    transaction: ChangeTransaction,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Revalidate the complete persisted APPLIED boundary and receipt chain."""
+
+    evidence = _object(
+        transaction.result.get("apply"),
+        "persisted MNE apply evidence",
+    )
+    applied = _object(
+        evidence.get("apply"),
+        "persisted program.apply_mne_replacement result",
+    )
+    mcp_transaction_id = _required_text(
+        evidence,
+        "mcp_transaction_id",
+        "persisted MNE apply evidence",
+    )
+    target_program = _typed_target_program(transaction)
+    MNEChangeExecutionService._validate_outer(
+        applied,
+        operation="program.apply_mne_replacement",
+        expected_state="APPLIED",
+        expected_transaction_id=mcp_transaction_id,
+        required_keys={"application", "project_unchanged"},
+        optional_keys=_hardware_outer_fields(target_program),
+    )
+    if applied.get("project_unchanged") is not True:
+        raise ChangeExecutionPreconditionError(
+            "persisted MNE apply result did not preserve the project file"
+        )
+    _validate_hardware_outer_binding(
+        applied,
+        target_program=target_program,
+        label="persisted MNE apply result",
+    )
+    checkpoint = _object(
+        applied.get("transaction_checkpoint"),
+        "persisted MNE apply checkpoint",
+    )
+    baseline, plan, application = _validated_persisted_apply_receipts(
+        transaction,
+        checkpoint,
+    )
+    if applied.get("application") != application:
+        raise ChangeExecutionPreconditionError(
+            "persisted MNE apply result differs from its application receipt"
+        )
+    MNEChangeExecutionService._validate_checkpoint(
+        transaction=transaction,
+        checkpoint=checkpoint,
+        expected_transaction_id=mcp_transaction_id,
+        expected_state="APPLIED",
+        expected_plan_id=str(plan["plan_id"]),
+        expected_plan_digest=str(plan["plan_digest"]),
+        target_program=target_program,
+        adapter_binding_digest=str(plan["adapter_binding_digest"]),
+        runtime_identity_digest=str(plan["runtime_identity_digest"]),
+        expected_before_mne_sha256=str(plan["before_mne_sha256"]),
+        expected_target_mne_sha256=str(
+            _object(plan.get("target_mne"), "persisted MNE target receipt")[
+                "payload_sha256"
+            ]
+        ),
+        expected_project_hash=transaction.target.artifact_hash,
+        expected_lease_generation=str(evidence["lease_generation"]),
+        expected_baseline_digest=str(baseline["baseline_digest"]),
+        expected_rollback_ld_sha256=str(plan["rollback_ld_sha256"]),
+        expected_snapshot_id=str(evidence["snapshot_id"]),
+        expected_snapshot_digest=str(evidence["snapshot_digest"]),
+        expected_artifact_visibility=str(evidence["artifact_visibility"]),
+        expected_backup_id=str(evidence["backup_id"]),
+    )
+    return baseline, plan, application
+
+
 def validated_terminal_mne_reopen(
     transaction: ChangeTransaction,
 ) -> dict[str, Any] | None:
@@ -1733,38 +1874,25 @@ def validated_terminal_mne_reopen(
         }
     ):
         return None
-    apply_evidence = _object(
-        transaction.result.get("apply"),
-        "terminal MNE apply evidence",
-    )
+    baseline, plan, application = _validated_persisted_apply_chain(transaction)
     if (
-        apply_evidence.get("host_transaction_id") != transaction.id
-        or apply_evidence.get("host_plan_digest") != transaction.plan_digest
-        or apply_evidence.get("plan_kind") != MNE_PLAN_KIND
+        transaction.state is ChangeTransactionState.COMPLETED
+        and transaction.plan.get("verification_scope")
+        == MNE_CHECK_ONLY_VERIFICATION_SCOPE
     ):
-        raise ChangeExecutionPreconditionError(
-            "terminal MNE apply evidence differs from the Host transaction"
-        )
-    plan = _object(apply_evidence.get("plan"), "terminal MNE plan")
-    baseline = _object(apply_evidence.get("baseline"), "terminal MNE baseline")
-    application = _object(
-        apply_evidence.get("application"),
-        "terminal MNE application",
-    )
-    if (
-        apply_evidence.get("mcp_plan_id") != plan.get("plan_id")
-        or apply_evidence.get("mcp_plan_digest") != plan.get("plan_digest")
-    ):
-        raise ChangeExecutionPreconditionError(
-            "terminal MNE plan identity differs from apply evidence"
-        )
+        return None
     verification_evidence = _object(
         transaction.result.get("verification"),
         "terminal MNE verification evidence",
     )
     if transaction.state is ChangeTransactionState.COMPLETED:
+        verification_value = verification_evidence.get("verification")
+        if verification_value is None:
+            reconciliation = transaction.result.get("reconciliation")
+            if isinstance(reconciliation, Mapping):
+                verification_value = reconciliation.get("verification")
         receipt = _validate_verification_receipt(
-            verification_evidence.get("verification"),
+            verification_value,
             transaction=transaction,
             plan=plan,
             application=application,
@@ -1792,6 +1920,432 @@ def validated_terminal_mne_reopen(
         baseline=baseline,
     )
     return dict(_object(rollback.get("reopen"), "terminal MNE rollback reopen"))
+
+
+def has_valid_terminal_mne_no_mutation_abort(
+    transaction: ChangeTransaction,
+) -> bool:
+    """Validate the exact terminal MNE outcome that performed no mutation."""
+
+    if (
+        transaction.plan.get("plan_kind") not in MNE_STRUCTURAL_PLAN_KINDS
+        or transaction.state is not ChangeTransactionState.ROLLED_BACK
+        or transaction.error_code != "mne_recovery_aborted_before_mutation"
+    ):
+        return False
+    try:
+        approval = transaction.approval
+        expected_plan_digest = calculate_plan_digest(
+            target=transaction.target,
+            risk_level=transaction.risk_level,
+            intent=transaction.intent,
+            plan=transaction.plan,
+        )
+        if (
+            approval is None
+            or approval.transaction_id != transaction.id
+            or approval.decision.value != "APPROVE"
+            or approval.plan_digest != transaction.plan_digest
+            or transaction.plan_digest != expected_plan_digest
+        ):
+            raise ChangeExecutionPreconditionError(
+                "terminal MNE abort is not bound to the canonical approval"
+            )
+
+        target_program = _typed_target_program(transaction)
+        _approved_baseline_binding(transaction)
+        expected_boundary = _verification_evidence(
+            transaction, executed_checks=()
+        )
+        reconciliation = _object(
+            transaction.result.get("reconciliation"),
+            "terminal MNE no-mutation reconciliation",
+        )
+        public_boundary_fields = {
+            "verification_scope",
+            "executed_checks",
+            "not_executed",
+            "manual_follow_up",
+            "lookup_checkpoint",
+            "abort_checkpoint",
+            "native_mutation_performed",
+        }
+        recovered_fields = public_boundary_fields | {
+            "recovery_attach",
+            "status_checkpoint",
+        }
+        if frozenset(reconciliation) not in {
+            frozenset(public_boundary_fields),
+            frozenset(recovered_fields),
+        }:
+            raise ChangeExecutionPreconditionError(
+                "terminal MNE abort has unexpected reconciliation evidence"
+            )
+        if any(
+            reconciliation.get(field) != expected_boundary[field]
+            for field in (
+                "verification_scope",
+                "executed_checks",
+                "not_executed",
+                "manual_follow_up",
+            )
+        ) or reconciliation.get("native_mutation_performed") is not False:
+            raise ChangeExecutionPreconditionError(
+                "terminal MNE abort changed its execution boundary"
+            )
+
+        lookup = _object(
+            reconciliation.get("lookup_checkpoint"),
+            "terminal MNE lookup checkpoint",
+        )
+        aborted = _object(
+            reconciliation.get("abort_checkpoint"),
+            "terminal MNE abort checkpoint",
+        )
+        stored_value = transaction.result.get("native_checkpoint")
+        stored_path = (
+            stored_value.get("project_path")
+            if isinstance(stored_value, Mapping)
+            else None
+        )
+
+        def complete_public_checkpoint(value: Mapping[str, Any]) -> dict[str, Any]:
+            checkpoint = dict(value)
+            if checkpoint.get("project_path") is None:
+                if not _same_path(stored_path, transaction.target.project_path):
+                    raise ChangeExecutionPreconditionError(
+                        "terminal MNE checkpoint has no exact project path binding"
+                    )
+                checkpoint["project_path"] = stored_path
+            return checkpoint
+
+        lookup = complete_public_checkpoint(lookup)
+        aborted = complete_public_checkpoint(aborted)
+        stored = MNEChangeExecutionService._stored_checkpoint(
+            transaction,
+            recovered_checkpoint=lookup,
+        )
+
+        def validate_checkpoint(value: dict[str, Any]) -> None:
+            if not set(value).issubset(_PUBLIC_CHECKPOINT_EVIDENCE_FIELDS):
+                raise ChangeExecutionPreconditionError(
+                    "terminal MNE checkpoint has unexpected public fields"
+                )
+            required_fields = {
+                "schema",
+                "host_transaction_id",
+                "transaction_id",
+                "snapshot_id",
+                "snapshot_digest",
+                "artifact_visibility",
+                "plan_kind",
+                "workspace_id",
+                "project_identity_digest",
+                "active_session_id",
+                "pid",
+                "hwnd",
+                "project_path",
+                "current_project_hash",
+                "state",
+                "lease_generation",
+                "mutation_possible",
+                "recovery_action",
+                "terminal",
+                "lease_status",
+            }
+            if not required_fields.issubset(value):
+                raise ChangeExecutionPreconditionError(
+                    "terminal MNE checkpoint is incomplete"
+                )
+            session_id = _required_text(
+                value, "active_session_id", "terminal MNE checkpoint"
+            )
+            pid = value.get("pid")
+            hwnd = value.get("hwnd")
+            transaction_id = _required_text(
+                value, "transaction_id", "terminal MNE checkpoint"
+            )
+            snapshot_id = _required_text(
+                value, "snapshot_id", "terminal MNE checkpoint"
+            )
+            if (
+                str(uuid.UUID(transaction_id)) != transaction_id
+                or str(uuid.UUID(snapshot_id)) != snapshot_id
+                or isinstance(pid, bool)
+                or not isinstance(pid, int)
+                or pid <= 0
+                or isinstance(hwnd, bool)
+                or not isinstance(hwnd, int)
+                or hwnd <= 0
+                or value.get("plan_kind") != MNE_PLAN_KIND
+                or value.get("workspace_id") != transaction.target.workspace_id
+                or value.get("current_project_hash")
+                != transaction.target.artifact_hash
+                or value.get("artifact_visibility") != "private_digest_only"
+                or _SHA256.fullmatch(str(value.get("snapshot_digest") or ""))
+                is None
+                or _SHA256.fullmatch(
+                    str(value.get("project_identity_digest") or "")
+                )
+                is None
+            ):
+                raise ChangeExecutionPreconditionError(
+                    "terminal MNE checkpoint target identity is invalid"
+                )
+            plan_id = value.get("plan_id")
+            plan_digest = value.get("plan_digest")
+            if (plan_id is None) != (plan_digest is None) or (
+                plan_id is not None
+                and (
+                    not isinstance(plan_id, str)
+                    or str(uuid.UUID(plan_id)) != plan_id
+                    or _SHA256.fullmatch(str(plan_digest)) is None
+                )
+            ):
+                raise ChangeExecutionPreconditionError(
+                    "terminal MNE checkpoint has an incomplete native plan binding"
+                )
+            backup_id = value.get("backup_id")
+            if backup_id is not None and (
+                not isinstance(backup_id, str)
+                or str(uuid.UUID(backup_id)) != backup_id
+            ):
+                raise ChangeExecutionPreconditionError(
+                    "terminal MNE checkpoint backup identity is invalid"
+                )
+            for field in (
+                "baseline_digest",
+                "before_mne_sha256",
+                "target_mne_sha256",
+                "adapter_binding_digest",
+                "runtime_identity_digest",
+                "target_program_digest",
+                "rollback_ld_sha256",
+                "simulation_receipt_digest",
+            ):
+                if value.get(field) is not None and _SHA256.fullmatch(
+                    str(value[field])
+                ) is None:
+                    raise ChangeExecutionPreconditionError(
+                        f"terminal MNE checkpoint has invalid {field}"
+                    )
+            for field, expected in (
+                ("program_id", target_program["program_id"]),
+                ("program_name", target_program["program_name"]),
+                ("target_program_digest", target_program["target_program_digest"]),
+            ):
+                if value.get(field) is not None and value.get(field) != expected:
+                    raise ChangeExecutionPreconditionError(
+                        f"terminal MNE checkpoint changed {field}"
+                    )
+            MNEChangeExecutionService._validate_recovery_checkpoint_against_stored(
+                transaction=transaction,
+                checkpoint=value,
+                stored=stored,
+                target_program=target_program,
+                expected_session_id=session_id,
+                expected_pid=pid,
+                expected_hwnd=hwnd,
+                expected_project_hash=transaction.target.artifact_hash,
+                allow_lease_rotation=True,
+            )
+
+        validate_checkpoint(lookup)
+        validate_checkpoint(aborted)
+        predecessor: Mapping[str, Any] = lookup
+        status_value = reconciliation.get("status_checkpoint")
+        if status_value is not None:
+            status_checkpoint = complete_public_checkpoint(
+                _object(status_value, "terminal MNE recovery status checkpoint")
+            )
+            validate_checkpoint(status_checkpoint)
+            predecessor = status_checkpoint
+            recovery_attach = _object(
+                reconciliation.get("recovery_attach"),
+                "terminal MNE recovery attachment",
+            )
+            if (
+                not set(recovery_attach).issubset(
+                    {"mode", "session_id", "pid", "hwnd", "project_hash", "plc_policy"}
+                )
+                or not isinstance(recovery_attach.get("mode"), str)
+                or not str(recovery_attach["mode"]).strip()
+                or
+                recovery_attach.get("session_id")
+                != status_checkpoint.get("active_session_id")
+                or recovery_attach.get("pid") != status_checkpoint.get("pid")
+                or recovery_attach.get("hwnd") != status_checkpoint.get("hwnd")
+                or recovery_attach.get("project_hash")
+                != transaction.target.artifact_hash
+            ):
+                raise ChangeExecutionPreconditionError(
+                    "terminal MNE recovery attachment changed target identity"
+                )
+            if recovery_attach.get("mode") == "existing_bound_session":
+                if recovery_attach.get("plc_policy") is not None:
+                    raise ChangeExecutionPreconditionError(
+                        "existing MNE recovery session returned a PLC policy"
+                    )
+            elif recovery_attach.get("plc_policy") != "offline_abort_recovery_only":
+                raise ChangeExecutionPreconditionError(
+                    "terminal MNE recovery attachment changed its abort-only policy"
+                )
+        elif reconciliation.get("recovery_attach") is not None:
+            raise ChangeExecutionPreconditionError(
+                "terminal MNE recovery attachment has no status checkpoint"
+            )
+
+        lookup_is_terminal = lookup.get("state") == "ABORTED_NO_MUTATION"
+        if (
+            (lookup_is_terminal and status_value is not None)
+            or (not lookup_is_terminal and status_value is None)
+            or
+            (lookup_is_terminal and lookup != aborted)
+            or (
+                not lookup_is_terminal
+                and (
+                    lookup.get("recovery_action") != "abort_safe"
+                    or lookup.get("mutation_possible") is not False
+                    or lookup.get("terminal") is not False
+                )
+            )
+            or (
+                status_value is not None
+                and (
+                    predecessor.get("recovery_action") != "abort_safe"
+                    or predecessor.get("mutation_possible") is not False
+                    or predecessor.get("terminal") is not False
+                )
+            )
+            or
+            aborted.get("state") != "ABORTED_NO_MUTATION"
+            or aborted.get("mutation_possible") is not False
+            or aborted.get("recovery_action") != "already_terminal"
+            or aborted.get("terminal") is not True
+            or aborted.get("lease_status") != "released"
+            or aborted.get("active_session_id")
+            != predecessor.get("active_session_id")
+            or aborted.get("pid") != predecessor.get("pid")
+            or aborted.get("hwnd") != predecessor.get("hwnd")
+            or aborted.get("transaction_id") != predecessor.get("transaction_id")
+            or aborted.get("lease_generation")
+            != predecessor.get("lease_generation")
+        ):
+            raise ChangeExecutionPreconditionError(
+                "terminal MNE abort checkpoint changed the recovery identity"
+            )
+    except (
+        ChangeExecutionPreconditionError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        return False
+    return True
+
+
+def has_valid_terminal_mne_receipt(transaction: ChangeTransaction) -> bool:
+    """Validate the canonical persisted receipt for a terminal MNE transaction."""
+
+    if (
+        transaction.plan.get("plan_kind") not in MNE_STRUCTURAL_PLAN_KINDS
+        or transaction.state
+        not in {
+            ChangeTransactionState.COMPLETED,
+            ChangeTransactionState.ROLLED_BACK,
+        }
+    ):
+        return False
+
+    try:
+        expected_boundary = _verification_evidence(transaction)
+        raw_verification = transaction.result.get("verification")
+        stored_verification = (
+            dict(raw_verification)
+            if isinstance(raw_verification, Mapping)
+            else {}
+        )
+        terminal_key = (
+            "rollback"
+            if transaction.state is ChangeTransactionState.ROLLED_BACK
+            else "verification"
+        )
+        evidence = stored_verification
+        simulation_finalization = transaction.result.get("simulation_finalization")
+        reconciliation = transaction.result.get("reconciliation")
+        if (
+            isinstance(simulation_finalization, dict)
+            and isinstance(simulation_finalization.get(terminal_key), dict)
+        ):
+            evidence = {**stored_verification, **simulation_finalization}
+        elif (
+            isinstance(reconciliation, dict)
+            and isinstance(reconciliation.get(terminal_key), dict)
+        ):
+            evidence = reconciliation
+        if any(
+            evidence.get(field) != expected_boundary[field]
+            for field in ("verification_scope", "executed_checks", "not_executed")
+        ):
+            return False
+
+        apply_evidence = transaction.result.get("apply")
+        if transaction.state is ChangeTransactionState.COMPLETED:
+            _baseline, plan, application = _validated_persisted_apply_chain(
+                transaction
+            )
+            _validate_verification_receipt(
+                evidence.get("verification"),
+                transaction=transaction,
+                plan=plan,
+                application=application,
+            )
+            return True
+
+        rollback_value = evidence.get("rollback")
+        rollback = _object(rollback_value, "terminal MNE rollback")
+        reopen = _object(rollback.get("reopen"), "terminal MNE rollback reopen")
+        validated_apply: tuple[
+            dict[str, Any],
+            dict[str, Any],
+            dict[str, Any],
+        ] | None = None
+        if isinstance(apply_evidence, Mapping):
+            validated_apply = _validated_persisted_apply_chain(transaction)
+        if (
+            validated_apply is not None
+            and reopen.get("source_pid")
+            == transaction.target.engineering_process_id
+            and reopen.get("source_hwnd")
+            == transaction.target.engineering_window_handle
+        ):
+            baseline, plan, _application = validated_apply
+            _validate_rollback_receipt(
+                rollback,
+                transaction=transaction,
+                plan=plan,
+                baseline=baseline,
+            )
+            return True
+
+        checkpoint = _object(
+            transaction.result.get("native_checkpoint"),
+            "terminal MNE native checkpoint",
+        )
+        lookup_checkpoint = _object(
+            evidence.get("lookup_checkpoint"),
+            "terminal MNE lookup checkpoint",
+        )
+        MNEChangeExecutionService._validate_recovered_rollback_receipt(
+            rollback,
+            transaction=transaction,
+            checkpoint=checkpoint,
+            expected_source_pid=int(lookup_checkpoint["pid"]),
+            expected_source_hwnd=int(lookup_checkpoint["hwnd"]),
+        )
+        return True
+    except (ChangeExecutionPreconditionError, KeyError, TypeError, ValueError):
+        return False
 
 
 class CompositeChangeExecutionService:
@@ -2003,6 +2557,7 @@ class MNEChangeExecutionService:
                     "impact",
                     "project_unchanged",
                 },
+                optional_keys=_hardware_outer_fields(target_program),
             )
             if (
                 planned.get("project_unchanged") is not True
@@ -2054,15 +2609,11 @@ class MNEChangeExecutionService:
                     raise ChangeExecutionPreconditionError(
                         "MNE plan does not match the approved instruction candidate"
                     )
-                if "hardware_context_digest" in candidate and (
-                    planned.get("hardware_context_digest")
-                    != candidate.get("hardware_context_digest")
-                    or planned.get("field_io_bindings")
-                    != candidate.get("field_io_bindings")
-                ):
-                    raise ChangeExecutionPreconditionError(
-                        "MNE plan lost its approved hardware terminal binding"
-                    )
+            _validate_hardware_outer_binding(
+                planned,
+                target_program=target_program,
+                label="MNE plan",
+            )
             mcp_plan_id = _required_text(plan, "plan_id", "MNE plan")
             mcp_plan_digest = _sha256(plan.get("plan_digest"), "MNE plan digest")
             lease_generation = _required_text(
@@ -2222,6 +2773,7 @@ class MNEChangeExecutionService:
                 expected_state="APPLIED",
                 expected_transaction_id=mcp_transaction_id,
                 required_keys={"application", "project_unchanged"},
+                optional_keys=_hardware_outer_fields(target_program),
             )
             if applied.get("project_unchanged") is not True:
                 raise ChangeExecutionPreconditionError(
@@ -2233,15 +2785,11 @@ class MNEChangeExecutionService:
                 plan=plan,
                 baseline=baseline,
             )
-            if "hardware_context_digest" in transaction.plan.get("candidate", {}) and (
-                applied.get("hardware_context_digest")
-                != transaction.plan["candidate"].get("hardware_context_digest")
-                or applied.get("field_io_bindings")
-                != transaction.plan["candidate"].get("field_io_bindings")
-            ):
-                raise ChangeExecutionPreconditionError(
-                    "MNE application receipt lost its approved hardware terminal binding"
-                )
+            _validate_hardware_outer_binding(
+                applied,
+                target_program=target_program,
+                label="MNE application receipt",
+            )
             self._validate_checkpoint(
                 transaction=transaction,
                 checkpoint=_object(
@@ -2626,7 +3174,11 @@ class MNEChangeExecutionService:
                 "completion_claim": (
                     "offline_project_saved_reopened_xgsim_observing"
                     if xgsim_scope
-                    else "offline_project_saved_reopened_with_full_program_verification"
+                    else (
+                        "offline_project_program_checked_and_saved_with_full_program_verification"
+                        if verification_scope == MNE_CHECK_ONLY_VERIFICATION_SCOPE
+                        else "offline_project_saved_reopened_with_full_program_verification"
+                    )
                 ),
             },
         )
@@ -3149,25 +3701,41 @@ class MNEChangeExecutionService:
                 error_detail="The terminal native journal receipt cannot be verified.",
             )
         if recovery_action == "already_terminal" and native_state == "COMMITTED":
+            assert validated_terminal_receipt is not None
             return ChangeVerificationResult(
                 state=ChangeTransactionState.COMPLETED,
                 evidence={
-                    **base_evidence,
+                    **_verification_evidence(transaction),
+                    "lookup_checkpoint": _public_checkpoint_evidence(checkpoint),
+                    "verification": validated_terminal_receipt,
                     "terminal_receipt": validated_terminal_receipt,
                     "completion_claim": ("recovered_committed_full_program_replacement_journal"),
                 },
             )
-        if recovery_action == "already_terminal" and native_state in {
-            "ROLLED_BACK_SAVED",
-            "ABORTED_NO_MUTATION",
-        }:
+        if recovery_action == "already_terminal" and native_state == "ROLLED_BACK_SAVED":
+            assert validated_terminal_receipt is not None
+            return ChangeVerificationResult(
+                state=ChangeTransactionState.ROLLED_BACK,
+                evidence={
+                    **_verification_evidence(transaction),
+                    "lookup_checkpoint": _public_checkpoint_evidence(checkpoint),
+                    "rollback": validated_terminal_receipt,
+                    "terminal_receipt": validated_terminal_receipt,
+                    "native_mutation_performed": True,
+                },
+            )
+        if recovery_action == "already_terminal" and native_state == "ABORTED_NO_MUTATION":
             return ChangeVerificationResult(
                 state=ChangeTransactionState.ROLLED_BACK,
                 evidence={
                     **base_evidence,
-                    "terminal_receipt": validated_terminal_receipt,
-                    "native_mutation_performed": native_state != "ABORTED_NO_MUTATION",
+                    "abort_checkpoint": _public_checkpoint_evidence(checkpoint),
+                    "native_mutation_performed": False,
                 },
+                error_code="mne_recovery_aborted_before_mutation",
+                error_detail=(
+                    "The interrupted native transaction was aborted before mutation."
+                ),
             )
         try:
             if checkpoint.get("lease_status") == "live":
@@ -3492,18 +4060,17 @@ class MNEChangeExecutionService:
                 f"{operation} did not prove the expected {expected_state} result"
             )
         transition = value.get("project_hash_transition")
-        if transition is not None:
-            if (
-                not isinstance(transition, dict)
-                or set(transition) != {"before", "after", "source"}
-                or _SHA256.fullmatch(str(transition.get("before") or "")) is None
-                or _SHA256.fullmatch(str(transition.get("after") or "")) is None
-                or not isinstance(transition.get("source"), str)
-                or not transition.get("source")
-            ):
-                raise ChangeExecutionPreconditionError(
-                    f"{operation} returned an invalid project hash transition"
-                )
+        if transition is not None and (
+            not isinstance(transition, dict)
+            or set(transition) != {"before", "after", "source"}
+            or _SHA256.fullmatch(str(transition.get("before") or "")) is None
+            or _SHA256.fullmatch(str(transition.get("after") or "")) is None
+            or not isinstance(transition.get("source"), str)
+            or not transition.get("source")
+        ):
+            raise ChangeExecutionPreconditionError(
+                f"{operation} returned an invalid project hash transition"
+            )
 
     @staticmethod
     def _validate_checkpoint(
@@ -3628,15 +4195,18 @@ class MNEChangeExecutionService:
             raise ChangeExecutionPreconditionError(
                 "MNE journal checkpoint has an unsafe recovery or lease disposition"
             )
-        if expected_state in {"COMMITTED", "ROLLED_BACK_SAVED", "ABORTED_NO_MUTATION"}:
-            if (
-                checkpoint.get("terminal") is not True
-                or checkpoint.get("recovery_action") != "already_terminal"
-                or checkpoint.get("lease_status") != "released"
-            ):
-                raise ChangeExecutionPreconditionError(
-                    "MNE terminal checkpoint did not prove durable lease release"
-                )
+        if expected_state in {
+            "COMMITTED",
+            "ROLLED_BACK_SAVED",
+            "ABORTED_NO_MUTATION",
+        } and (
+            checkpoint.get("terminal") is not True
+            or checkpoint.get("recovery_action") != "already_terminal"
+            or checkpoint.get("lease_status") != "released"
+        ):
+            raise ChangeExecutionPreconditionError(
+                "MNE terminal checkpoint did not prove durable lease release"
+            )
 
     def _authorization(
         self,
@@ -4056,7 +4626,7 @@ class MNEChangeExecutionService:
                 raise ChangeExecutionPreconditionError(
                     "MNE recovery lease generation changed during recovery"
                 )
-        elif not allow_lease_rotation and stored.get("lease_generation") is not None:
+        elif not allow_lease_rotation and stored.get("lease_generation") is not None:  # noqa: SIM102
             if lease_generation != stored.get("lease_generation"):
                 raise ChangeExecutionPreconditionError(
                     "MNE recovery checkpoint changed its durable lease generation"
@@ -4426,9 +4996,11 @@ class MNEChangeExecutionService:
 
 
 __all__ = [
-    "CompositeChangeExecutionService",
     "MNE_PLAN_KIND",
     "MNE_TARGET_PROGRAM_SCHEMA",
     "MNE_VERIFICATION_SCOPE",
+    "CompositeChangeExecutionService",
+    "has_valid_terminal_mne_no_mutation_abort",
+    "has_valid_terminal_mne_receipt",
     "validated_terminal_mne_reopen",
 ]
