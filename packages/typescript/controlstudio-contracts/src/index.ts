@@ -635,6 +635,7 @@ export interface ConversationCreate {
   workflow?: "engineering" | "new_project_planning";
   projectBrief?: ProjectBrief;
   nativeProjectId?: string;
+  targetScope?: "current" | "none";
 }
 
 export type EngineeringChangeRequestScope =

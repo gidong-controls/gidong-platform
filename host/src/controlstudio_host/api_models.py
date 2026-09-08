@@ -1545,6 +1545,7 @@ class ConversationCreateV1(ApiModel):
     workflow: Literal["engineering", "new_project_planning"] = "engineering"
     project_brief: ProjectBriefV1 | None = None
     native_project_id: str | None = Field(default=None, min_length=1, max_length=256)
+    target_scope: Literal["current", "none"] = "current"
 
     @model_validator(mode="after")
     def validate_workflow_contract(self) -> ConversationCreateV1:
@@ -1554,6 +1555,10 @@ class ConversationCreateV1(ApiModel):
             raise ValueError("projectBrief is only valid for new_project_planning")
         if self.workflow != "engineering" and self.native_project_id is not None:
             raise ValueError("nativeProjectId is only valid for engineering handoff")
+        if self.target_scope == "none" and (
+            self.workflow != "engineering" or self.native_project_id is not None
+        ):
+            raise ValueError("targetScope none is only valid for general engineering analysis")
         return self
 
 
@@ -4569,6 +4574,8 @@ class XG5000ProjectLaunchV1(ApiModel):
     identity_assurance: Literal[
         "strong_readback",
         "controlled_launch_read_only",
+        "controlled_launch_official_open_read_only",
+        "controlled_launch_native_file_read_only",
         "unverified",
     ] = "unverified"
     instance: dict[str, Any] | None = None

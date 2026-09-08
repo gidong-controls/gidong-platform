@@ -2450,6 +2450,23 @@ select {
   border-left: 3px solid #b4dd3b;
 }
 
+.message-analysis-details {
+  margin-top: 12px;
+}
+
+.message-analysis-details > summary {
+  width: fit-content;
+  padding: 5px 0;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.message-analysis-details > summary:focus-visible {
+  outline: 2px solid #7c9590;
+  outline-offset: 3px;
+}
+
 .composer {
   padding: 12px 14px 13px;
   background: #f5f6f1;

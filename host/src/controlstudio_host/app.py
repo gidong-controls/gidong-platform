@@ -8349,7 +8349,9 @@ def create_app(
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
         engineering_target = (
-            current_engineering_conversation_target() if body.workflow == "engineering" else None
+            current_engineering_conversation_target()
+            if body.workflow == "engineering" and body.target_scope == "current"
+            else None
         )
         if body.native_project_id is not None:
             if engineering_target is None:
@@ -8560,9 +8562,13 @@ def create_app(
             targetless_analysis_run = bool(
                 workflow == "engineering"
                 and change_request_scope == "analysis_only"
-                and expected_engineering_target is None
                 and all(item is None for item in stored_target_values)
+                and detail.engineering_handoff is None
             )
+            if targetless_analysis_run:
+                # An unbound conversation stays independent of a project opened
+                # elsewhere in the app, including across refresh and restart.
+                expected_engineering_target = None
             if (
                 workflow == "engineering"
                 and isinstance(detail.workspace_id, str)
@@ -10819,10 +10825,10 @@ def create_app(
                 raise HTTPException(status_code=404, detail="conversation not found")
             targetless_engineering_conversation = bool(
                 detail.workflow == "engineering"
-                and current_engineering_conversation_target() is None
                 and detail.workspace_id is None
                 and detail.revision_id is None
                 and detail.engineering_session_id is None
+                and detail.engineering_handoff is None
             )
             if (
                 targetless_engineering_conversation
@@ -10887,6 +10893,7 @@ def create_app(
                         )
             if (
                 detail.workflow == "engineering"
+                and not targetless_engineering_conversation
                 and not engineering_conversation_matches_current_target(detail)
             ):
                 current_target = current_engineering_conversation_target()
@@ -15813,6 +15820,21 @@ def create_app(
             and isinstance(working_copy.get("current_sha256"), str)
         ):
             arguments["project_hash"] = working_copy["current_sha256"]
+        if (
+            not body.allow_unbound_existing_target
+            and isinstance(active_workspace, dict)
+            and isinstance(active_workspace.get("workspace_id"), str)
+            and working_copy
+            and isinstance(arguments.get("project_path"), str)
+            and isinstance(working_copy.get("path"), str)
+            and _normalized_workspace_path(arguments["project_path"])
+            == _normalized_workspace_path(working_copy["path"])
+            and arguments.get("project_hash") == working_copy.get("current_sha256")
+        ):
+            # The controlled-open receipt is bound to a workspace as well as
+            # PID/path/hash. Keep that identity on manual attach after an open
+            # response fails, but never infer it for an unrelated window.
+            arguments["workspace_id"] = active_workspace["workspace_id"]
         try:
             result = (
                 await native_project_service.rebind_completed_bound_analysis_session(

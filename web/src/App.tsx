@@ -571,6 +571,22 @@ function conversationMissionMatchesCurrentTarget(
   );
 }
 
+function conversationMatchesPendingWorkspace(
+  conversation: Pick<Conversation, "workflow" | "engineeringTarget">,
+  status: HostStatusResponse,
+): boolean {
+  const target = conversation.engineeringTarget;
+  const workspace = status.workspace;
+  return Boolean(
+    conversation.workflow === "engineering" &&
+      target &&
+      workspace &&
+      currentEngineeringTarget(status) === null &&
+      target.workspaceId === workspace.workspaceId &&
+      target.revisionId === (workspace.revision ?? workspace.artifactHash),
+  );
+}
+
 function isUnboundEngineeringConversation(conversation: Conversation): boolean {
   return (
     conversation.workflow === "engineering" &&
@@ -1222,8 +1238,7 @@ function App() {
   const engineeringScopeVisible = !planningConversationActive;
   const targetlessAnalysisConversation = Boolean(
     conversation &&
-      isUnboundEngineeringConversation(conversation) &&
-      currentEngineeringTarget(status) === null,
+      isUnboundEngineeringConversation(conversation),
   );
   const targetlessAnalysisActive =
     targetlessAnalysisOpen && targetlessAnalysisConversation;
@@ -1984,7 +1999,10 @@ function App() {
   }, []);
 
   const startFreshConversation = useCallback(
-    async (title: string): Promise<Conversation | null> => {
+    async (
+      title: string,
+      targetScope: "current" | "none" = "current",
+    ): Promise<Conversation | null> => {
       const activationEpoch = ++targetActivationEpochRef.current;
       const refreshEpoch = ++conversationRefreshEpochRef.current;
       streamRef.current?.stop();
@@ -1994,7 +2012,7 @@ function App() {
       setNewProjectPlanning(null);
       resetConversationScopedUi();
 
-      const created = await hostApi.createConversation({ title });
+      const created = await hostApi.createConversation({ title, targetScope });
       if (
         activationEpoch !== targetActivationEpochRef.current ||
         refreshEpoch !== conversationRefreshEpochRef.current
@@ -2031,7 +2049,12 @@ function App() {
         !conversationMatchesCurrentTarget(detail, currentStatus) &&
         !conversationMissionMatchesCurrentTarget(detail, currentStatus) &&
         !isReusableUnboundDraft(detail, currentStatus) &&
-        !(allowSelectedUnboundDraft && isEmptyUnboundEngineeringDraft(detail))
+        !(allowSelectedUnboundDraft &&
+          conversationMatchesPendingWorkspace(detail, currentStatus)) &&
+        !(allowSelectedUnboundDraft &&
+          (targetActivationEpoch === undefined
+            ? isUnboundEngineeringConversation(detail)
+            : isEmptyUnboundEngineeringDraft(detail)))
       ) {
         return null;
       }
@@ -2042,9 +2065,7 @@ function App() {
       conversationIdRef.current = detail.conversationId;
       setConversation(detail);
       setNewProjectPlanning(planningSessionFromConversation(detail));
-      setTargetlessAnalysisOpen(
-        isUnboundEngineeringConversation(detail) && detail.messages.length > 0,
-      );
+      setTargetlessAnalysisOpen(isUnboundEngineeringConversation(detail));
     };
 
     const storedId = readStoredConversationId();
@@ -2061,6 +2082,7 @@ function App() {
         }
         if (restored) {
           if (
+            targetActivationEpoch !== undefined &&
             currentEngineeringTarget(currentStatus) &&
             isEmptyUnboundEngineeringDraft(restored)
           ) {
@@ -2232,6 +2254,7 @@ function App() {
         startEventStream(detail.conversationId, 0);
         setConversationHistoryOpen(false);
         const matchesCurrentTarget =
+          isUnboundEngineeringConversation(detail) ||
           conversationMatchesCurrentTarget(detail, status) ||
           conversationMissionMatchesCurrentTarget(detail, status);
         if (detail.workflow === "engineering" && matchesCurrentTarget) {
@@ -3670,7 +3693,7 @@ function App() {
     try {
       let selected = conversation;
       if (!selected || !isUnboundEngineeringConversation(selected)) {
-        selected = await startFreshConversation("PLC 일반 분석 대화");
+        selected = await startFreshConversation("PLC 일반 분석 대화", "none");
       }
       if (!selected || !isUnboundEngineeringConversation(selected)) {
         setConnectionMessage(
@@ -4208,6 +4231,7 @@ function App() {
       : status.capabilities.includes("online_observe"));
   const currentMessages = conversation?.messages ?? [];
   const canBrowseEngineeringPrograms =
+    !targetlessAnalysisActive &&
     status.engineeringSystem.readReady &&
     status.engineeringSystem.application === "XG5000";
   const programFocusAvailable =
@@ -4326,6 +4350,7 @@ function App() {
     (planningConversationActive ||
       hasEngineeringTarget ||
       targetlessAnalysisActive ||
+      Boolean(conversation && conversationMatchesPendingWorkspace(conversation, status)) ||
       canCancelActiveRun);
   const showStartSection =
     !hasPrimaryChange &&
@@ -5134,24 +5159,22 @@ function App() {
                 )}
 
                 <div className="entry-grid">
-                  {!hasEngineeringTarget && (
-                    <EntryCard
-                      icon="spark"
-                      title="대상 없이 질문"
-                      description="PLC 개념, 오류 원인과 설계 판단을 대화로 분석합니다. XG5000·PLC 도구와 변경 기능은 열지 않습니다."
-                      accent="blue"
-                      available={hostReady && engineeringAgentReady && !sending}
-                      actionLabel={sending ? "대화 준비 중…" : "분석 대화 시작"}
-                      unavailableReason={
-                        sending
-                          ? "대화 준비 중"
-                          : hostReady
-                            ? "엔지니어링 모델 연결 필요"
-                            : "Host 연결 필요"
-                      }
-                      onClick={() => void openTargetlessAnalysis()}
-                    />
-                  )}
+                  <EntryCard
+                    icon="spark"
+                    title="대상 없이 질문"
+                    description="PLC 개념, 오류 원인과 설계 판단을 대화로 분석합니다. XG5000·PLC 도구와 변경 기능은 열지 않습니다."
+                    accent="blue"
+                    available={hostReady && engineeringAgentReady && !sending}
+                    actionLabel={sending ? "대화 준비 중…" : "분석 대화 시작"}
+                    unavailableReason={
+                      sending
+                        ? "대화 준비 중"
+                        : hostReady
+                          ? "엔지니어링 모델 연결 필요"
+                          : "Host 연결 필요"
+                    }
+                    onClick={() => void openTargetlessAnalysis()}
+                  />
                   <EntryCard
                     icon="new"
                     title="새 프로젝트"
@@ -5695,7 +5718,7 @@ function App() {
             className={`workspace-grid ${activePanel ? "insight-open" : ""}`}
             aria-label="에이전트 작업 공간"
           >
-          {!newProjectPlanning && hasEngineeringTarget && (
+          {!newProjectPlanning && !targetlessAnalysisActive && hasEngineeringTarget && (
             <section
               className="target-proof-bar"
               aria-label="현재 엔지니어링 대상"
@@ -6080,25 +6103,28 @@ function App() {
                               {item.content}
                             </ReactMarkdown>
                             {item.engineeringAnalysis && (
-                              <EngineeringAnalysisPanel
-                                analysis={item.engineeringAnalysis}
-                                digest={item.engineeringAnalysisDigest}
-                                programs={programs}
-                                focusAvailable={programFocusAvailable}
-                                focusBusyProgramId={programFocusBusyId}
-                                onFocusLocation={(programId, location) => {
-                                  const activeConversationId = conversationIdRef.current;
-                                  if (!activeConversationId) {
-                                    return;
-                                  }
-                                  void focusEngineeringLocation(
-                                    activeConversationId,
-                                    item.messageId,
-                                    programId,
-                                    location,
-                                  );
-                                }}
-                              />
+                              <details className="message-analysis-details">
+                                <summary>근거·분석 상세</summary>
+                                <EngineeringAnalysisPanel
+                                  analysis={item.engineeringAnalysis}
+                                  digest={item.engineeringAnalysisDigest}
+                                  programs={programs}
+                                  focusAvailable={programFocusAvailable}
+                                  focusBusyProgramId={programFocusBusyId}
+                                  onFocusLocation={(programId, location) => {
+                                    const activeConversationId = conversationIdRef.current;
+                                    if (!activeConversationId) {
+                                      return;
+                                    }
+                                    void focusEngineeringLocation(
+                                      activeConversationId,
+                                      item.messageId,
+                                      programId,
+                                      location,
+                                    );
+                                  }}
+                                />
+                              </details>
                             )}
                           </>
                         )}
