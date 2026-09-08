@@ -4995,10 +4995,8 @@ function App() {
           </section>
         )}
 
-        {(hasEngineeringTarget || targetlessAnalysisActive) &&
+        {showAgentWorkspace &&
           !planningConversationActive &&
-          !workChooserOpen &&
-          !entryPanelOpen &&
           !primaryChange && (
             <button
               className="mobile-new-work-button"
