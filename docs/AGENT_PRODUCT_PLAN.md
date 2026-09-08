@@ -1,7 +1,8 @@
 # 채팅 기반 PLC 개발 에이전트 구현 계획
 
-갱신: 2026-09-08. 상태: P0a/P0b와 P1 소스 구현·정적 검증 완료. 실제 XG5000 기반
-P1-control·대표 사용자 흐름 검증과 P2 CLI 독립화는 미실행.
+갱신: 2026-09-09. 상태: P0a/P0b와 P1 소스 구현 뒤 실제 모델·웹·XG5000 사용자 흐름을
+검증했다. 일반 대화·복원·작업 사본 open/strong attach는 부분 통과했지만 native LD 본문
+읽기가 실패했다. 후보·편집·검사·저장·XG-SIM과 P2 CLI 독립화는 이번 실기에서 미검증이다.
 제품 요구는 [PRD](../PRD.md), 재개 상태는 [HANDOFF](HANDOFF.md)를 따른다.
 참조 대화 `6a9edf19-2e24-83e8-82ed-a3cfc2c41b35`의 최신 제품 방향을 로컬 코드와 대조했다.
 그 대화의 이전 답변은 소스 접근 없이 작성됐으므로 구현 증거로 사용하지 않았다.
@@ -29,18 +30,20 @@ M30 변경은 기존 프로젝트 수정의 한 사례다. `COMMITTED`, 테스�
 MCP/CLI 주요 실행 경로를 읽었다. 아래 행 번호는 문서 변경 전 HEAD 기준 탐색용이다.
 함수명을 다시 검색하면 된다. 전체 파일의 모든 분기를 검증했다는 뜻은 아니다.
 
-이번 구현에서는 소스 정적 검사와 focused contract smoke만 수행했고 정상 개발 앱·모델·
-XG5000·XG-SIM을 실행하지 않았다. 실제 실행으로 로드된 모듈 경로와 현재 작업 사본의 LD
-내용도 재확인하지 않았다. 따라서 소스 구현·정적 및 focused smoke, 과거 실기 기록, 현재
-미확인을 구분한다. 오래된 실기 통과를 현재 코드의 전체 성공으로 확대하지 않는다.
+2026-09-09에는 정상 개발 앱과 모델을 기동하고 브라우저에서 실제 질문·후속 대화·복원·
+프로젝트 열기·XG5000 읽기를 수행했다. 설정된 runtime의 모듈 경로와 원본/source/working
+copy 해시도 확인했다. LD 화면은 열렸지만 clipboard payload 읽기는 실패했다. 답변의
+scan time/주파수 혼동과 목록만으로 실행 순서를 단정하는 품질 문제도 관측했다. 따라서
+소스 검증, 실제 흐름 성공, 내용 정확성, 미검증을 구분한다. 상세 run과 실패 artifact는
+[최신 실사용 핸드오프](HANDOFF.md)를 따른다.
 
 | 영역 | 현재 소스 구현 | 남은 확인 |
 | --- | --- | --- |
-| Agent loop | Host catalog 기반 선택, 실제 결과·정제 실패 continuation, 대상 없는 안전 경로, 직전 실패 동일 호출 거부 | 실제 모델을 사용한 대표 end-to-end 요청 미검증 |
-| Host/Web | selected와 실제 dispatch 시작 분리, SSE terminal 갱신, request-message/run 재결합, compact chat card, 완료·근거 원자 기록 | 정상 기동·장시간 실행·reconnect의 브라우저 실사용 미검증 |
+| Agent loop | 실제 일반 질문·후속 대화 및 목록→구조→LD 읽기 선택 확인. 실패 LD 반환의 context 예외 수정 | 수정 후 native 실패 continuation 재확인, 설명 정확도·응답 지연 개선 필요 |
+| Host/Web | 실제 카드 진행/terminal·새로고침 복원 확인. 명시적 대상 없는 대화와 재연결 대기 진입 수정 | 취소·변경 중 거부 및 더 넓은 reconnect 경계 미검증 |
 | 요청 범위 | 새 메시지 strict scope matrix, permanent check/save 직접 실행, candidate 승인 대기, 과거 scope 조합 복구 호환 | 실제 XG5000 변경/후보 승인 흐름 미검증 |
-| MCP→CLI | 표준 subprocess/JSON 경계, check/save-only 정상 경로, saved identity 회전 | CLI native 역의존과 P1-control 실기 남음 |
-| 과거 실행 | 특정 LD의 과거 읽기·설명·생성·재열기 기록 보존 | 현재 작업 사본/timeout/대표 복수 흐름 미확인 |
+| MCP→CLI | 실제 open과 자동 strong attach 통과. Host launch enum 불일치 수정 | 재시작 후 수동 attach의 경로 증명 실패, read-ld의 XG5000_LADDER_CLIPBOARD_MISSING, save와 CLI 역의존 남음 |
+| 과거 실행 | 특정 LD의 과거 읽기·설명·생성·재열기 기록 보존 | 과거 성공을 이번 native 읽기나 변경 흐름 성공으로 확대하지 않음 |
 
 현재 모든 읽기가 전역 격리에 막힌다고 단정하면 틀린다. `app.py`의 강한 offline 준비
 조건은 `change_request_scope != analysis_only`에 적용된다. Keep/Revert도 특정 시뮬레이션
@@ -76,8 +79,8 @@ Host tool event → SSE → 같은 대화의 tool timeline
 
 ## 4. 구현 순서와 단계별 완료 조건
 
-아래 `완료:` 문장은 end-to-end 실기 완료 기준이다. 이번 갱신의 P0a/P0b와 P1 완료 표기는
-소스 변경과 정적·focused smoke 완료만 뜻하며, 이 실기 기준을 통과했다는 뜻은 아니다.
+아래 `완료:` 문장은 end-to-end 실기 완료 기준이다. P0a/P0b는 부분 실기만 통과했으며
+P1은 소스 변경과 정적·focused smoke 완료다. 모든 실기 기준을 통과했다는 뜻은 아니다.
 
 ### P0a — 기존 모델 루프와 결과 전달
 
@@ -142,18 +145,18 @@ STOP/복원까지 확인한다. CLI는 이미 이관한 process/app helper·wire
 ## 5. 검증과 작업 운영
 
 새 검증 시스템이나 테스트 개수 목표는 없다. 문서/정적 검사는 UI 실사용 성공을 대신하지
-않는다. 이번 소스 구현은 Python compile/Ruff, TypeScript typecheck/build, `git diff --check`,
-focused contract smoke까지만 수행했다. 후속 확인은 실제 실패 재현과 정상 웹 사용자 흐름을
-중심으로 진행하고, 회귀 검사가 필요하면 현재 문제를 확인하는 최소 범위만 사용한다. 사용자
-요청 없이 테스트 파일을 다시 대량 생성하지 않는다.
+않는다. Python compile/Ruff, TypeScript typecheck/build, `git diff --check`, focused smoke와
+이번 실제 웹 흐름 관측을 구분해 기록했다. 후속 확인은 실패한 native 읽기의 최소 경로와
+정상 웹 흐름을 중심으로 진행한다. 사용자 요청 없이 테스트 파일을 대량 생성하지 않는다.
 
 개발 실행 진입점은 Platform `scripts/Start-ControlStudio-Development.ps1 -Web` 또는
-`.cmd`이며 이번 구현 검증에서는 실행하지 않았다. 일반 웹 사용은 기존 Launcher 인증 경로를
+`.cmd`이며 이번 실사용 검증에서는 `-Web`으로 실행했다. 일반 웹 사용은 기존 Launcher 인증 경로를
 따른다. token을 문서·URL 예시·커밋에 저장하지 않는다. Codex의 화면 제어 기능이 제품의
 필수 의존성이 되어서는 안 된다. 제품 자체 Agent→Host→MCP→CLI 경로로 동작해야 한다.
 
-P0a/P0b와 P1의 소스 구현·정적 검증은 완료했다. 다음 작업은 정상 개발 기동에서 대상 없는
-설명과 후보만 작성 흐름을 먼저 확인하고, P1-control Open/read/save와 직접 수정·검사·저장을
-같은 실기 작업자가 이어서 확인하는 것이다. 같은 파일과 실제 XG5000 동작의 소유자는 하나로
-유지한다. 그 뒤 V6 XG-SIM 대표 흐름과 P2 CLI 역의존 폐쇄·신규 LD 흐름을 진행한다. 새 채팅에서
-이 문서 작성 과정을 반복하지 않는다.
+다음 작업은 P1-control의 기존 창 경로 증명과 native LD clipboard publication/owner/format 실패를 최소 경로에서
+구분하고 안전한 원인 코드를 Agent와 화면까지 전달하는 것이다. 읽기 복구 뒤 후보만 작성과
+직접 수정·검사·저장을 별도로 검증한다. 현재 같은 새 working copy를 연 XG5000 두 창은
+보존되어 있으므로 최신 핸드오프를 읽고 PID/lifetime을 재확인한다. 같은 파일과 실제 XG5000
+동작의 소유자는 하나로 유지한다. 이후 명시적 V6 XG-SIM, P2 CLI 역의존 폐쇄·신규 LD 흐름을
+진행한다. 새 채팅에서 이 문서 작성 과정을 반복하지 않는다.

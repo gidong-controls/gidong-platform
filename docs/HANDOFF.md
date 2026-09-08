@@ -1,5 +1,96 @@
 # Development handoff
 
+## 2026-09-09 실사용 검증 — 채팅·열기 부분 통과, native LD 읽기 실패
+
+정상 개발 Launcher와 실제 모델(`nemotron-3-ultra`)을 실행하고 웹 화면에서 직접 질문·후속
+대화·새로고침·프로젝트 열기·XG5000 연결·프로그램 읽기를 수행했다. 정적 검사만의 기록이
+아니다. 다만 **래더 본문 읽기가 실패했으므로 실사용 완료가 아니다.** 후보 준비·직접 편집·
+Program Check·저장·XG-SIM은 이번 실기에서 실행하지 않았다.
+
+### 소스 체크포인트
+
+- Platform `1893a50`: 대상 없는 대화의 명시적 `targetScope=none`, 일반 질문 진입·복원,
+  접힌 분석 상세, XG5000 open receipt 계약 및 작업 사본 수동 attach 결속 수정.
+  `6700f38`은 재연결 대기 중에도 새 작업 진입을 유지하며 Web 빌드 후 실제 진입을 확인했다.
+- Agent `71844ae`: 실패한 `read_ladder_program` 반환을 정상 LD model context로 해석해
+  예외를 내던 버그 수정. bounded Host 실패만 evidence 생성에서 제외하며 malformed success는
+  계속 거부한다. 해당 실패 응답은 다음 판단용 history에 남는다.
+- MCP `4698f74`, CLI `518e389`: 이번 실사용 검증에서 소스 변경 없음. 원격 push 없음.
+- 정상 기동에 지정된 Python으로 Host/Agent/MCP/CLI import 경로가 각각 현재 네 저장소를
+  가리킴을 확인했다. Host의 `코드 다시 불러오기 (UAC 없음)`으로 변경을 반영했으며 XG5000
+  창을 종료하거나 기존 불확실 transaction을 복구·초기화하지 않았다.
+
+### 실제 관측 (2026-09-09 KST, DB timestamp는 UTC)
+
+| 사용자 흐름 | 관측 결과 |
+| --- | --- |
+| 저장된 작업에서 프로그램 목록 질문 | `inspect_workspace_structure` 완료(496ms), 4개 LD 프로그램 답변. 전체 응답 약 56초. 새로고침 뒤 요청·답변·도구 카드가 중복 없이 복원됨 |
+| 대상이 이미 있을 때 일반 질문 시작 | 명시적 unbound conversation 생성, workspace/revision/session 모두 null. 빈 대화 및 메시지 있는 대화의 새로고침·작업 전환 복원 확인. 외부 도구/변경 거래 없음 |
+| 일반 질문과 후속 정정 | 첫 응답 약 49초, 후속 응답 약 14초. 대화 연결은 통과했으나 첫 답변이 scan time과 주파수를 혼동했고 사용자의 정정 지적 뒤 올바르게 설명함. 모델 답변 품질 통과로 기록하지 않음 |
+| 원본 프로젝트를 복사본으로 열기 | 새 작업 사본과 XG5000 창이 실제 생성됨. 최초에는 Host가 MCP의 controlled launch enum을 거부해 502. 계약 수정 후 같은 작업 사본 열기와 자동 strong attach 통과 |
+| `초기동작 프로그램의 구조를 설명해 줘` | 실제 목록→필터 목록→구조 분석→래더 읽기 순서로 진행. 래더 읽기는 약 36초 뒤 실패, 전체 run 약 185초 뒤 FAILED. 선택/실행/완료/실패가 같은 채팅 카드로 갱신됨 |
+| 코드 재로드 | 대화 기록 복원. native session은 자동 추측 결속하지 않고 offline 구조 대상으로 전환됨. 대상 재연결 대기 동안 새 작업 버튼이 숨던 분기를 수정함 |
+| 기존 창에 수동 재연결 | 재시작 뒤 PID 15200/HWND 918690을 선택했지만 현재 프로젝트 경로 검증 실패로 거부됨. 창 보존 안내를 확인했으며 추가 창 생성으로 우회하지 않음 |
+
+프로그램 목록 답변에도 근거가 증명하지 않은 “실행 순서대로”라는 표현이 있었다.
+짧은 질문의 긴 모델 대기, 중복 목록 조회, 일부 영어 도구 요약 및 일반 설명 정확도는 남은
+실사용 품질 문제다. 성공 terminal을 내용 정확성이나 전체 제품 완성의 근거로 삼지 않는다.
+
+대표 run:
+
+- 목록 질문: `db784cf7-e3b8-426b-8ef2-7586ff54499d` (`COMPLETED`).
+- 대상 없는 질문: `d70ffeec-9125-4f08-bea9-332e1d3e557e` (`COMPLETED`).
+- 후속 정정: `5609843e-1696-46f3-94fb-fe04d2560f88` (`COMPLETED`).
+- native 읽기: `5711c2c9-10e6-4ec8-a970-9243874f4fbc` (`FAILED`), conversation
+  `3ca75df4-386f-441c-aaee-b7505cee1f54`, session `82ef8893-53ab-4a4a-b678-a0f5ca29f128`.
+
+### 수정한 실패와 남은 원인
+
+1. MCP open은 `controlled_launch_official_open_read_only` 또는
+   `controlled_launch_native_file_read_only`를 반환하지만 Host enum에 없었다. 정확한 producer
+   값을 추가했으며 이를 strong identity로 승격하지 않았다. 수동 attach는 현재 작업 사본의
+   exact path/hash가 일치할 때만 누락됐던 workspace ID를 전달한다.
+2. 실패한 래더 반환도 `_checkpoint_program_read_ld_contexts`가 정상 데이터 검증에 넣어
+   `ValueError: checkpoint LD result is not a verified native read`가 발생했다. 실제와 같은
+   bounded 실패로 재현 후 Agent `71844ae`로 수정했다. 실패/기존 근거 유지, 정상 LD 수용,
+   malformed 결과 5종 및 잘못된 프로그램 이름 거부를 in-memory smoke로 확인했다.
+   **수정 후 동일 native 실패의 전체 모델 continuation은 아직 실기 재확인하지 않았다.**
+3. 그보다 아래의 실제 CLI 실패는 `read-ld`의 `XG5000_LADDER_CLIPBOARD_MISSING`이다.
+   `초기동작` LD 창은 열렸지만 copy 후 전용 `XG5000LADDER` payload를 얻지 못했다.
+   실패 screenshot에 해당 프로그램이 보인다. 정확한 clipboard publication 조건 실패는
+   아직 확정하지 못했으며 원인 변경 없이 전체 웹 과정을 반복하지 않았다.
+4. Host 재시작 이후 기존 창의 수동 attach도 프로젝트 경로 증명 실패로 남아 있다. workspace
+   ID 전달 누락은 고쳤지만 그것만으로 native 경로를 증명한 것은 아니다. 일회성 controlled
+   open proof를 재생성하거나 이미 열린 창을 추측 결속하지 않았다. 자동 strong attach의
+   성공을 재시작 후 수동 재연결의 성공으로 확대하지 않는다.
+
+native 실패 진단은 `%LOCALAPPDATA%/ControlStudio Development/artifacts/mcp-sessions/`
+`82ef8893-53ab-4a4a-b678-a0f5ca29f128/ba829a7259c3/`의 `error.json`, `manifest.json`,
+`main_window.png`에 있다. manifest의 UIA 진단 수집 timeout을 본래 read-ld 실패와 혼동하지
+않는다. Host/Agent에는 일반 `tool_error`로만 전달돼 원인 설명이 부족한 점도 남는다.
+
+### 작업 사본과 재개 주의사항
+
+- 원본: `C:/Users/Administrator/Downloads/대동인덱스-0917-2/대동인덱스-0917-2.xgwx`.
+- 새 workspace: `f74fe2f5-5cc3-44d7-82b8-ce549e951dc6`, revision
+  `42e009ce-efae-4b54-9cad-8966737517e9`. 작업 파일은 해당 개발 workspace의
+  `working/대동인덱스-0917-2.xgwx`다.
+- 원본·captured source·working copy의 실기 후 SHA-256 모두
+  `bee3b1a6e69469c0e1384cb8d9d758fef2f95a92f0cc7ac6486deea941a9a68f`로 확인했다.
+  열린 working copy는 공유 읽기 스트림으로 해시를 계산했다. 새 편집·저장은 하지 않았다.
+- 관측 시 XG5000 PID `18348`/HWND `67174`(첫 open), PID `15200`/HWND `918690`
+  (strong attach 후 읽기)이 같은 새 working copy를 열고 있었다. 두 창 모두 보존했다.
+  다음 작업은 PID/lifetime을 다시 확인하고 동일 파일의 중복 창을 고려해야 한다.
+- 오래된 격리 거래·백업·작업 사본은 건드리지 않았다. 테스트 파일을 대량 추가하지 않았다.
+  Agent compile/Ruff F/E9/I, Host compile/Ruff 및 계약 smoke, contracts build, Web
+  typecheck/build/production entry 검증은 통과했다. Web chunk 크기 경고와 이전 절의
+  OpenAPI guard/기존 MCP lint 문제는 별개로 남아 있다.
+
+다음은 기존 창 재연결의 native 경로 증명과 native read 실패의 최소 경로에서
+publication/owner/format 관측을 분리하고,
+실패 원인을 안전한 코드로 Agent와 화면까지 전달하는 것이다. 읽기를 복구한 뒤 후보만 작성,
+직접 편집·검사·저장, 명시적 XG-SIM을 각각 검증한다. 지금 전체 제품 통과로 기록하지 않는다.
+
 ## 2026-09-08 구현 결과 — 채팅 루프와 직접 오프라인 저장
 
 최신 제품 방향의 P0a/P0b와 P1 소스 변경을 `gidong-agent`, `gidong-platform`,
