@@ -147,6 +147,46 @@ function reconciliationFromEnvelope(
   });
 }
 
+const RUN_START_STATES = new Set<SendMessageResponse["state"]>([
+  "idle",
+  "analyzing",
+  "waiting_for_user",
+  "waiting_for_approval",
+  "approved_pending_execution",
+  "executing",
+  "verifying",
+  "completed",
+  "cancelled",
+  "failed",
+  "quarantined",
+]);
+const CANONICAL_RUN_ID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
+
+function runStartResponse(
+  value: unknown,
+  expectedOperationId: string,
+): SendMessageResponse {
+  return parseHostResponseContract(value, (response) => {
+    if (
+      !isRecord(response) ||
+      typeof response.runId !== "string" ||
+      !CANONICAL_RUN_ID.test(response.runId) ||
+      response.operationId !== expectedOperationId ||
+      typeof response.state !== "string" ||
+      !RUN_START_STATES.has(
+        response.state as SendMessageResponse["state"],
+      )
+    ) {
+      throw new Error("Host returned a malformed run-start response.");
+    }
+    return {
+      runId: response.runId,
+      operationId: response.operationId,
+      state: response.state as SendMessageResponse["state"],
+    };
+  });
+}
+
 export class HostApiClient {
   readonly baseUrl: string;
   private csrfToken?: string;
@@ -303,14 +343,14 @@ export class HostApiClient {
     conversationId: string,
     request: SendMessageRequest,
   ): Promise<SendMessageResponse> {
-    return this.request<SendMessageResponse>(
+    return this.request<unknown>(
       `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages`,
       {
         method: "POST",
         body: request,
         operationId: request.operationId,
       },
-    );
+    ).then((value) => runStartResponse(value, request.operationId));
   }
 
   reviewProjectPlan(
@@ -521,14 +561,14 @@ export class HostApiClient {
     conversationId: string,
     request: ResumeEngineeringMissionRequest,
   ): Promise<SendMessageResponse> {
-    return this.request<SendMessageResponse>(
+    return this.request<unknown>(
       `/api/v1/conversations/${encodeURIComponent(conversationId)}/engineering-mission/resume`,
       {
         method: "POST",
         body: request,
         operationId: request.operationId,
       },
-    );
+    ).then((value) => runStartResponse(value, request.operationId));
   }
 
   reverifyBlockedEngineeringMissionStep(

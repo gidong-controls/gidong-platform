@@ -745,7 +745,7 @@ select {
 
 .entry-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--line-strong);
@@ -1767,10 +1767,6 @@ select {
   grid-template-rows: auto minmax(300px, 1fr) auto;
 }
 
-.conversation-panel:has(> .engineering-mission) {
-  grid-template-rows: auto auto minmax(300px, 1fr) auto;
-}
-
 .insight-open .conversation-panel {
   border-right: 1px solid var(--line);
 }
@@ -2243,6 +2239,75 @@ select {
   box-shadow: var(--shadow-sm);
 }
 
+.compact-tool-card {
+  display: grid;
+  width: min(82%, 620px);
+  padding: 8px 10px;
+  align-self: flex-start;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 9px;
+  color: #52615d;
+  background: #f6f7f2;
+  border: 1px solid #e0e4dc;
+  border-radius: 5px;
+}
+
+.compact-tool-card__marker {
+  width: 8px;
+  height: 8px;
+  margin-top: 3px;
+  background: #7692a2;
+  border-radius: 50%;
+}
+
+.compact-tool-card.tool-running .compact-tool-card__marker {
+  background: #7d9d24;
+  box-shadow: 0 0 0 4px rgb(170 255 52 / 16%);
+}
+
+.compact-tool-card.tool-completed .compact-tool-card__marker {
+  background: var(--success);
+}
+
+.compact-tool-card.tool-failed .compact-tool-card__marker {
+  background: var(--danger);
+}
+
+.compact-tool-card > div {
+  display: grid;
+  gap: 2px;
+}
+
+.compact-tool-card strong {
+  color: #41504b;
+  font-size: 10px;
+}
+
+.compact-tool-card > div > span,
+.compact-tool-card > div > p {
+  margin: 0;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.compact-tool-card .compact-tool-card__context {
+  color: #687772;
+}
+
+.compact-tool-card > div > p {
+  margin-top: 2px;
+  font-family: inherit;
+}
+
+.compact-tool-card .compact-tool-card__result {
+  color: #3f6252;
+}
+
+.compact-tool-card .compact-tool-card__failure {
+  color: #a23f38;
+}
+
 .message-user {
   align-self: flex-end;
   background: #eff3e7;
@@ -2607,6 +2672,15 @@ select {
   overflow: auto;
 }
 
+.insight-content > .engineering-mission {
+  max-height: none;
+  margin: 0 0 14px;
+  padding: 13px;
+  overflow: visible;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
 .program-navigator {
   display: grid;
   gap: 13px;
@@ -2900,6 +2974,10 @@ select {
   background: var(--danger);
 }
 
+.activity-list li.tool-selected .activity-marker {
+  background: #7692a2;
+}
+
 .activity-list li.tool-running .activity-marker {
   background: #7d9d24;
   box-shadow: 0 0 0 4px rgb(170 255 52 / 16%);
@@ -2919,6 +2997,12 @@ select {
   color: var(--muted);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 8px;
+}
+
+.activity-list .activity-failure-reason {
+  color: #a23f38;
+  font-family: inherit;
+  line-height: 1.45;
 }
 
 .activity-list time {

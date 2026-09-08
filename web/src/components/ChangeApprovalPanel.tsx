@@ -1,6 +1,8 @@
 import { useState } from "react";
 import {
   getStructuralMnePlan,
+  hasValidChangeExecutionReceipt,
+  hasValidMneNoMutationAbortReceipt,
   isLegacyChangePlanV1,
   isMneRungPatchPlan,
   type StructuralMnePlan,
@@ -593,30 +595,7 @@ function objectValue(value: unknown): Record<string, unknown> | undefined {
 }
 
 function hasProvenNoMutationAbortRecovery(transaction: ChangeTransaction): boolean {
-  const reconciliation = objectValue(transaction.result.reconciliation);
-  const checkpoint = objectValue(reconciliation?.abort_checkpoint);
-  const executedChecks = reconciliation?.executed_checks;
-  const notExecuted = reconciliation?.not_executed;
-  return (
-    transaction.state === "rolled_back" &&
-    transaction.errorCode === "mne_recovery_aborted_before_mutation" &&
-    reconciliation?.native_mutation_performed === false &&
-    Array.isArray(executedChecks) &&
-    executedChecks.length === 0 &&
-    Array.isArray(notExecuted) &&
-    [
-      "structural_diff",
-      "xg5000_program_check",
-      "project_save",
-      "project_reopen",
-    ].every((check) => notExecuted.includes(check)) &&
-    checkpoint?.schema === "controlstudio-change-transaction-checkpoint/v1" &&
-    checkpoint.host_transaction_id === transaction.transactionId &&
-    checkpoint.state === "ABORTED_NO_MUTATION" &&
-    checkpoint.terminal === true &&
-    checkpoint.mutation_possible === false &&
-    checkpoint.lease_status === "released"
-  );
+  return hasValidMneNoMutationAbortReceipt(transaction);
 }
 
 type MneSimulationExpectedPhase = {
@@ -991,9 +970,20 @@ function hasExecutableMneContract(
   const coverageByArea = new Map(
     plan.coverage.map((item) => [item.area, item]),
   );
-  return (
+  // Stored plans predate the chat request boundary and may legitimately use
+  // either request scope with check-only or reopen verification. Keep those
+  // approval/recovery paths executable; only a new XG-SIM plan is
+  // candidate-scoped. SendMessage enforces the narrower new-chat matrix.
+  const supportedCheckOnly =
+    plan.verificationScope === "offline_native_check_only" &&
+    plan.validation.join("\u0000") ===
+      ["structural_diff", "xg5000_program_check", "project_save"].join(
+        "\u0000",
+      );
+  const supportedReopen =
     (plan.verificationScope === "offline_native_reopen" ||
-      (isMneRungPatchPlan(plan) &&
+      (plan.requestScope === "offline_candidate_revision" &&
+        isMneRungPatchPlan(plan) &&
         plan.verificationScope === "offline_native_reopen_xgsim" &&
         plan.candidate.simulationProfile !== null)) &&
     plan.validation.join("\u0000") ===
@@ -1002,7 +992,9 @@ function hasExecutableMneContract(
         "xg5000_program_check",
         "project_save",
         "project_reopen",
-      ].join("\u0000") &&
+      ].join("\u0000");
+  return (
+    (supportedCheckOnly || supportedReopen) &&
     plan.blockingUnknowns.length === 0 &&
     // `getStructuralMnePlan` already applies the shared candidate receipt
     // validator: its compiler-backed variants require the exact two
@@ -1108,11 +1100,13 @@ function hasExecutableChangeContract(
         hardwareStatus[name] === "observed" &&
         hardwareBinding?.[`${name}_status`] === hardwareStatus[name],
     );
-  // An offline candidate is explicitly limited to the bound working copy and
-  // native reopen verification.  Its retained hardware evidence must still be
-  // complete and digest-bound below, but signed runtime blockers are displayed
-  // rather than treated as permission to reject the offline-only contract.
-  // A permanent offline revision retains the stricter resolved-hardware gate.
+  // An offline candidate is explicitly limited to the bound working copy. New
+  // chat requests use native reopen verification, while older stored contracts
+  // may carry check-only verification and remain recoverable. Its retained
+  // hardware evidence must still be complete and digest-bound below, but signed
+  // runtime blockers are displayed rather than treated as permission to reject
+  // the offline-only contract. A permanent offline revision retains the
+  // stricter resolved-hardware gate.
   const requiresResolvedHardware =
     plan.requestScope === "permanent_offline_revision";
   const hardwareReadyForScope =
@@ -1271,10 +1265,14 @@ function mneReceiptBundle(transaction: ChangeTransaction): MneReceiptBundle {
   const applyEvidence = objectValue(transaction.result.apply);
   const verificationEvidence = objectValue(transaction.result.verification);
   const reconciliation = objectValue(transaction.result.reconciliation);
+  const simulationFinalization = objectValue(
+    transaction.result.simulation_finalization,
+  );
   const verification =
     objectValue(verificationEvidence?.verification) ??
     objectValue(reconciliation?.verification);
   const rollback =
+    objectValue(simulationFinalization?.rollback) ??
     objectValue(verificationEvidence?.rollback) ??
     objectValue(reconciliation?.rollback);
   return {
@@ -1446,6 +1444,9 @@ function executionReceiptChecks(
     const { application, verification, rollback, reopen } =
       mneReceiptBundle(transaction);
     const finalReceipt = rollback ?? verification;
+    const checkOnlyCompletion =
+      transaction.state === "completed" &&
+      transaction.plan.verificationScope === "offline_native_check_only";
     return [
       {
         label:
@@ -1472,23 +1473,30 @@ function executionReceiptChecks(
         label: "오프라인 작업 복사본 저장",
         passed: finalReceipt?.save_verified === true,
       },
-      {
-        label: "독립 프로세스 재열기와 stable readback",
-        passed:
-          reopen?.verified === true &&
-          reopen.process_is_independent === true &&
-          reopen.stable_readback === true &&
-          safeDigest(reopen.ld_canonical_sha256) !== undefined,
-      },
+      ...(checkOnlyCompletion
+        ? [
+            {
+              label: "Check-only 범위 · 독립 재열기 미실행",
+              passed: verification?.reopen === null,
+            },
+          ]
+        : [
+            {
+              label: "독립 프로세스 재열기와 stable readback",
+              passed:
+                reopen?.verified === true &&
+                reopen.process_is_independent === true &&
+                reopen.stable_readback === true &&
+                safeDigest(reopen.ld_canonical_sha256) !== undefined,
+            },
+          ]),
     ];
   }
   const result = transaction.result;
-  const verification =
-    result.verification &&
-    typeof result.verification === "object" &&
-    !Array.isArray(result.verification)
-      ? result.verification
-      : {};
+  const verification = objectValue(result.verification) ?? {};
+  const checkOnlyCompletion =
+    transaction.state === "completed" &&
+    transaction.plan.verificationScope === "offline_native_check_only";
   return [
     {
       label: "승인된 피연산자 적용 증거",
@@ -1514,11 +1522,25 @@ function executionReceiptChecks(
         hasObjectField(verification, "save") ||
         result.projectSaved === true,
     },
-    {
-      label: "새 XG5000 프로세스 재열기와 LD P0021 readback",
-      passed: hasObjectField(verification, "fresh_reopen") &&
-        hasObjectField(verification, "fresh_reopen_attach"),
-    },
+    ...(checkOnlyCompletion
+      ? [
+          {
+            label: "Check-only 범위 · 독립 재열기 미실행",
+            passed:
+              !hasObjectField(verification, "fresh_reopen") &&
+              !hasObjectField(verification, "fresh_reopen_attach") &&
+              Array.isArray(verification.not_executed) &&
+              verification.not_executed.includes("project_reopen"),
+          },
+        ]
+      : [
+          {
+            label: "새 XG5000 프로세스 재열기와 LD P0021 readback",
+            passed:
+              hasObjectField(verification, "fresh_reopen") &&
+              hasObjectField(verification, "fresh_reopen_attach"),
+          },
+        ]),
   ];
 }
 
@@ -1602,6 +1624,16 @@ export function ChangeApprovalPanel({
     );
   }
   const canDecide = transaction.state === "pending_approval";
+  const directCheckOnlyPlan =
+    transaction.plan.requestScope === "permanent_offline_revision" &&
+    transaction.plan.verificationScope === "offline_native_check_only";
+  const checkOnlyPlan =
+    transaction.plan.verificationScope === "offline_native_check_only";
+  const publicErrorCode =
+    typeof transaction.errorCode === "string" &&
+    /^[a-z0-9_.-]{1,120}$/i.test(transaction.errorCode)
+      ? transaction.errorCode
+      : "unknown";
   const compilerCandidate = Boolean(
     structuralMnePlan && structuralMnePlan.kind !== "full_program_replacement",
   );
@@ -1635,8 +1667,11 @@ export function ChangeApprovalPanel({
     hasProvenNoMutationAbortRecovery(transaction);
   const successfulOfflineReceipt =
     !provenNoMutationAbortRecovery &&
-    (transaction.state === "completed" ||
-      transaction.state === "rolled_back");
+    hasValidChangeExecutionReceipt(transaction);
+  const invalidSuccessfulTerminalReceipt =
+    (transaction.state === "completed" || transaction.state === "rolled_back") &&
+    !provenNoMutationAbortRecovery &&
+    !successfulOfflineReceipt;
   const receiptChecks = executionReceiptChecks(transaction, structuralMnePlan);
   const target = targetLabel(structuralMnePlan, legacyPlan);
   const expiresAt = new Date(transaction.approvalExpiresAt);
@@ -1679,8 +1714,8 @@ export function ChangeApprovalPanel({
           변경 성격:{" "}
           {transaction.plan.requestScope === "offline_candidate_revision"
             ? "사용자가 선택한 오프라인 후보 revision · 승인 뒤 작업 복사본에만 적용·저장 예정 · 실행 결과는 아직 없음"
-            : transaction.plan.requestScope === "permanent_offline_revision"
-              ? "영구 오프라인 작업 복사본 revision · 승인 뒤 적용·저장 예정 · 실행 결과는 아직 없음"
+            : directCheckOnlyPlan
+              ? "사용자가 명시한 작업 사본 수정 요청 · 1회 권한으로 구조 diff·Program Check·저장 실행 · 별도 승인 대기 없음"
               : "이전 계약 형식 · 실행 전 재검증 필요"}
         </span>
         {rungPatchPlan ? (
@@ -1692,27 +1727,33 @@ export function ChangeApprovalPanel({
                 : rungPatchPlan.candidate.patch.operation === "delete"
                 ? "선택한 공유 action 그룹을 포함한 완전 rung을 삭제합니다."
                 : "선택한 공유 action 그룹은 보존하고 Boolean 조건 전체를 교체합니다."} 동일
-            baseline 재컴파일·구조 readback·Program Check·저장·독립 재열기로 검증합니다.
+            baseline 재컴파일·구조 readback·Program Check·저장
+            {checkOnlyPlan ? "으로 검증합니다." : "·독립 재열기로 검증합니다."}
           </span>
         ) : instructionBatchPatchPlan ? (
           <span>
             같은 비공개 기준본에서 컴파일된 관련 명령 2–16개를 한 번의
-            승인·구조 readback·Program Check·저장·독립 재열기로 검증합니다.
+            {directCheckOnlyPlan ? "구조" : "승인·구조"} readback·Program
+            Check·저장
+            {checkOnlyPlan ? "으로 검증합니다." : "·독립 재열기로 검증합니다."}
           </span>
         ) : instructionPatchPlan ? (
           <span>
             비공개 기준본에서 유일하게 찾은 명령을 기준으로 한 행만 삽입·교체·삭제하고
-            구조 readback·Program Check·저장·독립 프로세스 재열기까지 확인합니다.
+            구조 readback·Program Check·저장
+            {checkOnlyPlan ? "까지 확인합니다." : "·독립 프로세스 재열기까지 확인합니다."}
           </span>
         ) : seriesGuardPlan ? (
           <span>
             승인된 단일 OUT 바로 앞에 컴파일된 접점 1행만 삽입하고 구조
-            readback·Program Check·저장·독립 프로세스 재열기까지 확인합니다.
+            readback·Program Check·저장
+            {checkOnlyPlan ? "까지 확인합니다." : "·독립 프로세스 재열기까지 확인합니다."}
           </span>
         ) : mnePlan ? (
           <span>
             지정된 프로그램 전체를 typed instruction 설계로 교체하고 구조
-            readback·Program Check·저장·독립 프로세스 재열기까지 확인합니다.
+            readback·Program Check·저장
+            {checkOnlyPlan ? "까지 확인합니다." : "·독립 프로세스 재열기까지 확인합니다."}
           </span>
         ) : (
           <span>
@@ -1815,7 +1856,9 @@ export function ChangeApprovalPanel({
           <section className="change-auto-verification">
             <h4>ControlStudio가 자동으로 확인</h4>
             <p>
-              {instructionBatchPatchPlan
+              {checkOnlyPlan
+                ? "범위: 구조 readback, XG5000 검사와 저장. 정상 성공 경로에서는 독립 재열기를 하지 않으며, 검증 실패 복구에서는 원복 확인을 위해 독립 재열기가 수행될 수 있습니다."
+                : instructionBatchPatchPlan
                 ? "범위: 승인된 명령 묶음 readback, XG5000 검사, 저장과 독립 재열기"
                 : rungPatchPlan
                   ? "범위: 승인된 완전 rung patch readback, XG5000 검사, 저장과 독립 재열기"
@@ -1882,6 +1925,13 @@ export function ChangeApprovalPanel({
               ? "준비 단계에서 변경을 적용하지 않았고, 종료된 no-mutation journal checkpoint만 확인했습니다. 구조 diff·Program Check·저장·재열기는 실행되지 않았습니다."
               : "이 receipt는 오프라인 작업 복사본과 XG5000 프로그램 검사 결과만 말합니다. XG-SIM·실제 PLC·설비 동작의 합격 판정은 아닙니다."}
           </p>
+          {invalidSuccessfulTerminalReceipt && (
+            <p className="change-notice change-error" role="alert">
+              Host가 종료 상태를 기록했지만 현재 Web이 검증할 수 있는 실행
+              receipt가 완전하지 않습니다. 결과 확인을 기록하지 말고 저장된
+              거래를 다시 불러오거나 복구 상태를 확인하세요.
+            </p>
+          )}
           {successfulOfflineReceipt && (
             <label className="change-receipt-acknowledgement">
               <input
@@ -1956,9 +2006,7 @@ export function ChangeApprovalPanel({
 
       {transaction.errorDetail && (
         <p className="change-notice change-error" role="alert">
-          {mnePlan
-            ? `전체 프로그램 작업이 안전하게 완료되지 않았습니다. 오류 코드: ${transaction.errorCode ?? "unknown"}`
-            : transaction.errorDetail}
+          {`작업을 완료하지 못했습니다. 오류 코드: ${publicErrorCode}`}
         </p>
       )}
       {notice && (
@@ -2032,6 +2080,7 @@ export function ChangeApprovalPanel({
               className="button primary-button"
               disabled={
                 busy ||
+                invalidSuccessfulTerminalReceipt ||
                 (successfulOfflineReceipt && !receiptBoundaryAcknowledged)
               }
               onClick={onDismiss}

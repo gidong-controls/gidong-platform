@@ -639,16 +639,37 @@ export interface ConversationCreate {
 
 export type EngineeringChangeRequestScope =
   | "analysis_only"
-  | "offline_candidate_revision";
+  | "offline_candidate_revision"
+  | "permanent_offline_revision";
 
-export interface SendMessageRequest {
+interface SendMessageRequestBase {
   content: string;
   operationId: string;
   workflow?: "engineering" | "new_project_planning";
   projectBrief?: ProjectBrief;
-  changeRequestScope?: EngineeringChangeRequestScope;
-  verificationScope?: "offline_native_reopen" | "offline_native_reopen_xgsim";
 }
+
+/**
+ * A message carries one explicit authority boundary. Permanent work-copy
+ * mutation is check/save-only; reopen and XG-SIM remain candidate workflows.
+ */
+export type SendMessageRequest = SendMessageRequestBase &
+  (
+    | {
+        changeRequestScope?: "analysis_only";
+        verificationScope?: "offline_native_reopen";
+      }
+    | {
+        changeRequestScope: "offline_candidate_revision";
+        verificationScope?:
+          | "offline_native_reopen"
+          | "offline_native_reopen_xgsim";
+      }
+    | {
+        changeRequestScope: "permanent_offline_revision";
+        verificationScope?: "offline_native_check_only";
+      }
+  );
 
 export interface SendMessageResponse {
   runId: string;
@@ -666,6 +687,7 @@ export interface ReverifyBlockedEngineeringMissionStepRequest {
 
 export interface EvidenceRef {
   evidenceId: string;
+  requestId?: string;
   toolCallId?: string;
   toolName?: string;
   title: string;
@@ -1687,7 +1709,8 @@ export type ChangeRequestScope =
 export type OfflineNativeValidationStep =
   | "structural_diff"
   | "xg5000_program_check"
-  | "project_save";
+  | "project_save"
+  | "project_reopen";
 export type MneFullProgramValidationStep =
   | "structural_diff"
   | "xg5000_program_check"
@@ -1748,7 +1771,7 @@ export interface ChangePlanV1 {
   observationSignals?: string[];
   stopConditions?: string[];
   coverage?: ChangeCoverageItem[];
-  verificationScope: "offline_native_check_only";
+  verificationScope: "offline_native_check_only" | "offline_native_reopen";
   validation: OfflineNativeValidationStep[];
   manualFollowUp: string[];
   rollback: string[];
@@ -1809,7 +1832,7 @@ export interface MneFullProgramReplacementChangePlanV2 {
   observationSignals: string[];
   stopConditions: string[];
   coverage: ChangeCoverageItem[];
-  verificationScope: "offline_native_reopen";
+  verificationScope: "offline_native_check_only" | "offline_native_reopen";
   validation: MneFullProgramValidationStep[];
   manualFollowUp: string[];
   rollback: string[];
@@ -1819,6 +1842,40 @@ export interface MneFullProgramReplacementChangePlanV2 {
  * Host-authored receipt for the one supported structural edit.  This is a
  * digest-only summary: the MCP keeps the baseline and compiled MNE private.
  */
+export interface MneFieldIoModule {
+  // These nested values are copied from the native MCP receipt and therefore
+  // intentionally retain their snake_case wire spelling.
+  rack_base: number;
+  slot: number;
+  module_id: number;
+  model: string | null;
+  module_type: string | null;
+  status: "observed";
+}
+
+export interface MneFieldIoChannel {
+  index: number;
+  status: "derived_from_verified_terminal_range";
+  derivation: "address offset within the exact configured module range";
+}
+
+export interface MneFieldIoTerminalRange {
+  address_start: string;
+  address_end: string;
+  binding_kind: "built_in_terminal_range" | "slot_reservation";
+  status: "observed" | "documented";
+}
+
+export interface MneFieldIoBinding {
+  device: string;
+  direction: "input" | "output";
+  pointKind: "digital_input" | "digital_output";
+  module: MneFieldIoModule;
+  channel: MneFieldIoChannel;
+  terminalRange: MneFieldIoTerminalRange;
+  bindingDigest: string;
+}
+
 export interface MneSeriesGuardCandidateReceipt {
   schema: "xg5000.mne-series-guard-candidate/1.0";
   projectSha256: string;
@@ -1839,6 +1896,8 @@ export interface MneSeriesGuardCandidateReceipt {
   targetMneSha256: string;
   designDigest: string;
   targetProgramDigest: string;
+  hardwareContextDigest?: string | null;
+  fieldIoBindings?: MneFieldIoBinding[];
   candidateDigest: string;
 }
 
@@ -1856,7 +1915,6 @@ interface MneCandidateChangePlan {
   observationSignals: string[];
   stopConditions: string[];
   coverage: ChangeCoverageItem[];
-  verificationScope: "offline_native_reopen" | "offline_native_reopen_xgsim";
   validation: MneFullProgramValidationStep[];
   manualFollowUp: string[];
   rollback: string[];
@@ -1864,6 +1922,10 @@ interface MneCandidateChangePlan {
 
 export interface MneSeriesGuardPatchChangePlanV3 extends MneCandidateChangePlan {
   planKind: "mne_series_guard_patch";
+  verificationScope: Exclude<
+    ChangeVerificationScope,
+    "offline_native_reopen_xgsim"
+  >;
   candidate: MneSeriesGuardCandidateReceipt;
 }
 
@@ -1896,11 +1958,17 @@ export interface MneInstructionPatchCandidateReceipt {
   targetMneSha256: string;
   designDigest: string;
   targetProgramDigest: string;
+  hardwareContextDigest?: string | null;
+  fieldIoBindings?: MneFieldIoBinding[];
   candidateDigest: string;
 }
 
 export interface MneInstructionPatchChangePlanV4 extends MneCandidateChangePlan {
   planKind: "mne_instruction_patch";
+  verificationScope: Exclude<
+    ChangeVerificationScope,
+    "offline_native_reopen_xgsim"
+  >;
   candidate: MneInstructionPatchCandidateReceipt;
 }
 
@@ -1918,12 +1986,18 @@ export interface MneInstructionBatchPatchCandidateReceipt {
   targetMneSha256: string;
   designDigest: string;
   targetProgramDigest: string;
+  hardwareContextDigest?: string | null;
+  fieldIoBindings?: MneFieldIoBinding[];
   candidateDigest: string;
 }
 
 export interface MneInstructionBatchPatchChangePlanV5
   extends MneCandidateChangePlan {
   planKind: "mne_instruction_batch_patch";
+  verificationScope: Exclude<
+    ChangeVerificationScope,
+    "offline_native_reopen_xgsim"
+  >;
   candidate: MneInstructionBatchPatchCandidateReceipt;
 }
 
@@ -2016,12 +2090,15 @@ export interface MneRungPatchCandidateReceipt {
   designDigest: string;
   targetProgramDigest: string;
   simulationProfile: MneRungXgSimProfile | null;
+  hardwareContextDigest?: string | null;
+  fieldIoBindings?: MneFieldIoBinding[];
   candidateDigest: string;
 }
 
 export interface MneRungPatchChangePlanV6
   extends MneCandidateChangePlan {
   planKind: "mne_rung_patch";
+  verificationScope: ChangeVerificationScope;
   candidate: MneRungPatchCandidateReceipt;
 }
 
@@ -2195,6 +2272,7 @@ export type HostEventType =
   | "mission.blocked_step_reverified"
   | "mission.recovery_digest_repaired"
   | "agent.checkpointed"
+  | "tool.selected"
   | "tool.started"
   | "tool.progress"
   | "tool.completed"

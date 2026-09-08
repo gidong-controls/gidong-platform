@@ -41,6 +41,7 @@ export type StructuralMnePlan =
     };
 
 const SHA256 = /^[0-9a-f]{64}$/;
+const CANONICAL_UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 const MNE_COMPILER_CANDIDATE_COVERAGE_AREAS: ChangeCoverageArea[] = [
   "target_identity",
   "direct_impact",
@@ -116,6 +117,48 @@ const CHANGE_STATES = new Set([
   "expired",
 ]);
 const RISK_LEVELS = new Set(["low", "medium", "high", "critical"]);
+const CHECK_ONLY_VALIDATION = [
+  "structural_diff",
+  "xg5000_program_check",
+  "project_save",
+] as const;
+const REOPEN_VALIDATION = [...CHECK_ONLY_VALIDATION, "project_reopen"] as const;
+
+function matchesValidation(
+  value: unknown,
+  expected: readonly string[],
+): boolean {
+  return (
+    Array.isArray(value) &&
+    value.join("\u0000") === expected.join("\u0000")
+  );
+}
+
+function hasExactMneExecutionScope(
+  value: Record<string, unknown>,
+  options: { supportsXgSim: boolean },
+): boolean {
+  if (
+    value.requestScope !== "offline_candidate_revision" &&
+    value.requestScope !== "permanent_offline_revision"
+  ) {
+    return false;
+  }
+  if (value.verificationScope === "offline_native_check_only") {
+    return (
+      matchesValidation(value.validation, CHECK_ONLY_VALIDATION)
+    );
+  }
+  if (value.verificationScope === "offline_native_reopen") {
+    return matchesValidation(value.validation, REOPEN_VALIDATION);
+  }
+  return (
+    value.requestScope === "offline_candidate_revision" &&
+    options.supportsXgSim &&
+    value.verificationScope === "offline_native_reopen_xgsim" &&
+    matchesValidation(value.validation, REOPEN_VALIDATION)
+  );
+}
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -148,6 +191,132 @@ function hasExactKeys(
     keys.length === expected.length &&
     expected.every((key) => Object.prototype.hasOwnProperty.call(value, key))
   );
+}
+
+function isNullableBoundedText(value: unknown, maximum = 256): boolean {
+  return value === null || (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= maximum &&
+    value === value.trim()
+  );
+}
+
+function isMneFieldIoBinding(value: unknown): boolean {
+  const physicalAddress = (item: unknown): item is string =>
+    typeof item === "string" &&
+    item.length <= 32 &&
+    /^P[0-9A-F]+$/.test(item);
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "device",
+      "direction",
+      "pointKind",
+      "module",
+      "channel",
+      "terminalRange",
+      "bindingDigest",
+    ]) ||
+    !physicalAddress(value.device) ||
+    (value.direction !== "input" && value.direction !== "output") ||
+    (value.direction === "input") !== (value.pointKind === "digital_input") ||
+    (value.direction === "output") !== (value.pointKind === "digital_output") ||
+    typeof value.bindingDigest !== "string" ||
+    !SHA256.test(value.bindingDigest)
+  ) {
+    return false;
+  }
+
+  const module = value.module;
+  const channel = value.channel;
+  const terminalRange = value.terminalRange;
+  if (
+    !isRecord(module) ||
+    !hasExactKeys(module, [
+      "rack_base",
+      "slot",
+      "module_id",
+      "model",
+      "module_type",
+      "status",
+    ]) ||
+    ![module.rack_base, module.slot].every(
+      (item) => typeof item === "number" &&
+        Number.isSafeInteger(item) && item >= 0 && item <= 255,
+    ) ||
+    typeof module.module_id !== "number" ||
+    !Number.isSafeInteger(module.module_id) ||
+    module.module_id < 0 ||
+    module.module_id > 65_535 ||
+    !isNullableBoundedText(module.model, 128) ||
+    (typeof module.model === "string" &&
+      !/^(?:(?:XBC|XBM|XEC|XMC|XEM|XBE|XBF|XGF|XGL)-[A-Z0-9/+.-]+|(?:XGK|XGI|XGR)-CPU[A-Z0-9/+.-]*)$/i.test(
+        module.model,
+      )) ||
+    !isNullableBoundedText(module.module_type, 128) ||
+    (typeof module.module_type === "string" &&
+      (/[/\\:]/.test(module.module_type) || /[\x00-\x1f]/.test(module.module_type))) ||
+    module.status !== "observed" ||
+    !isRecord(channel) ||
+    !hasExactKeys(channel, ["index", "status", "derivation"]) ||
+    typeof channel.index !== "number" ||
+    !Number.isSafeInteger(channel.index) ||
+    channel.index < 0 ||
+    channel.index > 65_535 ||
+    channel.status !== "derived_from_verified_terminal_range" ||
+    channel.derivation !== "address offset within the exact configured module range" ||
+    !isRecord(terminalRange) ||
+    !hasExactKeys(terminalRange, [
+      "address_start",
+      "address_end",
+      "binding_kind",
+      "status",
+    ]) ||
+    !physicalAddress(terminalRange.address_start) ||
+    !physicalAddress(terminalRange.address_end) ||
+    (terminalRange.binding_kind !== "built_in_terminal_range" &&
+      terminalRange.binding_kind !== "slot_reservation") ||
+    (terminalRange.status !== "observed" && terminalRange.status !== "documented")
+  ) {
+    return false;
+  }
+  const deviceOffset = BigInt(`0x${value.device.slice(1)}`);
+  const startOffset = BigInt(`0x${terminalRange.address_start.slice(1)}`);
+  const endOffset = BigInt(`0x${terminalRange.address_end.slice(1)}`);
+  return startOffset <= deviceOffset && deviceOffset <= endOffset;
+}
+
+function hasExactMneHardwareBinding(value: Record<string, unknown>): boolean {
+  const hasDigest = Object.prototype.hasOwnProperty.call(
+    value,
+    "hardwareContextDigest",
+  );
+  const hasBindings = Object.prototype.hasOwnProperty.call(
+    value,
+    "fieldIoBindings",
+  );
+  if (hasDigest !== hasBindings) return false;
+  if (!hasDigest) return true;
+  if (value.hardwareContextDigest === null) {
+    return Array.isArray(value.fieldIoBindings) && value.fieldIoBindings.length === 0;
+  }
+  if (
+    typeof value.hardwareContextDigest !== "string" ||
+    !SHA256.test(value.hardwareContextDigest) ||
+    !Array.isArray(value.fieldIoBindings) ||
+    value.fieldIoBindings.length === 0 ||
+    value.fieldIoBindings.length > 64 ||
+    !value.fieldIoBindings.every(isMneFieldIoBinding)
+  ) {
+    return false;
+  }
+  const keys = value.fieldIoBindings.map((binding) => {
+    const typed = binding as Record<string, unknown>;
+    return `${String(typed.device)}\u0000${String(typed.direction)}`;
+  });
+  return keys.every((key, index) => index === 0 || keys[index - 1] < key) &&
+    new Set(keys).size === keys.length;
 }
 
 function containsPrivatePayloadKey(value: unknown): boolean {
@@ -286,15 +455,7 @@ export function isMneFullProgramReplacementPlan(
     !["offline_candidate_revision", "permanent_offline_revision"].includes(
       String(value.requestScope),
     ) ||
-    value.verificationScope !== "offline_native_reopen" ||
-    !Array.isArray(value.validation) ||
-    value.validation.join("\u0000") !==
-      [
-        "structural_diff",
-        "xg5000_program_check",
-        "project_save",
-        "project_reopen",
-      ].join("\u0000") ||
+    !hasExactMneExecutionScope(value, { supportsXgSim: false }) ||
     !isStringList(value.impact, true) ||
     !isStringList(value.risks, true) ||
     !isStringList(value.assumptions) ||
@@ -481,17 +642,9 @@ function isMneCandidatePlanEnvelope(
     /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(
       value.candidateEvidenceId,
     ) &&
-    (value.verificationScope === "offline_native_reopen" ||
-      (planKind === "mne_rung_patch" &&
-        value.verificationScope === "offline_native_reopen_xgsim")) &&
-    Array.isArray(value.validation) &&
-    value.validation.join("\u0000") ===
-      [
-        "structural_diff",
-        "xg5000_program_check",
-        "project_save",
-        "project_reopen",
-      ].join("\u0000") &&
+    hasExactMneExecutionScope(value, {
+      supportsXgSim: planKind === "mne_rung_patch",
+    }) &&
     isStringList(value.impact, true) &&
     isStringList(value.risks, true) &&
     isStringList(value.assumptions) &&
@@ -556,11 +709,7 @@ function isMnePatchCandidateEnvelope(
   ) {
     return false;
   }
-  if (
-    Object.prototype.hasOwnProperty.call(value, "hardwareContextDigest") &&
-    (value.hardwareContextDigest !== null ||
-      !Array.isArray(value.fieldIoBindings) || value.fieldIoBindings.length !== 0)
-  ) return false;
+  if (!hasExactMneHardwareBinding(value)) return false;
   return (
     value.schema === schema &&
     typeof value.projectSha256 === "string" &&
@@ -1111,15 +1260,14 @@ export function isLegacyChangePlanV1(value: unknown): value is ChangePlanV1 {
     !isStringList(value.risks) ||
     !isStringList(value.manualFollowUp) ||
     !isStringList(value.rollback, true) ||
-    value.verificationScope !== "offline_native_reopen" ||
-    !Array.isArray(value.validation) ||
-    value.validation.join("\u0000") !==
-      [
-        "structural_diff",
-        "xg5000_program_check",
-        "project_save",
-        "project_reopen",
-      ].join("\u0000")
+    !(
+      ((value.requestScope === "permanent_offline_revision" ||
+        value.requestScope === "offline_candidate_revision") &&
+        value.verificationScope === "offline_native_check_only" &&
+        matchesValidation(value.validation, CHECK_ONLY_VALIDATION)) ||
+      (value.verificationScope === "offline_native_reopen" &&
+        matchesValidation(value.validation, REOPEN_VALIDATION))
+    )
   ) {
     return false;
   }
@@ -1160,6 +1308,1102 @@ export function isChangePlan(value: unknown): value is ChangePlan {
     isMneInstructionBatchPatchPlan(value) ||
     isMneRungPatchPlan(value)
   );
+}
+
+function terminalReceiptEvidence(
+  transaction: ChangeTransaction,
+): Record<string, unknown> | null {
+  const verification = isRecord(transaction.result.verification)
+    ? transaction.result.verification
+    : null;
+  const reconciliation = isRecord(transaction.result.reconciliation)
+    ? transaction.result.reconciliation
+    : null;
+  const simulationFinalization = isRecord(
+    transaction.result.simulation_finalization,
+  )
+    ? transaction.result.simulation_finalization
+    : null;
+  const terminalKey = transaction.state === "rolled_back"
+    ? "rollback"
+    : "verification";
+  if (simulationFinalization && isRecord(simulationFinalization[terminalKey])) {
+    return { ...(verification ?? {}), ...simulationFinalization };
+  }
+  if (reconciliation) {
+    return reconciliation;
+  }
+  return verification;
+}
+
+function hasReceiptExecutionBoundary(
+  transaction: ChangeTransaction,
+  evidence: Record<string, unknown>,
+): boolean {
+  if (
+    evidence.verification_scope !== transaction.plan.verificationScope ||
+    !matchesValidation(evidence.executed_checks, transaction.plan.validation) ||
+    !matchesValidation(evidence.manual_follow_up, transaction.plan.manualFollowUp)
+  ) {
+    return false;
+  }
+  const expectedNotExecuted = transaction.plan.verificationScope ===
+    "offline_native_check_only"
+    ? ["project_reopen", "xg_sim", "runtime_or_online_validation"]
+    : ["xg_sim", "runtime_or_online_validation"];
+  return matchesValidation(evidence.not_executed, expectedNotExecuted);
+}
+
+function nonemptyRecord(value: unknown): Record<string, unknown> | null {
+  return isRecord(value) && Object.keys(value).length > 0 ? value : null;
+}
+
+interface LegacyLdReceiptBinding {
+  mcpTransactionId: string;
+  mcpPlanId: string;
+  mcpPlanDigest: string;
+  projectIdentityDigest: string;
+  programId: string;
+  programName: string;
+  tokenOffset: number;
+  expectedOperand: string;
+  requestedReplacement: string;
+  nativeReplacement: string | null;
+  payloadSha256Before: string | null;
+  payloadCanonicalSha256After: string | null;
+}
+
+function firstLegacyField(
+  value: Record<string, unknown>,
+  ...keys: string[]
+): unknown {
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) return value[key];
+  }
+  return undefined;
+}
+
+function legacyPlanTarget(
+  transaction: ChangeTransaction,
+): Omit<LegacyLdReceiptBinding, "mcpTransactionId" | "mcpPlanId" |
+  "mcpPlanDigest" | "projectIdentityDigest" | "nativeReplacement" |
+  "payloadSha256Before" | "payloadCanonicalSha256After"> | null {
+  const plan = transaction.plan;
+  if (!isLegacyChangePlanV1(plan)) return null;
+  const target = plan.target;
+  const current = plan.current;
+  const proposed = plan.proposed;
+  const programId = firstLegacyField(target, "program_id", "programId", "program");
+  const programName = firstLegacyField(target, "program_name", "programName");
+  const tokenOffset = firstLegacyField(target, "token_offset", "tokenOffset", "token");
+  const expectedOperand = firstLegacyField(current, "value", "operand");
+  const requestedReplacement = firstLegacyField(proposed, "value", "operand");
+  if (
+    typeof programId !== "string" || programId.length === 0 ||
+    typeof programName !== "string" || programName.length === 0 ||
+    !Number.isInteger(tokenOffset) || Number(tokenOffset) < 0 ||
+    typeof expectedOperand !== "string" || expectedOperand.length === 0 ||
+    typeof requestedReplacement !== "string" || requestedReplacement.length === 0
+  ) return null;
+  return {
+    programId,
+    programName,
+    tokenOffset: Number(tokenOffset),
+    expectedOperand,
+    requestedReplacement,
+  };
+}
+
+function hasLegacyCheckpoint(
+  value: unknown,
+  transaction: ChangeTransaction,
+  binding: LegacyLdReceiptBinding,
+  states: ReadonlySet<string>,
+  requirePlan: boolean,
+): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  const pid = value.pid;
+  const hwnd = value.hwnd;
+  if (
+    value.schema !== "controlstudio-change-transaction-checkpoint/v1" ||
+    value.host_transaction_id !== transaction.transactionId ||
+    value.transaction_id !== binding.mcpTransactionId ||
+    value.workspace_id !== transaction.targetIdentity.workspaceId ||
+    value.project_identity_digest !== binding.projectIdentityDigest ||
+    typeof value.active_session_id !== "string" || value.active_session_id.length === 0 ||
+    !Number.isInteger(pid) || Number(pid) <= 0 ||
+    !Number.isInteger(hwnd) || Number(hwnd) <= 0 ||
+    value.project_path !== transaction.targetIdentity.projectPath ||
+    typeof value.current_project_hash !== "string" || !SHA256.test(value.current_project_hash) ||
+    typeof value.state !== "string" || !states.has(value.state)
+  ) return false;
+  if (!requirePlan) return true;
+  if (
+    value.plan_id !== binding.mcpPlanId ||
+    value.plan_digest !== binding.mcpPlanDigest ||
+    value.program_id !== binding.programId ||
+    value.program_name !== binding.programName ||
+    value.token_offset !== binding.tokenOffset ||
+    value.expected !== binding.expectedOperand ||
+    value.replacement !== binding.requestedReplacement
+  ) return false;
+  if (binding.payloadCanonicalSha256After === null) {
+    return value.payload_canonical_sha256_planned === undefined &&
+      value.native_replacement === undefined;
+  }
+  return value.payload_canonical_sha256_planned ===
+      binding.payloadCanonicalSha256After &&
+    value.native_replacement === binding.nativeReplacement;
+}
+
+function hasLegacyVerifiedOperation(
+  value: unknown,
+  operation: string,
+  transaction: ChangeTransaction,
+  binding: LegacyLdReceiptBinding,
+  states: ReadonlySet<string>,
+  requirePlan = true,
+): value is Record<string, unknown> {
+  const receipt = nonemptyRecord(value);
+  return Boolean(
+    receipt && receipt.ok === true && receipt.verified === true &&
+      receipt.operation === operation &&
+      receipt.transaction_id === binding.mcpTransactionId &&
+      typeof receipt.transaction_state === "string" &&
+      states.has(receipt.transaction_state) &&
+      hasLegacyCheckpoint(
+        receipt.transaction_checkpoint,
+        transaction,
+        binding,
+        new Set([String(receipt.transaction_state)]),
+        requirePlan,
+      ),
+  );
+}
+
+function exactLegacyLdDiff(
+  value: unknown,
+  binding: LegacyLdReceiptBinding,
+  nativeReplacement: string,
+  expectedBefore: string | null,
+): { before: string; after: string } | null {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "program", "payload_sha256_before", "payload_sha256_after",
+    "payload_size_before", "payload_size_after", "byte_length_unchanged",
+    "change_count", "changes",
+  ])) return null;
+  const changes = value.changes;
+  if (
+    value.program !== binding.programName ||
+    typeof value.payload_sha256_before !== "string" ||
+    !SHA256.test(value.payload_sha256_before) ||
+    typeof value.payload_sha256_after !== "string" ||
+    !SHA256.test(value.payload_sha256_after) ||
+    (expectedBefore !== null && value.payload_sha256_before !== expectedBefore) ||
+    !Number.isInteger(value.payload_size_before) || Number(value.payload_size_before) <= 0 ||
+    value.payload_size_after !== value.payload_size_before ||
+    value.byte_length_unchanged !== true || value.change_count !== 1 ||
+    !Array.isArray(changes) || changes.length !== 1 ||
+    !isRecord(changes[0]) || !hasExactKeys(changes[0], ["token_offset", "before", "after"]) ||
+    changes[0].token_offset !== binding.tokenOffset ||
+    changes[0].before !== binding.expectedOperand ||
+    changes[0].after !== nativeReplacement
+  ) return null;
+  return {
+    before: value.payload_sha256_before,
+    after: value.payload_sha256_after,
+  };
+}
+
+function legacyApplyBinding(
+  transaction: ChangeTransaction,
+): LegacyLdReceiptBinding | null {
+  const target = legacyPlanTarget(transaction);
+  const envelope = nonemptyRecord(transaction.result.apply);
+  if (!target || !envelope) return null;
+  const plan = nonemptyRecord(envelope.mcp_plan);
+  const applied = nonemptyRecord(envelope.apply);
+  const projectIdentityDigest = envelope.project_identity_digest;
+  if (
+    !plan || !applied ||
+    envelope.host_transaction_id !== transaction.transactionId ||
+    envelope.host_plan_digest !== transaction.planDigest ||
+    typeof envelope.mcp_transaction_id !== "string" || envelope.mcp_transaction_id.length === 0 ||
+    typeof envelope.mcp_plan_id !== "string" || envelope.mcp_plan_id.length === 0 ||
+    typeof envelope.mcp_plan_digest !== "string" || !SHA256.test(envelope.mcp_plan_digest) ||
+    typeof projectIdentityDigest !== "string" || !SHA256.test(projectIdentityDigest) ||
+    plan.transaction_id !== envelope.mcp_transaction_id ||
+    plan.plan_id !== envelope.mcp_plan_id || plan.plan_digest !== envelope.mcp_plan_digest ||
+    plan.workspace_id !== transaction.targetIdentity.workspaceId ||
+    plan.project_identity_digest !== projectIdentityDigest ||
+    plan.session_id !== transaction.targetIdentity.engineeringSessionId ||
+    plan.project_hash !== transaction.targetIdentity.artifactHash ||
+    plan.program_id !== target.programId || plan.program_name !== target.programName ||
+    plan.token_offset !== target.tokenOffset || plan.expected !== target.expectedOperand ||
+    plan.replacement !== target.requestedReplacement ||
+    typeof plan.native_replacement !== "string" || plan.native_replacement.length === 0 ||
+    typeof plan.payload_sha256_before !== "string" || !SHA256.test(plan.payload_sha256_before) ||
+    typeof plan.payload_sha256_planned !== "string" || !SHA256.test(plan.payload_sha256_planned) ||
+    typeof plan.payload_canonical_sha256_planned !== "string" ||
+    !SHA256.test(plan.payload_canonical_sha256_planned)
+  ) return null;
+  const binding: LegacyLdReceiptBinding = {
+    ...target,
+    mcpTransactionId: envelope.mcp_transaction_id,
+    mcpPlanId: envelope.mcp_plan_id,
+    mcpPlanDigest: envelope.mcp_plan_digest,
+    projectIdentityDigest,
+    nativeReplacement: plan.native_replacement as string,
+    payloadSha256Before: plan.payload_sha256_before,
+    payloadCanonicalSha256After: plan.payload_canonical_sha256_planned,
+  };
+  if (
+    !hasLegacyVerifiedOperation(
+      envelope.snapshot, "project.snapshot", transaction, binding,
+      new Set(["SNAPSHOT_CREATED"]), false,
+    ) ||
+    !hasLegacyVerifiedOperation(
+      envelope.backup, "project.backup", transaction, binding,
+      new Set(["BACKUP_CREATED"]), false,
+    ) ||
+    !hasLegacyVerifiedOperation(
+      applied, "program.apply_ld_patch", transaction, binding,
+      new Set(["APPLIED"]), true,
+    ) ||
+    applied.plan_id !== binding.mcpPlanId || applied.matches_plan !== true ||
+    applied.matches_native_plan !== true || applied.project_unchanged !== true ||
+    applied.payload_sha256_before !== binding.payloadSha256Before ||
+    applied.payload_canonical_sha256_after !== binding.payloadCanonicalSha256After
+  ) return null;
+  const diff = exactLegacyLdDiff(
+    applied.diff, binding, binding.nativeReplacement as string,
+    binding.payloadSha256Before,
+  );
+  if (!diff || applied.payload_sha256_after !== diff.after) return null;
+  return binding;
+}
+
+function legacyLookupBinding(
+  transaction: ChangeTransaction,
+  value: unknown,
+): LegacyLdReceiptBinding | null {
+  const target = legacyPlanTarget(transaction);
+  const lookup = nonemptyRecord(value);
+  const checkpoint = lookup && nonemptyRecord(lookup.transaction_checkpoint);
+  if (
+    !target || !lookup || !checkpoint || lookup.ok !== true ||
+    lookup.verified !== true || lookup.operation !== "change.transaction_lookup" ||
+    lookup.found !== true || lookup.host_transaction_id !== transaction.transactionId ||
+    typeof checkpoint.transaction_id !== "string" || checkpoint.transaction_id.length === 0 ||
+    typeof checkpoint.plan_id !== "string" || checkpoint.plan_id.length === 0 ||
+    typeof checkpoint.plan_digest !== "string" || !SHA256.test(checkpoint.plan_digest) ||
+    typeof checkpoint.project_identity_digest !== "string" ||
+    !SHA256.test(checkpoint.project_identity_digest)
+  ) return null;
+  const canonical = checkpoint.payload_canonical_sha256_planned;
+  const nativeReplacement = checkpoint.native_replacement;
+  const legacy = canonical === undefined && nativeReplacement === undefined;
+  if (!legacy && (
+    typeof canonical !== "string" || !SHA256.test(canonical) ||
+    typeof nativeReplacement !== "string" || nativeReplacement.length === 0
+  )) return null;
+  const binding: LegacyLdReceiptBinding = {
+    ...target,
+    mcpTransactionId: checkpoint.transaction_id,
+    mcpPlanId: checkpoint.plan_id,
+    mcpPlanDigest: checkpoint.plan_digest,
+    projectIdentityDigest: checkpoint.project_identity_digest,
+    nativeReplacement: legacy ? null : nativeReplacement as string,
+    payloadSha256Before: null,
+    payloadCanonicalSha256After: legacy ? null : canonical as string,
+  };
+  if (!hasLegacyCheckpoint(
+    checkpoint, transaction, binding, new Set([String(checkpoint.state)]), true,
+  )) return null;
+  const stored = transaction.result.native_checkpoint;
+  if (stored !== undefined) {
+    if (!isRecord(stored)) return null;
+    const pairs: Array<[unknown, unknown]> = [
+      [stored.host_transaction_id, transaction.transactionId],
+      [stored.host_plan_digest, transaction.planDigest],
+      [stored.mcp_transaction_id, binding.mcpTransactionId],
+      [stored.mcp_plan_id, binding.mcpPlanId],
+      [stored.mcp_plan_digest, binding.mcpPlanDigest],
+      [stored.workspace_id, transaction.targetIdentity.workspaceId],
+      [stored.project_identity_digest, binding.projectIdentityDigest],
+      [stored.program_id, binding.programId],
+      [stored.program_name, binding.programName],
+      [stored.token_offset, binding.tokenOffset],
+      [stored.expected, binding.expectedOperand],
+      [stored.replacement, binding.requestedReplacement],
+      [stored.native_replacement, binding.nativeReplacement ?? undefined],
+      [stored.payload_canonical_sha256_planned,
+        binding.payloadCanonicalSha256After ?? undefined],
+    ];
+    if (pairs.some(([actual, expected]) => actual !== expected)) return null;
+  }
+  return binding;
+}
+
+function legacyStatusScope(
+  value: unknown,
+  transaction: ChangeTransaction,
+  binding: LegacyLdReceiptBinding,
+  states: ReadonlySet<string>,
+): { sessionId: string; pid: number; hwnd: number; projectHash: string } | null {
+  const receipt = nonemptyRecord(value);
+  const native = receipt && nonemptyRecord(receipt.transaction);
+  const checkpoint = receipt && nonemptyRecord(receipt.transaction_checkpoint);
+  if (
+    !receipt || !native || !checkpoint || receipt.ok !== true ||
+    receipt.verified !== true || receipt.operation !== "change.transaction_status" ||
+    native.transaction_id !== binding.mcpTransactionId ||
+    typeof native.state !== "string" || !states.has(native.state) ||
+    typeof native.active_session_id !== "string" || native.active_session_id.length === 0 ||
+    !Number.isInteger(native.active_pid) || Number(native.active_pid) <= 0 ||
+    !Number.isInteger(native.active_hwnd) || Number(native.active_hwnd) <= 0 ||
+    native.project_path !== transaction.targetIdentity.projectPath ||
+    typeof native.current_project_hash !== "string" || !SHA256.test(native.current_project_hash) ||
+    !hasLegacyCheckpoint(
+      checkpoint, transaction, binding, new Set([native.state]), true,
+    ) ||
+    checkpoint.active_session_id !== native.active_session_id ||
+    checkpoint.pid !== native.active_pid || checkpoint.hwnd !== native.active_hwnd ||
+    checkpoint.current_project_hash !== native.current_project_hash
+  ) return null;
+  return {
+    sessionId: native.active_session_id,
+    pid: Number(native.active_pid),
+    hwnd: Number(native.active_hwnd),
+    projectHash: native.current_project_hash,
+  };
+}
+
+function legacyDiffReceipt(
+  value: unknown,
+  transaction: ChangeTransaction,
+  binding: LegacyLdReceiptBinding,
+  reconciliation: boolean,
+): {
+  before: string;
+  after: string;
+  canonical: string | null;
+  nativeReplacement: string;
+} | null {
+  if (!hasLegacyVerifiedOperation(
+    value, "project.diff", transaction, binding, new Set(["DIFF_VERIFIED"]),
+  )) return null;
+  const receipt = value;
+  if (
+    receipt.plan_id !== binding.mcpPlanId || receipt.matches_plan !== true ||
+    receipt.matches_token_plan !== true || receipt.matches_native_plan !== true ||
+    receipt.project_unchanged !== true ||
+    receipt.requested_replacement !== binding.requestedReplacement ||
+    typeof receipt.native_replacement !== "string" || receipt.native_replacement.length === 0 ||
+    (binding.nativeReplacement !== null &&
+      receipt.native_replacement !== binding.nativeReplacement) ||
+    receipt.native_contract_reconciliation !== reconciliation
+  ) return null;
+  const diff = exactLegacyLdDiff(
+    receipt.diff, binding, receipt.native_replacement, binding.payloadSha256Before,
+  );
+  if (!diff) return null;
+  const canonical = receipt.payload_canonical_sha256_after;
+  if (binding.payloadCanonicalSha256After === null) {
+    if (canonical !== undefined) return null;
+    return { ...diff, canonical: null, nativeReplacement: receipt.native_replacement };
+  }
+  if (canonical !== binding.payloadCanonicalSha256After) return null;
+  return {
+    ...diff,
+    canonical: binding.payloadCanonicalSha256After,
+    nativeReplacement: receipt.native_replacement,
+  };
+}
+
+function legacyValidationReceipt(
+  value: unknown,
+  transaction: ChangeTransaction,
+  binding: LegacyLdReceiptBinding,
+  diff: {
+    before: string;
+    after: string;
+    canonical: string | null;
+    nativeReplacement: string;
+  },
+): boolean {
+  if (!hasLegacyVerifiedOperation(
+    value, "project.validate_change", transaction, binding, new Set(["CHECKED"]),
+  )) return false;
+  const receipt = value;
+  const programCheck = nonemptyRecord(receipt.program_check);
+  const readback = exactLegacyLdDiff(
+    receipt.readback_diff,
+    binding,
+    diff.nativeReplacement,
+    diff.before,
+  );
+  return Boolean(
+    programCheck && programCheck.ok === true && programCheck.verified === true &&
+      receipt.plan_id === binding.mcpPlanId && receipt.matches_native_plan === true &&
+      receipt.status === "validated" && receipt.rollback === null &&
+      receipt.project_unchanged === true && readback &&
+      readback.before === diff.before && readback.after === diff.after &&
+      (diff.canonical === null
+        ? receipt.payload_canonical_sha256_after === undefined
+        : receipt.payload_canonical_sha256_after === diff.canonical),
+  );
+}
+
+function hasValidLegacyTerminalReceipt(
+  transaction: ChangeTransaction,
+  evidence: Record<string, unknown>,
+): boolean {
+  if (
+    !isLegacyChangePlanV1(transaction.plan) ||
+    transaction.approval?.decision !== "approve" ||
+    transaction.approval.planDigest !== transaction.planDigest ||
+    !SHA256.test(transaction.planDigest)
+  ) {
+    return false;
+  }
+  const reconciliation = nonemptyRecord(transaction.result.reconciliation);
+  const applyBinding = legacyApplyBinding(transaction);
+  const lookupBinding = reconciliation
+    ? legacyLookupBinding(transaction, evidence.lookup)
+    : null;
+  const binding = applyBinding ?? lookupBinding;
+  if (!binding || (reconciliation && !lookupBinding)) return false;
+  if (applyBinding && lookupBinding) {
+    const exact: Array<keyof LegacyLdReceiptBinding> = [
+      "mcpTransactionId", "mcpPlanId", "mcpPlanDigest",
+      "projectIdentityDigest", "programId", "programName", "tokenOffset",
+      "expectedOperand", "requestedReplacement", "nativeReplacement",
+      "payloadCanonicalSha256After",
+    ];
+    if (exact.some((key) => applyBinding[key] !== lookupBinding[key])) return false;
+  }
+
+  if (transaction.state === "completed") {
+    const sourceStatus = reconciliation
+      ? legacyStatusScope(
+        evidence.status, transaction, binding, new Set(["QUARANTINED"]),
+      )
+      : {
+        sessionId: transaction.targetIdentity.engineeringSessionId,
+        pid: transaction.targetIdentity.engineeringProcessId,
+        hwnd: transaction.targetIdentity.engineeringWindowHandle,
+        projectHash: transaction.targetIdentity.artifactHash,
+      };
+    if (
+      !sourceStatus ||
+      typeof sourceStatus.sessionId !== "string" || sourceStatus.sessionId.length === 0 ||
+      !Number.isInteger(sourceStatus.pid) || Number(sourceStatus.pid) <= 0 ||
+      !Number.isInteger(sourceStatus.hwnd) || Number(sourceStatus.hwnd) <= 0
+    ) return false;
+    const diffKey = reconciliation ? "native_contract_reconciliation" : "diff";
+    const diff = legacyDiffReceipt(
+      evidence[diffKey], transaction, binding, Boolean(reconciliation),
+    );
+    if (
+      !diff || !legacyValidationReceipt(
+        evidence.validation, transaction, binding, diff,
+      ) ||
+      !hasLegacyVerifiedOperation(
+        evidence.save, "project.commit_save", transaction, binding,
+        new Set(["SAVED"]),
+      )
+    ) {
+      return false;
+    }
+    const save = evidence.save;
+    if (
+      save.project_path !== transaction.targetIdentity.projectPath ||
+      typeof save.project_hash !== "string" || !SHA256.test(save.project_hash)
+    ) return false;
+    const savedStatus = legacyStatusScope(
+      evidence.saved_transaction_status, transaction, binding, new Set(["SAVED"]),
+    );
+    if (
+      !savedStatus || savedStatus.projectHash !== save.project_hash ||
+      savedStatus.sessionId !== sourceStatus.sessionId ||
+      savedStatus.pid !== sourceStatus.pid || savedStatus.hwnd !== sourceStatus.hwnd
+    ) return false;
+    let commitSessionId = savedStatus.sessionId;
+    let commitPid = savedStatus.pid;
+    let commitHwnd = savedStatus.hwnd;
+    if (transaction.plan.verificationScope === "offline_native_check_only") {
+      if (
+        Object.prototype.hasOwnProperty.call(evidence, "fresh_reopen") ||
+        Object.prototype.hasOwnProperty.call(evidence, "fresh_reopen_attach")
+      ) return false;
+    } else {
+      if (!hasLegacyVerifiedOperation(
+        evidence.fresh_reopen, "project.verify_ld_operand_reopen", transaction,
+        binding, new Set(["SAVED"]),
+      )) return false;
+      const reopen = evidence.fresh_reopen;
+      const readback = nonemptyRecord(reopen.program_readback);
+      const fresh = nonemptyRecord(reopen.fresh_reopen);
+      const attached = nonemptyRecord(evidence.fresh_reopen_attach);
+      const attachedSession = attached && isRecord(attached.session)
+        ? attached.session
+        : attached;
+      if (
+        !readback || !fresh || !attachedSession || readback.program_id !== binding.programId ||
+        readback.program_name !== binding.programName || readback.stable_repeat !== true ||
+        readback.final_view !== "LD" ||
+        (diff.canonical !== null && readback.ld_canonical_sha256 !== diff.canonical) ||
+        fresh.source_pid !== transaction.targetIdentity.engineeringProcessId ||
+        fresh.source_hwnd !== transaction.targetIdentity.engineeringWindowHandle ||
+        fresh.source_closed !== true || fresh.workspace_id !== transaction.targetIdentity.workspaceId ||
+        fresh.project_path !== transaction.targetIdentity.projectPath ||
+        fresh.project_sha256 !== save.project_hash ||
+        attachedSession.pid !== fresh.pid || attachedSession.hwnd !== fresh.hwnd ||
+        attachedSession.project_path !== transaction.targetIdentity.projectPath ||
+        attachedSession.project_hash !== save.project_hash ||
+        typeof attachedSession.session_id !== "string" || attachedSession.session_id.length === 0
+      ) return false;
+      commitSessionId = attachedSession.session_id;
+      commitPid = Number(attachedSession.pid);
+      commitHwnd = Number(attachedSession.hwnd);
+    }
+    if (!hasLegacyVerifiedOperation(
+      evidence.commit, "change.commit", transaction, binding,
+      new Set(["COMMITTED"]),
+    )) return false;
+    const commit = evidence.commit;
+    const commitCheckpoint = nonemptyRecord(commit.transaction_checkpoint);
+    if (!commitCheckpoint) return false;
+    return commit.project_hash === save.project_hash &&
+      commit.project_unchanged === true &&
+      commitCheckpoint.active_session_id === commitSessionId &&
+      commitCheckpoint.pid === commitPid && commitCheckpoint.hwnd === commitHwnd &&
+      commitCheckpoint.terminal === true &&
+      commitCheckpoint.recovery_action === "already_terminal" &&
+      commitCheckpoint.lease_status === "released";
+  }
+
+  const prefixKeys = ["diff", "validation", "save", "saved_transaction_status"];
+  let gap = false;
+  for (const key of prefixKeys) {
+    if (evidence[key] === undefined) gap = true;
+    else if (gap || nonemptyRecord(evidence[key]) === null) return false;
+  }
+  const statusKey = reconciliation ? "status" : "recovery_transaction_status";
+  const recoveryStatus = legacyStatusScope(
+    evidence[statusKey], transaction, binding,
+    new Set(["APPLYING", "APPLIED", "DIFF_VERIFIED", "CHECKED", "SAVED", "QUARANTINED"]),
+  );
+  if (!recoveryStatus) return false;
+  let prefixDiff: ReturnType<typeof legacyDiffReceipt> = null;
+  if (evidence.diff !== undefined) {
+    prefixDiff = legacyDiffReceipt(
+      evidence.diff, transaction, binding, Boolean(reconciliation),
+    );
+    if (!prefixDiff) return false;
+  }
+  if (evidence.validation !== undefined && (
+    !prefixDiff || !legacyValidationReceipt(
+      evidence.validation, transaction, binding, prefixDiff,
+    )
+  )) return false;
+  if (evidence.save !== undefined) {
+    if (!hasLegacyVerifiedOperation(
+      evidence.save, "project.commit_save", transaction, binding,
+      new Set(["SAVED"]),
+    )) return false;
+    const save = evidence.save;
+    if (
+      typeof save.project_hash !== "string" || !SHA256.test(save.project_hash) ||
+      save.project_path !== transaction.targetIdentity.projectPath ||
+      (evidence.saved_transaction_status !== undefined &&
+        legacyStatusScope(
+          evidence.saved_transaction_status, transaction, binding, new Set(["SAVED"]),
+        )?.projectHash !== save.project_hash)
+    ) return false;
+  }
+  if (!hasLegacyVerifiedOperation(
+    evidence.rollback, "project.rollback_change", transaction, binding,
+    new Set(["ROLLED_BACK_EDITOR"]),
+  )) return false;
+  const rollback = evidence.rollback;
+  if (
+    rollback.plan_id !== binding.mcpPlanId || rollback.status !== "rolled_back" ||
+    rollback.matches_original_canonical !== true ||
+    rollback.matches_original_logic_and_nonvolatile !== true
+  ) return false;
+  if (!hasLegacyVerifiedOperation(
+    evidence.rollback_save, "project.commit_save", transaction, binding,
+    new Set(["ROLLED_BACK_SAVED"]),
+  )) return false;
+  const rollbackSave = evidence.rollback_save;
+  const rollbackCheckpoint = nonemptyRecord(
+    rollbackSave.transaction_checkpoint,
+  );
+  if (!rollbackCheckpoint) return false;
+  if (
+    rollbackSave.project_path !== transaction.targetIdentity.projectPath ||
+    typeof rollbackSave.project_hash !== "string" || !SHA256.test(rollbackSave.project_hash) ||
+    rollbackCheckpoint.terminal !== true ||
+    rollbackCheckpoint.recovery_action !== "already_terminal" ||
+    rollbackCheckpoint.lease_status !== "released"
+  ) return false;
+  if (!reconciliation) return true;
+  const attached = nonemptyRecord(evidence.recovery_attach);
+  const attachedSession = attached && isRecord(attached.session)
+    ? attached.session
+    : attached;
+  const finalStatus = legacyStatusScope(
+    evidence.final_status, transaction, binding, new Set(["ROLLED_BACK_SAVED"]),
+  );
+  return Boolean(
+    attachedSession && finalStatus &&
+      attachedSession.session_id === recoveryStatus.sessionId &&
+      attachedSession.pid === recoveryStatus.pid && attachedSession.hwnd === recoveryStatus.hwnd &&
+      attachedSession.project_path === transaction.targetIdentity.projectPath &&
+      attachedSession.project_hash === recoveryStatus.projectHash &&
+      finalStatus.sessionId === recoveryStatus.sessionId &&
+      finalStatus.pid === recoveryStatus.pid && finalStatus.hwnd === recoveryStatus.hwnd &&
+      finalStatus.projectHash === rollbackSave.project_hash,
+  );
+}
+
+function hasIndependentMneReopen(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    value.verified === true &&
+    value.process_is_independent === true &&
+    value.stable_readback === true &&
+    typeof value.ld_canonical_sha256 === "string" &&
+    SHA256.test(value.ld_canonical_sha256) &&
+    typeof value.project_sha256 === "string" &&
+    SHA256.test(value.project_sha256)
+  );
+}
+
+const MNE_PUBLIC_CHECKPOINT_FIELDS = new Set([
+  "schema",
+  "host_transaction_id",
+  "transaction_id",
+  "snapshot_id",
+  "snapshot_digest",
+  "artifact_visibility",
+  "backup_id",
+  "plan_id",
+  "plan_digest",
+  "plan_kind",
+  "workspace_id",
+  "project_identity_digest",
+  "active_session_id",
+  "pid",
+  "hwnd",
+  "project_path",
+  "current_project_hash",
+  "state",
+  "program_id",
+  "program_name",
+  "baseline_digest",
+  "before_mne_sha256",
+  "target_mne_sha256",
+  "adapter_binding_digest",
+  "runtime_identity_digest",
+  "target_program_digest",
+  "rollback_ld_sha256",
+  "simulation_receipt_digest",
+  "lease_generation",
+  "mutation_possible",
+  "recovery_action",
+  "terminal",
+  "lease_status",
+]);
+const MNE_CHECKPOINT_REQUIRED_FIELDS = [
+  "schema",
+  "host_transaction_id",
+  "transaction_id",
+  "snapshot_id",
+  "snapshot_digest",
+  "artifact_visibility",
+  "plan_kind",
+  "workspace_id",
+  "project_identity_digest",
+  "active_session_id",
+  "pid",
+  "hwnd",
+  "project_path",
+  "current_project_hash",
+  "state",
+  "lease_generation",
+  "mutation_possible",
+  "recovery_action",
+  "terminal",
+  "lease_status",
+] as const;
+const MNE_CHECKPOINT_OPTIONAL_DIGESTS = [
+  "plan_digest",
+  "baseline_digest",
+  "before_mne_sha256",
+  "target_mne_sha256",
+  "adapter_binding_digest",
+  "runtime_identity_digest",
+  "target_program_digest",
+  "rollback_ld_sha256",
+  "simulation_receipt_digest",
+] as const;
+
+function sameLocalProjectPath(left: unknown, right: unknown): boolean {
+  const normalize = (value: unknown) => typeof value === "string"
+    ? value.replaceAll("/", "\\").replace(/\\+$/, "").toLowerCase()
+    : null;
+  const normalizedLeft = normalize(left);
+  return normalizedLeft !== null && normalizedLeft === normalize(right);
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function mneTargetProgramIdentity(transaction: ChangeTransaction): {
+  programId: string;
+  programName: string;
+  targetProgramDigest: string;
+} | null {
+  const structural = getStructuralMnePlan(transaction.plan);
+  if (!structural) return null;
+  const plan = structural.plan;
+  const target = "candidate" in plan ? plan.candidate : plan.targetProgram;
+  return {
+    programId: target.programId,
+    programName: target.programName,
+    targetProgramDigest: target.targetProgramDigest,
+  };
+}
+
+function isBoundMneNoMutationCheckpoint(
+  value: unknown,
+  transaction: ChangeTransaction,
+  targetProgram: ReturnType<typeof mneTargetProgramIdentity>,
+): value is Record<string, unknown> {
+  if (
+    !targetProgram ||
+    !isRecord(value) ||
+    Object.keys(value).some((key) => !MNE_PUBLIC_CHECKPOINT_FIELDS.has(key)) ||
+    !MNE_CHECKPOINT_REQUIRED_FIELDS.every((key) =>
+      Object.prototype.hasOwnProperty.call(value, key)
+    ) ||
+    value.schema !== "controlstudio-change-transaction-checkpoint/v1" ||
+    value.host_transaction_id !== transaction.transactionId ||
+    typeof value.transaction_id !== "string" ||
+    !CANONICAL_UUID.test(value.transaction_id) ||
+    typeof value.snapshot_id !== "string" ||
+    !CANONICAL_UUID.test(value.snapshot_id) ||
+    typeof value.snapshot_digest !== "string" ||
+    !SHA256.test(value.snapshot_digest) ||
+    value.artifact_visibility !== "private_digest_only" ||
+    value.plan_kind !== "mne_full_program_replacement" ||
+    value.workspace_id !== transaction.targetIdentity.workspaceId ||
+    typeof value.project_identity_digest !== "string" ||
+    !SHA256.test(value.project_identity_digest) ||
+    typeof value.active_session_id !== "string" ||
+    value.active_session_id.length === 0 ||
+    !isPositiveSafeInteger(value.pid) ||
+    !isPositiveSafeInteger(value.hwnd) ||
+    !sameLocalProjectPath(
+      value.project_path,
+      transaction.targetIdentity.projectPath,
+    ) ||
+    value.current_project_hash !== transaction.targetIdentity.artifactHash ||
+    typeof value.state !== "string" ||
+    value.state.length === 0 ||
+    typeof value.lease_generation !== "string" ||
+    !CANONICAL_UUID.test(value.lease_generation) ||
+    typeof value.mutation_possible !== "boolean" ||
+    typeof value.recovery_action !== "string" ||
+    typeof value.terminal !== "boolean" ||
+    typeof value.lease_status !== "string"
+  ) {
+    return false;
+  }
+  if (
+    (Object.prototype.hasOwnProperty.call(value, "backup_id") &&
+      (typeof value.backup_id !== "string" || !CANONICAL_UUID.test(value.backup_id))) ||
+    Object.prototype.hasOwnProperty.call(value, "plan_id") !==
+      Object.prototype.hasOwnProperty.call(value, "plan_digest") ||
+    (Object.prototype.hasOwnProperty.call(value, "plan_id") &&
+      (typeof value.plan_id !== "string" || !CANONICAL_UUID.test(value.plan_id))) ||
+    MNE_CHECKPOINT_OPTIONAL_DIGESTS.some((key) =>
+      Object.prototype.hasOwnProperty.call(value, key) &&
+      (typeof value[key] !== "string" || !SHA256.test(value[key]))
+    )
+  ) {
+    return false;
+  }
+  return (
+    (value.program_id === undefined || value.program_id === targetProgram.programId) &&
+    (value.program_name === undefined || value.program_name === targetProgram.programName) &&
+    (value.target_program_digest === undefined ||
+      value.target_program_digest === targetProgram.targetProgramDigest)
+  );
+}
+
+function checkpointFieldsEqual(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+  excluded: ReadonlySet<string>,
+): boolean {
+  const leftKeys = Object.keys(left).filter((key) => !excluded.has(key)).sort();
+  const rightKeys = Object.keys(right).filter((key) => !excluded.has(key)).sort();
+  return matchesValidation(leftKeys, rightKeys) &&
+    leftKeys.every((key) => left[key] === right[key]);
+}
+
+function checkpointMatchesStoredNative(
+  checkpoint: Record<string, unknown>,
+  transaction: ChangeTransaction,
+): boolean {
+  const stored = transaction.result.native_checkpoint;
+  if (stored === undefined) return true;
+  if (!isRecord(stored)) return false;
+  const exact = [
+    ["host_transaction_id", transaction.transactionId],
+    ["host_plan_digest", transaction.planDigest],
+    ["mcp_transaction_id", checkpoint.transaction_id],
+    ["snapshot_id", checkpoint.snapshot_id],
+    ["snapshot_digest", checkpoint.snapshot_digest],
+    ["artifact_visibility", checkpoint.artifact_visibility],
+    ["backup_id", checkpoint.backup_id],
+    ["mcp_plan_id", checkpoint.plan_id],
+    ["mcp_plan_digest", checkpoint.plan_digest],
+    ["workspace_id", transaction.targetIdentity.workspaceId],
+    ["project_hash", transaction.targetIdentity.artifactHash],
+    ["project_identity_digest", checkpoint.project_identity_digest],
+    ["plan_kind", "mne_full_program_replacement"],
+    ["program_id", checkpoint.program_id],
+    ["program_name", checkpoint.program_name],
+    ["target_program_digest", checkpoint.target_program_digest],
+    ["before_mne_sha256", checkpoint.before_mne_sha256],
+    ["target_mne_sha256", checkpoint.target_mne_sha256],
+    ["adapter_binding_digest", checkpoint.adapter_binding_digest],
+    ["runtime_identity_digest", checkpoint.runtime_identity_digest],
+    ["baseline_digest", checkpoint.baseline_digest],
+    ["rollback_ld_sha256", checkpoint.rollback_ld_sha256],
+  ] as const;
+  return (
+    ["SNAPSHOT_CREATED", "BACKUP_CREATED", "PLANNED"].includes(
+      String(stored.stage),
+    ) &&
+    sameLocalProjectPath(stored.project_path, transaction.targetIdentity.projectPath) &&
+    exact.every(([key, expected]) =>
+      expected === undefined || stored[key] === expected
+    )
+  );
+}
+
+/** Validate the exact, bounded recovery receipt proving no MNE mutation. */
+export function hasValidMneNoMutationAbortReceipt(
+  transaction: ChangeTransaction,
+): boolean {
+  const targetProgram = mneTargetProgramIdentity(transaction);
+  const reconciliation = transaction.result.reconciliation;
+  if (
+    !targetProgram ||
+    transaction.state !== "rolled_back" ||
+    transaction.errorCode !== "mne_recovery_aborted_before_mutation" ||
+    transaction.approval?.decision !== "approve" ||
+    transaction.approval.planDigest !== transaction.planDigest ||
+    !SHA256.test(transaction.planDigest) ||
+    !CANONICAL_UUID.test(transaction.transactionId) ||
+    !CANONICAL_UUID.test(transaction.targetIdentity.workspaceId) ||
+    !isRecord(reconciliation)
+  ) {
+    return false;
+  }
+  const baseFields = [
+    "verification_scope",
+    "executed_checks",
+    "not_executed",
+    "manual_follow_up",
+    "lookup_checkpoint",
+    "abort_checkpoint",
+    "native_mutation_performed",
+  ];
+  const recoveredFields = [...baseFields, "recovery_attach", "status_checkpoint"];
+  if (
+    !hasExactKeys(reconciliation, baseFields) &&
+    !hasExactKeys(reconciliation, recoveredFields)
+  ) {
+    return false;
+  }
+  if (
+    reconciliation.verification_scope !== transaction.plan.verificationScope ||
+    !matchesValidation(reconciliation.executed_checks, []) ||
+    !matchesValidation(reconciliation.not_executed, [
+      ...REOPEN_VALIDATION,
+      "xg_sim",
+      "runtime_or_online_validation",
+    ]) ||
+    !matchesValidation(
+      reconciliation.manual_follow_up,
+      transaction.plan.manualFollowUp,
+    ) ||
+    reconciliation.native_mutation_performed !== false
+  ) {
+    return false;
+  }
+  const lookup = reconciliation.lookup_checkpoint;
+  const aborted = reconciliation.abort_checkpoint;
+  if (
+    !isBoundMneNoMutationCheckpoint(lookup, transaction, targetProgram) ||
+    !isBoundMneNoMutationCheckpoint(aborted, transaction, targetProgram) ||
+    !checkpointMatchesStoredNative(lookup, transaction) ||
+    aborted.state !== "ABORTED_NO_MUTATION" ||
+    aborted.mutation_possible !== false ||
+    aborted.recovery_action !== "already_terminal" ||
+    aborted.terminal !== true ||
+    aborted.lease_status !== "released"
+  ) {
+    return false;
+  }
+  const dispositionFields = new Set([
+    "state",
+    "mutation_possible",
+    "recovery_action",
+    "terminal",
+    "lease_status",
+  ]);
+  if (lookup.state === "ABORTED_NO_MUTATION") {
+    return hasExactKeys(reconciliation, baseFields) &&
+      checkpointFieldsEqual(lookup, aborted, new Set());
+  }
+  if (
+    !["SNAPSHOT_CREATED", "BACKUP_CREATED", "PLANNED"].includes(
+      String(lookup.state),
+    ) ||
+    lookup.mutation_possible !== false ||
+    lookup.recovery_action !== "abort_safe" ||
+    lookup.terminal !== false ||
+    !hasExactKeys(reconciliation, recoveredFields)
+  ) {
+    return false;
+  }
+  const status = reconciliation.status_checkpoint;
+  const attach = reconciliation.recovery_attach;
+  if (
+    !isBoundMneNoMutationCheckpoint(status, transaction, targetProgram) ||
+    !isRecord(attach) ||
+    !(hasExactKeys(attach, ["mode", "session_id", "pid", "hwnd", "project_hash"]) ||
+      hasExactKeys(attach, [
+        "mode",
+        "session_id",
+        "pid",
+        "hwnd",
+        "project_hash",
+        "plc_policy",
+      ])) ||
+    typeof attach.mode !== "string" ||
+    attach.mode.length === 0 ||
+    attach.session_id !== status.active_session_id ||
+    attach.pid !== status.pid ||
+    attach.hwnd !== status.hwnd ||
+    attach.project_hash !== transaction.targetIdentity.artifactHash ||
+    (attach.mode === "existing_bound_session"
+      ? Object.prototype.hasOwnProperty.call(attach, "plc_policy")
+      : attach.plc_policy !== "offline_abort_recovery_only") ||
+    status.mutation_possible !== false ||
+    status.recovery_action !== "abort_safe" ||
+    status.terminal !== false ||
+    !["SNAPSHOT_CREATED", "BACKUP_CREATED", "PLANNED"].includes(
+      String(status.state),
+    ) ||
+    !checkpointFieldsEqual(
+      lookup,
+      status,
+      new Set(["active_session_id", "pid", "hwnd", "lease_generation", ...dispositionFields]),
+    ) ||
+    !checkpointFieldsEqual(status, aborted, dispositionFields)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Validate the bounded public receipt needed before the Web may describe and
+ * acknowledge a successful offline outcome. Recovery/no-mutation and uncertain
+ * states deliberately remain review-only.
+ */
+export function hasValidChangeExecutionReceipt(
+  transaction: ChangeTransaction,
+): boolean {
+  if (
+    transaction.state !== "completed" &&
+    transaction.state !== "rolled_back"
+  ) {
+    return false;
+  }
+  const evidence = terminalReceiptEvidence(transaction);
+  const structuralPlan = getStructuralMnePlan(transaction.plan);
+  if (
+    structuralPlan &&
+    transaction.state === "rolled_back" &&
+    transaction.errorCode === "mne_recovery_aborted_before_mutation"
+  ) {
+    return hasValidMneNoMutationAbortReceipt(transaction);
+  }
+  if (!evidence || !hasReceiptExecutionBoundary(transaction, evidence)) {
+    return false;
+  }
+
+  if (structuralPlan) {
+    if (transaction.state === "rolled_back") {
+      const rollback = isRecord(evidence.rollback) ? evidence.rollback : null;
+      return Boolean(
+        rollback &&
+          rollback.verified === true &&
+          rollback.program_check_verified === true &&
+          rollback.save_verified === true &&
+          rollback.ld_raw_equal === true &&
+          rollback.ld_canonical_equal === true &&
+          typeof rollback.rollback_digest === "string" &&
+          SHA256.test(rollback.rollback_digest) &&
+          hasIndependentMneReopen(rollback.reopen),
+      );
+    }
+
+    const apply = isRecord(transaction.result.apply)
+      ? transaction.result.apply
+      : null;
+    const application = apply && isRecord(apply.application)
+      ? apply.application
+      : null;
+    if (
+      !application ||
+      application.verified_in_editor !== true ||
+      typeof application.application_digest !== "string" ||
+      !SHA256.test(application.application_digest)
+    ) {
+      return false;
+    }
+
+    const verification = isRecord(evidence.verification)
+      ? evidence.verification
+      : null;
+    if (
+      !verification ||
+      verification.verified !== true ||
+      verification.program_check_verified !== true ||
+      verification.save_verified !== true ||
+      typeof verification.verification_digest !== "string" ||
+      !SHA256.test(verification.verification_digest)
+    ) {
+      return false;
+    }
+    return transaction.plan.verificationScope === "offline_native_check_only"
+      ? verification.reopen === null
+      : hasIndependentMneReopen(verification.reopen);
+  }
+
+  return hasValidLegacyTerminalReceipt(transaction, evidence);
 }
 
 function isOptionalText(value: unknown): boolean {
