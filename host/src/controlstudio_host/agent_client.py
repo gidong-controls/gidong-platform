@@ -17,8 +17,88 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from controlstudio_contracts import ExternalToolRequestV1
+from controlstudio_contracts import AgentToolDefinitionV1, ExternalToolRequestV1
 from pydantic import ValidationError
+
+_SAFE_DESIGN_DIAGNOSTIC_CODE = re.compile(r"[a-z][a-z0-9_]{0,79}\Z")
+_SAFE_DESIGN_DIAGNOSTIC_PATH = re.compile(r"(?:|/(?:[A-Za-z0-9_.~-]+/?)+)\Z")
+_MAX_DESIGN_FAILURE_DIAGNOSTICS = 4
+_DESIGN_DIAGNOSTIC_MESSAGES = {
+    "schema_invalid": "The proposed design value does not match the required schema.",
+    "edit_rejected": "Host validation rejected the proposed design edit.",
+    "edit_made_no_change": "The proposed edit is identical to the retained design.",
+    "ladder_move_repeats_prior_order": "The rung move repeats an order already produced by this run.",
+    "repair_section_mismatch": "The proposed edit does not target the diagnosed section.",
+    "repair_must_target_diagnosed_item": "The proposed edit does not target the diagnosed item.",
+    "repair_must_target_existing_item": "The proposed edit does not target an existing item.",
+    "repair_must_patch_not_remove": "The diagnosed item must be repaired rather than removed.",
+}
+_SAFE_DESIGN_EXPECTED_TYPES = frozenset(
+    {
+        "array",
+        "boolean",
+        "digital_input",
+        "digital_output",
+        "integer",
+        "internal_bit",
+        "mapping",
+        "number",
+        "object",
+        "string",
+        "timer",
+    }
+)
+
+
+def _bounded_design_failure_diagnostics(value: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Project useful design validation facts without retaining submitted values."""
+
+    raw_diagnostics = value.get("diagnostics")
+    if not isinstance(raw_diagnostics, list):
+        return []
+    projected: list[dict[str, str]] = []
+    for raw in raw_diagnostics[:_MAX_DESIGN_FAILURE_DIAGNOSTICS]:
+        if not isinstance(raw, Mapping):
+            continue
+        code = raw.get("code")
+        path = raw.get("path")
+        if (
+            not isinstance(code, str)
+            or _SAFE_DESIGN_DIAGNOSTIC_CODE.fullmatch(code) is None
+            or not isinstance(path, str)
+            or len(path) > 256
+            or _SAFE_DESIGN_DIAGNOSTIC_PATH.fullmatch(path) is None
+        ):
+            continue
+        item = {
+            "code": code,
+            "path": path,
+            "message": _DESIGN_DIAGNOSTIC_MESSAGES.get(
+                code, "Host validation rejected this design edit."
+            ),
+        }
+        expected_type = raw.get("expectedType")
+        if isinstance(expected_type, str):
+            normalized = " ".join(expected_type.split())
+            if normalized in _SAFE_DESIGN_EXPECTED_TYPES:
+                item["expectedType"] = normalized
+        projected.append(item)
+    return projected
+
+
+def _design_edit_failure_code(value: Mapping[str, Any]) -> str:
+    diagnostics = value.get("diagnostics")
+    codes = {
+        item.get("code") for item in diagnostics if isinstance(item, Mapping)
+    } if isinstance(diagnostics, list) else set()
+    if codes.intersection({"edit_made_no_change", "ladder_move_repeats_prior_order"}):
+        return "design_edit_unchanged"
+    if codes.intersection({"repair_section_mismatch", "repair_must_target_diagnosed_item",
+                           "repair_must_target_existing_item", "repair_must_patch_not_remove"}):
+        return "design_edit_scope_rejected"
+    if "schema_invalid" in codes:
+        return "design_edit_schema_invalid"
+    return "design_edit_not_applied"
 
 from .agent_protocol import (
     MAX_PROTOCOL_LINE_BYTES,
@@ -71,6 +151,9 @@ from .structural_evidence import (
 
 logger = logging.getLogger(__name__)
 
+_MODEL_CONTEXT_WINDOW_TOKENS = 196_608
+_SIDECAR_HISTORY_BUDGET_TOKENS = _MODEL_CONTEXT_WINDOW_TOKENS - 16_608
+
 _HISTORICAL_EVIDENCE_BUNDLE_KEYS = {
     "schemaVersion",
     "missionDigest",
@@ -81,6 +164,27 @@ _HISTORICAL_EVIDENCE_ITEM_KEYS = {"sourceRunId", "evidence"}
 _MAX_HISTORICAL_EVIDENCE_ITEMS = 2_500
 _MAX_HISTORICAL_EVIDENCE_BUNDLE_BYTES = 1_500_000
 _MAX_AGENT_CHECKPOINT_BYTES = 1_500_000
+_MAX_RETAINED_PLANNING_NARRATIVE_BYTES = 250_000
+_RETAINED_PLANNING_NARRATIVE_STRING_FIELDS = {
+    "project_name": 200,
+    "summary": 4_000,
+    "objective": 4_000,
+}
+_RETAINED_PLANNING_NARRATIVE_LIST_LIMITS = {
+    "user_requirements": 100,
+    "design_proposals": 100,
+    "scope": 50,
+    "assumptions": 50,
+    "open_questions": 5,
+    "hardware_and_network": 100,
+    "io_and_devices": 200,
+    "operating_modes": 50,
+    "sequence": 200,
+    "safety_invariants": 100,
+    "alarms_and_recovery": 100,
+    "program_structure": 100,
+    "validation_plan": 100,
+}
 _DURABLE_RESUME_SYNC_CAPABILITY = "durable-resume-sync-v1"
 _SAFE_ENGINEERING_VALIDATOR_STDERR = re.compile(
     r"^(?:[0-9]{4})-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01]) "
@@ -89,6 +193,21 @@ _SAFE_ENGINEERING_VALIDATOR_STDERR = re.compile(
     r"engineering output validator rejected at runtime frame "
     r"(?P<function>[A-Za-z_][A-Za-z0-9_]*) line "
     r"(?P<line>[1-9][0-9]{0,6})\r?\n?$"
+)
+_SAFE_RUNTIME_FRAME_STDERR = re.compile(
+    r"^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01]) "
+    r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9],[0-9]{3} "
+    r"WARNING controlstudio_agent\.runtime runtime invariant at runtime frame "
+    r"(?P<function>[A-Za-z_][A-Za-z0-9_]*) line (?P<line>[1-9][0-9]{0,6}) kind "
+    r"(?P<kind>AssertionError|AttributeError|IndexError|KeyError|TypeError|ValueError|"
+    r"RuntimeError|RecursionError|Exception)\r?\n?$"
+)
+_SAFE_NATIVE_RESPONSE_STDERR = re.compile(
+    r"^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01]) "
+    r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9],[0-9]{3} "
+    r"WARNING controlstudio_agent\.runtime native response shape "
+    r"finish=(?P<finish>stop|length|content_filter|tool_call|error|unknown) "
+    r"output_tokens=(?P<tokens>[0-9]{1,9}) text_chars=(?P<chars>[0-9]{1,9})\r?\n?$"
 )
 
 # The exact typed operand route is Host-selected from a durable mission rather
@@ -411,6 +530,17 @@ _OUTPUT_CONTRACT_VALIDATOR_CODES = frozenset(
         "invented_device_address",
         "invented_contact_polarity",
         "invalid_collection_evidence",
+        "requirement_source_invalid",
+        "requirement_source_missing",
+        "requirement_brief_unresolved",
+        "requirement_brief_unavailable",
+        "planning_narrative_incomplete",
+        "planning_question_missing",
+        "planning_question_repeated",
+        "planning_address_question_repeated",
+        "planning_polarity_question_repeated",
+        "planning_self_answered_question",
+        "planning_answered_question_repeated",
         "typed_tool_arguments",
         "candidate_current_run",
         "candidate_coverage_shape",
@@ -429,6 +559,11 @@ _OUTPUT_CONTRACT_VALIDATOR_CODES = frozenset(
         "native_unknown_reference",
         "native_condition_invalid",
         "native_sequence_structure",
+        "native_sequence_reset_step_reserved",
+        "native_sequence_group_mismatch",
+        "native_sequence_final_release_missing",
+        "native_sequence_reset_release_missing",
+        "native_sequence_recovery_release_missing",
         "native_output_network_coverage",
         "native_output_safety_coverage",
         "native_ladder_shape",
@@ -889,12 +1024,24 @@ class AgentSupervisor:
             except UnicodeDecodeError:
                 continue
             match = _SAFE_ENGINEERING_VALIDATOR_STDERR.fullmatch(diagnostic)
+            shape_match = _SAFE_NATIVE_RESPONSE_STDERR.fullmatch(diagnostic)
+            if shape_match is not None:
+                logger.warning(
+                    "Agent native response: finish=%s output_tokens=%d text_chars=%d",
+                    shape_match["finish"], int(shape_match["tokens"]), int(shape_match["chars"]),
+                )
             if match is not None:
                 logger.warning(
                     "Agent sidecar: engineering output validator rejected at "
                     "runtime frame %s line %s",
                     match["function"],
                     match["line"],
+                )
+            runtime_match = _SAFE_RUNTIME_FRAME_STDERR.fullmatch(diagnostic)
+            if runtime_match is not None:
+                logger.warning(
+                    "Agent sidecar: runtime invariant at runtime frame %s line %s kind %s",
+                    runtime_match["function"], runtime_match["line"], runtime_match["kind"],
                 )
         if emitted:
             logger.warning("Agent sidecar emitted diagnostics on stderr")
@@ -958,6 +1105,12 @@ class SubprocessAgentClient:
         self._supervisor = supervisor
         self._change_plan_callback: ChangePlanCallback | None = None
         self._knowledge_snapshot_callback: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None
+        self._design_tool_catalog_callback: Callable[
+            [], list[AgentToolDefinitionV1]
+        ] | None = None
+        self._design_tool_callback: Callable[
+            [str, Mapping[str, Any]], Awaitable[dict[str, Any]]
+        ] | None = None
 
     def bind_change_planner(self, callback: ChangePlanCallback) -> None:
         self._change_plan_callback = callback
@@ -966,6 +1119,17 @@ class SubprocessAgentClient:
         self, callback: Callable[[], Awaitable[list[dict[str, Any]]]]
     ) -> None:
         self._knowledge_snapshot_callback = callback
+
+    def bind_design_tools(
+        self,
+        *,
+        catalog: Callable[[], list[AgentToolDefinitionV1]],
+        execute: Callable[[str, Mapping[str, Any]], Awaitable[dict[str, Any]]],
+    ) -> None:
+        """Bind Host-local draft tools without granting direct DB authority."""
+
+        self._design_tool_catalog_callback = catalog
+        self._design_tool_callback = execute
 
     async def run(
         self,
@@ -991,14 +1155,24 @@ class SubprocessAgentClient:
             # cannot retain stale Agent-derived index entries.
             documents = await self._knowledge_snapshot_callback()
             await self._supervisor.sync_knowledge(documents)
-        tools = (
+        planning_workflow = bool(
+            isinstance(trusted_context, dict)
+            and trusted_context.get("workflow") == "new_project_planning"
+        )
+        broker_tools = (
             []
-            if targetless_analysis
+            if targetless_analysis or planning_workflow
             else await self._broker.agent_tool_catalog(
                 conversation_id=conversation_id,
                 run_id=run_id,
             )
         )
+        design_tools = (
+            self._design_tool_catalog_callback()
+            if planning_workflow and self._design_tool_catalog_callback is not None
+            else []
+        )
+        tools = [*broker_tools, *design_tools]
         mne_change_planner_available = (
             not targetless_analysis
             and self._change_plan_callback is not None
@@ -1011,7 +1185,8 @@ class SubprocessAgentClient:
                 for tool in tools
                 if tool.tool_name not in _MNE_CANDIDATE_TOOL_ALIASES
             ]
-        catalog = {tool.tool_name for tool in tools}
+        catalog = {tool.tool_name for tool in broker_tools}
+        design_catalog = {tool.tool_name for tool in design_tools}
         safe_trusted_context = _safe_trusted_context(
             trusted_context,
             knowledge_search_available=self._knowledge_snapshot_callback is not None,
@@ -1162,6 +1337,7 @@ class SubprocessAgentClient:
                 await self._dispatch_tool_request(
                     request,
                     catalog=catalog,
+                    design_catalog=design_catalog,
                     on_tool_event=on_tool_event,
                 )
                 return
@@ -1211,6 +1387,7 @@ class SubprocessAgentClient:
         request: ExternalToolRequestV1,
         *,
         catalog: set[str],
+        design_catalog: set[str],
         on_tool_event: ToolEventCallback | None,
     ) -> None:
         completed_tool_result: dict[str, Any] | None = None
@@ -1314,6 +1491,69 @@ class SubprocessAgentClient:
                     sink=sink,
                     completion_gate=validate_tool_completion,
                 )
+            elif (
+                request.tool_name in design_catalog
+                and self._design_tool_callback is not None
+            ):
+                await capture_event("tool.started", event_payload)
+                value = await self._design_tool_callback(
+                    request.tool_name,
+                    request.arguments,
+                )
+                completed_tool_result = _completed_tool_result_payload(
+                    request_id=request.request_id,
+                    raw_result=value,
+                    evidence_ref=None,
+                )
+                design_status = (
+                    value.get("status") if isinstance(value, Mapping) else None
+                )
+                design_failure_code = (
+                    "design_revision_conflict"
+                    if design_status == "revision_conflict"
+                    else (
+                        "design_edit_not_applied"
+                        if (
+                            request.tool_name.startswith("design.edit")
+                            or request.tool_name
+                            in {
+                                "design.patch_ladder_rung",
+                                "design.set_ladder_increment_action",
+                                "design.move_ladder_rung",
+                                "design.repair_index_mode_latches",
+                                "design.repair_automatic_start_rearm",
+                                "design.repair_stale_step_references",
+                                "design.repair_control_network_contracts",
+                                "design.repair_sequence_start_release_contracts",
+                            }
+                        )
+                        and design_status != "applied"
+                        else (
+                            "design_publish_blocked"
+                            if request.tool_name == "design.publish_review"
+                            and design_status != "published"
+                            else None
+                        )
+                    )
+                )
+                if design_failure_code == "design_edit_not_applied" and isinstance(value, Mapping):
+                    design_failure_code = _design_edit_failure_code(value)
+                if design_failure_code is None:
+                    await capture_event("tool.completed", event_payload)
+                else:
+                    failure_payload = {
+                        **event_payload,
+                        "failure_kind": "tool_error",
+                        "reason_code": design_failure_code,
+                    }
+                    bounded_diagnostics = _bounded_design_failure_diagnostics(value)
+                    if bounded_diagnostics:
+                        failure_payload["diagnostics"] = bounded_diagnostics
+                    await capture_event(
+                        "tool.failed",
+                        failure_payload,
+                    )
+                    callback_terminal_event_recorded = True
             elif (
                 request.tool_name == "change.propose_offline"
                 and self._change_plan_callback is not None
@@ -1540,6 +1780,24 @@ def _sidecar_environment() -> dict[str, str]:
 
 
 def _safe_history(history: Sequence[Message]) -> list[dict[str, Any]]:
+    bounded_history: list[Message] = []
+    estimated_tokens = 0
+    for item in reversed(history):
+        if item.role not in {MessageRole.USER, MessageRole.ASSISTANT}:
+            continue
+        ascii_characters = sum(character.isascii() for character in item.content)
+        non_ascii_characters = len(item.content) - ascii_characters
+        item_tokens = max(1, (ascii_characters + 3) // 4 + non_ascii_characters)
+        if (
+            bounded_history
+            and estimated_tokens + item_tokens > _SIDECAR_HISTORY_BUDGET_TOKENS
+        ):
+            break
+        if item_tokens > _SIDECAR_HISTORY_BUDGET_TOKENS:
+            continue
+        bounded_history.append(item)
+        estimated_tokens += item_tokens
+    bounded_history.reverse()
     return [
         {
             "role": item.role.value,
@@ -1549,9 +1807,80 @@ def _safe_history(history: Sequence[Message]) -> list[dict[str, Any]]:
                 item.metadata.get("structured_project_brief")
             ),
         }
-        for item in history[-100:]
-        if item.role in {MessageRole.USER, MessageRole.ASSISTANT}
+        for item in bounded_history
     ]
+
+
+def _safe_retained_planning_narrative(value: Any) -> dict[str, Any]:
+    """Bound the Host-authored narrative before crossing the sidecar boundary.
+
+    The Agent performs the full typed validation.  This projection prevents an
+    unrelated or oversized object from being transported as trusted context
+    while preserving the exact narrative and source identities selected by the
+    Host.
+    """
+
+    if not isinstance(value, dict):
+        raise AgentProtocolError("retained design narrative is invalid")
+    allowed_keys = {
+        "requirement_sources",
+        "status",
+        *_RETAINED_PLANNING_NARRATIVE_STRING_FIELDS,
+        *_RETAINED_PLANNING_NARRATIVE_LIST_LIMITS,
+        "not_applicable",
+    }
+    if not set(value).issubset(allowed_keys):
+        raise AgentProtocolError("retained design narrative fields are invalid")
+    if value.get("status") != "ready_for_review":
+        raise AgentProtocolError("retained design narrative is not ready for review")
+    for field, limit in _RETAINED_PLANNING_NARRATIVE_STRING_FIELDS.items():
+        item = value.get(field)
+        if not isinstance(item, str) or not item.strip() or len(item) > limit:
+            raise AgentProtocolError("retained design narrative text is invalid")
+    for field, limit in _RETAINED_PLANNING_NARRATIVE_LIST_LIMITS.items():
+        items = value.get(field, [])
+        if (
+            not isinstance(items, list)
+            or len(items) > limit
+            or any(not isinstance(item, str) for item in items)
+        ):
+            raise AgentProtocolError("retained design narrative list is invalid")
+    requirement_sources = value.get("requirement_sources", [])
+    if not isinstance(requirement_sources, list) or len(requirement_sources) > 5:
+        raise AgentProtocolError("retained design narrative sources are invalid")
+    for source in requirement_sources:
+        if (
+            not isinstance(source, dict)
+            or not set(source).issubset({"field", "quote", "message_id", "messageId"})
+            or not isinstance(source.get("field"), str)
+            or not isinstance(source.get("quote"), str)
+            or not source["quote"]
+            or len(source["quote"]) > 20_000
+            or (
+                source.get("message_id", source.get("messageId")) is not None
+                and not isinstance(source.get("message_id", source.get("messageId")), str)
+            )
+        ):
+            raise AgentProtocolError("retained design narrative sources are invalid")
+    not_applicable = value.get("not_applicable", [])
+    if (
+        not isinstance(not_applicable, list)
+        or len(not_applicable) > 3
+        or any(
+            not isinstance(item, dict)
+            or not set(item).issubset({"field", "justification"})
+            or not isinstance(item.get("field"), str)
+            or not isinstance(item.get("justification"), str)
+            or not item["justification"].strip()
+            or len(item["justification"]) > 2_000
+            for item in not_applicable
+        )
+    ):
+        raise AgentProtocolError("retained design narrative exclusions are invalid")
+    projected = json.loads(_canonical_json(value))
+    if len(_canonical_json(projected).encode("utf-8")) > _MAX_RETAINED_PLANNING_NARRATIVE_BYTES:
+        raise AgentProtocolError("retained design narrative is too large")
+    return projected
 
 
 def _safe_trusted_context(
@@ -1601,7 +1930,16 @@ def _safe_trusted_context(
                     for attachment in attachments
                     if isinstance(attachment, dict)
                 ]
-        return {
+            requirement_sources = brief.get("requirement_message_sources")
+            if isinstance(requirement_sources, list):
+                safe_brief["requirement_message_sources"] = [
+                    {"message_id": item["message_id"], "content": item["content"]}
+                    for item in requirement_sources
+                    if isinstance(item, dict)
+                    and isinstance(item.get("message_id"), str)
+                    and isinstance(item.get("content"), str)
+                ]
+        context = {
             "workflow": "new_project_planning",
             "project_brief": safe_brief,
             "current_prompt_is_structured_brief": bool(
@@ -1609,6 +1947,12 @@ def _safe_trusted_context(
             ),
             "knowledge_search_available": knowledge_search_available,
         }
+        retained_narrative = value.get("retained_design_narrative")
+        if retained_narrative is not None:
+            context["retained_design_narrative"] = (
+                _safe_retained_planning_narrative(retained_narrative)
+            )
+        return context
     context: dict[str, Any] = {
         "workflow": "engineering",
         "knowledge_search_available": knowledge_search_available,

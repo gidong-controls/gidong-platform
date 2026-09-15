@@ -3,22 +3,45 @@ export interface CoalescibleActivity {
   coalesceKey?: string;
 }
 
+export function isHistoricalRunReplay(
+  event: { sequence: number; eventType: string }, snapshotSequence: number,
+): boolean {
+  return event.sequence <= snapshotSequence && (
+    event.eventType === "run.created" || event.eventType === "run.state" ||
+    event.eventType === "run.state_changed" || event.eventType === "agent.token" ||
+    event.eventType === "agent.progress"
+  );
+}
+
 export function formatReportedElapsedSeconds(value: unknown): string | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
     return null;
   }
   if (value < 1) {
-    return `${Math.round(value * 1_000)}ms`;
+    return null;
   }
-  return `${value.toFixed(value < 10 ? 1 : 0)}초`;
+  if (value >= 60) {
+    const seconds = Math.floor(value);
+    return `${Math.floor(seconds / 60)}분${seconds % 60 ? ` ${seconds % 60}초` : ""}`;
+  }
+  return `${Math.floor(value)}초`;
+}
+
+export function activityDetail(
+  progress: boolean,
+  label: string | undefined,
+  previous: string | undefined,
+  current: string,
+): string {
+  return progress ? current : label ?? previous ?? current;
 }
 
 export function agentProgressDetail(
-  runId: string,
+  _runId: string,
   elapsedSeconds: unknown,
 ): string {
   const elapsed = formatReportedElapsedSeconds(elapsedSeconds);
-  return elapsed ? `${runId} · ${elapsed} 경과` : runId;
+  return elapsed ? `${elapsed} 경과` : "";
 }
 
 export function prependCoalescedActivity<T extends CoalescibleActivity>(

@@ -13,6 +13,7 @@ from .api_models import (
     ProjectBriefV1,
     ProjectPlanArtifactV1,
     ProjectPlanAttachmentV1,
+    ProjectRequirementSourceV1,
 )
 from .models import Message
 
@@ -50,7 +51,33 @@ def calculate_project_brief_digest(brief: dict[str, Any] | ProjectBriefV1) -> st
     validated = (
         brief if isinstance(brief, ProjectBriefV1) else ProjectBriefV1.model_validate(brief)
     )
-    return _canonical_digest(validated.model_dump(mode="json", by_alias=True))
+    payload = validated.model_dump(mode="json", by_alias=True)
+    # Adding an unused optional intake field must not invalidate legacy reviews.
+    if not validated.supplemental_requirements:
+        payload.pop("supplementalRequirements", None)
+    return _canonical_digest(payload)
+
+
+def append_planning_clarification(brief: dict[str, Any], content: str) -> dict[str, Any]:
+    """Keep a user's follow-up verbatim without guessing which fields it resolves."""
+
+    validated = ProjectBriefV1.model_validate(brief)
+    if not content.strip():
+        return validated.model_dump(mode="python")
+    previous_parts: list[str] = []
+    seen: set[str] = set()
+    for part in re.split(r"\n\s*\n", validated.supplemental_requirements):
+        normalized = part.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        previous_parts.append(normalized)
+    normalized_content = content.strip()
+    payload = validated.model_dump(mode="python")
+    if normalized_content not in seen:
+        previous_parts.append(content)
+    payload["supplemental_requirements"] = "\n\n".join(previous_parts)
+    return ProjectBriefV1.model_validate(payload).model_dump(mode="python")
 
 
 def calculate_project_plan_attachment_revision_digest(
@@ -138,9 +165,12 @@ _COLLECTION_ID_FIELDS = {
 }
 
 _TECHNICAL_SECTION_ID = "native-technical-configuration"
+_SIMULATION_PROFILE_SECTION_ID = "native-simulation-profile"
 _LADDER_SECTION_ID = "native-ladder-rungs"
 _SEMANTIC_SECTION_ORDER = (
+    "user-requirements",
     _TECHNICAL_SECTION_ID,
+    _SIMULATION_PROFILE_SECTION_ID,
     "native-io-map",
     "native-mode-model",
     "native-control-networks",
@@ -199,9 +229,60 @@ def _collection_evidence_clauses(values: Sequence[str]) -> list[str]:
     return clauses
 
 
+_REQUIREMENT_UNRESOLVED = re.compile(
+    r"(?:\bunknown\b|not\s+(?:yet\s+)?confirmed|to\s+be\s+confirmed|"
+    r"\btbd\b|\btbc\b|\bpending\b|\btentative\b|\bprovisional\b|"
+    r"\bassumed?\b|\bdraft\b|"
+    r"미정|미확정|확인되지|아직\s+모|모름|검토\s*(?:필요|중)|"
+    r"확인\s*필요|예정|임시|가정|초안)", re.IGNORECASE,
+)
+
+
+def validate_requirement_sources(
+    brief: ProjectBriefV1, sources: Sequence[ProjectRequirementSourceV1],
+    *, require_complete: bool, requirement_messages: dict[str, str] | None = None,
+) -> dict[str, str]:
+    fields = ("sequence", "hardware_and_io", "safety_and_interlocks",
+              "operating_modes", "performance_and_acceptance")
+    corpus = set(_collection_evidence_clauses([
+        getattr(brief, field) for field in (*fields, "machine_purpose", "supplemental_requirements")
+    ]))
+    mapped: dict[str, str] = {}
+    for source in sources:
+        source_corpus = corpus
+        if source.message_id is not None:
+            message = (requirement_messages or {}).get(source.message_id)
+            source_corpus = (
+                set(_collection_evidence_clauses([message]))
+                if isinstance(message, str)
+                else set()
+            )
+        if (
+            source.field in mapped or source.quote not in source_corpus
+            or source.quote.casefold() in {"ok", "okay", "yes", "네", "예", "확인", "동의"}
+            or _REQUIREMENT_UNRESOLVED.search(source.quote)
+        ):
+            raise ValueError("requirementSources must cite unique fields and exact resolved user quotes")
+        mapped[source.field] = source.quote
+    if require_complete and any(
+        not getattr(brief, field).strip() or _REQUIREMENT_UNRESOLVED.search(getattr(brief, field))
+        for field in ("project_name", "machine_purpose")
+    ):
+        raise ValueError("ready plan requires a resolved project name and purpose")
+    if require_complete and any(
+        field not in mapped and (not getattr(brief, field).strip()
+                                or _REQUIREMENT_UNRESOLVED.search(getattr(brief, field)))
+        for field in fields
+    ):
+        raise ValueError("ready plan requires source coverage for unresolved brief fields")
+    return mapped
+
+
 def validate_project_plan_scope_evidence(
     artifact: dict[str, Any],
     project_brief: dict[str, Any] | ProjectBriefV1,
+    *,
+    requirement_messages: dict[str, str] | None = None,
 ) -> None:
     """Require scope citations to be exact current brief fields, sentences, or lines."""
 
@@ -215,6 +296,13 @@ def validate_project_plan_scope_evidence(
     if scope is None:
         raise ValueError("native design requires explicit collectionScope")
     brief_values = brief.model_dump(mode="json")
+    sources = validate_requirement_sources(
+        brief, validated_artifact.requirement_sources,
+        requirement_messages=requirement_messages,
+        require_complete=(validated_artifact.status == "ready_for_review" and bool(
+            brief.supplemental_requirements or validated_artifact.requirement_sources
+        )),
+    )
     for collection, authority_fields in _COLLECTION_AUTHORITY_FIELDS.items():
         field_name = {
             "ioPoints": "io_points",
@@ -230,6 +318,8 @@ def validate_project_plan_scope_evidence(
         authority_clauses = set(
             _collection_evidence_clauses(
                 [str(brief_values.get(name) or "") for name in authority_fields]
+                + [sources.get(name, "") for name in authority_fields]
+                + [brief.supplemental_requirements]
             )
         )
         if any(
@@ -275,6 +365,19 @@ def expected_project_plan_semantic_items(
             }
         )
 
+    for source in canonical.get("requirementSources", []):
+        message_id = source.get("messageId")
+        if isinstance(message_id, str):
+            add(
+                "user-requirements",
+                f"requirement/message/{_pointer_segment(message_id)}/{_pointer_segment(source['field'])}",
+                {
+                    "field": source["field"],
+                    "messageId": message_id,
+                    "quote": source["quote"],
+                },
+            )
+
     if isinstance(technical, dict):
         for field_name, value in (
             ("projectName", canonical["projectName"]),
@@ -285,6 +388,50 @@ def expected_project_plan_semantic_items(
             ("description", technical["description"]),
         ):
             add(_TECHNICAL_SECTION_ID, f"technical/{field_name}", value)
+
+    profile = design.get("indexAcceptanceBindings")
+    if isinstance(profile, dict):
+        io_by_id = {item["signalId"]: item for item in design["ioPoints"]}
+        mode_by_id = {item["modeId"]: item for item in design["operatingModes"]}
+        alarm_by_id = {item["alarmId"]: item for item in design["alarms"]}
+        timer_by_id = {item["timerId"]: item for item in design["timers"]}
+        for role, signal_id in profile["signals"].items():
+            signal = io_by_id.get(signal_id, {})
+            add(
+                _SIMULATION_PROFILE_SECTION_ID,
+                f"design/indexAcceptanceBindings/signals/{_pointer_segment(role)}",
+                {
+                    "role": role,
+                    "signalId": signal_id,
+                    "signalName": signal.get("description", signal_id),
+                    "signalSymbol": signal.get("symbol", signal_id),
+                },
+            )
+        for role, mode_id in profile["modes"].items():
+            mode = mode_by_id.get(mode_id, {})
+            add(
+                _SIMULATION_PROFILE_SECTION_ID,
+                f"design/indexAcceptanceBindings/modes/{_pointer_segment(role)}",
+                {"role": role, "modeId": mode_id, "modeName": mode.get("name", mode_id)},
+            )
+        for role, alarm_id in profile["alarms"].items():
+            alarm = alarm_by_id.get(alarm_id, {})
+            add(
+                _SIMULATION_PROFILE_SECTION_ID,
+                f"design/indexAcceptanceBindings/alarms/{_pointer_segment(role)}",
+                {
+                    "role": role,
+                    "alarmId": alarm_id,
+                    "alarmName": alarm.get("name", alarm_id),
+                },
+            )
+        timer_id = profile["timerId"]
+        timer = timer_by_id.get(timer_id, {})
+        add(
+            _SIMULATION_PROFILE_SECTION_ID,
+            "design/indexAcceptanceBindings/timer",
+            {"timerId": timer_id, "timerName": timer.get("name", timer_id)},
+        )
 
     for collection, section_id in _SEMANTIC_SECTION_BY_COLLECTION.items():
         values = design[collection]
@@ -526,7 +673,7 @@ def project_plan_review_item_ids(artifact: dict[str, Any]) -> list[str]:
                 raise ValueError("project plan contains duplicate or colliding item identities")
             actual_by_id[item_id] = (section_id, item)
             item_ids.append(item_id)
-            if item_id.startswith(("technical/", "scope/", "design/")):
+            if item_id.startswith(("requirement/", "technical/", "scope/", "design/")):
                 semantic_ids.append(item_id)
         if semantic_ids != sorted(semantic_ids):
             raise ValueError("native semantic review rows must use canonical itemId order")
@@ -546,7 +693,7 @@ def project_plan_review_item_ids(artifact: dict[str, Any]) -> list[str]:
     unknown_semantic_ids = {
         item_id
         for item_id in actual_by_id
-        if item_id.startswith(("technical/", "scope/", "design/"))
+        if item_id.startswith(("requirement/", "technical/", "scope/", "design/"))
         and item_id not in expected_by_id
     }
     if unknown_semantic_ids:

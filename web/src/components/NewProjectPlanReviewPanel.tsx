@@ -23,6 +23,9 @@ export interface NewProjectPlanReviewPanelProps {
     reviewedItemIds: string[],
   ) => void;
   onRequestRevision: () => void;
+  onOpenTechnicalSetup?: () => void;
+  technicalSetupDisabled?: boolean;
+  technicalSetupTitle?: string;
 }
 
 export function projectPlanReviewItemIds(
@@ -77,6 +80,30 @@ export function projectPlanReviewItemIds(
     "scope/recoveryRules",
     "scope/safetyRules",
   ];
+  const expectedExactValues = new Map<string, unknown>();
+  artifact.requirementSources?.forEach((source) => {
+    if (!source.messageId) return;
+    const path = `requirement/message/${escape(source.messageId)}/${escape(source.field)}`;
+    expected.push(path);
+    expectedExactValues.set(path, {
+      field: source.field,
+      messageId: source.messageId,
+      quote: source.quote,
+    });
+  });
+  const bindings = artifact.design.indexAcceptanceBindings;
+  if (bindings) {
+    Object.keys(bindings.signals).forEach((role) =>
+      expected.push(`design/indexAcceptanceBindings/signals/${escape(role)}`),
+    );
+    Object.keys(bindings.modes).forEach((role) =>
+      expected.push(`design/indexAcceptanceBindings/modes/${escape(role)}`),
+    );
+    Object.keys(bindings.alarms).forEach((role) =>
+      expected.push(`design/indexAcceptanceBindings/alarms/${escape(role)}`),
+    );
+    expected.push("design/indexAcceptanceBindings/timer");
+  }
   artifact.design.ioPoints.forEach((point) => {
     const base = `design/ioPoints/${escape(point.signalId)}`;
     expected.push(`${base}/mapping`, `${base}/normalState`, `${base}/safeState`);
@@ -119,6 +146,7 @@ export function projectPlanReviewItemIds(
     expectedLadderValues.set(`${base}/condition`, rung.condition);
     expectedLadderValues.set(`${base}/action`, rung.action);
   });
+  expectedLadderValues.forEach((value, path) => expectedExactValues.set(path, value));
   artifact.design.timers.forEach((timer) => {
     const base = `design/timers/${escape(timer.timerId)}`;
     expected.push(`${base}/address`, `${base}/duration`);
@@ -184,6 +212,7 @@ export function projectPlanReviewItemIds(
     section.items
       .filter(
         (item) =>
+        item.itemId.startsWith("requirement/") ||
         item.itemId.startsWith("technical/") ||
         item.itemId.startsWith("scope/") ||
         item.itemId.startsWith("design/"),
@@ -213,14 +242,15 @@ export function projectPlanReviewItemIds(
           path?: unknown;
           value?: unknown;
         };
-        const expectedLadderValue = expectedLadderValues.get(item.itemId);
+        const expectedValue = expectedExactValues.get(item.itemId);
         return (
           parsed.path !== item.itemId ||
-          (item.itemId === "scope/ladderRungs" ||
-          item.itemId.startsWith("design/ladderRungs/")
-            ? sectionId !== "native-ladder-rungs" ||
-              !expectedLadderValues.has(item.itemId) ||
-              canonicalJson(parsed.value) !== canonicalJson(expectedLadderValue)
+          (expectedExactValues.has(item.itemId)
+            ? sectionId !==
+                (item.itemId.startsWith("requirement/")
+                  ? "user-requirements"
+                  : "native-ladder-rungs") ||
+              canonicalJson(parsed.value) !== canonicalJson(expectedValue)
             : false)
         );
       } catch {
@@ -247,6 +277,7 @@ interface SemanticReviewValue {
 
 function semanticReviewValue(item: EngineeringPlanItem) {
   if (
+    !item.itemId.startsWith("requirement/") &&
     !item.itemId.startsWith("technical/") &&
     !item.itemId.startsWith("scope/") &&
     !item.itemId.startsWith("design/")
@@ -264,24 +295,28 @@ function semanticReviewValue(item: EngineeringPlanItem) {
 }
 
 function semanticReviewLabel(path: string) {
+  if (path.startsWith("requirement/message/")) return "사용자 요구 근거";
   if (path === "technical/projectName") return "XG5000 프로젝트 이름";
   if (path === "technical/plcSeries") return "PLC 시리즈";
   if (path === "technical/cpuModel") return "CPU 모델";
   if (path === "technical/programName") return "첫 프로그램 이름";
   if (path === "technical/language") return "프로그램 언어";
   if (path === "technical/description") return "XG5000 프로젝트 설명";
-  if (path === "scope/ladderRungs") return "LD rung 전체 순서와 식별자";
+  if (path === "scope/ladderRungs") return "래더 실행 순서와 식별 정보";
   if (path.startsWith("design/ladderRungs/") && path.endsWith("/position")) {
-    return "LD rung 실행 순서";
+    return "래더 실행 순서";
   }
   if (path.startsWith("design/ladderRungs/") && path.endsWith("/description")) {
-    return "LD rung 설명";
+    return "래더 동작 설명";
   }
   if (path.startsWith("design/ladderRungs/") && path.endsWith("/condition")) {
-    return "LD rung 조건·분기·접점 극성";
+    return "래더 조건·분기·접점 종류";
   }
   if (path.startsWith("design/ladderRungs/") && path.endsWith("/action")) {
-    return "LD rung 명령·typed 대상";
+    return "래더 명령·대상";
+  }
+  if (path.startsWith("design/indexAcceptanceBindings/")) {
+    return "시뮬레이션 역할 연결";
   }
   if (path.startsWith("scope/")) return "제어 묶음 전체 범위";
   if (path.endsWith("/mapping")) return "I/O 기호·주소·종류";
@@ -346,6 +381,9 @@ function LadderConditionView({
 }
 
 function ladderActionLabel(action: EngineeringPlanLadderAction) {
+  if (action.instruction === "INCP") {
+    return `횟수 +1 · 조건이 켜질 때 한 번 · ${action.destinationAddress}`;
+  }
   if (action.instruction === "MOV") {
     return `MOV · ${action.sourceConstant} → ${action.destinationAddress}`;
   }
@@ -374,7 +412,7 @@ const REVISION_FIELD_LABELS: Record<
   summary: "요약",
   objective: "프로젝트 목표",
   attachments: "첨부 자료",
-  technicalConfiguration: "XG5000 기술 구성",
+  technicalConfiguration: "프로젝트 설정",
   design: "구조화 제어 설계",
   sections: "계획 섹션",
   openDecisions: "열린 결정",
@@ -405,7 +443,277 @@ function formatReviewedAt(value: string) {
   }).format(parsed);
 }
 
-function PlanItemRow({
+export function ReviewedPlanActions({
+  review,
+  onOpenTechnicalSetup,
+  technicalSetupDisabled,
+  technicalSetupTitle,
+}: {
+  review: EngineeringPlanReview;
+  onOpenTechnicalSetup?: () => void;
+  technicalSetupDisabled: boolean;
+  technicalSetupTitle?: string;
+}) {
+  return (
+    <div className="engineering-plan-reviewed-actions">
+      <p className="engineering-plan-reviewed" role="status">
+        <strong>설계 검토 완료</strong>
+        <span>
+          <time dateTime={review.reviewedAt}>
+            {formatReviewedAt(review.reviewedAt)}
+          </time>
+        </span>
+      </p>
+      {onOpenTechnicalSetup && (
+        <button
+          className="button primary-button"
+          type="button"
+          disabled={technicalSetupDisabled}
+          title={technicalSetupTitle}
+          onClick={onOpenTechnicalSetup}
+        >
+          다음 단계 · 프로젝트 설정 확인
+        </button>
+      )}
+    </div>
+  );
+}
+
+const PLAN_VALUE_LABELS: Record<string, string> = {
+  name: "이름", address: "주소", signalId: "신호", sourceId: "조건 대상",
+  sourceType: "조건 종류", targetId: "동작 대상", targetType: "대상 종류",
+  type: "종류", kind: "종류", state: "상태", direction: "입출력 방향",
+  dataType: "데이터 형식", normalState: "정상 상태", safeState: "안전 상태",
+  status: "확인 상태", reason: "이유", evidence: "참고 내용", unit: "단위",
+  duration: "시간", durationMs: "시간(ms)", preset: "설정값", timeBaseMs: "시간 단위(ms)",
+  timerId: "타이머", modeId: "운전 모드", sequenceId: "시퀀스", stepId: "단계",
+  alarmId: "알람", outputId: "출력", ioPointId: "입출력 신호", value: "값",
+  enabled: "사용", required: "필수", classification: "분류", action: "동작",
+  condition: "조건", terms: "조건 목록", restartPolicy: "재시작 방식",
+  from: "이전 단계", to: "다음 단계", source: "출처", members: "포함 항목",
+  includedIds: "포함 항목", excludedIds: "제외 항목", rationale: "설계 이유",
+  plcSeries: "PLC 종류", cpuModel: "CPU", language: "프로그램 언어",
+};
+
+const COLLECTION_SCOPE_LABELS: Record<string, string> = {
+  ioPoints: "입출력 신호",
+  operatingModes: "실행 운전 모드",
+  controlNetworks: "제어 네트워크",
+  ladderRungs: "래더 실행 순서",
+  timers: "타이머",
+  sequences: "시퀀스",
+  alarms: "알람",
+  recoveryRules: "복구 규칙",
+  safetyRules: "안전 규칙",
+};
+
+function collectionScopeSummary(path: string, value: unknown) {
+  const collection = path.startsWith("scope/") ? path.slice("scope/".length) : "";
+  const label = COLLECTION_SCOPE_LABELS[collection];
+  if (!label || value === null || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const status = record.status;
+  const count = record.count;
+  if (
+    (status !== "confirmed" && status !== "not_applicable") ||
+    typeof count !== "number" ||
+    !Number.isSafeInteger(count) ||
+    count < 0
+  ) {
+    return undefined;
+  }
+  return {
+    label,
+    statusLabel: status === "confirmed" ? "확인됨" : "해당 없음",
+    countLabel: `${count}개 항목`,
+  };
+}
+
+const SIMULATION_SIGNAL_ROLE_LABELS: Record<string, string> = {
+  automatic_start: "자동 시작 버튼",
+  manual_start: "수동 동작 버튼",
+  stop: "정지 입력",
+  reset: "복구·리셋 버튼",
+  select_automatic: "자동 모드 선택",
+  select_manual: "수동 모드 선택",
+  emergency_stop: "비상정지 입력",
+  door_open: "도어 열림 입력",
+  ready: "준비 완료 입력",
+  move_complete: "이동 완료 입력",
+  motion: "이동 명령 출력",
+  automatic_mode: "자동 모드 상태",
+  manual_mode: "수동 모드 상태",
+  running: "운전 상태",
+  moving: "이동 중 상태",
+  any_alarm: "알람 종합 상태",
+};
+
+const SIMULATION_MODE_ROLE_LABELS: Record<string, string> = {
+  automatic: "자동 운전 모드",
+  manual: "수동 운전 모드",
+};
+
+const SIMULATION_ALARM_ROLE_LABELS: Record<string, string> = {
+  emergency: "비상정지 알람",
+  door: "도어 열림 알람",
+  timeout: "이동 시간초과 알람",
+};
+
+const REQUIREMENT_FIELD_LABELS: Record<string, string> = {
+  sequence: "동작 순서",
+  hardware_and_io: "하드웨어·입출력",
+  safety_and_interlocks: "안전·인터록",
+  operating_modes: "운전 모드",
+  performance_and_acceptance: "성능·인수 조건",
+};
+
+function requirementSourceSummary(path: string, value: unknown) {
+  if (
+    !path.startsWith("requirement/message/") ||
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value)
+  ) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.field !== "string" || typeof record.quote !== "string") {
+    return undefined;
+  }
+  return {
+    fieldLabel: REQUIREMENT_FIELD_LABELS[record.field] ?? "사용자 요구",
+    quote: record.quote,
+  };
+}
+
+function simulationBindingSummary(path: string, value: unknown) {
+  if (
+    !path.startsWith("design/indexAcceptanceBindings/") ||
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value)
+  ) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const role = typeof record.role === "string" ? record.role : "";
+  if (path.includes("/signals/")) {
+    const name = typeof record.signalName === "string" ? record.signalName : "연결 신호";
+    const symbol = typeof record.signalSymbol === "string" ? record.signalSymbol : "";
+    return {
+      roleLabel: SIMULATION_SIGNAL_ROLE_LABELS[role] ?? "시험 신호",
+      valueLabel: symbol && symbol !== name ? `${name} (${symbol})` : name,
+    };
+  }
+  if (path.includes("/modes/")) {
+    return {
+      roleLabel: SIMULATION_MODE_ROLE_LABELS[role] ?? "시험 운전 모드",
+      valueLabel: typeof record.modeName === "string" ? record.modeName : "연결 모드",
+    };
+  }
+  if (path.includes("/alarms/")) {
+    return {
+      roleLabel: SIMULATION_ALARM_ROLE_LABELS[role] ?? "시험 알람",
+      valueLabel: typeof record.alarmName === "string" ? record.alarmName : "연결 알람",
+    };
+  }
+  if (path.endsWith("/timer")) {
+    return {
+      roleLabel: "5초 시간초과 타이머",
+      valueLabel: typeof record.timerName === "string" ? record.timerName : "연결 타이머",
+    };
+  }
+  return undefined;
+}
+
+function SemanticPlanValueView({ semantic }: { semantic: SemanticReviewValue }) {
+  const requirementSource = requirementSourceSummary(
+    semantic.path,
+    semantic.value,
+  );
+  if (requirementSource) {
+    return (
+      <p className="engineering-plan-requirement-source-summary">
+        <strong>{requirementSource.fieldLabel}</strong>
+        <span>{requirementSource.quote}</span>
+      </p>
+    );
+  }
+  const scopeSummary = collectionScopeSummary(semantic.path, semantic.value);
+  if (scopeSummary) {
+    return (
+      <p className="engineering-plan-collection-scope-summary">
+        <strong>{scopeSummary.label}</strong>
+        <span>{scopeSummary.statusLabel}</span>
+        <span>{scopeSummary.countLabel}</span>
+      </p>
+    );
+  }
+  const bindingSummary = simulationBindingSummary(semantic.path, semantic.value);
+  if (bindingSummary) {
+    return (
+      <p className="engineering-plan-simulation-binding-summary">
+        <strong>{bindingSummary.roleLabel}</strong>
+        <span>{bindingSummary.valueLabel}</span>
+      </p>
+    );
+  }
+  return <PlanValueView value={semantic.value} />;
+}
+
+function PlanValueView({ value }: { value: unknown }) {
+  if (value === null || value === undefined) return <span>없음</span>;
+  if (typeof value === "boolean") return <span>{value ? "예" : "아니요"}</span>;
+  if (Array.isArray(value)) return value.length
+    ? <ul>{value.map((entry, index) => <li key={index}><PlanValueView value={entry} /></li>)}</ul>
+    : <span>없음</span>;
+  if (typeof value === "object") return (
+    <dl className="plan-readable-value">
+      {Object.entries(value).map(([key, entry]) => <div key={key}>
+        <dt>{PLAN_VALUE_LABELS[key] ?? key}</dt><dd><PlanValueView value={entry} /></dd>
+      </div>)}
+    </dl>
+  );
+  return <span>{String(value)}</span>;
+}
+
+function PlanRevisionItemView({
+  item,
+}: {
+  item: EngineeringPlanRevision["addedItems"][number];
+}) {
+  let semantic: SemanticReviewValue | undefined;
+  try {
+    const parsed = JSON.parse(item.text) as Partial<SemanticReviewValue>;
+    if (typeof parsed.path === "string" && "value" in parsed) {
+      semantic = parsed as SemanticReviewValue;
+    }
+  } catch {
+    semantic = undefined;
+  }
+  return (
+    <li>
+      <span>{item.sectionTitle}</span>
+      {semantic ? (
+        <div>
+          <strong>{semanticReviewLabel(semantic.path)}</strong>
+          <SemanticPlanValueView semantic={semantic} />
+          <details>
+            <summary>기술 기록 보기</summary>
+            <code>{semantic.path}</code>
+            <pre>{item.text}</pre>
+          </details>
+        </div>
+      ) : (
+        <p>{item.text}</p>
+      )}
+    </li>
+  );
+}
+
+export function PlanItemRow({
   item,
   reviewControl,
 }: {
@@ -437,7 +745,7 @@ function PlanItemRow({
                 reviewControl.onChange(event.currentTarget.checked)
               }
             />
-            <span>이 항목을 읽었으며 이 값이 실행 설계로 확정됨을 확인합니다.</span>
+            <span>이 내용대로 진행</span>
           </label>
         )}
         {semantic ? (
@@ -458,10 +766,10 @@ function PlanItemRow({
                 </code>
               </p>
             ) : (
-              <pre>{JSON.stringify(semantic.value, null, 2)}</pre>
+              <SemanticPlanValueView semantic={semantic} />
             )}
             <details>
-              <summary>canonical path/value</summary>
+              <summary>기술 기록 보기</summary>
               <code>{semantic.path}</code>
               <pre>{item.text}</pre>
             </details>
@@ -485,7 +793,8 @@ function PlanItemRow({
           )}
         </div>
       </div>
-      <div className="engineering-plan-item__details">
+      <details className="engineering-plan-item__details">
+        <summary>설계 근거와 확인 방법</summary>
         {item.rationale && (
           <p className="engineering-plan-rationale">
             <span>설계 사유</span>
@@ -506,7 +815,7 @@ function PlanItemRow({
             ))}
           </div>
         )}
-      </div>
+      </details>
     </li>
   );
 }
@@ -556,25 +865,21 @@ export function NewProjectPlanReviewPanel({
   busy,
   onReview,
   onRequestRevision,
+  onOpenTechnicalSetup,
+  technicalSetupDisabled = false,
+  technicalSetupTitle,
 }: NewProjectPlanReviewPanelProps) {
+  const overviewSectionId =
+    artifact.sections.find((section) => section.title === "설계 제안")?.sectionId ??
+    artifact.sections[0]?.sectionId ??
+    "";
   const [selectedSectionId, setSelectedSectionId] = useState(
-    artifact.sections[0]?.sectionId ?? "",
+    overviewSectionId,
   );
-  const [acknowledgedSectionIds, setAcknowledgedSectionIds] = useState<
-    string[]
-  >(
-    review?.schemaVersion === "2" && review.planDigest === planDigest
-      ? review.reviewedSectionIds
-      : [],
-  );
+  const [reviewConfirmed, setReviewConfirmed] = useState(false);
   const expectedItemIds = useMemo(
     () => projectPlanReviewItemIds(artifact),
     [artifact],
-  );
-  const [acknowledgedItemIds, setAcknowledgedItemIds] = useState<string[]>(
-    review?.schemaVersion === "2" && review.planDigest === planDigest
-      ? review.reviewedItemIds
-      : [],
   );
 
   useEffect(() => {
@@ -588,17 +893,9 @@ export function NewProjectPlanReviewPanel({
   }, [artifact.sections, selectedSectionId]);
 
   useEffect(() => {
-    setAcknowledgedSectionIds(
-      review?.schemaVersion === "2" && review.planDigest === planDigest
-        ? review.reviewedSectionIds
-        : [],
-    );
-    setAcknowledgedItemIds(
-      review?.schemaVersion === "2" && review.planDigest === planDigest
-        ? review.reviewedItemIds
-        : [],
-    );
-  }, [planDigest, review]);
+    setReviewConfirmed(false);
+    setSelectedSectionId(overviewSectionId);
+  }, [overviewSectionId, planDigest]);
 
   const selectedSection =
     artifact.sections.find(
@@ -629,21 +926,19 @@ export function NewProjectPlanReviewPanel({
     hasExplicitTechnicalConfiguration &&
     hasExplicitLadderRungs;
   const hasExactReviewUniverse = Boolean(expectedItemIds);
+  const missingSimulationProfileReviewRows = Boolean(
+    artifact.design.indexAcceptanceBindings &&
+      !artifact.sections.some(
+        (section) =>
+          section.sectionId === "native-simulation-profile" &&
+          section.items.some((item) =>
+            item.itemId.startsWith("design/indexAcceptanceBindings/"),
+          ),
+      ),
+  );
   const legacyReview = Boolean(review && review.schemaVersion !== "2");
   const staleAuthorityReview = Boolean(
     review?.schemaVersion === "2" && review.authorityCurrent !== true,
-  );
-  const hasEverySectionAcknowledged =
-    acknowledgedSectionIds.length === sectionIds.length &&
-    sectionIds.every(
-      (sectionId, index) => acknowledgedSectionIds[index] === sectionId,
-    );
-  const hasEveryItemAcknowledged = Boolean(
-    expectedItemIds &&
-      expectedItemIds.length === acknowledgedItemIds.length &&
-      expectedItemIds.every(
-        (itemId, index) => acknowledgedItemIds[index] === itemId,
-      ),
   );
   const currentReview =
     hasReviewableAuthority &&
@@ -670,58 +965,29 @@ export function NewProjectPlanReviewPanel({
     !staleAuthorityReview &&
     artifact.completeness.blocking === 0 &&
     blockingDecisions.length === 0 &&
-    hasEverySectionAcknowledged &&
-    hasEveryItemAcknowledged;
+    reviewConfirmed;
 
   const sectionReviewLockReason =
     artifact.status !== "ready_for_review"
       ? "미확인 사항을 먼저 해결해야 합니다."
       : !hasReviewableAuthority
-        ? "이전 계획은 읽기만 가능합니다. 명시적 XG5000 기술 구성, collectionScope, ladderRungs로 다시 계획해 주세요."
+        ? "프로젝트 설정과 실행할 프로그램 설계가 부족합니다. 대화에서 계획 보완을 요청해 주세요."
       : artifact.completeness.blocking > 0 ||
           blockingDecisions.length > 0
         ? "검토를 차단하는 결정 사항을 먼저 해결해야 합니다."
-        : !hasEverySectionAcknowledged
-          ? "모든 계획 섹션을 하나씩 확인하고 검토 표시해 주세요."
+        : !reviewConfirmed
+          ? "핵심 설계와 필요한 상세 내용을 확인한 뒤 검토 확인란을 선택해 주세요."
         : "";
 
   const reviewLockReason = staleAuthorityReview
-    ? "프로젝트 브리프 또는 첨부 소스 revision이 변경되어 기존 검토가 stale 상태입니다. 현재 근거로 재계획해 주세요."
+    ? "요구사항이나 첨부 자료가 바뀌었습니다. 변경된 내용으로 계획을 다시 작성하고 검토해 주세요."
+    : missingSimulationProfileReviewRows
+    ? "이 계획에는 시뮬레이션 신호 연결 검토 항목이 없습니다. 연결 내용을 포함해 계획을 다시 발행한 뒤 검토해 주세요."
     : !hasExactReviewUniverse
     ? "이전 계획에는 전 실행 관계를 포함한 검토 항목이 없습니다. 새 계획으로 다시 계획해 주세요."
     : legacyReview
-    ? "이전 섹션 전용 검토는 실행 권한이 아닙니다. 새 계획으로 다시 계획한 뒤 모든 항목을 검토해 주세요."
-    : hasEverySectionAcknowledged && !hasEveryItemAcknowledged
-      ? "모든 계획 항목과 실행 관계의 실제 값을 하나씩 확인해 주세요."
-      : sectionReviewLockReason;
-
-  const setSectionAcknowledged = (
-    sectionId: string,
-    acknowledged: boolean,
-  ) => {
-    setAcknowledgedSectionIds((current) => {
-      if (acknowledged) {
-        return sectionIds.filter(
-          (candidate) =>
-            candidate === sectionId || current.includes(candidate),
-        );
-      }
-      return current.filter((candidate) => candidate !== sectionId);
-    });
-  };
-
-  const setItemAcknowledged = (itemId: string, acknowledged: boolean) => {
-    setAcknowledgedItemIds((current) => {
-      if (acknowledged) {
-        return (
-          expectedItemIds?.filter(
-            (candidate) => candidate === itemId || current.includes(candidate),
-          ) ?? current
-        );
-      }
-      return current.filter((candidate) => candidate !== itemId);
-    });
-  };
+    ? "이전 섹션 전용 검토는 실행 권한이 아닙니다. 새 계획으로 다시 계획한 뒤 내용을 검토해 주세요."
+    : sectionReviewLockReason;
 
   return (
     <section
@@ -730,7 +996,7 @@ export function NewProjectPlanReviewPanel({
     >
       <header className="engineering-plan-header">
         <div>
-          <p className="eyebrow">새 프로젝트 · Engineering Plan</p>
+          <p className="eyebrow">새 프로젝트 계획</p>
           <h2 id="engineering-plan-title">{artifact.projectName}</h2>
           <p className="engineering-plan-summary">{artifact.summary}</p>
         </div>
@@ -742,14 +1008,11 @@ export function NewProjectPlanReviewPanel({
               ? "검토 준비됨"
               : "확인 필요"}
           </span>
-          <strong>{coverage}% 작성</strong>
-          <span>
-            {artifact.completeness.totalItems}개 계획 항목
-          </span>
         </div>
       </header>
 
-      <div className="engineering-plan-coverage">
+      <details className="engineering-plan-coverage">
+        <summary>계획 항목 현황</summary>
         <progress
           aria-label="계획 작성 범위"
           max={100}
@@ -776,7 +1039,7 @@ export function NewProjectPlanReviewPanel({
             <dd>{artifact.completeness.blocking}</dd>
           </div>
         </dl>
-      </div>
+      </details>
 
       <section
         className="engineering-plan-objective"
@@ -787,10 +1050,12 @@ export function NewProjectPlanReviewPanel({
       </section>
 
       {revision && (
-        <section
-          className="engineering-plan-revision"
-          aria-labelledby="engineering-plan-revision-title"
-        >
+        <details className="engineering-plan-revision">
+          <summary>
+            이전 계획에서 바뀐 내용 · 추가 {revision.addedItems.length} · 제외{" "}
+            {revision.removedItems.length}
+          </summary>
+          <section aria-labelledby="engineering-plan-revision-title">
           <div className="engineering-plan-revision__heading">
             <div>
               <p className="eyebrow">PLAN REVISION</p>
@@ -849,10 +1114,10 @@ export function NewProjectPlanReviewPanel({
                       <h4>추가된 항목</h4>
                       <ul>
                         {revision.addedItems.map((item) => (
-                          <li key={`added-${item.itemId}`}>
-                            <span>{item.sectionTitle}</span>
-                            {item.text}
-                          </li>
+                          <PlanRevisionItemView
+                            key={`added-${item.itemId}`}
+                            item={item}
+                          />
                         ))}
                       </ul>
                     </div>
@@ -862,10 +1127,10 @@ export function NewProjectPlanReviewPanel({
                       <h4>빠진 항목</h4>
                       <ul>
                         {revision.removedItems.map((item) => (
-                          <li key={`removed-${item.itemId}`}>
-                            <span>{item.sectionTitle}</span>
-                            {item.text}
-                          </li>
+                          <PlanRevisionItemView
+                            key={`removed-${item.itemId}`}
+                            item={item}
+                          />
                         ))}
                       </ul>
                     </div>
@@ -874,13 +1139,15 @@ export function NewProjectPlanReviewPanel({
               )}
             </>
           )}
-        </section>
+          </section>
+        </details>
       )}
 
-      <section
+      {(artifact.design.ioPoints.length > 0 || ladderRungs.length > 0) && <details
         className="engineering-plan-native-design"
         aria-labelledby="engineering-plan-native-design-title"
       >
+        <summary>프로그램 설계 상세</summary>
         <div className="engineering-plan-native-design__heading">
           <div>
             <p className="eyebrow">XG5000 실행 제안 · 검토 전</p>
@@ -934,7 +1201,7 @@ export function NewProjectPlanReviewPanel({
                   <th>순서 / rung</th>
                   <th>설명</th>
                   <th>조건 분기 / 극성</th>
-                  <th>명령 / typed 대상</th>
+                  <th>명령 / 대상</th>
                 </tr>
               </thead>
               <tbody>
@@ -942,7 +1209,6 @@ export function NewProjectPlanReviewPanel({
                   <tr key={`ladder-${rung.rungId}`}>
                     <td>
                       <strong>{position + 1}</strong>
-                      <small>{rung.rungId}</small>
                     </td>
                     <td>{rung.description}</td>
                     <td>
@@ -958,7 +1224,7 @@ export function NewProjectPlanReviewPanel({
           </div>
         ) : (
           <p className="engineering-plan-empty">
-            실행할 LD rung IR이 없어 이 계획은 읽기 전용입니다.
+            실행할 래더 프로그램이 아직 설계되지 않아 이 계획은 읽기만 가능합니다.
           </p>
         )}
         {(artifact.design.timers.length > 0 ||
@@ -1035,54 +1301,7 @@ export function NewProjectPlanReviewPanel({
             </table>
           </div>
         )}
-      </section>
-
-      <section
-        className="engineering-plan-native-design"
-        aria-labelledby="engineering-plan-execution-review-title"
-      >
-        <div className="engineering-plan-native-design__heading">
-          <div>
-            <p className="eyebrow">HUMAN EXECUTION AUTHORITY</p>
-            <h3 id="engineering-plan-execution-review-title">
-              확정 실행 설계 · 전 항목 검토
-            </h3>
-          </div>
-          <p>
-            아래 제안의 모든 값과 관계를 개별 확인해야만 실행 설계로 확정됩니다.
-            자동 확인되는 항목은 없습니다.
-          </p>
-        </div>
-        {artifact.sections.map((section) => (
-          <section key={`review-${section.sectionId}`}>
-            <h4>{section.title}</h4>
-            {section.items.length > 0 ? (
-              <ul className="engineering-plan-item-list">
-                {section.items.map((item) => (
-                  <PlanItemRow
-                    key={`review-${item.itemId}`}
-                    item={item}
-                    reviewControl={{
-                      checked: acknowledgedItemIds.includes(item.itemId),
-                      disabled:
-                        busy ||
-                        Boolean(currentReview) ||
-                        legacyReview ||
-                        !hasExactReviewUniverse,
-                      onChange: (checked) =>
-                        setItemAcknowledged(item.itemId, checked),
-                    }}
-                  />
-                ))}
-              </ul>
-            ) : (
-              <p className="engineering-plan-empty">
-                이 섹션에는 검토할 항목이 없습니다. 섹션 범위는 아래에서 별도로 확인합니다.
-              </p>
-            )}
-          </section>
-        ))}
-      </section>
+      </details>}
 
       {artifact.openDecisions.length > 0 && (
         <section
@@ -1091,12 +1310,11 @@ export function NewProjectPlanReviewPanel({
         >
           <div className="engineering-plan-decisions__heading">
             <div>
-              <p className="eyebrow">사람이 결정할 항목</p>
-              <h3 id="engineering-plan-decisions-title">열린 결정</h3>
+              <h3 id="engineering-plan-decisions-title">확인할 질문</h3>
             </div>
             {blockingDecisions.length > 0 && (
               <strong role="status">
-                검토 차단 {blockingDecisions.length}건
+                답변 필요 {blockingDecisions.length}건
               </strong>
             )}
           </div>
@@ -1144,11 +1362,6 @@ export function NewProjectPlanReviewPanel({
                           : `미확인 ${unknownCount}`}
                       </small>
                     )}
-                    {acknowledgedSectionIds.includes(section.sectionId) && (
-                      <small className="engineering-plan-reviewed-section">
-                        검토함
-                      </small>
-                    )}
                   </button>
                 </li>
               );
@@ -1170,26 +1383,6 @@ export function NewProjectPlanReviewPanel({
                 </h3>
                 <span>{selectedSection.items.length}개 항목</span>
               </div>
-              {!currentReview && hasReviewableAuthority && (
-                <label className="engineering-plan-section-acknowledgement">
-                  <input
-                    type="checkbox"
-                    checked={acknowledgedSectionIds.includes(
-                      selectedSection.sectionId,
-                    )}
-                    disabled={busy || legacyReview || !hasExactReviewUniverse}
-                    onChange={(event) =>
-                      setSectionAcknowledged(
-                        selectedSection.sectionId,
-                        event.currentTarget.checked,
-                      )
-                    }
-                  />
-                  <span>
-                    이 섹션의 항목·상태·확인 방법을 검토했습니다
-                  </span>
-                </label>
-              )}
               {selectedSection.items.length > 0 ? (
                 <ul className="engineering-plan-item-list">
                   {selectedSection.items.map((item) => (
@@ -1211,8 +1404,11 @@ export function NewProjectPlanReviewPanel({
         </section>
       </div>
 
-      <details className="engineering-plan-technical-details">
-        <summary>계획 식별 정보</summary>
+      <details
+        className="engineering-plan-technical-details"
+        data-testid="project-plan-technical-details"
+      >
+        <summary>기술 세부 정보</summary>
         <dl>
           <div>
             <dt>스키마</dt>
@@ -1224,6 +1420,12 @@ export function NewProjectPlanReviewPanel({
               <code>{planDigest}</code>
             </dd>
           </div>
+          {currentReview && (
+            <div>
+              <dt>검토자 식별 정보</dt>
+              <dd><code>{currentReview.actorId}</code></dd>
+            </div>
+          )}
         </dl>
       </details>
 
@@ -1232,11 +1434,9 @@ export function NewProjectPlanReviewPanel({
           계획이 변경되어 이전 검토 완료 기록은 더 이상 유효하지 않습니다.
         </p>
       )}
-      {!hasReviewableAuthority && (
+      {!hasReviewableAuthority && artifact.status === "ready_for_review" && (
         <p className="engineering-plan-stale-review" role="alert">
-          이 계획은 검토된 XG5000 기술 구성, 명시적 collectionScope 또는 실행할
-          ladderRungs가 없는 이전 형식이므로 읽기 전용입니다. 기술 구성·적용
-          범위·LD rung을 포함해 다시 계획한 뒤 새 버전을 검토해 주세요.
+          프로그램 생성에 필요한 설계 내용이 부족합니다. 대화에서 계획을 보완해 주세요.
         </p>
       )}
 
@@ -1247,23 +1447,29 @@ export function NewProjectPlanReviewPanel({
           disabled={busy}
           onClick={onRequestRevision}
         >
-          {hasReviewableAuthority
-            ? "수정 요청"
-            : "기술 구성·범위·LD rung 포함 재계획 요청"}
+          대화에서 계획 보완
         </button>
 
         {currentReview ? (
-          <p className="engineering-plan-reviewed" role="status">
-            <strong>확정 실행 설계 검토 완료</strong>
-            <span>
-              {currentReview.actorId} ·{" "}
-              <time dateTime={currentReview.reviewedAt}>
-                {formatReviewedAt(currentReview.reviewedAt)}
-              </time>
-            </span>
-          </p>
-        ) : (
+          <ReviewedPlanActions
+            review={currentReview}
+            onOpenTechnicalSetup={onOpenTechnicalSetup}
+            technicalSetupDisabled={technicalSetupDisabled}
+            technicalSetupTitle={technicalSetupTitle}
+          />
+        ) : hasReviewableAuthority ? (
           <div className="engineering-plan-review-action">
+            <label className="engineering-plan-section-acknowledgement">
+              <input
+                type="checkbox"
+                checked={reviewConfirmed}
+                disabled={busy || legacyReview || !hasExactReviewUniverse}
+                onChange={(event) =>
+                  setReviewConfirmed(event.currentTarget.checked)
+                }
+              />
+              <span>핵심 설계와 필요한 상세 내용을 확인했습니다</span>
+            </label>
             <button
               className="button primary-button"
               type="button"
@@ -1274,12 +1480,8 @@ export function NewProjectPlanReviewPanel({
               onClick={() =>
                 onReview(
                   planDigest,
-                  sectionIds.filter((sectionId) =>
-                    acknowledgedSectionIds.includes(sectionId),
-                  ),
-                  expectedItemIds?.filter((itemId) =>
-                    acknowledgedItemIds.includes(itemId),
-                  ) ?? [],
+                  sectionIds,
+                  expectedItemIds ?? [],
                 )
               }
             >
@@ -1291,7 +1493,7 @@ export function NewProjectPlanReviewPanel({
               </small>
             )}
           </div>
-        )}
+        ) : null}
       </footer>
     </section>
   );

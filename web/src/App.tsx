@@ -2,6 +2,12 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
+  displayAssistantText,
+  hasReadableEngineeringAnalysis,
+  rowDetailList,
+} from "./evidenceDisplay";
+import { resolveRequestScope, type ConversationPermission } from "./requestPermissions";
+import {
   hostApi,
   HostApiError,
   HostResponseContractError,
@@ -10,6 +16,8 @@ import { isChangeTransaction } from "./api/changeContracts";
 import { ControlStudioEventStream } from "./api/sse";
 import {
   agentProgressDetail,
+  activityDetail,
+  isHistoricalRunReplay,
   prependCoalescedActivity,
 } from "./activityProgress";
 import {
@@ -24,7 +32,6 @@ import type {
   ControllerRestoreHandoff,
   ControllerRestorePreflight,
   ChangeTransaction,
-  EngineeringChangeRequestScope,
   EngineeringLocation,
   EngineeringProgram,
   EngineeringTargetBinding,
@@ -43,6 +50,8 @@ import type {
 import { ChangeApprovalPanel } from "./components/ChangeApprovalPanel";
 import { ChangeRecoveryPanel } from "./components/ChangeRecoveryPanel";
 import { ConversationHistoryDialog } from "./components/ConversationHistoryDialog";
+import { ConversationPermissions } from "./components/ConversationPermissions";
+import { ComposerActionButton } from "./components/ComposerActionButton";
 import { EngineeringAnalysisPanel } from "./components/EngineeringAnalysisPanel";
 import { EngineeringMissionPanel } from "./components/EngineeringMissionPanel";
 import { Icon, type IconName } from "./components/Icon";
@@ -72,6 +81,7 @@ import { ProgramNavigatorPanel } from "./components/ProgramNavigatorPanel";
 
 const CONVERSATION_STORAGE_KEY = "controlstudio.activeConversationId";
 const BROWSER_SESSION_STORAGE_KEY = "controlstudio.browserSession";
+const RECENT_MESSAGE_WINDOW = 8;
 
 interface PendingConversationRefresh {
   completion: Promise<Conversation>;
@@ -150,7 +160,7 @@ const RUN_COPY: Partial<Record<RunState, string>> = {
   waiting_for_approval: "승인 대기",
   executing: "실행 중",
   verifying: "검증 중",
-  completed: "응답 생성 완료(변경 실행 결과 아님)",
+  completed: "답변 완료",
   cancelled: "취소됨",
   failed: "실패",
   quarantined: "격리됨",
@@ -253,14 +263,19 @@ const TOOL_ACTIVITY_NAMES: Record<string, string> = {
   trace_ls_controller_devices: "PLC 디바이스 변화 추적",
   compare_workspace_source: "원본과 작업 복사본 비교",
   "change.propose_offline": "오프라인 변경안 생성",
+  "design.inspect": "설계 진행 상태 확인",
+  "design.read": "설계 내용 확인",
+  "design.edit": "설계 내용 작성",
+  "design.check": "설계 오류 검사",
+  "design.publish_review": "검토안 확정",
 };
 
 const AGENT_PROGRESS_COPY: Record<string, string> = {
   starting: "에이전트 실행을 준비하고 있습니다.",
   engineering_analysis: "PLC 분석을 구성하고 있습니다.",
-  planning_narrative: "요구사항과 차단 결정을 정리하고 있습니다.",
-  planning_native_design: "실행 가능한 native PLC 설계를 생성하고 있습니다.",
-  planning_finalize: "계획 artifact와 digest를 확정하고 있습니다.",
+  planning_narrative: "요구사항과 추가로 확인할 조건을 정리하고 있습니다.",
+  planning_native_design: "프로그램의 동작 조건과 순서를 설계하고 있습니다.",
+  planning_finalize: "검토할 계획서를 정리하고 있습니다.",
 };
 
 const NATIVE_CHECKPOINT_COPY: Record<string, string> = {
@@ -1103,9 +1118,10 @@ function App() {
   const [programFocusBusyId, setProgramFocusBusyId] = useState<string>();
   const [programNotice, setProgramNotice] = useState("");
   const [message, setMessage] = useState("");
+  const [messageHistoryExpanded, setMessageHistoryExpanded] = useState(false);
   const [targetlessAnalysisOpen, setTargetlessAnalysisOpen] = useState(false);
   const [changeRequestScope, setChangeRequestScope] =
-    useState<EngineeringChangeRequestScope>("analysis_only");
+    useState<ConversationPermission>("review_before_apply");
   const [verificationScope, setVerificationScope] = useState<
     | "offline_native_check_only"
     | "offline_native_reopen"
@@ -1143,6 +1159,8 @@ function App() {
   const [nativeProjectRestoreId, setNativeProjectRestoreId] = useState<
     string | null
   >(null);
+  const [nativeProjectRestoreConversationId, setNativeProjectRestoreConversationId] =
+    useState<string | null>(null);
   const [nativeProjectRestoreLoading, setNativeProjectRestoreLoading] =
     useState(false);
   const [onlineControllerOpen, setOnlineControllerOpen] = useState(false);
@@ -1196,8 +1214,11 @@ function App() {
     throughSequence: number;
   } | null>(null);
   const changePriorityRefreshEpochRef = useRef(0);
-  const debugModeInitializedRef = useRef(false);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const conversationBodyRef = useRef<HTMLDivElement>(null);
+  const followConversationRef = useRef(true);
+  const conversationScrollIdRef = useRef<string | undefined>(undefined);
+  const [conversationAtBottom, setConversationAtBottom] = useState(true);
   const returnWorkspaceRef = useRef<ReturnWorkspaceSnapshot | null>(null);
   const analysisProgramCatalogLoadRef = useRef<string | null>(null);
   const engineeringHandoffTransitionRef = useRef<{
@@ -1206,6 +1227,33 @@ function App() {
   } | null>(null);
   const insightPanelRef = useRef<HTMLElement>(null);
   const insightReturnFocusRef = useRef<HTMLButtonElement | null>(null);
+
+  const scrollConversationToLatest = useCallback(() => {
+    followConversationRef.current = true;
+    setConversationAtBottom(true);
+    const body = conversationBodyRef.current;
+    if (body) body.scrollTop = body.scrollHeight;
+  }, []);
+
+  useEffect(() => {
+    if (conversationScrollIdRef.current !== conversation?.conversationId) {
+      conversationScrollIdRef.current = conversation?.conversationId;
+      followConversationRef.current = true;
+      setMessageHistoryExpanded(false);
+    }
+    if (!followConversationRef.current) return;
+    const frame = window.requestAnimationFrame(scrollConversationToLatest);
+    return () => window.cancelAnimationFrame(frame);
+  }, [conversation?.conversationId, conversation?.messages, streamingText,
+    activeRunId, activeRunState, activities, scrollConversationToLatest]);
+
+  useEffect(() => {
+    const keepLatestOnResize = () => {
+      if (followConversationRef.current) scrollConversationToLatest();
+    };
+    window.addEventListener("resize", keepLatestOnResize);
+    return () => window.removeEventListener("resize", keepLatestOnResize);
+  }, [scrollConversationToLatest]);
 
   const hostReady = status.host.state === "ready";
   const agentReady = status.agent.state === "ready";
@@ -1244,6 +1292,7 @@ function App() {
     targetlessAnalysisOpen && targetlessAnalysisConversation;
   const selectedOfflineScopeUnavailable =
     engineeringScopeVisible &&
+    changeRequestScope !== "review_before_apply" &&
     changeRequestScope !== "analysis_only" &&
     !offlineCandidateAvailable;
   const missionChangeTransactionId =
@@ -1277,7 +1326,7 @@ function App() {
     !canCancelActiveRun &&
     (planningConversationActive ||
       (targetlessAnalysisActive
-        ? changeRequestScope === "analysis_only"
+        ? changeRequestScope === "analysis_only" || changeRequestScope === "review_before_apply"
         : mcpReady &&
           (conversationMatchesCurrentTarget(conversation, status) ||
             conversationMissionMatchesCurrentTarget(conversation, status)) &&
@@ -1358,23 +1407,10 @@ function App() {
     missionReverifyEligibility.available;
 
   useEffect(() => {
-    setChangeRequestScope("analysis_only");
+    setChangeRequestScope("review_before_apply");
     setVerificationScope("offline_native_reopen");
     setSelectedEvidenceId(null);
   }, [conversation?.conversationId]);
-
-  useEffect(() => {
-    if (
-      debugModeInitializedRef.current ||
-      status.host.state === "starting"
-    ) {
-      return;
-    }
-    debugModeInitializedRef.current = true;
-    if (status.releaseChannel === "development") {
-      setDebugMode(true);
-    }
-  }, [status.host.state, status.releaseChannel]);
 
   const refreshConversation = useCallback((
     conversationId: string,
@@ -1623,7 +1659,7 @@ function App() {
         const next: ActivityItem = {
           id: existing?.id ?? event.eventId,
           title,
-          detail: activityLabel ?? existing?.detail ?? detail,
+          detail: activityDetail(Boolean(progressStage), activityLabel, existing?.detail, detail),
           time: timeLabel(event.occurredAt),
           tone,
           eventType: event.eventType,
@@ -1865,7 +1901,7 @@ function App() {
           addActivity(
             event,
             `작업 상태: ${RUN_COPY[runState] ?? runState}`,
-            event.runId ?? "run",
+            "",
             runState === "failed" || runState === "quarantined"
               ? "warning"
               : "default",
@@ -1945,12 +1981,19 @@ function App() {
     (
       conversationId: string,
       afterSequence: number,
+      snapshotSequence: number = afterSequence,
     ) => {
       streamRef.current?.stop();
       const query = new URLSearchParams({ conversation_id: conversationId });
       const stream = new ControlStudioEventStream(
         `/api/v1/events?${query.toString()}`,
-        handleHostEvent,
+        (event) => {
+          // Conversation messages and active operation already came from the
+          // bootstrap snapshot. Keep historical tool evidence, but never let
+          // replayed run states/tokens resurrect a finished request in the UI.
+          if (isHistoricalRunReplay(event, snapshotSequence)) return;
+          handleHostEvent(event);
+        },
         (streamState) => {
           if (streamState === "connected") {
             setEventConnection("connected");
@@ -2022,6 +2065,7 @@ function App() {
       storeConversationId(created.conversationId);
       conversationIdRef.current = created.conversationId;
       setConversation(created);
+      setTargetlessAnalysisOpen(isUnboundEngineeringConversation(created));
       startEventStream(created.conversationId, 0);
       return created;
     },
@@ -2049,6 +2093,9 @@ function App() {
         !conversationMatchesCurrentTarget(detail, currentStatus) &&
         !conversationMissionMatchesCurrentTarget(detail, currentStatus) &&
         !isReusableUnboundDraft(detail, currentStatus) &&
+        !(allowSelectedUnboundDraft &&
+          targetActivationEpoch === undefined &&
+          planningSessionFromConversation(detail) !== null) &&
         !(allowSelectedUnboundDraft &&
           conversationMatchesPendingWorkspace(detail, currentStatus)) &&
         !(allowSelectedUnboundDraft &&
@@ -2237,6 +2284,7 @@ function App() {
       setConversationHistorySelectingId(conversationId);
       setConversationHistoryNotice("");
       try {
+        const snapshot = await hostApi.getBootstrap();
         const detail = await hostApi.getConversation(conversationId);
         if (
           activationEpoch !== targetActivationEpochRef.current ||
@@ -2249,15 +2297,21 @@ function App() {
         storeConversationId(detail.conversationId);
         conversationIdRef.current = detail.conversationId;
         setConversation(detail);
-        setNewProjectPlanning(planningSessionFromConversation(detail));
+        const restoredPlanningSession = planningSessionFromConversation(detail);
+        setNewProjectPlanning(restoredPlanningSession);
         setTargetlessAnalysisOpen(isUnboundEngineeringConversation(detail));
-        startEventStream(detail.conversationId, 0);
+        const currentOperation = snapshot.status.activeOperation;
+        if (currentOperation?.conversationId === detail.conversationId && currentOperation.runId) {
+          setActiveRunId(currentOperation.runId);
+          if (isRunState(currentOperation.state)) setActiveRunState(currentOperation.state);
+        }
+        startEventStream(detail.conversationId, 0, snapshot.lastEventSequence);
         setConversationHistoryOpen(false);
         const matchesCurrentTarget =
           isUnboundEngineeringConversation(detail) ||
           conversationMatchesCurrentTarget(detail, status) ||
           conversationMissionMatchesCurrentTarget(detail, status);
-        if (detail.workflow === "engineering" && matchesCurrentTarget) {
+        if (restoredPlanningSession || (detail.workflow === "engineering" && matchesCurrentTarget)) {
           setNewProjectBriefOpen(false);
           setNativeProjectOpen(false);
           setLocalProjectOpen(false);
@@ -2266,7 +2320,9 @@ function App() {
           setWorkChooserOpen(false);
         }
         setConnectionMessage(
-          matchesCurrentTarget
+          restoredPlanningSession
+            ? "저장된 계획 대화를 열었습니다. 이어서 요청할 수 있습니다."
+            : matchesCurrentTarget
             ? "저장된 작업 기록을 열었습니다."
             : "현재 엔지니어링 대상과 다른 작업 기록을 읽기 전용으로 열었습니다.",
         );
@@ -2329,6 +2385,8 @@ function App() {
           // conversation or make its composer read-only after startup.
           restoreActiveOperation =
             targetAtBootstrap === null ||
+            (operationConversation.workflow === "new_project_planning" &&
+              operationConversation.conversationId === readStoredConversationId()) ||
             conversationMatchesCurrentTarget(
               operationConversation,
               bootstrap.status,
@@ -2364,6 +2422,7 @@ function App() {
       }
       if (activeNativeProject) {
         setNativeProjectRestoreId(activeNativeProject);
+        setNativeProjectRestoreConversationId(operationConversationId ?? null);
         setLocalProjectOpen(false);
         setInstancePickerOpen(false);
         setOnlineControllerOpen(false);
@@ -2457,6 +2516,7 @@ function App() {
       startEventStream(
         activeConversation.conversationId,
         0,
+        bootstrap.lastEventSequence,
       );
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -2629,6 +2689,9 @@ function App() {
           // lineage until the Host revalidates the new read-ready session and
           // idempotently creates or rebinds the provenance conversation.
           setNativeProjectRestoreId(pendingNativeProjectId);
+          setNativeProjectRestoreConversationId(
+            conversationIdRef.current,
+          );
           setNativeProjectOpen(true);
         } else {
           // Restore an exact durable mission for this workspace/revision before
@@ -2640,7 +2703,7 @@ function App() {
         setConnectionMessage(
           pendingNativeProjectId
             ? "The accepted native workspace was revalidated; its exact planning, build, and XG-SIM handoff is being rebound."
-            : "저장된 작업 복사본과 해시를 다시 확인하고 XG5000 분석 세션을 복원했습니다.",
+            : "작업 사본을 확인하고 XG5000에 다시 연결했습니다.",
         );
         if (!pendingNativeProjectId && nextStatus.agent.state === "ready") {
           composerRef.current?.focus();
@@ -2995,7 +3058,9 @@ function App() {
       const stateLabel = RUN_COPY[result.state] ?? result.state;
       const message = result.idempotent
         ? `작업은 이미 종료 상태입니다: ${stateLabel}`
-        : result.detail ?? `작업 취소 결과: ${stateLabel}`;
+        : result.state === "cancelled" && result.detail === "run cancelled"
+          ? "요청한 작업을 중단했습니다."
+          : result.detail ?? `작업 취소 결과: ${stateLabel}`;
       setCancelNotice(message);
       setConnectionMessage(message);
       const refreshes: Promise<unknown>[] = [
@@ -3558,6 +3623,7 @@ function App() {
         setNewProjectPlanning(null);
         setNativeProjectOpen(false);
         setNativeProjectRestoreId(null);
+        setNativeProjectRestoreConversationId(null);
         setNewProjectBriefOpen(false);
         setWorkChooserOpen(false);
         setMessage("");
@@ -3911,11 +3977,12 @@ function App() {
 
   const sendMessage = async () => {
     const content = message.trim();
+    const requestScope = resolveRequestScope(changeRequestScope, Boolean(offlineCandidateAvailable), targetlessAnalysisActive || planningConversationActive);
     const conversationId = conversation?.conversationId;
     if (!content || !conversationId || !canChat || sending) {
       return;
     }
-    if (changeRequestScope !== "analysis_only" && !offlineCandidateAvailable) {
+    if (requestScope !== "analysis_only" && !offlineCandidateAvailable) {
       setConnectionMessage(
         "오프라인 변경을 요청하려면 원본 보존 작업 복사본과 strong XG5000 대상 결속이 필요합니다.",
       );
@@ -3923,12 +3990,13 @@ function App() {
     }
     if (
       verificationScope === "offline_native_reopen_xgsim" &&
-      (changeRequestScope !== "offline_candidate_revision" ||
+      (requestScope !== "offline_candidate_revision" ||
         !mneXgSimAvailable)
     ) {
       setConnectionMessage("XG-SIM 검증 capability가 현재 준비되지 않았습니다.");
       return;
     }
+    followConversationRef.current = true;
     setSending(true);
     setStreamingText("");
     setConnectionMessage(
@@ -3940,7 +4008,7 @@ function App() {
     );
     const permanentAttempt =
       !planningConversationActive &&
-      changeRequestScope === "permanent_offline_revision";
+      requestScope === "permanent_offline_revision";
     let acceptedByServer = false;
     const operationId = newOperationId();
     const request: SendMessageRequest = planningConversationActive
@@ -3949,7 +4017,7 @@ function App() {
           operationId,
           workflow: conversation.workflow,
         }
-      : changeRequestScope === "permanent_offline_revision"
+      : requestScope === "permanent_offline_revision"
         ? {
             content,
             operationId,
@@ -3957,7 +4025,7 @@ function App() {
             changeRequestScope: "permanent_offline_revision",
             verificationScope: "offline_native_check_only",
           }
-        : changeRequestScope === "offline_candidate_revision"
+        : requestScope === "offline_candidate_revision"
           ? {
               content,
               operationId,
@@ -3988,9 +4056,9 @@ function App() {
           ? "계획 에이전트가 요구사항과 안전 조건을 반영해 계획서를 보완합니다."
           : targetlessAnalysisActive
             ? "외부 도구와 변경 권한 없이 일반 엔지니어링 질문을 분석합니다."
-          : changeRequestScope === "permanent_offline_revision"
+          : requestScope === "permanent_offline_revision"
             ? "에이전트가 MCP 근거를 확인한 뒤 작업 사본을 수정·검사·저장합니다."
-            : changeRequestScope === "offline_candidate_revision"
+            : requestScope === "offline_candidate_revision"
               ? "에이전트가 MCP 근거를 확인하고 승인 가능한 변경안을 만듭니다."
               : "에이전트가 MCP 근거를 확인해 읽기·분석합니다.",
       );
@@ -4007,7 +4075,7 @@ function App() {
       );
     } finally {
       if (permanentAttempt) {
-        setChangeRequestScope("analysis_only");
+        setChangeRequestScope("review_before_apply");
         setVerificationScope("offline_native_reopen");
       }
       setSending(false);
@@ -4230,8 +4298,19 @@ function App() {
         onlineObserveFeature.verification !== "not_verified"
       : status.capabilities.includes("online_observe"));
   const currentMessages = conversation?.messages ?? [];
+  const renderedMessages = messageHistoryExpanded
+    ? currentMessages
+    : currentMessages.slice(-RECENT_MESSAGE_WINDOW);
+  const hiddenMessageCount = currentMessages.length - renderedMessages.length;
+  const activeToolActivity = activities.find(
+    (activity) => activity.runId === activeRunId && activity.toolState === "running",
+  );
+  const activeProgressActivity = activities.find(
+    (activity) => activity.runId === activeRunId && activity.eventType === "agent.progress",
+  );
   const canBrowseEngineeringPrograms =
     !targetlessAnalysisActive &&
+    !planningConversationActive &&
     status.engineeringSystem.readReady &&
     status.engineeringSystem.application === "XG5000";
   const programFocusAvailable =
@@ -4377,6 +4456,11 @@ function App() {
       : undefined;
   const latestPlanningArtifact = latestPlanningResult?.planArtifact;
   const latestPlanningDigest = latestPlanningResult?.planDigest;
+  const planningHasLaterRequest = Boolean(latestPlanningResult &&
+    currentMessages.slice(currentMessages.indexOf(latestPlanningResult) + 1)
+      .some((message) => message.role === "user"));
+  const planningLatestRequestFailed = newProjectPlanning &&
+    [...currentMessages].reverse().find((message) => message.role === "assistant")?.status === "failed";
   const latestPlanningItemIds = latestPlanningArtifact
     ? projectPlanReviewItemIds(latestPlanningArtifact)
     : undefined;
@@ -4424,6 +4508,23 @@ function App() {
     Boolean(latestPlanningArtifact.design.ladderRungs?.length) &&
     Boolean(latestPlanningDigest) &&
     Boolean(latestPlanningReview);
+  const technicalSetupDisabled =
+    !planningReadyForTechnicalSetup ||
+    !nativeProjectAvailable ||
+    nativeProjectRestoreLoading ||
+    sending ||
+    canCancelActiveRun;
+  const technicalSetupTitle =
+    latestPlanningArtifact &&
+    (!latestPlanningArtifact.technicalConfiguration ||
+      !latestPlanningArtifact.design.collectionScope ||
+      !latestPlanningArtifact.design.ladderRungs?.length)
+      ? "프로그램을 생성하는 데 필요한 설계 내용이 빠져 있습니다. 대화에서 계획을 보완해 주세요"
+      : !planningReadyForTechnicalSetup
+      ? "확인이 필요한 질문에 답하고 계획을 검토해 주세요"
+      : !nativeProjectAvailable
+      ? "XG5000 새 프로젝트 생성 코어가 준비되어야 합니다"
+      : undefined;
 
   const openTechnicalSetup = async () => {
     if (
@@ -4434,6 +4535,17 @@ function App() {
     ) {
       return;
     }
+    if (
+      nativeProjectRestoreId &&
+      nativeProjectRestoreConversationId === conversation.conversationId
+    ) {
+      // A newly reviewed simulation-only profile belongs on the already built
+      // native project. Keep that immutable build selected; the Host will
+      // independently verify that only indexAcceptanceBindings changed before
+      // accepting simulationReviewedPlan on resume.
+      setNativeProjectOpen(true);
+      return;
+    }
     setNativeProjectRestoreLoading(true);
     try {
       const saved = await hostApi.getCompletedUnboundNativeProject(
@@ -4442,10 +4554,12 @@ function App() {
         latestPlanningReview.planDigest,
       );
       setNativeProjectRestoreId(saved.nativeProjectId);
+      setNativeProjectRestoreConversationId(conversation.conversationId);
       setNativeProjectOpen(true);
     } catch (error) {
       if (error instanceof HostApiError && error.status === 404) {
         setNativeProjectRestoreId(null);
+        setNativeProjectRestoreConversationId(null);
         setNativeProjectOpen(true);
       } else {
         setConnectionMessage(
@@ -4458,6 +4572,12 @@ function App() {
       setNativeProjectRestoreLoading(false);
     }
   };
+
+  const currentNativeProjectRestoreId =
+    conversation &&
+    nativeProjectRestoreConversationId === conversation.conversationId
+      ? nativeProjectRestoreId
+      : null;
 
   const reviewLatestProjectPlan = async (
     planDigest: string,
@@ -4501,27 +4621,31 @@ function App() {
   };
 
   const requestProjectPlanRevision = () => {
-    setMessage(
-      "현재 Engineering Plan을 다음 요구에 맞게 수정해 주세요: ",
-    );
+    setMessage((current) => current.trim() ? current : "계획에서 다음 내용을 수정해 주세요: ");
     window.setTimeout(() => composerRef.current?.focus(), 0);
   };
-  const systemAttentionDetail =
-    [
+  const quarantinedService = [
       status.host,
       status.agent,
       status.mcp,
       status.engineeringSystem,
       status.controller,
-    ].find((service) => service.state === "quarantined")?.detail ??
-    [
+    ].find((service) => service.state === "quarantined");
+  const unavailableService = [
       status.host,
       status.agent,
       status.mcp,
-      status.engineeringSystem,
-      status.controller,
-    ].find((service) => service.state === "degraded")?.detail;
-  const systemNeedsAttention = Boolean(systemAttentionDetail);
+    ].find((service) => service.state === "degraded" || service.state === "unavailable");
+  const systemAttentionDetail = quarantinedService
+    ? "이전 작업의 변경 결과를 확인해야 합니다. 확인 전에는 추가 변경을 진행하지 않습니다."
+    : unavailableService === status.agent
+      ? "에이전트에 연결하지 못했습니다. 연결 설정을 확인해 주세요."
+      : unavailableService === status.mcp
+        ? "프로젝트 도구에 연결하지 못했습니다. 잠시 후 다시 연결해 주세요."
+        : unavailableService === status.host
+          ? "앱 연결이 끊겼습니다. 연결 상태를 확인해 주세요."
+          : undefined;
+  const systemNeedsAttention = status.host.state !== "starting" && Boolean(systemAttentionDetail);
   const primaryChange = hasPrimaryChange ? activeChange : null;
   const openInsightPanel = (
     panel: "programs" | "evidence" | "activity",
@@ -4536,10 +4660,6 @@ function App() {
       window.matchMedia("(max-width: 860px)").matches
     ) {
       window.setTimeout(() => {
-        insightPanelRef.current?.scrollIntoView?.({
-          behavior: "smooth",
-          block: "start",
-        });
         insightPanelRef.current?.focus({ preventScroll: true });
       }, 0);
     }
@@ -4565,7 +4685,9 @@ function App() {
     insightReturnFocusRef.current = null;
     window.setTimeout(() => returnFocus?.focus(), 0);
   };
-  const engineeringSessionLabel = status.engineeringSystem.sessionVerified
+  const engineeringSessionLabel = planningConversationActive
+    ? "새 프로젝트 계획"
+    : status.engineeringSystem.sessionVerified
     ? "강한 프로젝트 일치"
     : status.engineeringSystem.readReady
       ? "읽기 대상 확인"
@@ -4726,8 +4848,32 @@ function App() {
     </section>
   ) : null;
 
+  const visibleActivities = debugMode ? activities : activities.filter(
+    (item) => item.eventType !== "message.appended",
+  );
+  const planningReviewDisclosure = newProjectPlanning && latestPlanningArtifact &&
+    latestPlanningDigest ? (
+      <details className="project-plan-disclosure">
+        <summary>{planningHasLaterRequest ? "이전 계획 보기" : `계획서 보기 · ${latestPlanningArtifact.status === "ready_for_review" ? "검토 준비됨" : "확인 질문에 답해 주세요"}`}</summary>
+        <NewProjectPlanReviewPanel
+          artifact={latestPlanningArtifact}
+          planDigest={latestPlanningDigest}
+          review={latestPlanningResult.planReview}
+          revision={latestPlanningResult.planRevision}
+          busy={projectPlanReviewBusy || sending || canCancelActiveRun}
+          onReview={(digest, sectionIds, itemIds) =>
+            void reviewLatestProjectPlan(digest, sectionIds, itemIds)
+          }
+          onRequestRevision={requestProjectPlanRevision}
+          onOpenTechnicalSetup={() => void openTechnicalSetup()}
+          technicalSetupDisabled={technicalSetupDisabled}
+          technicalSetupTitle={technicalSetupTitle}
+        />
+      </details>
+    ) : null;
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${showAgentWorkspace && !debugMode ? "app-shell--conversation" : ""}`}>
       <a className="skip-link" href="#main-content">
         본문으로 바로가기
       </a>
@@ -4740,8 +4886,8 @@ function App() {
           <div className="brand-copy">
             <strong>ControlStudio</strong>
             <span>
-              PLC 엔지니어링 에이전트 · {(status.releaseChannel ?? "development").toUpperCase()}
-              {(status.productRelease ?? "source") !== "source"
+              PLC 프로젝트 작업{debugMode ? ` · ${(status.releaseChannel ?? "development").toUpperCase()}` : ""}
+              {debugMode && (status.productRelease ?? "source") !== "source"
                 ? ` ${status.productRelease}`
                 : ""}
             </span>
@@ -4776,7 +4922,7 @@ function App() {
         </div>
 
         <div className="header-actions">
-          {onlineObserveAvailable && (
+          {onlineObserveAvailable && !planningConversationActive && (
             <button
               className="header-text-button"
               type="button"
@@ -4806,6 +4952,24 @@ function App() {
             </button>
           )}
           <button
+            className="header-text-button header-new-conversation-button"
+            type="button"
+            disabled={canCancelActiveRun || sending || !hostReady}
+            aria-label="새 대화"
+            title="새 대화 · 현재 기록은 보존됩니다"
+            onClick={() => {
+              setSending(true);
+              void startFreshConversation("새 대화", "none")
+                .catch(() => {
+                  setCancelNotice("새 대화를 열지 못했습니다. 작업 기록에서 기존 대화를 다시 열 수 있습니다.");
+                })
+                .finally(() => setSending(false));
+            }}
+          >
+            <Icon name="new" size={16} />
+            <span className="header-new-conversation-button__label">새 대화</span>
+          </button>
+          <button
             className="header-text-button header-history-button"
             type="button"
             disabled={canCancelActiveRun}
@@ -4824,10 +4988,14 @@ function App() {
             <Icon name="database" size={16} />
             지식
           </button>
+          <details className="header-advanced-options">
+          <summary>더 보기</summary>
+          <div className="header-advanced-menu">
           <button
             className="header-text-button"
             type="button"
             aria-pressed={debugMode}
+            aria-label={debugMode ? "기술 진단 닫기" : "기술 진단 보기"}
             onClick={() => {
               setDebugMode((current) => !current);
               if (!debugMode) {
@@ -4836,22 +5004,24 @@ function App() {
             }}
           >
             <Icon name="activity" size={16} />
-            {debugMode ? "디버깅 종료" : "디버깅"}
+            {debugMode ? "기술 진단 닫기" : "기술 진단 보기"}
           </button>
           <button
             className="connection-button"
             type="button"
             onClick={() => void refreshStatus()}
-            aria-label="Host 상태 다시 확인"
+            aria-label="앱 연결 다시 확인"
           >
             <span
               className={`connection-light ${
                 hostReady ? "connection-online" : ""
               }`}
             />
-            <span>{hostReady ? "Host 준비됨" : "Host 연결 안 됨"}</span>
+            <span>연결 다시 확인</span>
             <Icon name="refresh" size={15} />
           </button>
+          </div>
+          </details>
           <button
             className="icon-button header-icon-button"
             type="button"
@@ -4879,12 +5049,10 @@ function App() {
         <summary>
           <span>
             <Icon name="shield" size={15} />
-            시스템 상세
+            연결 상태
           </span>
           <span>
-            {SERVICE_COPY[status.host.state].label} ·{" "}
-            {status.agent.modelDisplayName ?? "모델 미설정"} ·{" "}
-            {engineeringSessionLabel}
+            {hostReady && agentReady ? "대화 준비됨" : "연결 확인 중"}
           </span>
         </summary>
         <section
@@ -4892,26 +5060,26 @@ function App() {
           aria-label="Host, 에이전트, MCP와 XG5000 상세 상태"
         >
           <StatusItem
-            label="HOST"
+            label="앱"
             state={status.host.state}
-            detail={status.host.detail ?? "상태 정보 없음"}
+            detail={debugMode ? status.host.detail ?? "상태 정보 없음" : hostReady ? "연결됨" : "연결 확인 필요"}
             icon="database"
           />
           <StatusItem
-            label="AGENT"
+            label="에이전트"
             state={status.agent.state}
-            detail={agentStatusDetail}
+            detail={debugMode ? agentStatusDetail : status.agent.modelDisplayName ?? "모델 연결을 설정해 주세요"}
             icon="spark"
           />
           <StatusItem
-            label="MCP"
+            label="프로젝트 도구"
             state={status.mcp.state}
             detail={
-              status.mcp.agentToolCount !== undefined
+              debugMode && status.mcp.agentToolCount !== undefined
                 ? `AI 최대 허용 ${status.mcp.agentToolCount}개 · MCP 등록 ${
                     status.mcp.toolCount ?? 0
                   }개`
-                : status.mcp.detail ?? "안전 코어 대기"
+                : mcpReady ? "사용 가능" : "연결 확인 필요"
             }
             icon="shield"
           />
@@ -4919,9 +5087,9 @@ function App() {
             label={status.engineeringSystem.application}
             state={status.engineeringSystem.state}
             detail={
-              status.engineeringSystem.processId
+              debugMode && status.engineeringSystem.processId
                 ? `PID ${status.engineeringSystem.processId}`
-                : status.engineeringSystem.detail ?? "대상 선택 전"
+                : status.engineeringSystem.readReady ? "프로젝트 연결됨" : "프로젝트를 열면 연결됩니다"
             }
             icon="cpu"
           />
@@ -4931,12 +5099,12 @@ function App() {
             detail={
               status.controller.endpoint
                 ? `${status.controller.endpoint.host}:${status.controller.endpoint.port} · 읽기 전용`
-                : status.controller.detail ?? "온라인 대상 선택 전"
+                : "연결 안 됨 · 오프라인 작업에는 필요하지 않습니다"
             }
             icon="plc"
           />
         </section>
-        {status.featureReadiness &&
+        {debugMode && status.featureReadiness &&
           status.featureReadiness.length > 0 && (
             <section
               className="feature-readiness"
@@ -4976,16 +5144,17 @@ function App() {
           <section className="session-required" aria-labelledby="session-title">
             <Icon name="shield" size={20} />
             <div>
-              <h2 id="session-title">Launcher 세션 인증이 필요합니다</h2>
+              <h2 id="session-title">ControlStudio에서 다시 열어 주세요</h2>
               <p>
-                이 주소를 직접 새로 열어서는 제어 API를 사용할 수 없습니다.
-                Windows의 ControlStudio 아이콘으로 다시 실행해 주세요.
+                이 탭의 연결이 만료되었거나 앱에서 열지 않은 페이지입니다.
+                Windows의 ControlStudio 아이콘으로 열면 다시 연결할 수 있습니다.
+                저장된 대화와 프로젝트는 그대로 유지됩니다.
               </p>
             </div>
           </section>
         )}
 
-        {systemNeedsAttention && (
+        {systemNeedsAttention && !sessionRequired && (
           <section className="system-alert" role="status">
             <Icon name="shield" size={18} />
             <div>
@@ -5044,7 +5213,7 @@ function App() {
           </>
         )}
 
-        {showStartSection && (
+        {showStartSection && !sessionRequired && (
           <section className="start-section" aria-label="엔지니어링 시작">
             {showEntryChoices && (
               <>
@@ -5068,10 +5237,6 @@ function App() {
                           현재 작업으로 돌아가기
                         </button>
                       )}
-                    <div className="safety-caption">
-                      <Icon name="shield" size={16} />
-                      <span>승인·권한 경계 적용</span>
-                    </div>
                   </div>
                 </div>
 
@@ -5087,16 +5252,15 @@ function App() {
                     </span>
                     <div>
                       <p className="eyebrow">
-                        저장된 작업공간 · 재검증 필요
+                        최근 작업
                       </p>
                       <h2 id="workspace-resume-title">
                         {status.workspace.displayName}
                       </h2>
                       <p>
-                        원본이 아닌 저장된 작업 복사본을 해시로 다시 확인한 뒤
-                        XG5000 읽기 전용 분석을 이어갑니다.
+                        원본은 그대로 두고, 작업 사본에서 이어서 진행합니다.
                       </p>
-                      {status.workspace.artifactHash && (
+                      {debugMode && status.workspace.artifactHash && (
                         <code>
                           SHA-256 {status.workspace.artifactHash.slice(0, 12)}…
                         </code>
@@ -5111,9 +5275,9 @@ function App() {
                           <strong>
                             {workspaceCompareSummary(workspaceCompare)}
                           </strong>
-                          <span>
+                          {debugMode && <span>
                             비교 영수증 {workspaceCompare.compareDigest.slice(0, 12)}…
-                          </span>
+                          </span>}
                           {workspaceCompare.limitations.map((item) => (
                             <span key={item.code}>{item.detail}</span>
                           ))}
@@ -5136,7 +5300,7 @@ function App() {
                         onClick={() => void resumeWorkspace()}
                       >
                         {workspaceResumeBusy
-                          ? "대상 재검증 중…"
+                          ? "프로젝트 연결 중…"
                           : "이 작업 계속하기"}
                       </button>
                       {!status.engineeringSystem.readReady && (
@@ -5176,7 +5340,7 @@ function App() {
                   <EntryCard
                     icon="new"
                     title="새 프로젝트"
-                    description="설비 목적과 안전 조건을 정리해 검토 가능한 계획서를 만듭니다. XG5000 프로젝트 생성은 별도 검증 기능입니다."
+                    description="어떤 설비를 만들지 알려 주세요. 동작 순서와 입출력을 정리하고 프로젝트 만들기를 준비합니다."
                     accent="lime"
                     available={newProjectPlanningAvailable}
                     actionLabel="요구사항부터 시작"
@@ -5224,11 +5388,10 @@ function App() {
                   <div className="recovery-entry" role="status">
                     <Icon name="warning" size={18} />
                     <div>
-                      <strong>이전에 열린 XG5000 창을 먼저 확인</strong>
+                      <strong>열려 있는 프로젝트에서 이어서 작업할 수 있습니다</strong>
                       <p>
-                        현재 작업 복사본은 offline 분석 대상으로만 전환됐습니다. Host는
-                        남아 있을 수 있는 XG5000 창을 이 작업 복사본으로 추측 결속하거나
-                        자동으로 닫지 않습니다.
+                        저장된 파일 분석은 사용할 수 있습니다. 래더를 읽거나 수정하려면
+                        기존 XG5000 창을 연결해 주세요.
                       </p>
                     </div>
                     <button
@@ -5239,7 +5402,7 @@ function App() {
                         void openInstancePicker(true);
                       }}
                     >
-                      PID/HWND로 기존 창 확인
+                      열린 프로젝트 연결
                     </button>
                   </div>
                 )}
@@ -5283,7 +5446,7 @@ function App() {
                   </details>
                 )}
 
-                {nativeProjectRestoreId && (
+                {currentNativeProjectRestoreId && (
                   <div className="recovery-entry" role="status">
                     <Icon name="warning" size={18} />
                     <div>
@@ -5325,7 +5488,7 @@ function App() {
 
           {nativeProjectOpen && (
             <>
-              {newProjectPlanning && !nativeProjectRestoreId && (
+              {newProjectPlanning && !currentNativeProjectRestoreId && (
                 <section className="technical-setup-context">
                   <ProjectFlowStepper
                     activeStep={3}
@@ -5344,31 +5507,35 @@ function App() {
                 </section>
               )}
               <NativeProjectPanel
+                key={
+                  currentNativeProjectRestoreId ??
+                  latestPlanningReview?.planDigest ??
+                  "new-native-project"
+                }
                 status={status}
                 onEngineeringReady={enterAcceptedNativeEngineering}
-                initialNativeProjectId={nativeProjectRestoreId ?? undefined}
+                initialNativeProjectId={currentNativeProjectRestoreId ?? undefined}
                 initialProjectName={
-                  nativeProjectRestoreId
+                  currentNativeProjectRestoreId
                     ? undefined
                     : latestPlanningArtifact?.projectName
                 }
                 initialDescription={
-                  nativeProjectRestoreId
+                  currentNativeProjectRestoreId
                     ? undefined
                     : latestPlanningArtifact?.technicalConfiguration?.description
                 }
                 reviewedProjectName={
-                  nativeProjectRestoreId
+                  currentNativeProjectRestoreId
                     ? undefined
                     : latestPlanningArtifact?.projectName
                 }
                 reviewedTechnicalConfiguration={
-                  nativeProjectRestoreId
+                  currentNativeProjectRestoreId
                     ? undefined
                     : latestPlanningArtifact?.technicalConfiguration ?? undefined
                 }
                 reviewedPlan={
-                  !nativeProjectRestoreId &&
                   conversation &&
                   latestPlanningResult &&
                   latestPlanningArtifact?.technicalConfiguration &&
@@ -5393,11 +5560,10 @@ function App() {
                 }
                 onClose={() => {
                   setNativeProjectOpen(false);
-                  if (
-                    status.activeOperation?.kind !== "native_project_create"
-                  ) {
-                    setNativeProjectRestoreId(null);
-                  }
+                }}
+                onCreateFromReviewedPlan={() => {
+                  setNativeProjectRestoreId(null);
+                  setNativeProjectRestoreConversationId(null);
                 }}
                 onStatusChanged={applyHostStatus}
               />
@@ -5563,8 +5729,7 @@ function App() {
             >
               <div className="instance-picker-heading">
                 <div>
-                  <p className="eyebrow">ANALYSIS-ONLY ENGINEERING SESSION</p>
-                  <h2 id="instance-picker-title">XG5000 실행 창 선택</h2>
+                  <h2 id="instance-picker-title">열려 있는 프로젝트 연결</h2>
                 </div>
                 <button
                   className="icon-button"
@@ -5576,11 +5741,7 @@ function App() {
                 </button>
               </div>
               <p className="instance-explanation">
-                이 연결은 XG5000 엔지니어링 IDE의 프로젝트를 읽고 분석하기 위한
-                세션입니다. 실제 온라인 PLC 연결이나 PLC 프로젝트 업로드가
-                아닙니다. 선택한 PID와 프로젝트 정체성이 완전히 증명되지 않으면
-                상태가 <strong>제한됨</strong>으로 유지되며 MCP가 불확실한 작업을
-                차단합니다.
+                이어서 작업할 XG5000 창을 선택하세요. 연결만으로 프로젝트를 변경하지 않습니다.
               </p>
 
               {instancesLoading ? (
@@ -5592,9 +5753,11 @@ function App() {
                       <div className="instance-card-copy">
                         <strong>{instance.title || "XG5000"}</strong>
                         <span>
-                          PID {instance.pid} · HWND {instance.hwnd}
-                          {instance.version ? ` · ${instance.version}` : ""}
+                          {typeof instance.process_create_time === "number"
+                            ? `${new Date(instance.process_create_time * 1000).toLocaleTimeString("ko-KR", {hour: "2-digit", minute: "2-digit"})}에 연 창`
+                            : "열려 있는 프로젝트"}
                         </span>
+                        {debugMode && <code>PID {instance.pid} · HWND {instance.hwnd}</code>}
                         {restorePreflight?.target.hwnd === instance.hwnd && (
                           <div className="restore-preflight-result" role="status">
                             <strong>
@@ -5630,7 +5793,7 @@ function App() {
                         )}
                       </div>
                       <div className="instance-card-actions">
-                        <button
+                        {debugMode && <button
                           className="button secondary-button"
                           type="button"
                           disabled={
@@ -5641,7 +5804,7 @@ function App() {
                           {restorePreflightBusyHwnd === instance.hwnd
                             ? "표면 확인 중"
                             : "복원 표면 확인"}
-                        </button>
+                        </button>}
                         {restorePreflight?.target.hwnd === instance.hwnd &&
                           restorePreflight.ready &&
                           !restoreHandoff && (
@@ -5676,8 +5839,8 @@ function App() {
                           onClick={() => void attachInstance(instance)}
                         >
                           {attachingHwnd === instance.hwnd
-                            ? "검증 중…"
-                            : "분석 세션 연결"}
+                            ? "연결 중…"
+                            : "이 프로젝트 연결"}
                         </button>
                       </div>
                     </li>
@@ -5722,17 +5885,19 @@ function App() {
               aria-label="현재 엔지니어링 대상"
             >
               <div className="target-proof-name">
-                <p className="eyebrow">ACTIVE ENGINEERING TARGET</p>
+                <p className="eyebrow">작업 프로젝트</p>
                 <strong>
                   {workspaceTargetActive && status.workspace
                     ? status.workspace.displayName
                     : directXgTargetActive && status.engineeringSystem.processId
-                      ? `XG5000 PID ${status.engineeringSystem.processId}`
+                      ? "연결된 XG5000 프로젝트"
                       : controllerTargetActive && status.controller.endpoint
                         ? `${status.controller.endpoint.host}:${status.controller.endpoint.port}`
                         : "대상 확인 중"}
                 </strong>
               </div>
+              <details className="project-context-details">
+                <summary>프로젝트 정보</summary>
               <dl>
                 <div>
                   <dt>벤더</dt>
@@ -5743,31 +5908,31 @@ function App() {
                   </dd>
                 </div>
                 <div>
-                  <dt>엔지니어링 도구</dt>
+                  <dt>편집 프로그램</dt>
                   <dd>
                     {controllerTargetActive
                       ? "XGT FEnet 읽기 전용 관찰"
                       : status.engineeringSystem.application}
-                    {!controllerTargetActive && status.engineeringSystem.processId
+                    {debugMode && !controllerTargetActive && status.engineeringSystem.processId
                       ? ` · PID ${status.engineeringSystem.processId}`
                       : ""}
                   </dd>
                 </div>
                 <div>
-                  <dt>대상 보증</dt>
-                  <dd>{engineeringSessionLabel}</dd>
+                  <dt>연결 상태</dt>
+                  <dd>{status.engineeringSystem.readReady ? "XG5000 연결됨" : "저장된 파일 분석 가능"}</dd>
                 </div>
                 <div>
-                  <dt>현재 권한</dt>
+                  <dt>사용 가능 작업</dt>
                   <dd>
                     {(offlineMutateFeature?.currentReady ??
                       status.capabilities.includes("offline_mutate")) &&
                     status.engineeringSystem.sessionVerified
-                      ? "분석 · 안전한 오프라인 변경"
-                      : "읽기·분석 전용"}
+                      ? "분석 · 작업 사본 수정"
+                      : "읽기·분석"}
                   </dd>
                 </div>
-                {activeProjectHash && (
+                {debugMode && activeProjectHash && (
                   <div>
                     <dt>프로젝트 해시</dt>
                     <dd>
@@ -5776,27 +5941,66 @@ function App() {
                   </div>
                 )}
               </dl>
+              <p>원본은 보존됩니다. 변경을 요청하면 작업 사본에만 적용합니다.</p>
+              <button
+                className="button secondary-button"
+                type="button"
+                disabled={canCancelActiveRun || sending}
+                onClick={() => {
+                  void startFreshConversation("PLC 분석 대화").catch(() => {
+                    setCancelNotice("새 대화를 열지 못했습니다. 작업 기록에서 기존 대화를 다시 열 수 있습니다.");
+                  });
+                }}
+              >
+                이 프로젝트에서 새 대화
+              </button>
+              </details>
+              {workspaceStaticTargetActive && (
+                <div className="workspace-reconnect">
+                  <span>XG5000 연결을 복구하면 프로그램 읽기와 변경안 작성을 이어갈 수 있습니다.</span>
+                  <button type="button" disabled={workspaceResumeBusy || canCancelActiveRun || sending || !mcpReady}
+                    onClick={() => void resumeWorkspace()}>
+                    {workspaceResumeBusy ? "프로젝트 확인 중…" : "XG5000 연결 복구"}
+                  </button>
+                  {workspaceResumeNotice && <p role="status">{workspaceResumeNotice}</p>}
+                </div>
+              )}
             </section>
           )}
           {newProjectPlanning && (
-            <section
+            <details
               className="project-plan-context"
-              aria-labelledby="project-plan-context-title"
             >
-              <ProjectFlowStepper
-                activeStep={2}
-                nativeProjectAvailable={nativeProjectAvailable}
-              />
+              <summary className="project-plan-context-toggle">
+                <span>{newProjectPlanning.brief.projectName}</span>
+                <span>요구사항 · 설정</span>
+              </summary>
+              <details className="project-flow-overview">
+                <summary>
+                  {latestPlanningArtifact?.status === "ready_for_review" && !planningHasLaterRequest
+                    ? "계획 검토" : "요구사항 정리"}
+                  <span>전체 단계</span>
+                </summary>
+                <ProjectFlowStepper
+                  activeStep={latestPlanningArtifact?.status === "ready_for_review" && !planningHasLaterRequest ? 2 : 1}
+                  nativeProjectAvailable={nativeProjectAvailable}
+                />
+              </details>
               <div className="project-plan-summary">
                 <div>
-                  <p className="eyebrow">PLANNING ONLY · NO PROJECT WRITE</p>
                   <h2 id="project-plan-context-title">
                     {newProjectPlanning.brief.projectName}
                   </h2>
                   <p>
-                    {planningHasResponse
+                    {canCancelActiveRun
+                      ? "요구사항을 바탕으로 계획서를 작성하고 있습니다."
+                      : planningLatestRequestFailed
+                      ? "새 계획을 완성하지 못했습니다. 입력한 요구사항은 보존되어 있습니다."
+                      : planningHasLaterRequest
+                      ? "최근 요청에 대한 결과는 아래 대화에서 확인할 수 있습니다."
+                      : planningHasResponse
                       ? "계획서 초안을 검토하고, 빠진 조건이나 잘못된 가정을 대화로 수정하세요."
-                      : "에이전트가 요구사항을 구조화하고 필요한 확인 질문을 준비하고 있습니다."}
+                      : "아직 계획서가 만들어지지 않았습니다. 아래 대화에서 다시 요청하거나 요구사항을 수정할 수 있습니다."}
                   </p>
                 </div>
                 <div className="project-plan-actions">
@@ -5808,32 +6012,17 @@ function App() {
                   >
                     요구사항 수정
                   </button>
+                  {latestPlanningArtifact?.technicalConfiguration && (
                   <button
                     className="button primary-button"
                     type="button"
-                    disabled={
-                      !planningReadyForTechnicalSetup ||
-                      !nativeProjectAvailable ||
-                      nativeProjectRestoreLoading ||
-                      sending ||
-                      canCancelActiveRun
-                    }
-                    title={
-                      latestPlanningArtifact &&
-                      (!latestPlanningArtifact.technicalConfiguration ||
-                        !latestPlanningArtifact.design.collectionScope ||
-                        !latestPlanningArtifact.design.ladderRungs?.length)
-                        ? "검토할 XG5000 기술 구성, 명시적 collectionScope와 ladderRungs가 있는 새 계획으로 다시 계획해야 합니다"
-                        : !planningReadyForTechnicalSetup
-                        ? "미결 결정을 해소하고 현재 Engineering Plan 버전에 대한 사람의 검토를 기록해야 합니다"
-                        : !nativeProjectAvailable
-                        ? "XG5000 새 프로젝트 생성 코어가 준비되어야 합니다"
-                        : undefined
-                    }
+                    disabled={technicalSetupDisabled}
+                    title={technicalSetupTitle}
                     onClick={() => void openTechnicalSetup()}
                   >
-                    기술 구성으로
+                    프로젝트 설정 확인
                   </button>
+                  )}
                   <button
                     className="project-plan-cancel"
                     type="button"
@@ -5844,43 +6033,27 @@ function App() {
                   </button>
                 </div>
               </div>
-              <p className="project-stage-limit">
-                {canCancelActiveRun
-                  ? "계획 작업이 실행 중입니다. 요구사항 수정·기술 구성·계획 닫기는 완료되거나 취소된 뒤 가능합니다."
+              {!canCancelActiveRun && !planningHasLaterRequest && <p className="project-stage-limit">
+                {latestPlanningArtifact?.status === "needs_clarification"
+                    ? "아래 대화의 확인 질문에 답해 주세요."
                   : latestPlanningArtifact &&
                       (!latestPlanningArtifact.technicalConfiguration ||
                         !latestPlanningArtifact.design.collectionScope ||
                         !latestPlanningArtifact.design.ladderRungs?.length)
-                    ? "이전 형식 계획은 읽기 전용입니다. XG5000 기술 구성, 명시적 collectionScope와 ladderRungs를 포함해 다시 계획한 뒤 새 버전을 검토해 주세요."
+                    ? "이 계획은 읽을 수 있지만 프로그램 생성에 필요한 설계 내용이 부족합니다. 대화에서 계획을 보완한 뒤 다시 검토해 주세요."
                   : latestPlanningArtifact &&
                       latestPlanningArtifact.status === "ready_for_review" &&
                       !latestPlanningReview
-                    ? "다음 단계 전에 아래 Engineering Plan의 범위·가정·안전 조건·검증 계획을 검토 완료해야 합니다."
+                    ? "아래 계획의 동작 방식과 안전 조건이 의도한 내용인지 확인해 주세요."
                   : nativeProjectAvailable
-                    ? "검토된 XG5000 기술 구성과 ladderRungs를 그대로 인계해 프로그램을 생성합니다. rung IR/source digest, exact mnemonic readback, LD 변환, 프로그램 검사와 저장까지 지원하며 PLC 연결·다운로드·쓰기는 별도 승인 흐름입니다."
+                    ? "계획을 검토한 뒤 새 프로그램을 만들고, 검사와 저장을 진행합니다. 실제 PLC에 연결하거나 전송하지 않습니다."
                     : "현재 사용 가능한 범위는 계획서 검토까지입니다. XG5000 프로젝트 생성·로직·검사·재열기·시뮬레이션은 아직 일반 실행할 수 없습니다."}
-              </p>
-            </section>
+              </p>}
+              {planningHasLaterRequest && planningReviewDisclosure}
+            </details>
           )}
-          {newProjectPlanning &&
-            latestPlanningArtifact &&
-            latestPlanningDigest && (
-              <NewProjectPlanReviewPanel
-                artifact={latestPlanningArtifact}
-                planDigest={latestPlanningDigest}
-                review={latestPlanningResult.planReview}
-                revision={latestPlanningResult.planRevision}
-                busy={
-                  projectPlanReviewBusy ||
-                  sending ||
-                  canCancelActiveRun
-                }
-                onReview={(digest, sectionIds, itemIds) =>
-                  void reviewLatestProjectPlan(digest, sectionIds, itemIds)
-                }
-                onRequestRevision={requestProjectPlanRevision}
-              />
-            )}
+          {!planningHasLaterRequest && planningReviewDisclosure}
+          <div className={`conversation-split ${activePanel ? "conversation-split--insight" : ""}`}>
           <article className="conversation-panel">
             <header className="panel-header conversation-header">
               <div>
@@ -5888,12 +6061,7 @@ function App() {
                   <Icon name="message" size={18} />
                 </span>
                 <div>
-                  <p className="panel-kicker">
-                    {newProjectPlanning
-                      ? "PROJECT PLANNING AGENT"
-                      : "ENGINEERING AGENT"}
-                  </p>
-                  <h2>{conversation?.title ?? "대화 준비 중"}</h2>
+                  <h2>{newProjectPlanning ? "계획 대화" : conversation?.title ?? "대화 준비 중"}</h2>
                 </div>
               </div>
               <div className="run-controls">
@@ -5949,6 +6117,25 @@ function App() {
                     진행 내역
                   </button>
                 </div>
+                {debugMode && engineeringScopeVisible && !targetlessAnalysisActive && (
+                  <ConversationPermissions
+                    key={conversation?.conversationId}
+                    scope={changeRequestScope}
+                    busy={sending || canCancelActiveRun || offlineCandidateBindingBusy}
+                    canChange={offlineCandidateSelectable}
+                    simulation={verificationScope === "offline_native_reopen_xgsim"}
+                    canSimulate={offlineCandidateAvailable && mneXgSimAvailable}
+                    onSimulation={(enabled) => setVerificationScope(enabled ? "offline_native_reopen_xgsim" : "offline_native_reopen")}
+                    onSelect={(scope) => {
+                      if (scope !== "analysis_only" && scope !== "review_before_apply" && !offlineCandidateAvailable) {
+                        void prepareOfflineCandidateSession(scope);
+                      } else {
+                        setChangeRequestScope(scope);
+                        setVerificationScope(scope === "permanent_offline_revision" ? "offline_native_check_only" : "offline_native_reopen");
+                      }
+                    }}
+                  />
+                )}
                 <div className="stream-state" aria-live="polite">
                   <span
                     className={`stream-dot stream-${eventConnection}`}
@@ -5963,16 +6150,6 @@ function App() {
                         ? "재연결 중"
                         : "연결 대기"}
                 </div>
-                {canCancelActiveRun && (
-                  <button
-                    className="cancel-run-button"
-                    type="button"
-                    disabled={cancelBusy}
-                    onClick={() => void cancelActiveRun()}
-                  >
-                    {cancelBusy ? "취소 요청 중…" : "실행 중 작업 취소"}
-                  </button>
-                )}
                 {cancelNotice && (
                   <span className="run-notice" role="status">
                     {cancelNotice}
@@ -5981,8 +6158,26 @@ function App() {
               </div>
             </header>
 
-            <div className="conversation-body" aria-live="polite">
-              {conversation?.engineeringHandoff && (
+            {!conversationAtBottom && (
+              <button className="conversation-latest" type="button" onClick={scrollConversationToLatest}>
+                최근 대화로 이동
+              </button>
+            )}
+            <div
+              ref={conversationBodyRef}
+              className="conversation-body"
+              role="region"
+              aria-label="대화 기록"
+              tabIndex={0}
+              aria-live="polite"
+              onScroll={(event) => {
+                const body = event.currentTarget;
+                const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 96;
+                followConversationRef.current = atBottom;
+                setConversationAtBottom(atBottom);
+              }}
+            >
+              {debugMode && conversation?.engineeringHandoff && (
                 <aside className="engineering-handoff-lineage">
                   <strong>Accepted engineering baseline</strong>
                   <span>
@@ -6004,7 +6199,6 @@ function App() {
                   <span className="agent-orb" aria-hidden="true">
                     <Icon name="spark" size={26} />
                   </span>
-                  <p className="empty-kicker">CONTROLSTUDIO AGENT</p>
                   <h3>
                     {newProjectPlanning
                       ? "프로젝트 계획을 준비하고 있습니다"
@@ -6014,8 +6208,8 @@ function App() {
                     {newProjectPlanning
                       ? "설비 목적, 동작 순서, I/O, 모드, 인터록과 검증 방법을 분리해 검토 가능한 계획으로 만듭니다."
                       : targetlessAnalysisActive
-                        ? "특정 프로젝트에 연결하지 않고 일반 엔지니어링 질문을 분석합니다. 외부 도구 실행과 변경은 사용할 수 없습니다."
-                      : "단편적인 래더 답변이 아니라 프로젝트 전체의 근거, 영향, 불확실성과 안전 조건을 함께 확인합니다."}
+                        ? "궁금한 PLC 개념이나 오류 메시지를 알려 주세요."
+                      : "설비 동작을 물어보거나, 확인하고 싶은 프로그램과 수정할 내용을 알려 주세요."}
                   </p>
                   {!newProjectPlanning && (
                     <div className="prompt-suggestions" aria-label="질문 예시">
@@ -6048,7 +6242,29 @@ function App() {
                 </div>
               ) : (
                 <ol className="message-list" aria-label="대화 메시지">
-                  {currentMessages.map((item) => (
+                  {hiddenMessageCount > 0 && (
+                    <li className="message-history-control">
+                      <span>최근 대화 {renderedMessages.length}개만 표시 중</span>
+                      <button
+                        type="button"
+                        onClick={() => setMessageHistoryExpanded(true)}
+                      >
+                        이전 대화 {hiddenMessageCount}개 보기
+                      </button>
+                    </li>
+                  )}
+                  {messageHistoryExpanded && currentMessages.length > RECENT_MESSAGE_WINDOW && (
+                    <li className="message-history-control">
+                      <span>전체 대화를 표시 중</span>
+                      <button
+                        type="button"
+                        onClick={() => setMessageHistoryExpanded(false)}
+                      >
+                        최근 대화만 보기
+                      </button>
+                    </li>
+                  )}
+                  {renderedMessages.map((item) => (
                     <Fragment key={item.messageId}>
                     <li
                       className={`message-item message-${item.role} ${
@@ -6083,24 +6299,64 @@ function App() {
                               item.planArtifact?.design.ladderRungs?.length
                                 ? "계획 검토 가능"
                                 : item.planStatus === "ready_for_review"
-                                  ? "기술 구성·범위·LD rung 포함 재계획 필요"
+                                  ? "계획 보완 필요"
                                   : "추가 확인 필요"}
                             </span>
                           )}
                       </div>
                       <div className="message-content">
                         {item.planArtifact ? (
-                          <p className="plan-message-reference">
-                            {item.messageId === latestPlanningResult?.messageId
-                              ? "위 Engineering Plan에 이 응답의 설계 항목과 미결 결정을 구조화했습니다. 수정할 내용은 아래 대화에 남겨 주세요."
-                              : "이전 Engineering Plan 버전입니다. 현재 검토 대상은 화면 상단의 최신 계획입니다."}
-                          </p>
+                          <div className="plan-message-reference">
+                            <p>{item.planArtifact.summary}</p>
+                            {item.planArtifact.openDecisions.length > 0 ? <>
+                              <p>다음 내용을 알려주시면 계획을 이어서 작성하겠습니다.</p>
+                              <ol>{item.planArtifact.openDecisions.map((decision) =>
+                                <li key={decision.decisionId}>{decision.question}</li>,
+                              )}</ol>
+                            </> : <p>계획서 보기에서 동작 방식과 안전 조건을 검토할 수 있습니다.</p>}
+                            {(item.messageId !== latestPlanningResult?.messageId || planningHasLaterRequest) &&
+                              <small>이후 대화가 있는 이전 계획입니다.</small>}
+                          </div>
+                        ) : item.role === "user" && item.content.length > 600 ? (
+                          <details className="long-user-message">
+                            <summary>
+                              <span className="long-user-message__preview">{item.content.slice(0, 140).trim()}…</span>
+                              <span className="long-user-message__expand">보낸 내용 펼쳐보기</span>
+                              <span className="long-user-message__collapse">보낸 내용 접기</span>
+                            </summary>
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.content}</ReactMarkdown>
+                          </details>
                         ) : (
                           <>
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                              {item.content}
+                            <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                              ol: ({ node, children, ...props }) => {
+                                const details = item.role === "assistant" && !debugMode ? rowDetailList(node) : null;
+                                if (!details) return <ol {...props}>{children}</ol>;
+                                const request = currentMessages
+                                  .slice(0, currentMessages.indexOf(item))
+                                  .reverse()
+                                  .find((message) => message.role === "user")?.content ?? "";
+                                return <>
+                                  <details className="answer-row-details" open={/행별|줄별|자세|상세|row.by.row/i.test(request)}>
+                                    <summary>행별 로직 상세</summary>
+                                    <ol {...props}>{children}</ol>
+                                  </details>
+                                  {details.warnings.map((warning, index) => <p key={index}>{warning}</p>)}
+                                </>;
+                              },
+                              a: ({ href, children }) => {
+                                const evidenceId = href?.startsWith("#evidence-") ? href.slice(10) : null;
+                                return evidenceId && evidence.some((entry) => entry.evidenceId === evidenceId)
+                                  ? <button type="button" className="inline-evidence-link" onClick={(event) => openMissionEvidence(evidenceId, event.currentTarget)}>{children}</button>
+                                  : <a href={href}>{children}</a>;
+                              },
+                            }}>
+                              {item.role === "assistant" && !debugMode ? displayAssistantText(item.content, evidence, programs) : item.content}
                             </ReactMarkdown>
-                            {item.engineeringAnalysis && (
+                            {item.engineeringAnalysis &&
+                              hasReadableEngineeringAnalysis(
+                                item.engineeringAnalysis,
+                              ) && (
                               <details className="message-analysis-details">
                                 <summary>근거·분석 상세</summary>
                                 <EngineeringAnalysisPanel
@@ -6128,8 +6384,12 @@ function App() {
                         )}
                       </div>
                     </li>
-                    {isInlineToolActivityAnchor(item) &&
-                      activities
+                    {isInlineToolActivityAnchor(item) && (
+                      <li className="message-work-log">
+                        <details>
+                          <summary>작업 과정 보기{activities.some((activity) => activity.runId === item.runId && activity.toolState === "failed") ? " · 확인하지 못한 항목 있음" : ""}</summary>
+                          <ol>
+                      {activities
                         .filter(
                           (activity) =>
                             activity.toolState && activity.runId === item.runId,
@@ -6142,25 +6402,32 @@ function App() {
                           >
                             <span className="compact-tool-card__marker" aria-hidden="true" />
                             <div>
+                              <details className="tool-result-details">
+                              <summary>
                               <strong>{activity.detail}</strong>
-                              {(activity.toolRole || activity.toolTarget) && (
-                                <span className="compact-tool-card__context">
-                                  {[activity.toolRole, activity.toolTarget]
-                                    .filter(Boolean)
-                                    .join(" · ")}
-                                </span>
-                              )}
                               <span>
                                 {TOOL_STATE_COPY[activity.toolState!]}
                                 {activityDuration(activity, activityClockMs)
                                   ? ` · ${activityDuration(activity, activityClockMs)}`
                                   : ""}
                               </span>
+                              </summary>
+                              {debugMode && (activity.toolRole || activity.toolTarget) && (
+                                <span className="compact-tool-card__context">
+                                  {[activity.toolRole, activity.toolTarget]
+                                    .filter(Boolean)
+                                    .join(" · ")}
+                                </span>
+                              )}
                               {activity.resultSummary && (
                                 <p className="compact-tool-card__result">
-                                  {activity.resultSummary}
+                                  {activity.resultSummary.startsWith("Observed a bounded, digest-bound inventory")
+                                    ? "프로그램, 변수, 작업과 통신 등 프로젝트 구성을 확인했습니다."
+                                    : activity.resultSummary}
                                 </p>
                               )}
+                              {!activity.resultSummary && <p>{activity.toolState === "running" ? "프로젝트에서 필요한 내용을 확인하고 있습니다." : activity.toolState === "selected" ? "작업을 준비하고 있습니다." : activity.toolState === "failed" ? "이 항목은 확인하지 못했습니다. 완료된 결과로 사용하지 않습니다." : "이 작업을 마쳤습니다."}</p>}
+                              </details>
                               {activity.failureReason && (
                                 <p className="compact-tool-card__failure">
                                   {activity.failureReason}
@@ -6169,8 +6436,25 @@ function App() {
                             </div>
                           </li>
                         ))}
+                          </ol>
+                        </details>
+                      </li>
+                    )}
                     </Fragment>
                   ))}
+                  {canCancelActiveRun && !visibleStreamingText && (
+                    <li className="message-item message-assistant" role="status">
+                      <div className="message-content">
+                        {activeToolActivity?.detail
+                          ? `${activeToolActivity.detail} 중…`
+                          : activeProgressActivity?.title ?? "요청을 처리하고 있습니다…"}
+                      </div>
+                      {activeProgressActivity?.detail &&
+                        !activeProgressActivity.detail.includes(activeRunId ?? " · ") && (
+                          <small>{activeProgressActivity.detail}</small>
+                        )}
+                    </li>
+                  )}
                   {visibleStreamingText && (
                     <li className="message-item message-assistant message-streaming">
                       <div className="message-meta">
@@ -6225,158 +6509,28 @@ function App() {
                         ? "MCP 안전 코어를 확인해 주세요"
                       : !hasEngineeringTarget
                         ? "먼저 XG5000 프로젝트나 온라인 LS PLC를 선택해 주세요"
-                        : "증상이나 확인할 동작을 설명해 주세요"
+                        : "프로젝트에 대해 질문하거나 원하는 변경을 말해 주세요"
                 }
               />
-              {engineeringScopeVisible && !targetlessAnalysisActive && (
-                <fieldset className="change-request-scope">
-                  <legend>에이전트 작업 범위</legend>
-                  <label>
-                    <input
-                      type="radio"
-                      name="change-request-scope"
-                      value="analysis_only"
-                      checked={changeRequestScope === "analysis_only"}
-                      onChange={() => {
-                        setChangeRequestScope("analysis_only");
-                        setVerificationScope("offline_native_reopen");
-                      }}
-                      disabled={sending}
-                    />
-                    <span>
-                      <strong>읽기·분석</strong>
-                      변경 transaction을 만들지 않음
-                    </span>
-                  </label>
-                  <label>
-                    <input
-                      type="radio"
-                      name="change-request-scope"
-                      value="offline_candidate_revision"
-                      checked={
-                        changeRequestScope === "offline_candidate_revision"
-                      }
-                      onChange={() => {
-                        if (offlineCandidateAvailable) {
-                          setChangeRequestScope("offline_candidate_revision");
-                          setVerificationScope("offline_native_reopen");
-                        } else {
-                          void prepareOfflineCandidateSession();
-                        }
-                      }}
-                      disabled={
-                        sending ||
-                        offlineCandidateBindingBusy ||
-                        !offlineCandidateSelectable
-                      }
-                    />
-                    <span>
-                      <strong>
-                        {offlineCandidateBindingBusy
-                          ? "오프라인 후보 확인 중"
-                          : "승인할 오프라인 후보 준비"}
-                      </strong>
-                      제안 생성 · 승인 후에만 작업 복사본 실행 가능
-                    </span>
-                  </label>
-                  {changeRequestScope === "offline_candidate_revision" && (
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={
-                          verificationScope ===
-                          "offline_native_reopen_xgsim"
-                        }
-                        onChange={(event) =>
-                          setVerificationScope(
-                            event.target.checked
-                              ? "offline_native_reopen_xgsim"
-                              : "offline_native_reopen",
-                          )
-                        }
-                        disabled={
-                          sending ||
-                          !offlineCandidateAvailable ||
-                          !mneXgSimAvailable
-                        }
-                      />
-                      <span>
-                        <strong>저장 후 XG-SIM 검증 요청</strong>
-                        V6 OUT rung 후보에서만 지원되며, 정적 검증을 대체하지 않습니다.
-                      </span>
-                    </label>
-                  )}
-                  <label>
-                    <input
-                      type="radio"
-                      name="change-request-scope"
-                      value="permanent_offline_revision"
-                      checked={
-                        changeRequestScope === "permanent_offline_revision"
-                      }
-                      onChange={() => {
-                        if (offlineCandidateAvailable) {
-                          setChangeRequestScope("permanent_offline_revision");
-                          setVerificationScope("offline_native_check_only");
-                        } else {
-                          void prepareOfflineCandidateSession(
-                            "permanent_offline_revision",
-                          );
-                        }
-                      }}
-                      disabled={
-                        sending ||
-                        offlineCandidateBindingBusy ||
-                        !offlineCandidateSelectable
-                      }
-                    />
-                    <span>
-                      <strong>작업 사본 수정·검사·저장</strong>
-                      명확한 요청을 1회 권한으로 사용 · 승인 대기 없이 정적 검사 후 저장
-                    </span>
-                  </label>
-                  <p>
-                    {changeRequestScope === "permanent_offline_revision"
-                      ? "현재 작업 사본에만 적용하며 구조 diff, Program Check, 저장을 확인합니다. 정상 성공 경로에서는 XG-SIM과 독립 재열기를 수행하지 않지만, 검증 실패 복구에서는 원복 확인을 위해 독립 재열기가 수행될 수 있습니다."
-                      : offlineCandidateAvailable
-                      ? "후보는 정적 저장·재열기 검증이 기본이며, V6 OUT rung 후보에는 XG-SIM 검증을 명시 요청할 수 있습니다."
-                      : status.engineeringSystem.offlineCandidateEligible
-                        ? "이 선택은 현재 읽기 전용 작업 복사본을 승인 후보로 다시 검증합니다. 변경은 제안과 승인 뒤에만 적용됩니다."
-                        : "오프라인 후보는 원본 보존 작업 복사본과 검증된 XG5000 대상에서만 선택할 수 있습니다."}
-                  </p>
-                </fieldset>
-              )}
               <div className="composer-footer">
                 <span>
-                  {targetlessAnalysisActive
-                    ? "대상 없는 읽기·분석 · Enter 전송"
-                    : engineeringScopeVisible
-                    ? selectedOfflineScopeUnavailable
-                      ? "현재 대상에서는 오프라인 변경을 요청할 수 없습니다"
-                      : `${
-                          changeRequestScope === "analysis_only"
-                            ? "읽기·분석"
-                            : changeRequestScope ===
-                                "permanent_offline_revision"
-                              ? "작업 사본 수정·검사·저장"
-                              : "승인할 오프라인 후보 준비"
-                        } · Enter 전송`
+                  {selectedOfflineScopeUnavailable
+                    ? "작업 사본 연결을 확인해 주세요"
                     : "Enter 전송 · Shift+Enter 줄바꿈"}
                 </span>
-                <button
-                  className="send-button"
-                  type="button"
-                  disabled={
+                <ComposerActionButton
+                  running={canCancelActiveRun}
+                  cancelBusy={cancelBusy}
+                  sendDisabled={
                     !canChat ||
                     !message.trim() ||
                     sending ||
                     selectedOfflineScopeUnavailable
                   }
-                  aria-label="메시지 보내기"
-                  onClick={() => void sendMessage()}
-                >
-                  <Icon name="send" size={18} />
-                </button>
+                  writeRequest={changeRequestScope === "permanent_offline_revision" && !planningConversationActive}
+                  onSend={() => void sendMessage()}
+                  onCancel={() => void cancelActiveRun()}
+                />
               </div>
             </footer>
           </article>
@@ -6387,6 +6541,13 @@ function App() {
               className="insight-panel"
               tabIndex={-1}
               aria-label="열린 작업 정보"
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  closeInsightPanel();
+                }
+              }}
             >
             <div
               className="panel-tabs"
@@ -6430,7 +6591,7 @@ function App() {
               >
                 <Icon name="activity" size={16} />
                 진행
-                <span>{activities.length}</span>
+                <span>{visibleActivities.length}</span>
               </button>
               <button
                 className="close-insight-button"
@@ -6449,6 +6610,7 @@ function App() {
                   <EngineeringMissionPanel
                     mission={conversation.engineeringMission}
                     availableEvidenceIds={evidence.map((item) => item.evidenceId)}
+                    evidenceTitles={Object.fromEntries(evidence.map((item) => [item.evidenceId, item.title]))}
                     onOpenEvidence={openMissionEvidence}
                     resumeAvailable={canResumeEngineeringMission}
                     resumeUnavailableMessage={
@@ -6497,10 +6659,14 @@ function App() {
                         }
                         tabIndex={-1}
                       >
-                        <span className="evidence-kind">{item.kind}</span>
+                        {debugMode && <span className="evidence-kind">{item.kind}</span>}
                         <strong>{item.title}</strong>
                         <p>{item.summary}</p>
-                        <code className="evidence-id">{item.evidenceId}</code>
+                        <details>
+                          <summary>기술 기록</summary>
+                          <code className="evidence-id">{item.evidenceId}</code>
+                          {item.knowledgeRef && <code className="evidence-knowledge-ref">{item.knowledgeRef}</code>}
+                        </details>
                         {item.location && (
                           <span className="evidence-location">
                             <Icon name="link" size={14} />
@@ -6513,10 +6679,15 @@ function App() {
                               .join(" · ") || "근거 위치"}
                           </span>
                         )}
-                        {item.knowledgeRef && (
-                          <code className="evidence-knowledge-ref">
-                            {item.knowledgeRef}
-                          </code>
+                        {item.location?.program && programs.filter((program) => program.name === item.location?.program).length === 1 && (
+                          <button type="button" className="button secondary-button"
+                            disabled={!programFocusAvailable || Boolean(programFocusBusyId) || canCancelActiveRun}
+                            onClick={() => {
+                              const program = programs.find((entry) => entry.name === item.location?.program);
+                              if (program) void focusEngineeringProgram(program.programId);
+                            }}>
+                            XG5000에서 프로그램 보기
+                          </button>
                         )}
                       </li>
                     ))}
@@ -6537,9 +6708,9 @@ function App() {
               {activePanel === "activity" && engineeringDebugPanel}
 
               {activePanel === "activity" &&
-                (activities.length > 0 ? (
+                (visibleActivities.length > 0 ? (
                   <ol className="activity-list">
-                    {activities.map((item) => (
+                    {visibleActivities.map((item) => (
                       <li
                         key={item.id}
                         className={`${item.tone ?? "default"}${
@@ -6551,7 +6722,7 @@ function App() {
                           <strong>
                             {item.toolState ? item.detail : item.title}
                           </strong>
-                          <p>
+                          {(item.toolState || item.detail) && <p>
                             {item.toolState
                               ? `${TOOL_STATE_COPY[item.toolState]}${
                                   activityDuration(item, activityClockMs)
@@ -6559,7 +6730,7 @@ function App() {
                                     : ""
                                 }`
                               : item.detail}
-                          </p>
+                          </p>}
                           {item.failureReason && (
                             <p className="activity-failure-reason">
                               {item.failureReason}
@@ -6613,6 +6784,7 @@ function App() {
 
             </aside>
           )}
+          </div>
           </section>
         )}
 
@@ -6781,23 +6953,19 @@ function App() {
                 <Icon name="power" size={20} />
               </span>
               <div>
-                <p className="eyebrow">EXPLICIT HOST SHUTDOWN</p>
                 <h2 id="shutdown-dialog-title">ControlStudio 종료</h2>
               </div>
             </header>
             <div className="shutdown-dialog-body">
               <p>
-                Host와 MCP 프로세스를 명시적으로 종료합니다. 브라우저나 PWA
-                창을 닫는 것만으로는 ControlStudio가 종료되지 않습니다.
+                ControlStudio의 백그라운드 작업도 함께 종료합니다.
+                브라우저 창만 닫으면 앱은 계속 실행됩니다.
               </p>
               <p>
-                실행 중인 분석 또는 안전 확인 작업이 있으면 Host가 종료를
-                거부하며, 해당 이유를 이 화면에 표시합니다.
+                진행 중인 작업이 있으면 먼저 완료하거나 취소해 주세요.
               </p>
               <p>
-                개발 코드 변경을 반영할 때는 재시작을 선택하세요. 이미 실행 중인
-                elevated Host가 replacement를 시작하므로 추가 UAC 확인을 요청하지
-                않으며, XG5000은 종료하거나 다시 열지 않습니다.
+                앱을 다시 시작해도 열려 있는 XG5000 프로젝트는 그대로 유지합니다.
               </p>
               {shutdownNotice && (
                 <div
@@ -6839,7 +7007,7 @@ function App() {
                 disabled={shutdownBusy}
                 onClick={() => void restartControlStudio()}
               >
-                {shutdownBusy ? "재시작 확인 중…" : "코드 다시 불러오기 (UAC 없음)"}
+                {shutdownBusy ? "재시작 확인 중…" : "앱 다시 시작"}
               </button>
               <button
                 className="button danger-button"
@@ -6847,7 +7015,7 @@ function App() {
                 disabled={shutdownBusy}
                 onClick={() => void shutdownControlStudio()}
               >
-                {shutdownBusy ? "종료 확인 중…" : "Host와 MCP 종료"}
+                {shutdownBusy ? "종료 확인 중…" : "ControlStudio 종료"}
               </button>
             </footer>
           </section>

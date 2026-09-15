@@ -476,6 +476,7 @@ function RungPatchReview({
               {receipt.simulationProfile.scenario.steps.map((step, index) => (
                 <li key={`${index}:${step.name}`}>
                   <strong>{step.name}</strong>
+                  {!!step.hold_ms && <p>입력을 그대로 유지하며 {step.hold_ms / 1000}초 동안 예상 상태를 반복 확인합니다.</p>}
                   <dl>
                     <div><dt>입력</dt><dd><code>{Object.entries(step.drive).map(([key, value]) => `${key}=${value}`).join(", ")}</code></dd></div>
                     <div><dt>예상 관찰값</dt><dd><code>{Object.entries(step.observe).map(([key, value]) => `${key}=${value}`).join(", ")}</code></dd></div>

@@ -803,6 +803,33 @@ def _expected_mne_xgsim_observation_phases(
     return tuple(phases)
 
 
+def _mne_xgsim_hold_verified(profile: Mapping[str, Any], phases: object) -> bool:
+    """A legacy endpoint cannot satisfy a newly approved held-input test."""
+    scenario = profile.get("scenario")
+    if scenario is None:
+        return True
+    steps = scenario.get("steps") if isinstance(scenario, Mapping) else None
+    if not isinstance(steps, list) or not isinstance(phases, list) or len(steps) != len(phases):
+        return False
+    total = 0
+    for step, phase in zip(steps, phases, strict=True):
+        if not isinstance(step, Mapping) or not isinstance(phase, Mapping):
+            return False
+        hold_ms = step.get("hold_ms", 0)
+        if type(hold_ms) is not int or not 0 <= hold_ms <= 10_000:
+            return False
+        total += hold_ms
+        if hold_ms:
+            duration = phase.get("holdObservedMs")
+            samples = phase.get("holdSamples")
+            if (type(phase.get("holdMs")) is not int or phase["holdMs"] != hold_ms
+                or type(duration) not in (int, float) or not math.isfinite(duration)
+                or duration < hold_ms or type(samples) is not int or samples < 2
+                or phase.get("observationKind") != "polled_steady_state"):
+                return False
+    return total <= 30_000
+
+
 _PUBLIC_CHECKPOINT_EVIDENCE_FIELDS = (
     "schema",
     "host_transaction_id",
@@ -3050,6 +3077,7 @@ class MNEChangeExecutionService:
                     or observation.get("output_bytes_written") is not False
                     or not isinstance(phases, list)
                     or len(phases) != len(expected_phase_values)
+                    or not _mne_xgsim_hold_verified(profile, phases)
                     or any(
                         not isinstance(item, dict)
                         or item.get("phase") != expected_name

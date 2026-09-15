@@ -1,5 +1,3089 @@
 # Development handoff
 
+## 2026-09-14 no-op·scoped edit 배포 후 기존 설계 계속
+
+- root가 planning/projection 전체 회귀 **64 passed**(20.71초)를 확인한 뒤 run
+  `7bd0de8f-f8c9-4ae3-92e7-e4c6bb53351d`를 정상 cancel했고 terminal=true를
+  확인했다. Host restart를 scheduled로 요청하고 재인증까지 성공하여 no-op/진단
+  freshness 및 invalid 초안의 광고된 scoped edit 허용 수정을 배포했다.
+- event19331의 영속 진단은 기존
+  `index_acceptance_alarm_roles_invalid`와 `repair_requires_scoped_edit_tool`을
+  확인하게 했지만 raw arguments는 의도적으로 보존하지 않는다. 따라서 그 실제
+  호출이 narrative와 item repair의 혼합 편집이었다고 단정하지 않는다.
+- 같은 conversation `b0f18468-e072-4b4c-8455-7e2a722f41f3`에서 새 run
+  `b4492e6e-d329-4a8f-80f2-6955c6094fb2`, operation
+  `continue-index-edit-contract-20260914`을 시작했다. 사용자 문구는 “지금까지 만든
+  설계에서 이어서 완성해 줘.”이며 기술 조건을 중복 추가하지 않았다. API는
+  analyzing이고 기존 browser8 재인증 후 최신 요청·분석 중·대화 준비 상태를 실제
+  접근성 트리에서 확인했다.
+- 기존 draft/revision/native 결과는 보존했다. 새 run의 요구 출처 채택, 설계 완성,
+  새 native 생성과 XG-SIM은 아직 확인하지 않았다.
+- 위 배포 뒤 scoped-edit 거절 안내를 더 정확히 고쳐, 실행 collection 전체 교체만
+  제한되고 narrative·기술 설정·acceptance bindings는 관련 item edit와 함께 바꿀
+  수 있음을 명시했다. 이 문구 정리는 현재 Host 재시작 이후 작성되어 아직 실행
+  서비스에는 미배포다. 서버나 실 run을 추가 조작하지 않았다.
+
+## 2026-09-14 설계 no-op·진단 freshness 수정 — 배포 대기
+
+- 실제 run `7bd0de8f-f8c9-4ae3-92e7-e4c6bb53351d`에서 rev621→622
+  `design.edit`가 성공으로 기록됐지만 두 revision의 editable document와 digest가
+  동일했고, 이전 `index_acceptance_alarm_roles_invalid` 진단도 그대로 승계됐다.
+- 일반 `design.edit`가 실제 문서를 바꾸지 않으면 revision을 만들지 않고
+  `edit_made_no_change`, `diagnosticsFreshness=retained_not_rechecked`,
+  `nextAction=design.check`를 반환하도록 수정했다. 실제 변경이면 이전 검사를 새
+  결과처럼 승계하지 않고 새 revision을 `working`/미검증 상태로 저장한다. 이전
+  진단은 append-only 과거 revision에 보존된다.
+- 최신 USER 요구 출처가 complete brief/legacy supplemental shortcut에서 빠지던
+  문제도 함께 수정했다. Agent가 exact message source를 요구 변경인지 상태·계속
+  메시지인지 판단하며, 채택 시 기존 Host 원문 검증과 review 결속을 거친다.
+- root가 planning/projection 전체 회귀를 독립 실행해 **63 passed**
+  (19.56초)를 확인했다. 테스트 이름도 새 진단 freshness 계약에 맞췄다.
+- 이 no-op/freshness 수정은 아직 Host에 배포하지 않았다. 현재 실 run은 취소하거나
+  재시작하지 않고 유지 중이다. 이 회귀 결과는 PLC 동작 또는 XG-SIM 통과 증거가
+  아니다.
+
+## 2026-09-14 요구 출처 채택·설계 실패 진단 배포 후 재실행
+
+- 설계 도구 실패 이벤트에 request/tool-call 결속을 유지한 bounded 진단을
+  영속하도록 배포했다. 최대 4개의 Host 고정 `code`/JSON-pointer `path`/고정
+  `message`/허용된 `expectedType`만 남기며 raw arguments, submitted value,
+  전체 설계와 credentials는 저장하지 않는다. 일반 UI는 기존 실패 요약만 표시한다.
+- complete brief와 legacy supplemental이 있더라도 새
+  `requirement_message_sources`가 있으면 deterministic narrative shortcut을
+  사용하지 않고 Agent가 새 원문을 요구 변경/확인 또는 상태·계속 메시지로
+  판단한다. 채택한 요구는 기존 exact quote/messageId 검증과 새 review artifact에
+  결속하며 기존 승인본이나 DB brief에 소급 적용하지 않는다.
+- root가 독립 실행한 Host 집중 회귀는 4 passed, Agent 묶음은 67 passed 및
+  51 subtests passed다. 이 결과는 PLC 동작 또는 XG-SIM 통과 증거가 아니다.
+- 이전 run `b52c1f37-0c12-4142-9caa-5e1f96d50153`는 정상 cancel API로
+  terminal=true를 확인했다. 중단 사유는 속도가 아니라 정상 정지를 네 번째
+  알람으로 생성(rev606), 삭제(rev616), 재생성(rev618)하고 acceptance의 네 번째
+  알람으로 추가(rev619), 다시 삭제(rev621)한 의미 왕복 회귀다.
+- Host restart API를 scheduled로 요청한 뒤 재인증까지 성공하여 위 두 패치를
+  배포했다. 같은 conversation
+  `b0f18468-e072-4b4c-8455-7e2a722f41f3`에서 새 run
+  `7bd0de8f-f8c9-4ae3-92e7-e4c6bb53351d`, operation
+  `complete-index-requirement-adoption-20260914`을 시작했다. 요청은 정상 정지를
+  별도 버튼으로 두고 세 알람을 유지하며, 준비·정지 실제 연결과 자동·수동 모드
+  리셋을 기존 설계에서 완성하는 내용이다. 원본 금지 등의 불필요한 반복 문구는
+  추가하지 않았다.
+- 현재 API 상태는 analyzing이다. 새 run의 실제 source 채택, 설계 완성,
+  브라우저 재인증, 새 native 생성과 XG-SIM은 아직 확인하지 않았다. 기존 DB
+  revision, native operation과 생성 파일은 모두 보존했다.
+
+## 2026-09-14 변경 설계의 별도 native 생성 경로 복구
+
+- 같은 대화의 기존 native operation 복원이 새 코드 변경 검토본에서도 신규 생성
+  폼을 숨기는 UI 결함을 확인했다. Host의 binding-only 동일성 검사는 유지했다.
+- 다른 검토 digest일 때 기존 프로젝트 시험 설정 사용과 새 설계의 별도 프로젝트
+  생성을 구분했다. 후자는 UI 복원 선택만 해제하고 패널을 새로 마운트한다.
+  기존 operation/프로젝트는 삭제하거나 변경하지 않는다. 동일 digest 복원은 유지한다.
+- Sol의 typecheck/프로필 UI 회귀 통과 후 실제 production build 및 entry 검증 성공.
+  서비스 HTML이 assets/index-BL4t9JA2.js를 제공함을 확인했다. Host 재시작 없음.
+- 실제 새 검토본으로 클릭·생성·XG-SIM까지 통과한 증거는 아직 없다.
+  run b52c1f37-0c12-4142-9caa-5e1f96d50153는 현재 계속 실행 중이다.
+
+## 2026-09-14 반복 편집 중단 후 요구 출처·검토 UI 수정 배포
+
+- run `bdc6b832-13f9-491a-b117-aca3b177052d`는 준비 연결을
+  mode_stopped→emergency_stop→mode_stopped로 되돌렸다(rev600~603 비교).
+  같은 invalid 설정의 왕복 편집을 확인해 취소 API를 호출했고 terminal=true,
+  state=cancelled를 받았다. 속도/조회 timeout만으로 중단한 것이 아니다.
+- 아래 요구 출처 보존, profile/requirement semantic review UI 묶음을 Host 재시작과
+  실제 `npm run build`로 반영했다. production entry 검증도 통과했다.
+- 새 run `b52c1f37-0c12-4142-9caa-5e1f96d50153`, operation
+  `complete-index-missing-inputs-20260914`를 같은 대화에서 시작했다.
+  준비 확인 입력과 정상 정지 버튼을 실제 로직에 추가하고 원래 요구 전체를
+  완성하라는 자연어 요청이다. 새 요청 후 supplemental 길이는 13,601자로 불변,
+  draft도603으로 유지되어 불필요한 brief_changed revision을 만들지 않았다.
+- 기존 브라우저 tab8에서 재인증 후 실제 새 요청/처리 중 화면을 확인했다.
+  기존 native 파일은 변경하지 않았다. XG-SIM 실제 인수 시험은 여전히 미완료다.
+
+## 2026-09-14 후속 대화 요구 출처 보존 수정 — 배포 대기
+
+- 일반 USER 후속 메시지의 supplemental 자동 append를 제거하는 코드 묶음이
+  Host/Agent 집중 회귀를 마쳤다. 기존 DB/이력은 변경하지 않았다.
+- 메시지 출처는 마지막 human review의 채택 출처, 현재 draft 참조,
+  그 review 이후 USER 원문을 결합한다. 부분/질문 artifact만 발행됐다고
+  미채택 요구를 버리지 않는다. messageId+exact quote는 동일 대화 DB에서 검증한다.
+- 새 요구 출처는 새 artifact semantic review에 결속된다. 상태 질문만으로
+  기존 review를 일괄 stale로 만드는 신규 코드는 제거했다.
+- Host planning drafts 59, 출처 관련17, Agent65 회귀가 통과했다.
+  새 requirement/message 항목의 웹 본문/기술 상세 연결도 완료했다.
+  웹 exact review universe는 출처 항목의 누락/ID·quote 변조를 거절하고,
+  본문에는 한국어 요구 분야와 사용자 원문만 표시한다. UI 회귀/typecheck 통과.
+  root의 별도 Vite production build도 성공했다
+  (`.test-tmp/requirement-review-build-20260914`, 실제 서비스에는 미반영).
+- 이 묶음과 앞선 profile 검토 화면 수정은 아직 실행 서버에 미배포다.
+  실제 run bdc6b832는 rev600 invalid에서 신호 연결 진단을 받았고 계속 실행 중이다.
+  아직 설계 편집이나 XG-SIM 운전 완료를 확인한 것은 아니다.
+
+## 2026-09-14 의미 검사 및 이력 조회 배포 후 실제 설계 보완 재개
+
+- design.read의 revision/latest_published/published_plan_digest와 profile 의미 검사를
+  배포했다. 미존재 digest에서 None을 역참조하던 배포 전 결함도 수정했다.
+- rev598에는 준비/정상 정지 입력이 실제로 없다. 설정만 수정하는 임시 제약을
+  해제하고 원래 요구를 구현하는 요청을 같은 대화에 전달했다. 실행 ID는
+  `bdc6b832-13f9-491a-b117-aca3b177052d`, operation은
+  `complete-functional-index-design-20260914`다. 기존 저장 파일 덮어쓰기는 요청하지 않았다.
+- 브라우저 기존 tab8을 재인증해 실제 새 요청과 처리 중 화면을 확인했다.
+  Sol은 Host/Agent/web의 시험 역할·신호 연결 검토 항목을 구현 완료했다.
+  한국어 역할·신호 이름 본문과 기술 상세를 분리하고 구 artifact의 검토 누락을
+  재발행 안내로 처리한다. 집중 Host/Agent/UI 회귀와 typecheck는 통과, 아직 배포 전이다.
+  현재 run은 이전 Host/Agent 프로세스를 사용하므로 종료 전 재시작하지 않는다.
+  새 검토 규칙은 Host/Agent/web을 함께 배포하고 기존 draft로 재발행해야 한다.
+- 실제 시뮬레이션 완료 증거는 여전히 없다. 기존 native operation을 보존한다.
+
+## 2026-09-14 시험 설정 발행 후 의미 검증 차이 확인
+
+- 역사적 native 관찰 전달 및 금지 출력 유지관측을 배포했다. 실제 DB projection에서
+  briefRelation=previous_project_brief인 native_simulation_profile 관찰이 전달됨을
+  읽기 전용으로 확인했다(`.test-tmp/inspect-native-observation-lineage.py`).
+- 같은 대화의 run `3b2ce590-5b7e-4749-9083-141e84d94441`은 07:09:08 UTC에
+  COMPLETED, rev598 published로 종료했다. 최신 검토 message는
+  `65733f30-3d33-4a83-931a-6c853df8aff8`이다. indexAcceptanceBindings만 추가했고
+  요청한 이전 rung 순서 복원은 수행하지 않았다. 실제 프로젝트에는 미적용이다.
+- Host design.check는 valid를 반환했지만 같은 발행 artifact를 production MCP
+  IndexAcceptanceBindings.resolve에 넣으면 `acceptance signal role ready has no
+  compatible reviewed signal`로 거절된다. ready=mode_stopped, stop=emergency_stop인
+  설정이다. 역할 kind 불일치와 서로 다른 기능의 alias를 시험 설정 검사에서
+  진단해야 한다. `.test-tmp/check-current-index-bindings.py`로 읽기 전용 재현 가능.
+- 과거 초안은 DB에 있었지만 Agent가 조회할 도구는 없었다. Sol이 design.read의
+  revision/latest_published 조회를 구현했으나 아직 배포하지 않았다. latest는
+  현재598이므로 native base591은 관찰의 reviewedPlanDigest로 정확히 선택할 수
+  있도록 보완 중이다. 설정 의미 검증 연결과 함께 완료 후 배포한다.
+- 같은 대화의 새 검토본에서 기존 native operation 연결이 사라지는 웹 결함은
+  수정하고 production build까지 반영했다. 다른 대화에는 기존 operation을
+  재사용하지 않는다. 새로운 검토본의 실제 simulation resume는 아직 미검증이다.
+
+## 2026-09-14 기존 build 재연결 및 profile 관찰 전달 확인
+
+- supplemental/rebind 1차 묶음을 Host 재시작으로 배포하고, 기존 native operation
+  `6f9b17bc-027d-4396-af06-049b325d8507`에 runSimulation=true로 재개했다.
+  동일 독립 XG5000 PID15588/HWND199644에서 project.verify_native_reopen을
+  실제 실행해 native_reopen_binding을 다시 만들었다. 결과는 COMPLETED,
+  engineeredProgramReady=true, reopenVerification=verified다.
+- simulationVerification은 아직 not_verified이며, 실제 structured preflight는
+  EXPLICIT_INDEX_ACCEPTANCE_BINDINGS_REQUIRED다. auto/manual/stopped와 현재
+  신호·알람·타이머 목록을 보존한다. XG-SIM 운전 시나리오는 아직 실행되지 않았다.
+- 웹 production build를 반영하고 실제 화면에서 저장·재열기·프로그램 검사 완료를
+  확인했다. 새로고침 후 동일 planning 대화와 마지막 취소 요청도 보존됐다.
+- 후속 대화의 brief 변경 시 과거 build 관찰이 projection에서 없어지는 별도
+  문제를 확인했다. Sol 작업자가 Host→Agent 역사적 관찰 전달을 수정 중이다.
+  이 관찰은 실행 권한이나 현재 draft 검증 결과로 취급해서는 안 된다.
+- 금지 출력의 단발 관측을 유지 관측으로 바꾸는 runner 수정은 소스 회귀를
+  마쳤으나 위 Host 재시작 이후 작성되어 아직 실행 프로세스에 반영되지 않았다.
+
+## 2026-09-14 실제 생성·재열기 이후 시뮬레이션 연결 미완료
+
+- 대화 `b0f18468-e072-4b4c-8455-7e2a722f41f3`의 run
+  `0750277e-855a-4ede-b6a7-f6da233bd033`은 rev591 검토 발행으로 종료했다.
+  native operation `6f9b17bc-027d-4396-af06-049b325d8507`은 기존 작업을
+  reconcile/resume하여 생성·저장·독립 재열기 검증을 완료했다. 새로 만들지 않는다.
+- XG-SIM 인수 시험은 아직 실행되지 않았다. 첫 시도는 세 운전 모드에 대한
+  indexAcceptanceBindings 부재로 profile preflight에서 거절됐다. Host 재시작 뒤
+  같은 operation을 재개한 시도는 saved-build 세션이 analysis 권한으로만 복구되어
+  simulate 권한 검사에서 차단됐다. 두 결과 모두 PLC 시나리오 실패 증거가 아니다.
+- profile 관찰의 Host→Agent strict schema 전달 수정은 배포됐다. 별도 검토한
+  binding-only 시험 설정을 기존 build에 연결하는 simulationPlanRevision과 재시작
+  후 simulation 권위 복구는 Sol 작업자가 구현 중이다. 현재 작업 파일을 완성본으로
+  간주하거나 검증 없이 Host를 재시작하지 않는다.
+- 후속 실제 요청 `자동·수동 모두 시험할 수 있게 시뮬레이션 설정을 보완해줘.
+  프로그램은 그대로 유지해줘.`의 run `db066e45-33de-4060-96f7-7f76ade8c000`은
+  설정 작성 대신 timeout recovery rung 순서를 두 번 변경했다. rev594에서 이를
+  확인하고 취소 API가 terminal=true/cancelled를 반환했다. 속도 때문에 취소한
+  것이 아니다. rev591 대비 rung 내용은 같고 순서만 다르며 bindings는 아직 없다.
+  rev594와 이력을 보존했고 실제 생성 파일에는 이 변경을 적용하지 않았다.
+- 다음 작업은 미완성 권위 연결을 끝내고, 기존 검토 build 기준 시험 설정만
+  작성·검토한 뒤 실제 XG-SIM을 실행하는 것이다. 운전 중 모드 유지와 timeout
+  복구 등 로직 정확성도 아직 미완료이며 정적 진단 0건으로 대체할 수 없다.
+
+## 2026-09-14 리셋 불가능 조건 재현 및 실제 실행 반영
+
+- 이전 run b6872caf-c6a5-4cd4-8ed2-edefc54b9ab1은 rev578까지 작성했다.
+  모드 선언에서 stopped 공통 조건을 제거했지만, stopped OUT에 any_alarm OFF를
+  추가하여 구조 검사 0건 상태에서도 세 알람 복구가 막혔다. 모든 recovery가
+  mode_stopped ON과 해당 alarm latch ON을 요구하기 때문이다.
+- `.test-tmp/probe-retained-alarm-reset.py`는 원본 DB를 읽기 전용으로 열어
+  세 복구 조건 모두 false인 settled Boolean trace를 재현한다. XG-SIM 증거가 아니다.
+- Host recovery_conditions.py는 단일 OUT writer의 필수 Boolean 조건을 추적한다.
+  OR 대안은 교집합만 사용하며 다중 writer를 임의 해석하지 않는다. 충돌을
+  design.check/publish에 반환하고 Agent는 ladder/control_network/recovery 편집을
+  선택할 수 있다. Host 관련 테스트 56 passed.
+- binding-only design.edit는 invalid 초안에서도 가능하되 기존 진단과 나머지
+  작업물을 보존한다. Agent의 invalid/working read도 해당 editor를 노출한다.
+  상충 지시문 수정, no-op 뒤 read/check 우선 경로 적용. Agent 회귀 40 passed,
+  binding 경로 4 passed. 이 수치는 실사용 완료 증거가 아니다.
+- 위 변경과 앞선 forced inspect/check 추론 분리를 Host 재시작으로 반영했다.
+  기존 초안을 보존하고 짧은 `이어서 완성해줘.`로 재개한 현재 run은
+  3f135fda-a5a5-4324-af7c-58668541bac1, operation
+  resume-recovery-dependency-fix-20260914. 실제 check로 rev579 invalid,
+  recovery_settled_conditions_contradict 3건 전달 확인. task131116 생성 중 관찰.
+- 브라우저 기존 tab8에 재인증하여 같은 대화 복원 확인. 새 정책 문구를 사용자에게
+  반복 입력시키지 않았다. native 생성/저장/재열기/XG-SIM 전체 검증은 미완료.
+
+## 2026-09-14 확정 조회 호출과 설계 추론 분리 (차기 실행)
+
+- capability에서 허용 도구가 design.inspect 또는 design.check 하나뿐인 경우,
+  Qwen 추론을 끄고300토큰 호출 준비. 선택/수정 판단은 추론 및16000예산 유지.
+  base extra_body를 복사하므로 이후 수정 호출의 추론 설정은 바뀌지 않음.
+- test_workspace_reasoning_profile 4 passed. 현재 runb687은 재시작하지 않았음.
+  task120409 processing=true 관찰. 실제 수정 품질/전체 인수 시험은 미완료.
+
+## 2026-09-14 연결 회귀 및 첫 실제 도구 진행
+
+- runb687에서 design.inspect tool.selected 확인. task117139 종료 후
+  task118675 processing=true. 새 예산으로 최초 도구 단계 진행, rev574 보존.
+- 결합 회귀: Agent workspace/runtime/추론/실패 shape/artifact + MCP 역할 시험
+  60 passed + 5 subtests. Host draft/직렬화/receipt ID/edit impact 64 passed.
+- 실제 설계 조건 변경, 검토 발행, native 생성/XG-SIM은 여전히 미완료.
+
+## 2026-09-14 추론 예산 도구별 덮어쓰기 수정
+
+- run2eb3 FAILED agent_output_contract (02:38:52 UTC), rev574 유지. 첫 tool 이벤트 없음.
+  앞서 관찰한 서버 n_predict300은 capability가 설계 추론 예산16000을 덮은 값.
+- _RequireWorkspaceToolUntilPublished.minimum_output_tokens 추가, 추론 켠 workspace만
+  전체 응답 예산을 하한으로 유지. 비추론 모델의 기존 도구별 한도는 유지.
+  test_workspace_reasoning_profile 3 passed. 실패의 유일 원인이라는 증거는 아직 없음.
+- terminal 실행이므로 같은 대화에 짧은 계속 요청으로 새 실행 시작
+  operation resume-reasoning-budget-fix-20260914. 다음에 run/slots 실제 예산 확인 필요.
+
+## 2026-09-14 설계 추론 프로파일 재개
+
+- run61d4 정상 cancel terminal 확인 후 Host 재시작 없이 새 Agent 실행.
+  run2eb3a346-99f5-4f62-b415-ae4e9cfe5324, operation resume-reasoning-workspace-20260914.
+  같은 대화에 '이어서 완성해줘.'만 전송, rev574 invalid 3 보존.
+- Qwen task116830 processing=true, generated179, outputLimit300 (초기 단계).
+  아직 design tool 이벤트 없음. workspace 추론 실제 요청/품질 개선 확인 전.
+- 이전과 같은 오류 반복을 근거로 설계 전용 프로파일 적용했으며 느림만을 이유로
+  재시작하지 말 것. 새 실행에서 실제 조건 수정 및 전체 요구 완료 여부 확인 필요.
+
+## 2026-09-14 설계 작업 추론 설정 분리 (미적용)
+
+- run61d4 rev572→574에서 stopped permit 재추가 왕복 확인, 실제 모드 조건 그대로.
+- _design_workspace_model_settings 추가. Qwen 설계 작업만 enable_thinking=True,
+  max_tokens16000. 일반 대화/서술 설정은 그대로. 원래 context 크기를 줄이지 않음.
+- 이것은 반복 수정에 대한 품질 개선 가설이며 실제 성공 증거 아님. 현재 실행은
+  아직 이전 설정. 프로파일/기존 Qwen 회귀 11 passed + 3 subtests (session26572 exit0).
+
+## 2026-09-14 설명 편집과 실행 편집 구분 검증
+
+- 기존 _ladder_edit_impact 반환을 재사용. 조건만 바꾼 실제 draft 저장 및
+  description/condition/action/순서 구분 테스트 5 passed.
+- Agent 지침에 executableChanged=false를 동작 수정으로 보지 말도록 연결
+  (현재 run에는 아직 미적용). 관련 저장 경로 자체는 조건을 버리지 않음.
+- run61d4 유지, rev572 working diagnostic0, task115618 processing=true.
+  rev569→572는 network permit 변경이며 mode OUT 실제 조건은 그대로임.
+  cn_mode_stopped에 any_alarm OFF를 추가했으므로 알람 복구 정지 조건과 충돌
+  여부도 확인할 것. '오류0'을 동작 완료로 취급 금지.
+
+## 2026-09-14 실제 웹 복원 확인 / Windows 관찰 실패
+
+- CUA browser1 tab8 실제 AX 확인: 대화 준비됨, retained 대동인덱스 대화,
+  '이어서 완성해줘.' 및 분석 중/작업 중단 요청 버튼 표시. 웹 연결 증거 있음.
+- computer-use SKILL 및 guidance/api/confirmations 전체 읽은 후 sky 초기화.
+  list_windows timeout → 2초 후 retry timeout → node_repl reset/초기화 후
+  retry timeout. 이번 복구 절차 소진. 이전 좌표나 임의 handle로 조작 금지.
+- XG5000 화면/프로젝트/XG-SIM 실행은 이번에도 확인되지 않음. 웹 연결 확인을
+  native 검증 완료로 대체하지 말 것. 코드 및 목적별 MCP 경로 작업은 계속 가능.
+
+## 2026-09-14 역할 바인딩 변경 적용 후 일반 문장으로 재개
+
+- run41e3 정상 cancel terminal 확인 후 Host restart scheduled 및 재인증 성공.
+  새 run61d4e32b-7156-49b5-b621-f705f4b83fc3 ANALYZING,
+  operation resume-index-acceptance-bindings-20260914.
+- 같은 대화에 '이어서 완성해줘.'만 전송. brief/초안 보존, 최신 rev566 invalid 2.
+  mode network permit와 OUT 조건 불일치가 남아 있음. 기술 repair prompt 미추가.
+- MCP 개발 실행기 import가 현재 src/native_simulation.py 및 새 role mapper를
+  읽는 것 확인. Host/Agent 재시작 적용 경로 확인; 실제 XG-SIM 호출은 아직 아님.
+- 웹 재인증 URL을 Codex browser panel로 열도록 요청. 실제 렌더 확인은 별도 필요.
+
+## 2026-09-14 Host 시험 ID 검증 회귀
+
+- _index_acceptance_scenario_ids는 receipt가 아닌 검토 설계에서 기대 시험 ID를
+  계산한다. 실제 알람 ID 지원 및 누락/중복/미검토 알람 연결 거부.
+- test_index_acceptance_receipt_scope.py 7 passed. 전체 receipt/실제 PLC 통합
+  증거가 아니라 기대 시험 집합의 회귀 테스트다. legacy 8개 시험 이름 유지.
+
+## 2026-09-14 Agent 바인딩 작성 및 최종 artifact 연결 (미배포)
+
+- 유효한 design.read(index_acceptance_bindings) 이후 design.edit 노출.
+  신규 설계 workspace 지침에 해당 인덱스 인수 조건일 때만 기존 ID 역할 연결 작성
+  안내 추가. 사용자에게 내부 역할 이름을 입력시키지 않는다.
+- derive_new_project_plan_artifact가 수동 직렬화하므로 새 필드를 빠뜨리던 경로
+  수정: design.indexAcceptanceBindings 보존. 없는 기존 artifact는 필드 생략 유지.
+- Agent test_index_acceptance_artifact.py 2 passed: read→editor와 artifact 보존 및
+  digest 변경 확인. 모의 의미 검증이나 실제 XG-SIM 시험 완료 아님.
+- 아직 Host 의미 검증/receipt 통합 회귀 및 live 배포 필요. 현재 저장 초안에
+  바인딩을 직접 덮어쓰지 않았고 실행 중 Agent는 구버전이다.
+
+## 2026-09-14 인수 시험 runner 실제 ID 연결 (미배포)
+
+- MultiModeIndexSimulationRunner가 design.indexAcceptanceBindings를 해석한다.
+  신호/알람/타이머는 실제 ID를 사용하며, 수동 시험은 별도 manual_start 역할 사용.
+  잘못된 명시 profile은 constructor에서 거절하며 generic 시험으로 묵살하지 않는다.
+- legacy profile은 유지. 명시 profile의 stop은 motion/running 정지를 요구하되
+  선택된 모드까지 반드시 해제하도록 강제하지 않는다 (선택 상태와 운전 상태 분리).
+- Host multi-mode receipt의 fault scenario ID 집합은 명시 바인딩의 실제 알람과
+  정확히 일치해야 함. 바인딩 세 역할/서로 다른 알람/전체 알람 커버리지 검사.
+- MCP tests: 17 passed + 5 subtests. 새 테스트는 임의 ID/별도 수동 입력/정지 모드
+  포함 전체 trial 흐름을 mock으로 실행; 실제 XG-SIM 성공 증거 아님.
+- 남은 연결: Agent 작성 지침/선택 경로 및 Host 전체 의미 검사·receipt 회귀,
+  live 배포 후 실제 생성/저장/재열기/XG-SIM. 기존 run은 아직 구버전 실행 중.
+
+## 2026-09-14 역할 바인딩 draft 편집 연결
+
+- planning_drafts의 read/replace_section에 index_acceptance_bindings 추가.
+  기존 native_design 컬렉션을 유지하면서 해당 객체만 교체한다.
+- 직렬화/기존 객체 보존 테스트 3 passed. catalog 기대 항목에 새 section 반영.
+  전체 planning_drafts 재실행 49 passed (session79290 exit0).
+- runner/receipt 연결과 Agent 도구 선택·지침 연결은 아직 남음. 현재 live run은
+  이 미배포 변경을 사용하지 않음. /slots task113414 processing=true 관찰.
+
+## 2026-09-14 역할 바인딩 설계 직렬화 연결 (실행 전)
+
+- Agent NewProjectNativeDesign / Host ProjectPlanNativeDesignV1에 선택적
+  index_acceptance_bindings 추가. nested profile은 schema/signals/modes/alarms/timer.
+- None은 exclude_if로 생략하므로 기존 serialized design에 새 null 필드를
+  넣지 않는다. Host serialization tests 2 passed (실행 의미 검증 아님).
+- 아직 draft 편집 도구, runner, receipt 검증 연결 전이다. 실행 지원 완료로
+  취급 금지. MCP IndexAcceptanceBindings.resolve가 전체 역할/참조 검사를 담당할
+  예정이며 현재 API 모델은 전송 형식만 보존한다. 배포 전 통합 필요.
+
+## 2026-09-14 인수 시험 역할 바인딩 구현 시작 (실행 연결 전)
+
+- MCP live/index_acceptance_bindings.py 추가: 명시적인 검토용 역할→실제 ID
+  바인딩을 원본 설계 변경 없이 해석. 자동/수동 시작 버튼 분리 또는 공용 지원,
+  별도 정지 모드 허용, 실제 알람 latch 및 timeout timer 연결.
+- tests/test_index_acceptance_bindings.py 8 passed. 임의 ID와 세 모드 설계 보존,
+  버튼 분리/공용을 검사. 실제 XG-SIM 시험 결과 아님.
+- 아직 production 호출자 없음. 다음 작업은 검토 아티팩트/다이제스트에 바인딩을
+  포함시키고 MultiModeIndexSimulationRunner의 고정 문자열을 이 바인딩으로
+  대체하는 것. Host receipt 검증도 실제 alarm ID를 사용해야 함.
+  미검토 외부 별도 인자로 바인딩을 주입하거나 설계를 예제 이름으로 바꾸지 말 것.
+
+## 2026-09-14 컴파일 경계 재검증 / 남은 실행 연결
+
+- rev556 readonly replay: Host/MCP v4 컴파일 결과의 모든 필드 동일
+  (`DIFFERENT_FIELDS []`). 내부 출력의 빈 permit 허용과 별개로 digital_output으로
+  바꾼 음성 사례는 양쪽 모두 거부. 실제 XG5000 빌드/시뮬레이션 증거는 아님.
+- Agent `.venv-dev`에서 wait_step_release_contract + native_held_state: 8 passed.
+  Host 테스트 환경에는 Agent openai 의존성이 없으므로 이 결합 테스트에 쓰지 말 것.
+- 최신 관찰: 동일 run41e3 ANALYZING, draft559 working diagnostics0.
+  서버 /slots task112042 processing=true 확인. 느리다는 이유로 새 요청 시작 금지.
+- 실제 다중 모드 시험기는 REQUIRED_MODES/ALARMS와 신호 이름에 의존한다.
+  임의로 생성한 설계의 역할을 검토된 시험 계획에 연결하는 작업이 아직 필요하다.
+  예제 이름으로 강제 변경하거나 mock 통과를 실제 인수 시험 완료로 보고하지 말 것.
+
+## 2026-09-14 XG5000 실행 확인 / 일반 대화 원칙
+
+- 기존 실행 요청 session24455 exit0. Get-Process에서 PID4384, MainWindowTitle XG5000
+  확인. 창 내용/프로젝트/시뮬레이터 실행 증명 아님. 중복 실행하지 말 것.
+- sky.list_windows timeout → 재시도 app-server exited → reset/초기화 후 동일 오류.
+  Computer Use 화면 확인 실패. 과거 좌표나 가짜 window handle로 조작 금지.
+- 사용자는 매번 원본/물리PLC 금지 등 내부 지시를 대화에 넣는 것에 명확히 반대.
+  기존 brief는 append_planning_clarification에서 유지됨. plain followup 보존 테스트1passed.
+  향후 기술적 repair prompt를 일반 사용자 메시지로 계속 쌓지 말 것.
+- rev556 manual start_all에 버튼 재추가됐음. 현재 run41e3, Qwen task108976 생성중.
+  release 및 MCP 내부 permit 수정은 아직 live 배포 전. 전체 검증 미완료.
+
+## 2026-09-14 Host/MCP 컴파일 연결 비교 및 XG 실행 요청
+
+- .test-tmp/compare-native-compilers.py readonly rev553 비교: XGK 주소 정규화 후
+  Host pass/MCP empty internal permit 거부 확인. MCP network 조건에서 internal_bit만
+  빈 permit 허용 및 conditions allow_empty 인자를 추가해 Host와 일치시킴.
+- 재실행 Host COMPILE_PASS / MCP COMPILE_PASS (v4). 출력 전체 동일성/실기 검증 아님.
+  release 변경과 이번 MCP 변경은 live 배포 및 regression 추가 확인 필요.
+- XG5000 프로세스 없음 확인 후 C:\XG5000\XG5000.exe Start-Process 요청.
+  exec session24455는 아직 반환 안 됨, 후속 process 조회도 없음. 승인창 추정 금지.
+  사용자에게 승인창 여부 질문했으나 답변 아직 없음. 중복 launch 금지, 같은 handle 확인.
+
+## 2026-09-14 첫 대기 단계 release 회귀 검증 (미배포)
+
+- test_wait_step_release_contract.py 추가: 첫 대기 단계의 digital input ON과 final/reset
+  OFF 허용, final 또는 reset 해제조건 누락 시 거부. 선언과 대응 advance rung 함께 변경.
+  Agent 테스트 3 passed. 실제 XG-SIM 시험이 아닌 계약 회귀 검사.
+- 회귀 중 recovery에도 start_all만 보던 동일 제한 발견. Agent/Host/MCP 세 계층의
+  recovery release 후보도 첫 단계 digital input까지 일치시킴. 역조건 필요 자체는 유지.
+- 전체 MCP/Host 통합 회귀 및 live 배포는 아직 필요. run41e3 현재 상태 재조회할 것.
+
+## 2026-09-14 수동 시작 조건 왕복의 하위 검증 원인 수정 (미배포)
+
+- rev553 실제 diagnostic: require_start_release final inverse start condition.
+  첫 대기 단계에서 버튼을 받는 설계인데 하위 세 계약은 start_all만 역조건 후보로 삼음.
+- Agent runtime / Host native_projects / MCP native_create 모두 첫 단계 complete 조건의
+  digital_input도 release 후보로 포함. final 및 reset의 역조건 검사는 유지.
+- 저장 rev553 Host 재검사 diagnostics0 확인. 실제 래더/모드 유지/XG-SIM 증명 아님.
+- 새 회귀 fixture 테스트 및 MCP 계약 검증 추가 필요. 현재 live에는 미적용, run41e3 유지.
+
+## 2026-09-14 왕복 수정 중단 후 Host 변경 적용 재개
+
+- rev550 manual_move_btn start_all 재추가, rev551 재제거: rev549와 동일해지는
+  왕복 수정 확인. run cfbac858 정상 cancel, Host restart 요청 후 새 인증 성공.
+- run41e3d8c0-4bc4-4133-b5bd-7023a57a31a3 analyzing 시작,
+  operation resume-host-dependency-patch-20260914. mode 조건 실제 변경 우선 요청.
+- Host existing-item patch 범위 및 실패 이유 표시 변경 포함 재기동 요청함.
+  웹 세션 재인증/실제 화면 확인은 다음에 필요. native 전체 미완료.
+
+## 2026-09-14 편집 거부 원인 표시 구분 (미배포)
+
+- agent_client가 design edit 거부 진단을 no-change/scope/schema/기타 고정 reason code로
+  구분해 기록하고 app이 짧은 사람용 문구로 표시. 원문 JSON/경로/비밀값은 복사하지 않음.
+- 이전 두 실패 event16690/16696은 generic code만 있어 정확한 원인 복구 불가.
+- Host 기존 항목 patch 허용과 함께 아직 미배포. run cfbac858 유지, rev549 이후
+  새 수정 확인 전. 전체 native/XG-SIM 완료 아님.
+
+## 2026-09-14 장기 생성 반환, 수동 진입 선언 수정
+
+- runcfbac858 Qwen task89497이 15k 이상 생성 후 실제 edit 반환.
+  rev549 seq_manual.start_all에서 manual_move_btn ON만 제거. 첫 대기 단계의
+  버튼 ON 조건은 유지. 아직 대응 래더/모드 유지/새 시작 요구 완료 아님.
+- 다음 task105339 processing=true/generated0 확인. 기존 요청을 시간 이유로 중단하지 않음.
+- Host 기존 항목 patch 허용 변경은 여전히 미배포. 전체 native/XG-SIM 미완료.
+
+## 2026-09-14 Host 기존 항목 연관 수정 허용 (미배포)
+
+- planning_drafts section edit에서 모두 기존 ID의 patch_item인 batch는 첫 diagnostic의
+  section/item 제한을 넘어서 수정 가능. Agent read/editor 노출만 바꿔서는 Host가
+  repair_section_mismatch로 거부하던 실제 연결 문제 수정.
+- create/remove 제한, schema/revision/no-op 검사와 최종 check/publish 조건은 유지.
+- test_planning_drafts 49 passed. 새 테스트는 오류 남은 상태의 다른 영역 실제 저장 및
+  후속 check invalid 유지를 확인. Host 미재시작이므로 live에는 아직 미적용.
+- 현재 runcfbac858 계속 생성. 마지막 Qwen task89497 processing=true/generated132.
+- 시뮬레이터 explicit binding 구현은 아직 미완료, 전체 native 검증도 미완료.
+
+## 2026-09-14 현재 native acceptance 연결 제약 재확인
+
+- native_simulation.py MultiModeIndexSimulationRunner.supports는 모드/알람 ID 고정 집합을
+  요구하고 수동 trial은 manual_mode_btn pulse 후 start_btn을 사용한다. 현재 별도
+  manual_move_btn/select 입력 설계의 사용자 시나리오와 다름. 단순 이름 치환 금지.
+- server.py verify_native_simulation는 supports false이면 단일 객체 NativeSimulationRunner로
+  분기. Host receipt도 고정 alarm scenario ID를 검증하므로 MCP 한 곳만 바꾸면 안 됨.
+- 기존 verify_mne_rung_patch_profile은 컴파일된 MNE 단일 프로그램/정상상태 bit 시나리오이며
+  2..16 phase, bit 출력만 지원. 전체 신규 프로젝트의 계수/시간/복구 검증 대체물 아님.
+- 다음 구현 범위: 검토된 plan에 시나리오별 drive/observe 역할 및 실제 signal/mode/alarm/
+  timer ID를 명시 결합 → plan digest에 포함 → MCP 실행/Host receipt가 같은 binding 사용.
+  input-only byte 쓰기, STOP-before-restore, 실제 native evidence는 유지할 것.
+- 현재 runcfbac858 유지. 마지막 Qwen task89264 processing=true/generated29.
+
+## 2026-09-14 연속 편집 경로 실제 적용 재개
+
+- runad799 rev543/545 자동/수동 모두 stopped OR self 추가했지만 선택 입력이 바깥
+  필수 조건으로 남아 모드 유지 해결 안 됨. rev546 초안 보존 후 정상 cancel.
+- Host 재시작 없이 runcfbac858-0a23-4d65-8af4-264a2aee3407 analyzing 재개.
+  operation resume-continuous-edit-mode-20260914. 직전 두 Agent routing 변경 적용.
+  정지 선택/운전 유지 분기를 실제 분리하고 나머지 원래 요구 완료하도록 요청.
+- CUA tab6에서 ControlStudio 실제 분석 중 화면 확인. native sky list_apps는 두 번
+  timeout 후 kernel reset/reinitialize에도 app-server exited 오류. native 화면 미확인.
+- 전체 XG5000/XG-SIM 완료 아님. 원본/물리 PLC 쓰기 금지 유지.
+
+## 2026-09-14 오류 초안의 연관 영역 편집 경로 (다음 Agent 실행 적용)
+
+- invalid/working design.read는 읽은 sections의 editor/read/check를 제공하도록 수정.
+  이전에는 남은 첫 diagnostic이 조회한 연관 영역 편집기를 덮어써 다중 영역 수정을 막았음.
+  게시 도구는 노출하지 않고 Host 검증/수정 권한은 변경하지 않음.
+- runtime/compaction 테스트 40 passed. 현재 Agent는 재시작하지 않아 아직 미적용.
+- 마지막 확인 Qwen task88820 processing=true/generated0, rev544까지. 전체 완료 아님.
+
+## 2026-09-14 성공 편집 후 연속 작업 경로 (다음 Agent 실행 적용)
+
+- runtime.py 성공한 section edit 이후 check만 강제하던 경로를 해당 editor/read/check로 변경.
+  게시 도구는 제공하지 않으며 Host revision/검증 및 부분 실패 재검사 경로는 유지.
+- 관련 runtime/compaction 테스트 39 passed. 현재 실행 보존, 아직 live Agent에는 미적용.
+- run ad799d0a rev543 mode_auto 조건에 stopped OR auto를 추가했지만 auto_mode_select가
+  여전히 바깥 필수 조건이라 운전 중 선택 해제 문제는 해결되지 않음. rev544 검사만 수행.
+- 마지막 모델 task88781 processing=true/generated28. 전체 native/XG-SIM 미완료.
+
+## 2026-09-14 모드 상태 로직으로 후속 작업 재개
+
+- runfb4d5a95 rev531 자동 step_move_cmd.complete_all move_complete ON 변경,
+  rev533 대응 rung_seq_auto_move_to_wait contact ON 변경. 설명엔 OFF 잔존.
+- rev535 mode IO 설명만 변경, rev537 narrative 원문 인용/요구 문장 재작성,
+  rev540 이미 alarm RST 앞인 도어 auto/manual reset 순서만 서로 교환.
+  모드 전환 요구 실제 로직은 여전히 미수정. 반복 구간 중단 위해 정상 cancel.
+- Host 재시작 없이 runad799d0a-869f-4189-8f27-37bd9fa5b4c1 analyzing,
+  operation resume-mode-state-logic-20260914. mode OUT/network의 운전 중
+  상태 유지+정지 선택을 실제 구현하도록 요청. 초기화 순서/계수/안전 보존.
+- 전체 native/XG-SIM 및 fresh-start 동작은 여전히 미완료.
+
+## 2026-09-14 다섯 복구 reset 순서 이동 실제 저장
+
+- runfb4d5a95에서 rev522 도어 자동, rev523 도어 수동, rev525 타임아웃 자동,
+  rev527 타임아웃 수동, rev529 비상정지 자동 sequence reset이 각 alarm RST
+  앞으로 이동 저장됨. 조건/액션 변경이 아닌 실제 rung 순서 변경 확인.
+- 여전히 모드 전환/새 시작/전체 reset 의미 및 실제 native XG-SIM 검증이 남음.
+  순서 dependency 해소만으로 전체 복구 성공을 주장하지 말 것.
+- 마지막 Qwen task83533 processing=true. 같은 실행 계속 중, 재시작 안 함.
+
+## 2026-09-14 복구 dependency/순서 activity Host 배포 및 재개
+
+- runfdae7441은 rev518까지 추가 순서 변경 없이 I/O 편집 실패/check/read.
+  정상 cancel 후 Host restart로 dependency observation과 사람이 읽는 순서
+  activity label 적용. 초안 보존 확인 후 같은 대화에서 재개.
+- 새 runfb4d5a95-10d9-4920-9501-ca10cfbb3d74 analyzing,
+  operation resume-reset-dependencies-20260914. 다섯 dependency 쌍을 읽고
+  각 sequence reset을 해당 alarm RST 앞으로 옮긴 뒤 나머지 요구 완성 요청.
+- 웹 재인증 표시 요청도 수행. 실제 native/XG-SIM 전체는 여전히 미완료.
+
+## 2026-09-14 복구 순서 dependency 조회 정보 추가 (Host 미배포)
+
+- executionObservations에 potentialResetOrderDependencies 추가: 앞 signal RST와
+  뒤 sequence_reset의 필수 ON 참조 쌍을 제공. 중간 같은 신호 writer면 제외,
+  OR는 모든 경로에서 필수인 경우만 포함. 조건 동시 실행 여부는 미판정이므로
+  potential/static이며 새 publication gate나 자동 수정 아님.
+- test_reset_order_observations 1 passed. rev517 대조에서 door auto/manual,
+  timeout auto/manual, estop auto 다섯 쌍 확인. 현재 순서 편집 대상이 명확해짐.
+- Host 재시작 전이라 live read에는 아직 미적용. app.py 순서 activity 표시도
+  함께 미배포 상태. 기존 runfdae7441 상태는 다음에 확인할 것.
+
+## 2026-09-14 순서 편집 실제 호출/저장 확인
+
+- runfdae7441 event16090 design.move_ladder_rung 실제 호출. rev514에서
+  rung_seq_manual_reset이 rung_recovery_estop 앞으로 이동함. 나머지
+  알람별 reset rung은 아직 뒤에 있으므로 전체 복구 순서 완료 아님.
+- compare-design-revisions.py에 RUNG_ORDER before/after 출력 추가.
+- Host app.py의 순서 편집 이벤트에 사람용 label/result 추가(미배포).
+  기존 이벤트에는 tool_name만 표시됐음. test_ladder_order_activity.py 추가.
+  Host는 실행 보존을 위해 재시작하지 않았음.
+
+## 2026-09-14 순서 편집/크기 기반 이력 실제 실행 적용
+
+- runb708dbb0 rev511까지 계수 조건 수정 후 설명만 재수정하고 복구 순서는
+  그대로. 순서 도구가 노출되지 않던 코드 교정을 적용하기 위해 정상 cancel.
+- Host 재시작 없이 same draft runfdae7441-6d41-4589-9444-81cbc9fbf290
+  analyzing 시작, operation resume-scan-order-tools-20260914.
+- 정상 ladder read 후 move_ladder_rung 노출 및 크기 기반 이력 정책 적용됨.
+  같은 alarm ON을 쓰는 sequence_reset을 alarm RST 이전으로 이동하는 실제
+  작업부터 요청. 기존 계수/수동/이동 수정 보존, 나머지 전체 요구 유지.
+- native XG-SIM 전체는 여전히 미완료. 현재 revision 및 실행 결과 재조회 필요.
+
+## 2026-09-14 정상 래더 조회 후 순서 편집 도구 허용 (미배포)
+
+- valid/published design.read가 ladder_rungs를 반환해도 move_ladder_rung이
+  숨겨져 있었음. 이제 읽은 래더의 scan-order 수정 도구도 노출.
+  Host의 기존 move_item/revision 검증은 유지, 새 native 권한은 없음.
+- 정상 구조 검사 통과와 별개로 alarm RST 이전 sequence reset 배치를
+  고칠 수 있게 함. narrative만 읽었을 때는 순서 편집 노출 안 함.
+- 관련 테스트 기대 도구 집합 갱신 및 회귀 검사 추가. 현재 runb708dbb0에는
+  아직 미적용; 크기 기반 history 변경과 함께 다음 Agent 실행부터 적용.
+
+## 2026-09-14 계수 reset_btn 실제 저장 확인
+
+- runb708dbb0 rev506에서 MOV0 D00000 조건 init_btn ON을 reset_btn ON으로 수정.
+  rev507 INCP D00000 억제 조건도 init_btn OFF에서 reset_btn OFF로 변경.
+- rev507 static check diagnostics 0 / unwritten internal 0 확인. 실제 PLC scan,
+  복구 단계 reset 순서, 모드 전환 및 fresh start는 아직 검증 안 됨.
+- 웹 open_in_codex 요청은 queued 반환이므로 화면 표시 확인으로 간주하지 말 것.
+
+## 2026-09-14 도구 이력 네 번 고정 절단 제거 (다음 Agent 실행 적용)
+
+- _compact_design_workspace_history가 문맥 크기와 무관하게 최근 4교환만
+  남기던 정책 제거. 완료된 교환을 serialized UTF-8 byte allowance까지 유지하고
+  넘으면 오래된 교환 단위로 제거. 기본 allowance는 context 상수의 3/4 bytes:
+  tokenizer 측정이 아닌 보수적 크기 proxy이며 schema/output 여유를 남김.
+- 사용자 요구 전부 및 최신 도구 교환은 크기 초과에도 조용히 버리지 않음.
+  작은 이력 20교환 유지, 극소 allowance에서도 요구와 마지막 call/result
+  대응 보존 검사 포함 관련 suite 38 passed.
+- 현재 runb708dbb0는 이전 all-UserPrompt 보존 코드로 진행 중이며 이 새
+  크기 기반 변경은 다음 Agent 실행에서 적용. 단순 배포 목적으로 취소 안 함.
+
+## 2026-09-14 반복 수정 중단 후 계수 초기화/복구 실제 작업 재개
+
+- run66d53fc1은 rev498 manual_start_allowed 참조 변경 후 rev500 원래
+  manual_move_btn으로 되돌리고 rev501/502 추가 동작 변경 없이 check/read
+  반복. 단순 지연이 아니라 저장된 왕복 수정 확인 후 정상 cancel.
+- Host 재시작 없이 같은 초안에서 runb708dbb0-e118-41b3-b940-ceff6c4d12da
+  analyzing 시작, operation resume-counter-reset-and-recovery-20260914.
+  모든 UserPrompt 보존 Agent 수정도 이 새 실행부터 적용.
+- reset_btn으로 MOV0/INCP 억제, alarm RST 이전 단계 reset 순서부터 실제
+  수정하고 모드 전환/fresh start 나머지도 완성 지시. 기존 이동 출력 및
+  수동 start_btn 제거 보존, 원본/물리 PLC 금지 유지. 아직 native 미완료.
+
+## 2026-09-14 수동 held-command 시험의 완료 센서 혼동 제거
+
+- 후속 관찰 rev497: seq_auto.start_all에서 세 alarm OFF 접점 제거,
+  mode_auto ON/auto_start_allowed ON만 남음. check diagnostics 0이나
+  fresh-start 구현 증거는 아님. actual rung 안전 조건은 다음 확인 필요.
+  Qwen task77057 processing=true. 위 변경 방향 및 실제 초기화/복구가 남음.
+
+- manual trial에서 첫 완료 후 버튼 ON을 유지하고 완료 센서만 OFF로
+  바꾼 뒤 계수 1 유지/이동 OFF를 관찰하도록 추가. 기존에는 완료 센서
+  ON이 재이동을 막는 것인지 command re-arm이 막는 것인지 구분 못 했음.
+- mocked 입력/관찰 회귀 검사 추가 포함 8 passed, 5 subtests passed.
+  실제 XG-SIM 검증은 아직 수행되지 않았음.
+- run66d53fc1의 design.edit_sequences 형식 오류 event15913 확인.
+  오류 후 동일 Qwen task76654 processing=true 관찰; 실패한 편집은
+  저장되지 않았고 당시 draft495 valid. 모델의 복구 응답은 계속 확인 필요.
+
+## 2026-09-14 fault recovery 시험의 held-start 누락 수정
+
+- MultiModeIndexSimulationRunner의 세 fault trial에서 start_btn을 ON으로
+  유지한 채 fault 발생/원인 제거/reset을 진행하고 이동 OFF를 확인하도록 수정.
+  버튼 해제만으로도 이동 OFF인지 확인한 뒤 새 누름으로 재시작한다.
+- 종전 시험은 start OFF인 상태의 reset만 보고 freshStartRequired=true를
+  기록했으므로 held-start 자동 재출발 결함을 놓칠 수 있었다.
+- 시험 입력/관찰 순서 회귀 검사 추가: 8 passed, 5 subtests passed.
+  이는 mock 기반 시험 절차 검증이며 실제 XG-SIM 통과 증거가 아니다.
+- 고정 profile signal/mode ID에 묶인 runner의 범용 binding 문제는 아직 남음.
+
+## 2026-09-14 후속 요구 이력 보존 / 수동 시작 실제 수정 확인
+
+- Agent `_compact_design_workspace_history`가 최초/마지막 UserPrompt만 남겨
+  독립적인 중간 수정 요구를 유실하는 문제 수정. 모든 UserPrompt를 순서대로
+  유지하며 최근 도구 교환 4쌍은 유지. 반복 압축에서도 세 후속 요구 및
+  tool-call/result 대응을 보존하는 회귀 검사 추가. 관련 테스트 37 passed.
+- 이 Agent 코드 수정은 현재 실행에 아직 미적용. 실행 중인 run66d53fc1을
+  단지 코드 반영을 위해 취소하지 않았음. 다음 정상 실행에서 적용됨.
+- DB rev492: cn_move_cmd.step_id=null, permit_all의 step_move_cmd 제거 확인.
+  rev489 이동 OUT의 자동/수동 명령 및 완료대기 OR 분기는 유지됨.
+- DB rev494: rung_seq_manual_start의 별도 start_btn 접점 제거 실제 저장 확인.
+  Qwen task75625 processing=true 확인. 이후 상태는 다시 조회해야 함.
+- 초기화/정지 중 모드전환/알람 복구 후 fresh start와 native XG-SIM 전체는
+  아직 검증되지 않았음. 기존 테스트 통과나 draft valid를 전체 완료로 보지 말 것.
+
+## 2026-09-14 자동/수동 공통 이동 선언 충돌 방향 교정
+
+- runfc680... rev479에서 rung_move_cmd_out에 step_manual_move_cmd ON OR 경로
+  추가. 안전 permit 보존. 완료대기 step은 아직 없음.
+- rev481/482 cn_move_cmd permit에 any_alarm OFF 추가했으나 step_id 자동 고정
+  유지. rev483에는 permit_all에도 step_move_cmd ON 추가해 충돌을 악화시킴.
+  중간 래더 편집 형식 오류도 tool.failed로 미저장 확인.
+- 잘못된 수정 방향 교정 위해 정상 cancel 후 Host restart 없이 같은 초안
+  재개: run66d53fc1-d238-449e-be21-388d75eb7549 analyzing,
+  operation resume-shared-motion-network-20260914. cn_move_cmd.step_id null,
+  permit_all의 step_move_cmd만 제거(안전 보존), 기존 OR rung 보존, 이동대기
+  출력 유지와 수동 별도 start_btn 제거 및 원래 나머지 요구 완성 지시.
+- native/XG-SIM 전체 미완료. 최신 초안은 DB에서 다시 확인해야 함.
+
+## 2026-09-14 인용 수정 run 완료 / 웹에서 실제 이동 로직 보완 재개
+
+- run67f... COMPLETED, draft474 published. Agent 최종 계약 통과 후 UI에
+  검토안 반환 확인. 실제 요구 동작 미완성이므로 검토 완료 확인란은 선택 안 함.
+- 저장 래더 확인: rung_move_cmd_out은 step_move_cmd ON만 참조(수동 없음),
+  rung_seq_manual_start에는 start_btn ON이 여전히 남아 있음.
+- CUA currentControlTab(browser1/tab4) 실제 메시지 입력/Enter로 자동·수동
+  이동 중 출력 유지, 완료/알람시 OFF, 별도 수동 시작 버튼 제거 및 나머지
+  원래 reset/모드/복구 요구 완성을 요청. 기존 인용/안전 보존, 원본/PLC 금지.
+- 새 run fc680a2c-bc47-4181-ab9b-a1e9f3caa3cc ANALYZING,
+  operation message:6bfc8dc2-fb5d-42d8-b200-b2f076cafdb9.
+  웹에 새 요청/분석 중 표시 확인, markHandoff. native/XG-SIM 미완료.
+
+## 2026-09-14 rev472/473 인용 수정 저장 및 Agent 최종 계약 통과
+
+- rune67f...에서 narrative.requirement_sources.sequence 중복 '한 칸 이동'
+  제거 저장. operating_modes 인용 및 user_requirements도 기존 supplemental
+  문장으로 변경. native_design의 운전 로직 변경은 없음.
+- replay-published-contract.py 결과 AGENT_FINAL_CONTRACT_PASS 확인.
+- compare-design-revisions.py가 native_design만 비교하던 관찰 누락 수정:
+  narrative/technical_configuration의 변경 필드도 이제 출력함. 앞선
+  native diff 없음만으로 인용 미수정을 단정하면 안 된다.
+- 전체 실제 동작, 별도 XG5000 생성/XG-SIM은 여전히 미완료.
+
+## 2026-09-14 정상 read 후 narrative 편집 허용 배포
+
+- rune245... 정상 cancel 확인. Host 재시작 없이 Agent 재개해 source 변경 적용.
+- 새 run67f9874b-6b8e-4c0e-a97d-7d849a4738a1 analyzing,
+  operation resume-narrative-editor-20260914. 기존 인용 중복 수정부터 실제
+  저장하고 남은 원래 동작을 완성하도록 요청. 원본/물리 PLC 금지 유지.
+- 인용 수정 및 native/XG-SIM 완료 증거는 아직 없음.
+
+## 2026-09-14 새 실행의 인용 편집 도구 차단 해제 (미배포)
+
+- 현재 rune245...는 publish 전 check/read 반복. source_error 플래그는
+  run-local이며 새 실행에서 false로 시작. valid design.read가 narrative를
+  반환해도 generic design.edit를 의도적으로 제외해서 인용 수정이 막혔음.
+- valid/published read 후 읽은 모든 section editor 노출하도록 변경.
+  narrative/configuration도 수정 가능. 구조 검사 통과는 불변 의미가 아니다.
+- workspace runtime + internal permits + compaction tests 58 passed.
+  Agent 재개 필요(Host 재시작 불필요). 실제 인용/운전 로직 저장은 아직 없음.
+
+## 2026-09-14 복구 지시 보존 및 오류 위치 안내 Agent 재개 적용
+
+- compaction + workspace runtime + internal network tests 57 passed.
+- run7893... 정상 cancel, Host 재시작 없이 새 Agent 실행:
+  e245b2ee-5725-4d43-9595-b50f9d5b61de (resume-retained-repair-20260914),
+  analyzing 확인. draft465 published 유지. 인용 sequence 중복 원문 수정과
+  원래 남은 실제 동작 완성을 요청했다. 웹 세션/Host는 재시작 안 함.
+- 마지막 /slots task67831 processing=false이므로 새 모델 요청 착수 여부는
+  다음 턴에서 재확인할 것. native 생성/XG-SIM은 여전히 미완료.
+
+## 2026-09-14 인용 복구 지시가 compaction에서 유실되는 문제 수정 (미배포)
+
+- _compact_design_workspace_history는 최초 UserPromptPart와 최근 tool-only
+  이력만 보존했다. validate_published_workspace가 enqueue한 원문 인용 수정
+  지시도 UserPromptPart이므로 compaction 후 사라질 수 있었다.
+- 최초 요청 외 최신 후속 UserPromptPart도 보존하도록 변경. 최근 도구 4쌍
+  유지. test_workspace_compaction_repair 1 passed: 도구 8쌍 후에도 원래 요구와
+  중간 삽입한 인용 수정 지시가 함께 남는지 확인.
+- 앞서 추가한 인용 오류 위치 안내와 함께 Agent 재개 시 적용 필요. 현재
+  run7893.../draft465 published 유지, Qwen task67708 processing true 확인.
+  원문 인용 편집은 아직 저장 안 됐으며 native/XG-SIM 미완료.
+
+## 2026-09-14 rev465 재확정 / 원문 인용 오류 복구 중
+
+- run7893...가 실제 래더 수정 없이 inspect/check/read/publish_review 수행,
+  rev465 published. rev462에서 수동 start_all에 manual_move_btn ON 재추가된
+  상태는 남아 있음. static valid는 실제 요구 완료가 아니다.
+- Agent final contract 읽기전용 재현에서 requirement_sources 원문 불일치:
+  sequence 인용의 '한 칸 이동' 중복. validate_published_workspace는 해당
+  실패시 repair_requirement_sources 플래그를 설정해 편집 루프로 돌아간다.
+- Agent 오류 메시지에 narrative.requirement_sources[index]와 field 및 원문
+  조회/정확 복사 안내 추가(설계 보존). 이 메시지 수정은 아직 미배포.
+- live /slots task66773 processing=true, generated0 마지막 확인. rev465 유지.
+
+## 2026-09-14 수동 inert-wait 검사 배포 / 동일 초안 재개
+
+- run cee57c88-d093-4c23-9a8a-49ec040bd5c1 정상 cancel 확인, Host restart 후
+  재인증 및 새 run 7893a161-91b8-4c6d-92f7-c5b4f28c6259 analyzing.
+  operation resume-manual-idle-20260914. rev461의 오진 때문에 검사 갱신 및
+  기존 idle 구조 보존, 실제 출력/reset/모드/복구 완성을 요청함.
+- 수동 inert-wait Host 수정 배포. 기존 초안/원래 요구사항 보존.
+- 브라우저4/browser1 currentControlTab에서 해당 새 요청과 분석 중 확인,
+  markHandoff. 만료된 tab3 닫음. 실제 native 생성/XG-SIM은 아직 미완료.
+
+## 2026-09-14 rev460 수동 idle 진입 검사 수정 (Host 미배포)
+
+- 새 run에서 rev458 검사 갱신, rev459 scope 변경 후 rev460 수동 start_all의
+  manual_move_btn ON도 제거. 첫 step_manual_wait.complete_all은 버튼 ON 유지.
+- Host manual_sequence_missing_operator_start가 startAll 버튼만 인정하는
+  문제에 대응: 첫 단계의 완료 조건이 명령 입력 ON이고 해당 단계에 의존하는
+  signal writer 또는 control network step 연결이 없으면 inert wait 진입 허용.
+  버튼 없는 무조건 이동이나 idle 의존 출력은 여전히 진단. 이는 전체 동작
+  안전성을 증명하는 분석은 아니며 별도 native 실행 시험 필요.
+- test_recovery_input_polarity 5 passed(기존 수동 버튼 테스트에 inert wait
+  허용 및 idle OUT 거절 추가). 이 Host 변경 아직 미배포.
+- 브라우저 재인증 후 tab3/browser1 resumedControlTab 정상 작업화면 확인,
+  markHandoff. 만료된 이전 tab2는 닫음.
+
+## 2026-09-14 rev457 수동 시작 버튼 오진 수정 배포 후 재개
+
+- rev454 cn_auto_start_allowed 추가, rev455 정합 검사 valid. rev456 수동
+  start_all에서 start_btn ON만 제거(수동 버튼 ON 보존). rev457은 실행 중인
+  구 Host의 manual_sequence_missing_operator_start 오진 1개로 invalid.
+- 이전 run03ef... 정상 cancel(state cancelled) 및 Host restart 요청 후 새
+  인증 성공. 이미 테스트한 manual_move_btn 인식 수정과 Agent scoped repair
+  design.read 허용 수정 적용을 위해 수행한 재시작이며 대기 시간 때문이 아님.
+- 새 run cee57c88-d093-4c23-9a8a-49ec040bd5c1 analyzing,
+  operation resume-manual-button-20260914. 기존 초안/요구 유지하여 check 갱신,
+  수동 시작 조건 제거 보존 및 수동 출력/reset 계수/정지 모드전환/복구 후
+  fresh-start 완성 요청. 원본/물리 PLC 쓰기 금지 유지.
+- 실제 XG5000 생성 및 XG-SIM 미완료. 브라우저 인증은 재시작 후 재확인 필요.
+
+## 2026-09-14 rev452 자동 시작 허용 writer 저장 / rev453 선언 누락
+
+- task49874 완료 후 rev452에서 rung_auto_start_allowed 추가됨. OUT 조건은
+  (mode_stopped ON OR mode_auto ON) AND any_alarm OFF. 내부 미작성 신호는 없어졌으나
+  이것만으로 복구 후 fresh-start가 보장되는 것은 아니다.
+- 다음 design.check가 rev453 invalid1 저장: 해당 OUT의 control_network 0개.
+  현재 compiler native_projects.py require_exact_actions도 OUT 대상 집합과
+  network output 집합의 정확한 일치를 요구한다. Host 진단만 없애면 안 됨.
+- 현재 run 유지, 후속 task63448 생성 시작 확인. native 실행 미완료.
+- 웹 추가 관찰: 진행 이벤트 수신 후 설계 중 문구와 70분45초 경과가 표시됨.
+  이전 일반 처리 문구는 연결 직후였으며 지속 갱신 누락으로 단정하지 않는다.
+
+## 2026-09-14 사용자 웹 화면 인증/표시 복구
+
+- CUA getState가 다시 성공. browser1(Codex In-app Browser) 최초 tabs 비어 있음.
+  Start-ControlStudio-Development.ps1 -Web 정상 종료 후 직접 주소 탭은 미인증.
+- 기존 /api/launcher/handoff 일회용 티켓을 앱 open_in_codex로 전달해 정상
+  인증된 탭2를 열었음(티켓 미출력). 미인증 임시 탭1은 닫음.
+- CUA binding liveControlTab(tab2, browser1), markHandoff 적용. 실제 AX와
+  screenshot에서 대동인덱스 실사용 재검증 / 분석 중 / 작업 중단 요청 확인.
+  UUID 등 작업 상세는 접혀 있음. 긴 생성 중 화면은 여전히 일반적인
+  '요청을 처리하고 있습니다'만 보여 생성/저장 상태 구분이 어려움.
+- 네이티브 XG5000 화면 확인 또는 XG-SIM 실행 완료를 뜻하지 않음.
+
+## 2026-09-14 Host 지정 수정 범위에서도 의존성 조회 허용 (Agent 미배포)
+
+- Agent 라우터에서 design.check invalid + repairContext.section에 해당하는
+  editor만 노출하던 분기에 design.read 추가. 오류 항목을 고치기 전에 다른
+  섹션의 실제 신호/참조를 조회할 수 있어야 한다. Host 쓰기 권한은 변경 안 함.
+- test_design_workspace_runtime + test_internal_network_permits: 56 passed.
+  실행 중인 Agent subprocess에는 아직 미배포. 다른 진단별 단일 도구 강제
+  분기들은 그대로이므로 전체 도구 제어 문제가 해결됐다고 주장하지 않는다.
+- live task49874 processing=true/generated9985, draft451 유지 확인.
+
+## 2026-09-14 rev451 / 시뮬레이션 추가 내부 신호 관찰 수정
+
+- 현재 run 03ef1d5c-e25d-496c-ad78-8705587804ab 유지. Qwen /slots task49874
+  processing=true, generated8764 확인. 대기 만료를 실패로 취급하거나 재시작하지 않음.
+- rev444/446 자동 대기 완료 선언과 전환 래더의 start_btn을 auto_start_allowed로
+  변경했고 rev448/450 자동 시작 선언/래더에도 추가됨. rev451 valid이지만 해당
+  내부 신호 writer는 아직 없어 실행 완료를 의미하지 않음.
+- MultiModeIndexSimulationRunner.output_refs가 REQUIRED_SIGNALS에 있는 이름만
+  포함하던 것을 설계의 전체 비입력 M/P 신호로 변경. 추가 내부 신호를 실제
+  관찰 대상으로 해석하고 입력 byte와의 겹침도 검출함. 단위 테스트7개 통과.
+- 이 수정은 모델 설계 수정이나 실제 XG-SIM 실행 증거가 아님. runner의 고정
+  mode/alarm/signal ID와 수동 start_btn 가정은 남아 있으며, 현재 설계에 대한
+  명시적 역할 연결 및 실제 native 생성/시험은 여전히 미완료.
+
+## 2026-09-14 rev443 수동 시작 재요구 / 버튼 검증 수정 미배포
+
+- run 03ef1d5c-e25d-496c-ad78-8705587804ab 유지. rev439 계수 증가 조건은
+  init_btn OFF AND (auto 완료 OR manual 해제대기)로 수정되어 valid.
+- rev440 수동 start_all에서 두 버튼을 제거했지만 기존 검증이 start 이름만
+  인정해 rev442에서 start_btn/manual_move_btn ON이 다시 추가됨. rev443 valid.
+- Host manual_sequence_missing_operator_start의 명령 입력 후보를 digital_input만
+  대상으로 하고 manual_move_btn/button 및 jog_btn/button도 인정하도록 수정.
+  모드 선택만 있는 경우는 여전히 오류. test_recovery_input_polarity5 passed.
+  이 변경은 아직 Host 미배포이며, idle 단계에서 명령을 기다리는 일반 경로까지
+  해결한 것은 아니다. 실제 move_cmd OUT은 여전히 자동 단계에만 연결되어 있음.
+- 자동 step_wait는 start_btn ON 유지(설명만 최초1회로 변경됐음). 실제 자동
+  반복/수동 출력/reset 계수연결/복구순서 및 native XG-SIM 완료 미확인.
+
+## 2026-09-14 시작/전환 양방향 편집 배포 후 재개
+
+- rev427 자동 전환 start_btn 제거가 rev429 sync로 되돌아간 것을 확인.
+  rev430 invalid2, 첫 진단 수동 시작 조건. Agent 라우팅이 start/transition
+  sync만 허용하고 Host가 sequences 편집을 거절하는 동일 구조 결함이었다.
+- start/transition도 reset과 같이 edit_sequences/edit_ladder_rungs/read 허용,
+  Host diagnosed sequences 편집 허용. Agent55 passed, Host sequence_sync_tools1 passed.
+- run c89457bb-1d1a-4f6e-8f58-8cd5e78f3b96 정상 취소 후 Host restart.
+  새 run 03ef1d5c-e25d-496c-ad78-8705587804ab analyzing,
+  operation resume-sequence-bidirectional-20260914. 위 수정 배포.
+- 저장 모드 래더와 선언은 상대 모드 OFF로 정합 수정됨(rev421/423/425).
+  제한 Boolean 스캔에서 진동/동시ON은 사라졌지만 정지 중 전환 요구는 미검증.
+- 자동 초기/복구 후 새 시작을 보존하면서 반복 시작요구 제거, 수동 입력/출력/
+  계수, reset/복구 순서 완성을 요청. 별도 native 프로젝트/XG-SIM은 미완료.
+
+## 2026-09-14 거절된 편집 재조회 및 양방향 진단 안내 배포 / 재개
+
+- 기존 run a16331f4-be38-451d-bf17-a422f249ac8d에서 rev418 valid 유지,
+  design.edit_sequences 형식 오류로 미저장 확인. 정상 cancel(state=cancelled)
+  후 Host restart(status=scheduled), 새 세션 bootstrap 성공.
+- 새 run c89457bb-1d1a-4f6e-8f58-8cd5e78f3b96, operation
+  resume-readable-repair-20260914, state=analyzing 확인.
+- 앞선 Agent rejected-edit read/check 허용 및 Host 양방향 permit 진단 안내
+  반영을 위한 재개다. 기존 설계/확정 요구 보존, 정지 선언 수정 보존,
+  모드 진동·자동 반복·수동 출력/계수·복구 순서 해결 요청. 전체 완료 아님.
+
+## 2026-09-14 rev417 정지 선언 변경 / 진단 안내 미배포
+
+- 같은 run a16331f4-be38-451d-bf17-a422f249ac8d에서 cn_mode_stopped의
+  permit_all 중 any_alarm OFF 제거가 저장됐다. 현재 rung도 auto/manual OFF
+  AND이므로 선언 정합성은 후속 검사 대상. 모드 진동/전체 동작 해결은 아님.
+- Host control_network_out_missing_effective_permits 안내를 양방향 선언/래더
+  수정으로 변경했다. 잘못된 선언을 그대로 래더에 복사하지 말고 확정 요구와
+  비교하며 safety-rule permits는 보존하도록 명시. 검증 조건은 그대로다.
+- focused internal_or_rung 테스트 1 passed. 이 Host 변경 및 앞선 Agent의
+  rejected-edit read/check 변경은 현재 실행에 미배포. 이번에는 실제 선언
+  수정이 진행됐으므로 실행을 취소하지 않았다. Qwen task24935 live 확인.
+- rev411에서는 seq_auto.start_all의 auto_running ON이 제거됐지만 첫 단계
+  start_btn ON은 남아 있다. 연속운전 요구를 해결한 것으로 인정하지 않는다.
+
+## 2026-09-14 rev407 재확인 및 거절된 편집 재조회 경로 수정 (Agent 미배포)
+
+- 동일 run a16331f4-be38-451d-bf17-a422f249ac8d 유지. rev403→405에서
+  mode_stopped rung의 any_alarm OFF를 제거했지만 선언 불일치 검사 후
+  rev407에서 다시 추가했다. 이 왕복은 기능 해결이 아니다.
+- rev407 valid이나 제한적인 mode OUT Boolean 순차 평가에서는 자동/정지
+  진동, 동시 선택 시 두 모드 ON, 알람 발생 시 stopped OFF가 여전히 재현된다.
+  이 평가는 XG-SIM/전체 PLC 실행 검증이 아니다. 실제 프로젝트 생성도 미완료.
+- Agent runtime의 거절된 collection 편집은 같은 편집뿐 아니라 read/check를
+  허용하도록 변경했다. 거절된 rung repair helper도 read/check 및 직접 rung
+  편집으로 진단할 수 있다. Host 검증·revision·publication 경계는 변경하지 않았다.
+- test_internal_network_permits.py + test_design_workspace_runtime.py: 51 passed.
+  기존 reset 양방향 편집 변경을 반영하지 않았던 오래된 기대값 1개도 갱신했다.
+- 이 Agent 수정은 현재 subprocess에는 아직 반영되지 않았다. 진행 중인
+  모델 요청을 단순 대기 시간 때문에 취소하지 않았다. 전체 목표 완료 아님.
+
+## 2026-09-14 rev395 초기화 선언 정지 조건 복구 확인
+
+- run a16331f4-be38-451d-bf17-a422f249ac8d의 실제 edit_sequences 저장:
+  seq_auto.reset_all=[mode_stopped ON] 복구. alarm3 OFF/seq_auto_step OFF 제거.
+- rung_seq_auto_reset의 추가 alarm/step 조건 정리는 아직 미확인.
+  모드/수동/연속/복구 및 XG-SIM 전체 동작 검증은 남아 있다. 실행 유지.
+
+## 2026-09-14 초기화 진단 안내 반영 후 선언 우선 재개
+
+- rev392 invalid1 및 기존 일방적 reset rung 추가 안내를 확인하고 정상 취소/restart.
+  Host의 양방향 수정 안내 문구 반영. 저장 설계 보존.
+- 새 run a16331f4-be38-451d-bf17-a422f249ac8d,
+  operation resume-reset-declaration-first-20260914 시작(analyzing 확인).
+- 먼저 seq_auto.reset_all=[mode_stopped ON] 전체 교체를 명시하고 이후
+  rung_seq_auto_reset도 동일하게 수정하도록 요청. 별도 복구/자기유지 보존.
+  모드/수동/연속/복구 순서 및 전체 기존 요구사항은 그대로 남아 있음.
+
+## 2026-09-14 reset 진단의 일방적 래더 추가 지시 제거 (Host 미배포)
+
+- rev389는 선언 수정 대신 rung_seq_auto_reset에 step_complete OFF를 다시 추가했다.
+- sequence_reset_rung_missing_or_incomplete 메시지가 'Add only the missing explicit
+  reset rung'으로 지시해 양방향 편집 라우팅과 모순됨을 확인.
+  사용자 요구와 선언/래더를 비교하고 잘못된 선언은 edit_sequences로 고치라는
+  안내로 변경. 검증 조건 자체는 완화하지 않았다. focused3 passed.
+- Host 메시지 수정은 아직 미배포. 현재 run e861ed48-dc35-4eaa-ae07-6fb928399b38,
+  Qwen task19257 processing=true 확인. 초기화 실제 복구 및 전체 동작 미완료.
+
+## 2026-09-14 rev387 초기화 래더 정지 조건 복구
+
+- 동일 run e861ed48-dc35-4eaa-ae07-6fb928399b38의 rev384→387에서
+  rung_seq_auto_reset 조건의 step_complete OFF를 mode_stopped ON으로 교체.
+  알람3개 OFF는 유지. 앞선 duplicate 생성/condition-action 오류는 저장되지 않았음.
+- reset_all 선언은 아직 alarm3 OFF + seq_auto_step OFF이므로 후속 정합 수정 필요.
+  실제 모드 진동/복구/수동/연속운전 해결은 여전히 미완료.
+- Qwen task18919 processing=true 확인. 실행 유지.
+
+## 2026-09-14 rev384 잘못된 초기화의 참조만 수정
+
+- run e861ed48-dc35-4eaa-ae07-6fb928399b38 유지.
+  rung_seq_auto_reset의 미선언 step seq_auto_step OFF를 step_complete OFF로 교체.
+  alarm3개 OFF 조건은 그대로. 완료 단계가 아닌 이동 중에도 reset될 수 있어
+  실제 초기화 요구 해결로 인정하지 않는다. reset_all 선언도 여전히 별도 수정 필요.
+- Qwen task18070 processing=true 확인. 목표 완료 아님.
+
+## 2026-09-14 rev380 초기화 조건 여전히 오수정
+
+- 동일 run e861ed48-dc35-4eaa-ae07-6fb928399b38에서 seq_auto.reset_all은
+  completion_count OFF 대신 alarm 3개 OFF + seq_auto_step OFF로 변경됐다.
+  요청한 mode_stopped ON 복구가 아니며 성공으로 인정하지 않는다.
+- rev380 invalid1 sequence_reset_rung_missing_or_incomplete. 실제 reset rung은
+  아직 completion_count OFF. Qwen task17523 processing=true 확인, 실행 유지.
+
+## 2026-09-14 reset 양방향 수정 반영 후 재개
+
+- 취소 전 최신 rev376 valid 확인. rev371→376에서 rung_seq_auto_reset이
+  completion_count OFF로 sync됐고 기존 estop 복구는 별도 rung_seq_auto_reset_estop 추가.
+- 기존 run 정상 취소/Host restart로 reset 선언 편집 허용 반영.
+  새 run e861ed48-dc35-4eaa-ae07-6fb928399b38,
+  operation resume-reset-contract-repair-20260914 시작(analyzing 확인).
+- seq_auto.reset_all과 rung_seq_auto_reset을 mode_stopped ON으로 복원,
+  별도 estop 복구 및 자기유지는 보존하도록 요청. 남은 전체 동작 요구도 유지.
+- 아직 실제 복원 저장/XG-SIM 완료 미확인. 원본/물리 PLC 쓰기 없음.
+
+## 2026-09-14 초기화 선언/래더 양방향 수정 연결 (미배포)
+
+- rev372 sequence_reset_rung_missing_or_incomplete에서 Agent가 sync만 허용했다.
+  잘못된 reset_all 자체를 고치도록 check/read 라우팅을 edit_sequences/
+  edit_ladder_rungs/read로 변경. Host도 해당 diagnostic의 sequences 부분 편집 허용.
+- Agent focused10 passed, Host 실제 서비스 sequence 편집 회귀1 passed.
+  Host 테스트는 최초 fixture의 published_digest 누락을 고친 뒤 통과했다.
+- 두 소스 수정 모두 현재 실행에는 미배포. run c29a2775-d10c-4d1f-8d16-ab9af722c2ff.
+  초기화 completion_count OFF 변경 원인이 모델 판단인지 변환인지 raw call 근거는
+  아직 확보하지 못했으므로 단정하지 않는다. 실제 동작 완료 아님.
+
+## 2026-09-14 rev371 자동 초기화 선언 의심 변경
+
+- 동일 run c29a2775-d10c-4d1f-8d16-ab9af722c2ff에서 seq_auto.reset_all이
+  mode_stopped ON → completion_count OFF로 변경됐다. 요청한 정지/리셋 동작과
+  맞는 변경으로 인정하지 않는다. 다른 자동 steps(시작 버튼 반복 요구 등)는 그대로.
+- read-only Host check는 sequence_reset_rung_missing_or_incomplete 1건.
+  안내는 새 선언에 맞춘 reset rung 추가인데, 선언 자체가 잘못됐으면 이를 수정해야 한다.
+- 자기유지는 rev369 상태 유지. Qwen task16121 processing=true. 전체 미완료.
+
+## 2026-09-14 rev369 자기유지 실제 복원 및 선언 일치
+
+- 동일 run c29a2775-d10c-4d1f-8d16-ab9af722c2ff의 rev368→369에서
+  rung_auto_running에 (start_btn ON OR auto_running ON) 복원 저장.
+  rev367에서 공통 start permit을 제거했으므로 이번에는 선언과 충돌하지 않는다.
+- 저장 rev369 read-only Host check diagnostics0 / unwrittenInternalSignals[].
+  이는 정적 확인이며 mode_auto 진동이 남아 있어 실제 연속운전 성공을 뜻하지 않는다.
+- Qwen task15377 processing=true 확인. 모드/수동 출력 및 계수/복구 순서 등
+  남은 실제 동작 수정과 XG5000/XG-SIM 검증 필요. 실행 유지.
+
+## 2026-09-14 rev367 자동운전 공통 시작 조건 실제 제거
+
+- run c29a2775-d10c-4d1f-8d16-ab9af722c2ff 유지 중.
+  rev366→367 design.edit_control_networks로 cn_auto_running permit_all에서
+  start_btn ON만 제거했다. mode_auto ON 및 알람 3개 OFF는 유지.
+- 아직 rung_auto_running 자기유지 복원은 미확인. 전체 동작 완료 아님.
+  Qwen task14946 processing=true, 후속 check/편집 대기.
+
+## 2026-09-14 timer/source 최종 검증 수정 Agent로 재개
+
+- 기존 run 6b167973-bc91-4fd5-9437-9cc03569c02a는 native 수정 없이 rev361
+  published 후 ANALYZING 상태. 최종 계약 오류를 고친 Agent 사용을 위해 정상 취소.
+- Host 재시작 없이 새 run c29a2775-d10c-4d1f-8d16-ab9af722c2ff,
+  operation resume-actual-selfhold-edit-20260914 시작. timer 참조/source repair 소스 적용.
+- followup은 먼저 cn_auto_running start_btn 공통 permit 제거 및 실제 rung 자기유지
+  복원 두 변경을 수행하도록 명시했다. 이후 남은 기존 동작 요구사항도 유지.
+- 실제 저장 결과/전체 기능 완료는 아직 미확인. 물리 PLC/원본 쓰기 없음.
+
+## 2026-09-14 publication 인용문 수정 경로 연결 (Agent 미배포)
+
+- read-only final contract replay로 narrative requirement_sources.sequence의
+  '한 칸 이동→한 칸 이동' 중복 문구가 실제 brief corpus에 없음을 확인했다.
+- 최종 ModelRetry 뒤 read는 허용됐지만 정상 published read 라우터가 design.edit를
+  제외하므로 인용문 자체를 수정할 수 없었다. requirement_sources 오류에 한해
+  후속 read 뒤 design.edit/read를 제공하도록 workspace 상태/라우팅 연결.
+- tests/test_internal_network_permits.py 8 passed(타이머 참조 + source repair 포함).
+  이 Agent 변경과 앞선 timer 참조 변경은 현재 시작된 run에는 아직 미반영.
+  run 6b167973-bc91-4fd5-9437-9cc03569c02a의 실제 native 수정은 여전히 없음.
+
+## 2026-09-14 Agent 최종 timer 참조 오진 수정 (현재 실행 미반영)
+
+- run 6b167973-bc91-4fd5-9437-9cc03569c02a는 실제 native 수정 없이 rev361 publish.
+  Qwen task12264 뒤 task13103으로 넘어갔고 Host는 여전히 ANALYZING.
+- read-only replay에서 NewProjectNativeDesign이 실제 rung timer 접점을 무시하여
+  every timer must drive... 오류를 냄. 선언 참조 외에 nested ladder condition의
+  source_type=timer 참조도 수집하도록 수정했다. TON writer만으로는 소비로 세지 않음.
+- tests/test_internal_network_permits.py 7 passed. 저장 draft replay는 timer 오진을
+  통과한 뒤 requirement_sources exact resolved user quotes 불일치 ModelRetry로 이동.
+  다음 작업: 그 인용문/현재 brief 불일치 처리 경로 확인. 실제 PLC 동작은 여전히 미완료.
+- 변경은 Agent source에만 있고 현재 이미 시작된 실행에는 아직 미반영.
+
+## 2026-09-14 모드 오진 수정 Host 반영 및 재개
+
+- rev358 invalid6 상태를 확인하고 기존 run 정상 취소, Host 정상 restart로
+  모드 중복 activation 오진 수정 반영. 초안은 보존했다.
+- 새 run 6b167973-bc91-4fd5-9437-9cc03569c02a,
+  operation resume-mode-check-correction-20260914 시작(analyzing 응답 확인).
+  check 갱신 후 기존 실제 동작 수정 지시를 이어가도록 요청했다.
+- 이번 변경은 검사 오진 제거이며 실제 모드/자동/수동/복구 동작 완료가 아니다.
+
+## 2026-09-14 모드 상호배제 오진 수정 (Host 미배포)
+
+- 새 run adf7537f-9769-499a-b9e9-e850a4a8f831의 rev358 check에서
+  mutually_exclusive_modes_required_together 6건이 새로 나타났지만 native 변경은 없었다.
+  강화된 followup의 '동시' 문구가 해당 검사 분기를 활성화했다.
+- 검사기가 모든 모드 activation ID를 모아 stopped의 auto_mode_select OFF까지
+  auto_mode_select ON으로 중복 계산했다. 자동/수동 모드만 선택하고 중복 ID 제거 수정.
+- test_stopped_mode_does_not_duplicate_auto_activation: 자동 단독은 오진 없음,
+  실제 auto+manual ON AND는 여전히 검출. 관련 파일 4 passed.
+- Host 소스 변경은 아직 미배포. 다음 작업에서 배포하고 잘못된 진단을 새 check로 갱신 필요.
+  실제 mode_auto/manual/stopped의 진동/상호배제 결함은 별개로 여전히 남아 있다.
+
+## 2026-09-14 자기유지 회귀 후 수정 라우터로 재개
+
+- rev355에서 sync_control_network_out_rung이 auto_running 자기유지 OR를 제거했다.
+  실제 회귀 확인으로 기존 run 정상 취소. 관찰 timeout 때문에 취소한 것이 아니다.
+- Host 재시작 없이 새 run adf7537f-9769-499a-b9e9-e850a4a8f831,
+  operation resume-preserve-behavior-20260914 시작(analyzing 응답 확인).
+  Agent source의 permit mismatch 직접 edit 라우팅 변경을 새 실행에 사용.
+- followup은 cn_auto_running start_btn 공통 permit 제거 + 자기유지 복원,
+  모드 선택과 운전 상태 분리/상호배제/정지 중 전환, 남은 기존 요구사항을 지시.
+  새 실제 수정 저장과 전체 E2E 완료는 아직 미확인.
+
+## 2026-09-14 permit mismatch 직접 래더 편집 라우팅 수정 (아직 미배포)
+
+- rev351→353에서 sync가 mode_stopped를 기존 AND+any_alarm OFF로 되돌렸다.
+  선언 일치는 개선했지만 기존 모드 진동/복구 차단 논리로 회귀한 것.
+- Agent check/read의 control_network_out_missing_effective_permits 분기에서
+  sync 대신 edit_ladder_rungs/edit_control_networks/read를 노출하도록 수정했다.
+  앞선 분기는 실제 래더 직접 편집을 누락했고 기존 선언 강제 복원을 유도했다.
+- focused 24 passed, 15 deselected. 현재 실행에는 미배포; 다음 Agent 실행에 적용 필요.
+- 현재 run 56c74617-1640-45d1-98b3-5559908ef69f 유지. rev354 invalid1은
+  cn_auto_running의 start_btn ON 공통 선언이 자기유지 OR와 충돌하는 진단이다.
+  이 선언에서 start_btn을 제거해야 자기유지가 보존됨; 래더를 이전식으로 되돌리면 회귀.
+
+## 2026-09-14 rev351 자기유지 추가 및 정지 조건 오수정 확인
+
+- 동일 run의 rev350→351 실제 rung 수정: auto_running 조건에
+  (start_btn ON OR auto_running ON) 추가. 자기유지 경로가 생겼으나 전체 동작은 미검증.
+- mode_stopped 조건은 (mode_auto OFF OR mode_manual OFF)로 바뀌었다.
+  limited Boolean scan 재현에서 자동 선택 시 auto/stopped 동시 ON,
+  두 선택 입력 ON 시 auto/manual 동시 ON 및 진동은 여전하다. 완료가 아니다.
+- Qwen task10692 processing=true 확인. 기존 run 유지하며 후속 check/수정 대기.
+
+## 2026-09-14 rev350 모드 순차 Boolean 계산 재현
+
+- `.test-tmp/probe-mode-scan.py`는 DB read-only로 실제 모드 OUT rung 3개를 순차
+  계산하는 제한된 조사 스크립트다. PLC 전체 emulator/XG-SIM 증거가 아니다.
+- 자동 선택 유지 시 (auto, stopped)=(0,1)→(1,0)→(0,1) 반복.
+  두 선택 입력 ON 시 auto/manual 모두 ON이 되는 스캔 발생.
+  any_alarm ON 시 stopped도 OFF라 stopped를 요구하는 복구가 막히는 구조 확인.
+  따라서 rev350 valid/diagnostics0은 기능 완료가 아님.
+- run 56c74617-1640-45d1-98b3-5559908ef69f는 재시작 없이 유지.
+  design.read 후 Qwen task9882 processing=true 확인. 후속 동작 수정 저장 대기.
+
+## 2026-09-14 실제 타이머 완료 writer 작성 확인
+
+- run 56c74617-1640-45d1-98b3-5559908ef69f 유지 중, rev348→350에서
+  rung_move_timeout_done 추가 확인: timer/move_timeout ON → OUT signal/move_timeout_done.
+  빈 sync 반복 대신 design.read 후 실제 래더 작성으로 진행했다.
+  부수적인 network mode_id/step_id null 직렬화 변화는 동작 개선으로 세지 않는다.
+- Agent router 회귀 17 passed. 현재 Qwen task9826 processing=true 확인.
+  자동 연속운전/수동/복구 및 실제 XG-SIM 완료는 여전히 미검증.
+
+## 2026-09-14 빈 내부 network 자동 동기화 반복 수정
+
+- rev340→345에서 cn_any_alarm permit_all=[] 및 cycle_complete/move_cmd_active/
+  move_timeout_done network 추가 확인. 실제 OR rung은 보존됨.
+- 이후 sync_control_network_out_rung이 빈 all_of를 생성해 schema_invalid를 반복했다.
+  missing OUT 분기의 도구 선택에 edit_ladder_rungs/read를 열고, sync not_applied는
+  동일 sync만 재시도하지 않고 직접 편집/read/check로 이동하게 수정했다.
+  Host sync는 조건 없는 선언으로 계산식을 만들어내지 않고 직접 편집 안내 conflict 반환.
+- Host focused 3 passed, Agent focused 6 passed. 전체 E2E 성공 의미 아님.
+- 기존 run 정상 취소 후 Host 재시작, 저장 초안에서 run
+  56c74617-1640-45d1-98b3-5559908ef69f 재개(analyzing 응답 확인).
+  operation resume-authored-internal-rung-20260914. 실제 타이머 rung 저장은 아직 확인 전.
+  XG5000 별도 프로젝트 생성 및 XG-SIM 실동작 검증은 미완료.
+
+## 2026-09-14 내부 OR 표현 및 선언/래더 양방향 수정 반영
+
+- Host/Agent/Provider network permit_all은 내부 계산일 때 []를 허용한다.
+  digital_output은 여전히 명시적 permit을 요구한다. compiler conditions()의
+  allow_empty는 내부 network 검증 호출에만 켰고 다른 조건/실제 rung/safety 검증은 유지.
+- OR 두 입력의 실제 Host compiler 통과, digital_output empty 거부를 확인했다.
+  Agent 계약에서도 동일 기준 확인. permit mismatch에서 correct OR를 wrong AND에
+  강제 동기화하지 않도록 edit_control_networks/read/sync 중 선택 가능하게 변경했고,
+  Host도 진단 대상 network 선언의 부분 수정을 허용한다. 실제 서비스 edit/check
+  경로에서 wrong permit→[] 수정→valid를 확인했다. Host2/Agent4 focused 통과.
+- 기존 run 정상 취소/Host 재시작 뒤 run 91e02e5f-14a7-49cf-82ce-eccb3405e53f,
+  operation resume-internal-or-contract-20260914로 기존 초안에서 재개했다.
+  Qwen task8636 processing=true 및 Launcher -Web exit0 확인. 실모델의 후속 수정 저장은
+  아직 확인 전이다. 전체 동작 및 XG-SIM은 여전히 미완료다.
+
+## 2026-09-14 내부 writer 실제 추가 및 OR 연산 표현 차단 확인
+
+- run f1568fa1-c2c3-498b-8eba-62deb0191f8e의 rev334→335에서 실제 OUT rung 4개 추가:
+  any_alarm(3 alarm latch OR), auto_running(mode_auto/alarms OFF/start_btn ON),
+  cycle_complete(auto step_complete AND move_complete), move_cmd_active(move_cmd AND !complete).
+  auto_running은 아직 자기유지가 아니고 cycle_complete는 수동 경로가 빠진 상태다.
+- rev336의 첫 오류는 any_alarm control_network_out_cardinality_mismatch이며 총4개다.
+  중요한 다음 수정: 모든 내부 OUT에도 control_network가 필요하지만 permit_all이 반드시
+  nonempty AND여서 any_alarm의 3-way OR에는 합법적인 공통 permit이 없다.
+  dummy always-true bit나 self-reference로 우회하지 말고 내부 계산용 network는
+  명시적 추가 permit 없음([])을 표현하도록 Host/Agent schema, compiler, instructions를
+  함께 수정할 것. 실제 digital_output의 permit/safety 및 rung condition 검증은 유지.
+- 위치: Host api_models ProjectPlanControlNetworkV1.permit_all min1; Agent runtime
+  NewProjectControlNetwork/ProviderControlNetwork min1 및 instructions non-empty 강제;
+  native_projects compiler network loop의 not permits, conditions()의 empty 거부.
+  conditions()는 다른 용도에도 쓰므로 network 전용 allow-empty 여부를 분리해야 한다.
+- 마지막 관측 약1305초에서 같은 run이 유지 중. 취소/재시작하지 않았다.
+  이 구조 문제를 고쳐 실제 내부 OR writer가 컴파일되는 테스트를 먼저 만들고 반영할 것.
+
+## 2026-09-14 원인별 복구 시험 바인딩 및 실제 출력 permit 반영
+
+- MultiModeIndexSimulationRunner의 one shared recovery 제한을 제거했다.
+  reviewed resetAlarmIds의 대응으로 공유 규칙 또는 알람별 규칙을 바인딩한다.
+  현재 profile은 각 알람에 하나의 복구 경로를 시험하며 누락/중복 경로는 거부한다.
+  더 일반적인 복수 조건별 경로 및 역할 ID 매핑은 여전히 남은 작업이다.
+  test_multimode_plan_bindings.py 5개 통과. 실제 XG-SIM 실행은 아직 아니다.
+- 유지 중인 model run f1568fa1-c2c3-498b-8eba-62deb0191f8e의 rev332→334에서
+  rung_move_cmd_out에 emergency_stop ON이 실제 추가되어 control network와 일치했다.
+  rev334 valid는 전체 기능 완료가 아니며 내부 신호 writer/자동·수동/모드 진동이 남는다.
+
+## 2026-09-14 단계·시퀀스 식별자 고정 제거
+
+- MultiModeIndexSimulationRunner에서 네 개 예제 step ID/개수 조건을 제거했다.
+  실제 선언된 단계들을 고유 ID로 검증하고 그 주소를 바인딩한다. 시퀀스 식별자도
+  index_sequence/manual_sequence 고정 대신 modeId 연결로 선택한다.
+  임의 시퀀스 이름과 7개 단계, D 주소/NC 정상 상태의 focused 회귀 4개 통과.
+- 아직 REQUIRED_MODES/REQUIRED_SIGNALS/REQUIRED_ALARMS 및 단일 recovery 가정이
+  남는다. 현재 3모드/원인별 recovery 초안을 위한 전체 시험 경로 완성은 아니다.
+- 유지 중인 run f1568fa1-c2c3-498b-8eba-62deb0191f8e는 rev330→332에서
+  cn_move_cmd permit_all에 emergency_stop ON을 실제 추가했다. 뒤의 OUT rung 동기화와
+  미작성 내부 신호 로직은 이어서 확인할 것. 관측 당시 Qwen task7033 처리 중.
+
+## 2026-09-14 실제 시험 경로의 고정 예제 의존성 확인
+
+- MultiModeIndexSimulationRunner는 REQUIRED_SIGNALS/MODES/SEQUENCES/ALARMS와
+  네 개 step ID, one shared recovery, D00001을 고정한다. 현재 초안은 auto/manual/stopped,
+  seq_auto/seq_manual, 원인별 recovery, D00000이므로 이 runner를 현재 설계의 완전한
+  시험 경로로 취급하면 안 된다. 남은 핵심은 명시적 설계/시험 바인딩으로 일반화하는 것.
+- 이번에는 counter address를 INCP/MOV-0의 실제 일치 주소에서 바인딩하도록 고쳤고,
+  E-stop/door 초기화 및 fault assert/clear도 normalState의 정상/반대로 구동하도록
+  수정했다. MCP tests/test_multimode_plan_bindings.py의 주소/불일치/NC 복구 3개 통과.
+  신호명·단계명·recovery 수 고정은 아직 남는다. XG-SIM 실운전 완료 증거는 아니다.
+- 현재 model run f1568fa1-c2c3-498b-8eba-62deb0191f8e는 유지 중이다.
+  rev324→330에서 timer.enable_all과 실제 TON rung이 move_cmd_active로 변경됐다.
+  해당 신호 writer는 아직 확인되지 않았으므로 타이머 동작 해결로 판단하지 않는다.
+
+## 2026-09-14 데이터 흐름 조회 실앱 반영 및 무변경 저장 수정
+
+- rev320→321 design.edit_sequences는 native_design 변경 없이 remaining_work만
+  바뀌었다. 무변경 비교가 이 검사 bookkeeping을 포함해 가짜 편집 revision을 만든
+  버그였다. narrative/technical_configuration/native_design의 실제 편집 내용만
+  비교하도록 수정했다. invalid 및 valid-check 뒤 동일 patch 회귀 2 passed.
+- executionObservations와 이 수정은 정상 cancel/restart로 실 Host에 반영했다.
+  현재 run f1568fa1-c2c3-498b-8eba-62deb0191f8e,
+  operation resume-dataflow-workspace-20260914. 기존 rev322에서 재개했다.
+  Qwen slot task5465 processing=true를 확인했다. Launcher -Web exit0도 확인했다.
+- 내부 신호 생산 로직부터 실제 작성하도록 요청했으며 자동/수동/모드/복구 순서
+  요구도 유지했다. 해당 기능 수정의 실제 저장 여부 및 XG-SIM 완료는 아직 미확인.
+
+## 2026-09-14 정적 실행 의존성 조회 추가 — 현재 요청은 유지 중
+
+- design.inspect/read 응답에 executionObservations를 추가했다. 읽기만 하고
+  OUT/SET/RST writer가 없는 내부 신호와 소비 rung ID를 제공한다. 새 publication
+  gate나 시뮬레이션 결과가 아니라, 에이전트의 실제 편집에 필요한 정적 관찰이다.
+- 실제 rev320 read-only 검사에서는 기존 진단 0개였지만 any_alarm, auto_running,
+  cycle_complete, move_cmd_active, move_timeout_done 5개가 writer 없이 사용됐다.
+  이 정보는 코드 및 focused 회귀 3 passed와 실제 저장본 분석으로 확인했다.
+- 이 executionObservations 변경은 현재 실행 Host에 아직 반영하지 않았다.
+  현재 run 0c3598b1-fb8f-4a92-b687-d004b63c8d6d를 다시 취소하지 않고 유지한다.
+  관측 시 Qwen slot task3832는 processing=true, n_decoded623이었고 run 약405초,
+  rev320 상태였다. live 출력의 완료/진척을 먼저 확인하고 다음 정상 재시작 때 반영할 것.
+- 이전 goal turn은 코드 수정/실제 초안 수정으로 progress, 이번 turn도 조회 기능
+  구현 및 실제 저장본의 5개 미작성 신호 확인으로 progress다. 전체 목표 미완료.
+
+## 2026-09-14 복구 래더 오판 수정 및 실제 자동 복구 접점 수정
+
+- 후속 rev314→316에서 수동 reset rung도 실제 위험 접점이 제거됐다.
+  rev316→318은 mode_auto description만 바뀌었고 실행 조건은 그대로다.
+- 컬렉션 래더 편집 결과에 editImpact(executableChanged, changedFieldsByRung,
+  실제 변경 설명)를 추가했다. 설명 수정은 허용하되 실행 변경으로 오인하지 않도록
+  모델 observation을 제공한다. 조건/순서/삭제와 설명-only 구분 포함 회귀 2 passed.
+- 이 변경 반영 후 현재 run은 0c3598b1-fb8f-4a92-b687-d004b63c8d6d,
+  operation resume-executable-impact-20260914이다. 모드 순환 조건 및 실제 rung 순서
+  문제를 명시해 기존 초안에서 재개했고 rev319 inspect 완료를 확인했다.
+  editImpact를 실제 모델이 활용해 운전 조건을 고쳤는지는 아직 미확인이다.
+- 실행 순서상 알람 RST가 해당 latch ON을 요구하는 sequence reset보다 앞에 있다.
+  이것도 복구 동작 미완료 사유다. 자동/수동 모드 진동 및 내부 writer 문제도 남는다.
+
+- rev302→306은 reset rung에 emergency_stop ON뿐 아니라 door_open ON 및
+  move_timeout_done ON까지 AND로 추가했다. 기존 검사는 이를 valid로 처리했지만
+  정상 복구 동작은 아니다. 단순 검사 통과를 완료로 판단하지 않는다.
+- 작업자 recovery를 구현하는 sequence_reset rung이 활성 위험 입력을 추가 요구하는
+  오류를 검출하도록 수정했다. 일반 trip에 의한 sequence reset은 이 검사의 대상이 아니다.
+- 이름만으로 alarm_estop_latch를 위험 입력으로 오인하는 문제도 확인하여 hazard 판별을
+  digital_input으로 한정했다. rev312 read-only 검사에서 자동 쪽 오탐은 사라지고
+  수동 rung 실제 오류 하나만 남았다. 입력/래치/trip-reset 구분 회귀 1 passed.
+- rev310→312에서 자동 rung의 door_open/move_timeout_done 접점이 실제 제거됐다.
+  설명만 변경된 rev308→310과 구분한다. 수동 쪽 및 전체 동작은 미완료다.
+- 현재 run e3c3c556-36ba-43c9-8fde-733c924a124b,
+  operation resume-typed-input-repair-20260914. 정상 API cancel/restart 후 기존
+  초안에서 재개했으며 rev314는 수동 rung 오류 한 건을 실 Host에서 반환했다.
+  테스트 반복 대신 실제 저장 diff와 수정 완료 여부를 확인하며 이어갈 것.
+
+## 2026-09-14 중단된 Host 복구 및 rev298 재개
+
+- 시작 시 8767 listener와 Python 프로세스가 없었지만 이전 run은 DB에 ANALYZING으로
+  남아 있었다. 정식 Start-ControlStudio-Development.ps1 -Web이 exit0으로 기동했고
+  새 listener와 웹 API 요청을 확인했다. 화면 시각 검증으로 확대하지 않는다.
+- Qwen 100.64.0.1:8978/v1 / qwen36 설정이 보존됐다. 기존 대화에 정상 메시지 API로
+  run 9aa24eba-9806-4433-badf-020aa5165b79를 시작했다. rev298에는 recovery_estop
+  emergency_stop ON 변경이 실제 보존돼 있다. 신규 실행은 rev302까지 진행했으며
+  비상정지 recovery의 seq_auto/seq_manual reset rung 진단 2개가 남아 있다.
+- continuous start 검사에서 이름에 start가 있는 내부 신호를 순간 버튼으로 오인하는
+  판별을 digital_input으로 제한했다. 이 소스 변경은 현재 실행 Host에 아직 미반영이다.
+  실제 저장본 rev298의 read-only 검사에서는 RST/sequence reset 불일치 3개를 확인했다.
+- 자동/수동 전체 동작, 별도 파일 생성 및 XG-SIM은 여전히 미완료다.
+
+## 2026-09-13 실행 설계 대신 설명문만 재작성하는 경로 차단
+
+- Qwen run `5e974c18-ddfa-460f-a38d-29cfba6fc43c`의 긴 응답은 design.edit로
+  narrative만 변경했고 rev283→285 native_design diff는 없었다. 이것을 기능
+  수정 완료로 보지 않는다. valid read 후에도 narrative/technical_configuration의
+  공통 design.edit를 노출하던 경로를 수정했다. 초기 작성/진단 기반 복구 경로는
+  유지하고 valid 설계 의미 검토에서는 컬렉션별 실제 편집기를 노출한다.
+- 정상 cancel/restart 후 run `4b5e1339-cbc5-41e9-a90c-28d2e716816c`, operation
+  `resume-executable-edit-20260913-1810`으로 재개. alarm_estop OFF,
+  recovery_estop ON을 명시하고 설명문을 다시 쓰지 않도록 전달했다.
+- 사용자 요청으로 정식 launcher `-Web` 실행(정상 exit0)했다. 인앱 open 요청은
+  queued이고 CUA timeout이 반복됐다. computer-use skill의 초기화/앱목록/복구
+  절차 후에도 `codex app-server exited before returning response 1`로 실패했다.
+  실제 화면 확인 완료라고 주장하지 않는다. 현재 재시작 후 -Web 재호출 중.
+
+## 2026-09-13 NC 입력 정상 상태를 거절하던 검사기 수정
+
+- 실모델이 rev278에서 이동 제어망에 emergency_stop ON을 올바르게 추가했으나
+  rev279 검사가 `hazard_active_used_as_run_permit`로 OFF로 바꾸라고 요구했다.
+  `_requirement_diagnostics`가 emergency/door 입력은 모두 ON=위험이라고
+  하드코딩한 것이 원인이다. NC emergency_stop의 normalState=on과 충돌했다.
+- 제어망/OUT rung 진단을 각 I/O의 normalState 기준으로 변경했다. 같은 실제
+  저장본 rev279 read-only 재검사는 잘못된 극성 오류 대신 정상 ON 조건을
+  OUT rung에도 반영하라는 `control_network_out_missing_effective_permits`만
+  반환했다. 신규 단위 테스트 반복이 아니라 실제 실패 저장본 확인이다.
+- 잘못된 진단을 받은 이전 run 정상 cancel/restart 후 기존 초안에서 재개:
+  run `5e974c18-ddfa-460f-a38d-29cfba6fc43c`, operation
+  `resume-nc-polarity-repair-20260913-1750`. 이동허용 ON/알람발동 OFF/복구 ON을
+  정확히 요청했다. 동작 및 시뮬레이션 전체 완료는 아직 아니다.
+
+## 2026-09-13 최신 수정 요청 전달 누락 복구
+
+- 이전 Qwen run은 저장 초안 rev265에서 read를 반복하며 실제 편집 저장을
+  확인하지 못했다. 단순 진행 heartbeat를 작업 진척으로 보지 않는다.
+- `_run_design_workspace`는 project_brief와 narrative만 받아 현재 사용자
+  prompt를 실행 모델에 전달하지 않았다. 호출부에서 user_request=prompt를
+  전달하고 `_design_workspace_prompt`에서 확정 brief와 구분해 작업 지시를
+  제공하도록 수정했다. valid인 기존 초안 재발행만으로 수정 요청을 충족했다고
+  취급하지 않도록 명시했다. Agent 회귀 33 passed.
+- 이전 run 정상 cancel/restart 후 기존 대화에서 정상 API로 재개:
+  `e8a9a2e4-ab91-4cc6-9d4c-15def4bcff25`, operation
+  `resume-user-directed-repair-20260913-1720`. 첫 작업을 NC E-stop의 알람/복구
+  극성 수정으로 특정하고 나머지 자동/수동/모드/신호/timer 문제도 유지했다.
+  실제 편집 저장 및 전체 시뮬레이션 완료는 아직 확인 전이다.
+- 후속 실실행은 safety edit 형식 오류 후 재수정하여 안전 규칙을 저장했다.
+  rev270→276 read-only 비교에서 원인별 알람 차단 규칙 추가와 이동 OUT rung
+  조건 변경이 확인됐다. rev277은 구조 검사 valid이나 NC 알람/복구 극성,
+  내부 writer/자동·수동 동작은 아직 수정 확인 전이다. 완료로 표현하지 않는다.
+  `.test-tmp/compare-design-revisions.py`는 저장본을 read-only 비교한다.
+
+## 2026-09-13 Qwen OpenAI 호환 연결 검사 복구 진행
+
+- 사용자 로컬 서버는 `http://100.64.0.1:8978/v1`, 모델 `qwen36`이다.
+  `/models` 응답과 서버 슬롯을 확인했다. 게이트웨이 인증정보를 전달하지 않는다.
+- 이전 기능 검사 실패는 Qwen 사용 불가의 증거가 아니다. 실제 런타임 직접
+  재현에서 structured probe의 1,000-token 제한으로 JSON이 절단되어
+  `UnexpectedModelBehavior`/JSON EOF가 발생했다. Host는 이를 일반 실패로
+  표시하며 이미 성공한 단계도 false로 축약했다.
+- structured probe는 실제 native output profile을 재사용하고 streaming
+  probe의 별도 64-token 제한을 제거했다. 추론 모델의 출력 예산을 tiny probe
+  상수로 제한하지 않는다. 성공 기준/스키마 검증은 유지한다.
+- HTTP 응답 hook은 SSE를 미리 `aread()`하지 않게 수정했다. 기존 코드는
+  생성 종료까지 스트림 전체를 버퍼링했다. HTTP200 error envelope도 모두503으로
+  바꾸지 않고 인증/요청/한도/서버 오류를 구분한다.
+- 관련 Agent 회귀 31 passed. 정상 Host restart 요청 완료. 수정 후 Qwen 실서버
+  직접 검사 5개 항목 모두 통과했고 정상 settings PUT의 재검사도 통과했다.
+  앱 저장 모델은 Qwen 위 주소이며 hasApiKey=false/customHeaderNames=[]이다.
+- 기존 대화에서 정상 messages API로 의미 수정 재개:
+  run `93b309bd-78a6-4a96-88d6-8416ce40535b`,
+  operation `resume-qwen-semantic-review-20260913-1640`, analyzing 응답 확인.
+  브라우저 연결 도구는 반복 timeout 상태여서 UI 확인을 했다고 주장하지 않는다.
+  설계 의미 수정 및 XG-SIM 완료는 아직 아니다.
+- 위 run은 inspect/check/read까지 실제 완료했으나 이후 비스트리밍 모델 응답을
+  오래 기다려 rev263에서 정상 cancel했다. workspace `agent.iter`가 모델 노드를
+  비스트리밍 next로만 구동하던 것을 확인했다. `_advance_workspace_node`는
+  모델 노드 스트림을 소비한 뒤 원래 graph transition으로 검증/도구 실행한다.
+  partial JSON/thinking은 사용자 텍스트로 노출하지 않는다. streaming-only
+  TestModel 회귀는 비스트리밍 호출 금지 및 도구 exactly once를 확인한다.
+  Agent 32 passed, 정상 Host restart scheduled. 전체 운전 완료 아님.
+- 재시작 뒤 재개 run `db288e7a-fb69-498d-ad25-06f1ffc764b9`은 모델 검증
+  precondition으로 실패했다. `create_app`의 개발 모델 기본값이 기존 사용자
+  선택을 매번 덮어쓰는 코드가 원인이었다. 개발 기본값을 **비어 있는 설치만**
+  seed하도록 변경했다. 실제 create_app/repository 테스트 2 passed는 사용자
+  endpoint/검증시각/빈 인증정보 보존 및 빈 설치 초기화를 확인한다.
+  Qwen 재저장 후 실제 재시작 보존 확인 중이다.
+- 실제 재시작 후 settings GET은 Qwen 주소/모델과 빈 인증정보 보존을 확인했다.
+  재개 run `4aae3847-d092-4e3c-8860-d7f10695541d`
+  (`resume-qwen-persisted-stream-20260913-1700`)은 precondition을 통과하여
+  design.inspect를 실행했다. 서버 `/slots`에서 stream=true와 생성 중 상태를
+  확인했다. Host 관련 합산 48 passed/5 subtests, Agent 32 passed.
+- 같은 run은 약315초 시점에도 실행 중이며 inspect→check→read→read 도구 완료가
+  확인됐다. 현재 rev265 valid, 이 run의 실제 편집 저장/설계 완주는 아직 확인하지
+  못했다. 스트리밍 연결과 모델 선택 보존의 복구를 PLC 동작 완료로 해석하지 말 것.
+
+## 2026-09-13 09:32 승인 후 재개 및 실제 카운터 수정 차단 복구
+
+- 마지막 10:11 의미 검토 요청 run `1e19cab1-65f5-46c6-8db9-3f7711804471`은
+  inspect/check 후 provider HTTP503으로 FAILED. rev261 valid가 보존돼 있으나
+  위 의미 결함은 수정 완료되지 않았다. 새 read/review/edit 경로의 실모델 완주도
+  미검증이다. 후속 짧은 design_read tool-call probe: Nemotron 30초 timeout,
+  gemma-4-26b-a4b-it HTTP429. 앱 모델 설정은 바꾸지 않고 dialog를 닫았다.
+  인앱 ControlStudio 탭은 표시/유지했다. native 파일 생성/물리 PLC 쓰기는 없음.
+
+- 10:01 재개에서 unbound rung을 특정해 수정한 뒤 rev250 valid, 이후 published로
+  갔으나 최종 응답 없이 publish/narrative 편집을 반복했다. 10:07 정상 UI cancel.
+  실제 DB의 read-only Agent contract replay는 NewProjectNativeDesign의
+  `every timer must drive a transition, alarm, recovery, or output` 거절을 확인했다.
+  `.test-tmp/replay-published-contract.py`는 DB를 읽기만 한다.
+- 검사가 통과하면 publish 도구만 강제하던 Agent 라우터를 변경했다.
+  valid check→design.read→읽은 영역의 편집/read/check/publish 선택을 허용해
+  모델이 검사기가 놓친 동작 오류도 검토·수정할 수 있다. 최종 publication 거절도
+  narrative 전용 edit 대신 read로 돌아가며, pydantic 오류는 입력 값 없이
+  구체적인 경로/메시지를 모델에 전달한다. Agent 관련 28 tests passed.
+- 현재 구조/컴파일 pass와 별개로 초안의 의미상 결함을 직접 확인했다:
+  NC emergency_stop 정상 ON인데 alarm trigger ON/recovery OFF로 반대;
+  자동 step_wait가 매 사이클 start_btn ON을 요구; move_cmd OUT은 자동 이동
+  단계만 포함; auto_running/cycle_complete/any_alarm/move_timeout_done 등에
+  writer가 없고, 모드 OUT들의 상호 의존은 스캔 간 진동 우려가 있다.
+  이 초안을 정상 완성품으로 승인하거나 native 생성하지 않았다.
+  새로운 동작 검토 경로를 정상 restart로 반영 중이며 실모델 후속 검증 필요.
+
+- 09:52 재개는 복구 rung 검사 6개→1개까지 진행 후 provider HTTP503으로
+  실패했다. 짧은 Nemotron 생성 probe HTTP200/choices 있음/error 없음 확인 후
+  UI 재개했다. 기존 SDK max_retries=2가 이미 있어 횟수를 더 늘리지 않았다.
+- 다음 native 오류는 unbound SET rung인데 generic 메시지에 sequence가 들어가
+  sequences 수정으로 오분류됐다. 정상 UI cancel 후 NativeProjectPreconditionError에
+  선택적 구조화 repair_section/item_ids/diagnostic_code를 추가했다.
+  unbound_sequence_rung은 실제 matching rung IDs를 전달하고 해당 rung의
+  부분 수정/중복 제거만 허용한다. Host는 이 구조화 대상을 문자열 추정보다
+  우선한다. timer+draft 테스트 46 passed/5 subtests. 정상 restart로 반영 중.
+  비상정지 NC 해제 조건은 현재 초안에서 아직 의미 검토가 필요한 상태다.
+
+- 09:43 재개에서 timer 진단은 통과했고 sequence S group 충돌도 수정했다.
+  rev229에서 recovery_sequence_reset_rung_missing_or_incomplete가 recovery_rules로
+  잘못 라우팅돼 실행이 다시 실패했다. Host의 summary/execute가 따로 가진
+  ladder 소유 코드 목록을 `_LADDER_REPAIR_CODES`로 통합하고 복구 전용 rung
+  추가를 허용했다. 일반 초기화 rung을 보존하는 실제 execute 회귀를 추가했다.
+  timer+draft 45 passed/5 subtests. 정상 Host restart scheduled로 반영 중이다.
+  native 프로젝트 생성/전체 제품 완료는 아니다.
+
+- 후속 09:30 run `62ec3309-cbde-450a-89ce-bb0faf3b6e2f`는 rev204까지
+  진행 후 `agent_runtime_provider_http_503`으로 실패했다. 마지막 진단은
+  T0010/default timer area mismatch다. 목록 조회와 Nemotron 짧은 생성 probe는
+  이후 각각 HTTP200으로 복구 확인했다. 성공한 전체 계획 생성이 아니다.
+- timer preflight가 잘못됐다는 말만 반복하고 필요한 timeBaseMs를 알려주지 않아
+  모델이 주소만 반복 변경했다. 기존 검증 조건은 유지하면서 주소별 기대 base,
+  duration 유지와 presetTicks 계산식을 오류에 포함했다. 범위 밖 주소에는 base
+  수정 대신 주소 선택 안내를 준다. timer+draft 테스트 44 passed/5 subtests.
+  계획 UI/clarification 18 passed/5 subtests, revision handoff 2 passed다.
+  처음 revision tests 2개는 공유 TEMP 접근 거부로 setup 실패했고, 새 고유
+  basetemp 재실행에서 통과했다. 이를 제품 코드 실패/수정으로 오인하지 않는다.
+
+- 기본 LOCALAPPDATA Development DB/Host 8767 ready를 확인하고 정상 Launcher
+  `-WebUrl` handoff로 인앱 대동인덱스 대화를 복원했다. 기존 실행은
+  `host_restarted` FAILED였으며 완료가 아니었다. 초안은 rev128에서 보존돼 있었다.
+- 09:25 UI 재개에서 카운터 MOV 0 수정이 `repair_must_target_diagnosed_item`로
+  다시 막혔다. missing reset 진단의 path가 INCP 인덱스를 가리켜, relatedIds를
+  제외해도 인덱스 기반 수정 제한이 남는 것이 원인이었다. missing reset일 때는
+  ladder 컬렉션 소유로 처리해 초기화 writer 추가/수정을 허용한다. 기존 rung 보존과
+  진단 인덱스가 있는 상태의 실제 execute 회귀를 추가했다. Host 해당 모듈 42 passed.
+- Agent의 복수 호출 축약은 design workspace 요청에만 적용하도록 범위를 제한했다.
+  일반 engineering 호출을 조용히 버리지 않는 회귀 포함 해당 모듈 27 passed.
+- UI cancel 완료 후 정상 `/api/v1/host/restart` scheduled→health ready,
+  정상 Launcher 재인증으로 수정본 반영했다. 추가 UAC/강제 종료/DB 수동 변경 없음.
+  09:30 UI 재개는 rev143까지 진행했고 카운터 차단 다음인 manual_move_pressed의
+  control network 누락 진단으로 넘어갔다. 전체 설계/신규 파일/XG-SIM 완료 아님.
+- Windows computer-use list_apps는 timeout→app-server exited, kernel reset 후에도
+  app-server exited로 실패했다. 현재 native 창을 확인했다고 주장하지 않는다.
+  브라우저 제품 실행은 가능하며 이 화면 도구 오류와 제품 native 실패를 구분한다.
+
+## 2026-09-10 Qwen 196K 컨텍스트 기준 에이전트 예산 반영 및 배포
+
+- 실제 llama.cpp slot의 `n_ctx=196608`을 기준으로 Qwen 네이티브 설계 1차 출력
+  한도를 32,000토큰, JSON 절단 재시도 한도를 64,000토큰으로 확대했다. 이 값은
+  목표 출력 길이가 아니라 상한이며, 프롬프트와 출력을 합친 컨텍스트 한도는 지킨다.
+- 기존 100개 메시지 절단을 제거했다. Host는 약 180k, Agent는 시스템 지시와
+  출력 여유를 둔 약 150k 토큰까지 대화 입력을 보수적으로 계산해 보존한다.
+- UsageLimits의 누적 실행 예산을 요청별 context와 혼동하던 문제를 수정했다.
+  네이티브/서술 교정은 최대 4요청 각각 196,608 컨텍스트를 사용할 수 있도록
+  누적 예산을 786,432로 분리했다. Qwen 서술 출력은 16k/절단 재시도 32k,
+  네이티브 출력은 32k/절단 재시도 64k이며 이것들은 강제 생성량이 아닌 상한이다.
+- agent 전체 103tests, Host 전체 27tests 및 정적 오류 검사 통과. Host 정상
+  restart202로 새 코드를 배포했다. 앞선 XG5000 PID10172/HWND462098 재attach200도
+  확인했지만 재시작 후 다시 사용할 때는 세션을 재결속해야 한다.
+- 실모델 재검증 직전 `100.64.0.1:8060`이 TCP 연결 거부로 바뀌었다. Tailscale의
+  `sanghun-desktop` 노드와 SSH 22번 포트는 살아 있으나 이 Windows 환경에는 해당
+  Linux 계정 인증서가 없어 원격으로 모델 서버를 재기동하지 못했다. 모델 서버가
+  다시 listen하기 전에는 설계 요청을 중복 제출하지 않는다. 정상 API로 제출했던
+  run4f94689e-3a13-43f8-9a76-544fd1505075는 무의미한 provider timeout을 기다리지
+  않고 cancel200/CANCELLED 처리했다.
+- 신규 프로젝트 생성/저장/재열기/전체 XG-SIM은 여전히 미완료이며 성공으로
+  주장하지 않는다.
+
+## 2026-09-10 Qwen 분석 도구 분리 실검증과 JSON 절단 수정 (미배포)
+
+- 일반 Qwen 엔지니어링을 통합 대형 EngineeringAnalysisOutput 대신 기존의
+  Host 선택 도구 루프와 compact continuation 경로로 분리했다. 프로그램 목록과
+  초기동작 LD 읽기 2건, evidence 2건, checkpoint/mission checkpoint가 실제 생성됨.
+- run705151a8-6b72-4e4d-b01f-a4f35052ac46 최종 FAILED. 시간 초과가 아니라
+  continuation 2,000토큰 한도에서 unexpected_end_of_json/json_invalid로 종료.
+  따라서 단순 토큰 축소 성공으로 주장하지 않는다.
+- Qwen 보조 continuation에 enable_thinking=false를 유지하고 한도를 4,000으로
+  조정. qwen sampling/program continuation 30tests 및 Ruff 통과. 아직 이 최종
+  변경은 미배포/실모델 미검증. 읽기 자체와 projectUnchanged 근거는 성공 유지.
+- 신규 프로젝트 생성/저장/재열기/전체 XG-SIM은 여전히 미완료.
+
+## 2026-09-10 실제 대동 읽기 성공, 후속 모델 설명 시간 초과
+
+- 정상 workspace resume 200으로 대동 작업 사본을 새 XG5000 PID10172/HWND462098에
+  열고 controlled_launch_official_open_read_only 세션을 결속했다. 이전 빈 창
+  PID8868에 attach409가 난 것을 XG5000 전체 연결 불가라고 확대하지 말 것.
+- 앱 대화 a0e2657e-0d7d-4e94-80cb-8f92ff8dd3b7의 run
+  e70b5502-f56d-4b1d-bb25-4128ea54b74a는 최종 FAILED/provider_timeout.
+  그러나 tool.completed 2개: list_project_programs와 read_ladder_program 모두 성공.
+  초기동작 program.read_ld receipt verified=true/stableRepeat=true/projectUnchanged=true.
+  evidence fa3d5126-2aa6-53c5-95b2-d24666d607c8. 본문 읽기 실패로 표현하면 틀린다.
+- 실패는 후속 engineering_analysis 모델 단계. 설정 timeoutSeconds=300.0,
+  일반 Agent max_tokens6000. Qwen slot190226 idle 확인. 타임아웃의 세부 원인을
+  토큰 수만으로 확정하지 않았고 시간 제한 증가/재요청/모델 변경은 하지 않았다.
+- 사용자에게 잘못된 이전 설명을 정정했다. 신규 재생성/저장/전체 XG-SIM은 미완료.
+
+## 2026-09-10 XG5000 실행은 Windows 사용자 승인 대기
+
+- 설치된 C:\XG5000\XG5000.exe를 Computer Use launch_app으로 한 번 실행 요청.
+  호출 timeout 뒤 재실행하지 않고 창 목록을 새로 조회했으며,
+  consent.exe의 "XG5000 Application이(가) 사용자 권한을 요청하고 있습니다."
+  창을 확인했다. 사용자에게 직접 승인을 요청했다.
+- 다음 goal turn의 read-only 프로세스 확인에서도 consent PID7352/session1,
+  동일 권한 창이 존재하고 XG5000 프로세스는 없다. 승인/취소를 대신 누르거나
+  중복 실행하지 않았다. 사용자의 승인 후 새 프로세스/창을 재확인할 것.
+- 이전 브라우저 URL 안전 차단은 우회하지 않았으며 원본/작업 파일 변경 없음.
+  XG5000 본 화면/신규 프로젝트/전체 시뮬레이션 완료로 주장하지 않는다.
+
+## 2026-09-10 실제 재시도는 추가 질문으로 종료, 실행 설계 없음
+
+- run2a4a444b-cdb7-4ce8-8b74-72e97209bb2a COMPLETED, 그러나 최신 assistant
+  metadata plan_status=needs_clarification. 마지막progress planning_finalize225초,
+  task187122 is_processing=false. live 요청 없음.
+- 질문은 기존 reset 조건으로 알람 해제 처리/추가 알람 reset 불필요 여부,
+  추가 HMI/위치 표시 제외 여부, 자동6회 및 수동 ON/OFF 시험 순서의 계획 반영 여부.
+  질문 자체에 이전 확정 답변을 괄호로 인용하면서 다시 필수 확인으로 취급했다.
+  주소/극성 guard 실패가 아닌 별개의 범위 재확인 문제이며, COMPLETED를
+  실행 설계 생성 성공으로 해석하지 않는다. 동일 질문을 사용자에게 재전달하지 않았다.
+- 새 프로젝트 파일/저장/재열기/전체 XG-SIM 미완료. 다음은 기존 답변 재전송이나
+  또 다른 개별 질문 정규식보다 요구 판단 구조를 재검토할 것.
+
+## 2026-09-10 원인 구분 배포 후 실제 설계 재시도 진행 중
+
+- Host active 없음/모델 idle 확인 후 정상 restart202. 재인증/bootstrap 이후
+  정상 대화 API로 "기존에 답한 요구사항으로 설계 생성을 다시 진행해 줘.
+  추가 요구사항이나 변경은 없어." 제출. 기존 답변 전문은 다시 누적하지 않았다.
+- run2a4a444b-cdb7-4ce8-8b74-72e97209bb2a HTTP202/analyzing.
+  기존 9a5ef 실패와 혼동하지 말고 이 실행을 추적할 것. 종료 전에 중복 요청 금지.
+- 새 모델 결과/파일 생성/실제 전체 시뮬레이션 성공은 아직 미확인.
+
+## 2026-09-10 반복 질문 실패 원인 구분 (미배포)
+
+- 주소 위임 재질문과 모의 극성 재질문이 모두 planning_question_repeated로
+  기록되어 실제 마지막 실패 원인을 구분할 수 없었다. Agent 진단 매핑 및
+  Agent/Host 허용 목록에 planning_address_question_repeated,
+  planning_polarity_question_repeated를 추가했다. 원문/비공개 사고를 기록하지 않는다.
+- correction55tests 통과. 기존 모델 실패를 새 코드로 소급해 해석하지 말 것.
+  다음 실제 실행에서 어떤 guard가 실패했는지 구분하기 위한 변경이며 해결 자체가 아니다.
+  아직 미배포이고 신규 요청 없음. 단계 연동 카운트/다중 시퀀스 구현은 아직 없음.
+
+## 2026-09-10 작성 누락 피드백 수정 정상 재로딩
+
+- bootstrap activeOperation 없음 및 모델 slot task184635 is_processing=false 확인 후
+  정상 /api/v1/host/restart 202. 이후 새 세션 bootstrap 200/activeOperation 없음,
+  model=qwen36와 기존 endpoint 유지 확인. 새 모델 메시지는 제출하지 않았다.
+- 전체 시뮬레이션 경로 재검토: NativeSimulationRunner는 여전히 각 모드/시퀀스/
+  알람 1개, 2-step require_start_release만 지원한다. 별도 MNE rung profile은
+  비트 관측과 최대16step 전용이며 대동 전체 카운트/다중모드 시험의 대체가 아니다.
+  단순 개수 제한 삭제 또는 MNE profile 우회로 전체 PASS를 만들지 말 것.
+- 실제 신규 프로젝트 생성/저장/재열기/전체 XG-SIM과 사용자 화면 확인 미완료.
+
+## 2026-09-10 계획서 작성 누락과 사용자 미확정 구분 (미배포)
+
+- _validate_new_project_narrative_readiness의 누락 항목 retry 문구가
+  "Complete the narrative, or return needs_clarification"으로 작성 누락을
+  질문 분기로 돌아갈 선택지처럼 제시했다. 작성 누락 자체는 미확정 사용자
+  결정이 아니며 근거와 명시적 제안으로 보완하도록 수정. 실제 미확정 결정은
+  그대로 질문하도록 유지하며 자동 ready/근거 보충/DB 변경은 없다.
+- correction54tests 통과: 미작성 ready는 여전히 거부하고 원래 객체 불변,
+  진짜 clarification 질문은 그대로 유지. 최신 실제 반복 질문 실패가 이 문구로
+  유발됐다는 증거는 없으며 해결됐다고 주장하지 않는다. 미배포/새 요청 없음.
+- Windows 브라우저 화면의 정책상 안전 중단을 우회하지 않는다. 전체 일반 사용자
+  생성/저장/재열기/전체 XG-SIM 목표는 여전히 미완료.
+
+## 2026-09-10 실제 탭 인증 오류 확인과 안내 정리
+
+- 사용자에게 보이는 상태를 재확인: in-app 탭은 Launcher 세션 인증 필요 상태로
+  시작 메뉴 3개가 모두 비활성화되어 있었다. 서버 8767 listener만으로 웹 사용 가능이라
+  판단하지 말 것. 정상 Development 런처 -Web 실행은 종료 코드 0, Edge 창은 존재한다.
+- Windows Computer Use 초기 timeout 후 kernel reset으로 앱 목록 조회는 복구됐으나
+  Edge 관측에서 현재 브라우저 URL을 확신할 수 없다는 안전 중단 발생. 이 경로를
+  다른 UI 조작 기술로 우회하지 않았다. 사용자 화면 확인 답변은 아직 없음.
+- App.tsx: 세션 인증 필요 시 중복 연결 경고와 비활성 시작 메뉴를 숨기고,
+  정상 앱으로 다시 여는 방법 및 저장 기록 보존을 안내한다. npm run build 통과.
+  수정 후 실제 화면 검증은 아직 하지 않았다. XG5000 생성/저장/재열기와 전체
+  XG-SIM 인수 시험은 여전히 미완료이며 새 모델 요청도 제출하지 않았다.
+
+## 2026-09-10 중복 축소 실검증도 반복 질문으로 실패
+
+- run9a5ef227-3582-461b-912d-a8e30e628af0 최종 FAILED/agent_output_contract,
+  planning_narrative/validator_rejected/planning_question_repeated. 마지막progress495초,
+  task184635 idle. live 요청 없음, 모델 설계/파일 채택 없음.
+- 중복 축소만으로 반복 질문 해결되지 않음. 동일 입력 재제출/재시작 없음.
+  기존 정확 요구는 보존되어 있다. 사용자에게 다시 같은 질문을 넘기거나
+  단순 안내 추가를 해결로 주장하지 말 것. 전체 목표는 여전히 미완료.
+
+## 2026-09-10 모델 전달 중복 축소 반영 후 실제 요청
+
+- task179746 idle/Host activeOperation 없음 확인→정상 restart202→재인증과
+  bootstrap/settings qwen36 기존 endpoint 확인.
+- 마지막 후속 답변 그대로 정상 메시지 API로 제출:
+  run9a5ef227-3582-461b-912d-a8e30e628af0 HTTP202/analyzing.
+  다음은 이 실행 추적. e6512fdd는 FAILED이며 중복 제출하지 말 것.
+- 원문DB/근거 검증 변경 없음. 실제 생성/저장/재열기/전체 XG-SIM 미완료.
+
+## 2026-09-10 누적 동일 답변의 모델 전달 중복 축소 (미배포)
+
+- 현재 DB brief readonly 측정: supplemental 8650자/46문단, 연속 동일 문단만
+  접으면3099자/17문단. 저장 절단은 아니며 반복 재제출이 상당 부분을 차지함.
+- _planning_brief_prompt_view는 shallow copy에서 연속으로 완전히 동일한 문단만
+  한 번 표시. _trusted_context_instructions의 serialized model view에만 적용.
+  원문DB/brief digest/source enum 및 validator는 그대로. 공백 차이/A→B→A는 보존.
+- correction52tests/Ruff 통과. 미배포/새 모델 요청 없음. 실제 반복 질문 해결 여부
+  및 전체 생성/시뮬레이션은 미검증. 최신 e6512fdd FAILED, live 요청 없음.
+
+## 2026-09-10 ON/OFF 보존 수정 후에도 반복 질문 최종 실패
+
+- e6512fdd-21a9-44f7-813c-3174a079327d FAILED/agent_output_contract:
+  planning_narrative/validator_rejected/planning_question_repeated. 마지막progress375초,
+  task179746 idle 확인. live 요청 없음. 계획/파일 채택 없음.
+- Host append_planning_clarification은 후속 원문을 잘라내지 않고 누적한다.
+  실제 실패 질문 원문은 보존되지 않았으므로 극성/주소 중 무엇인지 확정하지 말 것.
+  같은 요청 추가 제출/재시작 없음. 반복 질문을 사용자에게 재질문하는 대신
+  누적 요구 전달 및 판단 경로의 구조적 개선 필요. 전체 목표 미완료.
+
+## 2026-09-10 ON/OFF 정의 보존 반영 후 실제 요청
+
+- 서버 task175896 idle/Host activeOperation 없음 확인 후 정상 restart202.
+  재인증/bootstrap/settings qwen36 및 기존 endpoint 확인.
+- 마지막 시험 순서 포함 답변 그대로 정상 API로 재제출:
+  run e6512fdd-21a9-44f7-813c-3174a079327d HTTP202/analyzing.
+  다음은 이 요청부터 확인. 이전67dee000는 clarification 완료일 뿐 실행 설계 없음.
+  중복 제출 금지. 전체 생성/저장/재열기/XG-SIM 미완료.
+
+## 2026-09-10 ON/OFF 시험 언급이 기존 정의를 가리는 결함 수정 (미배포)
+
+- 67dee000 COMPLETED/needs_clarification, design 빈 배열. ON/OFF와 알람표시,
+  6회 후 추가동작, 초기화 질문을 다시 출력. task175896 idle, live 요청 없음.
+- _stored_simulation_polarity_quote가 가장 나중의 ON/OFF 언급이면 무조건
+  정의 후보로 삼아 "버튼 ON/OFF 시험 순서"가 이전 확정 정의를 가림.
+  후보는 논리/의미/정의/변경 또는 미확정 언급으로 한정. 시험 순서 언급은
+  기존 정의 유지, 실제 후속 논리 미정/변경은 기존 답을 재사용하지 않음.
+- 시험 순서 후 기존 정의 보존/논리 재정의 시 미확정 회귀 포함51tests 통과,
+  Ruff 통과. 미배포/새 요청 없음. 모델 생성/파일/전체 시뮬레이션 미완료.
+
+## 2026-09-10 시험 순서 작성 선택 질문에 정상 후속 응답
+
+- e690dc57 COMPLETED/needs_clarification, design 빈 배열. 자동6회 모의 입력
+  단계 정리 여부/수동 버튼 ON-OFF 타임라인 여부를 필수 질문으로 출력.
+  task172361 idle. native 단계 도달하지 않아 참조 수정 실검증은 아직 아님.
+- Codex 실사용 테스트 답변으로 두 시험 순서 포함을 정상 API로 응답.
+  원래 요청한 PC 검증 범위임을 설명하고 기존 안전/운전/리셋/원본보존 유지.
+  사용자 새 발언이라고 주장하지 말 것. 다음 실행 ID는 최신 runs 조회로 확인.
+  추가 필수 질문 남발 문제와 전체 파일 생성/XG-SIM은 미완료.
+
+## 2026-09-10 선언 ID 재시도 전달 반영 후 실제 검증
+
+- 서버 task169390 idle/Host activeOperation 없음 확인 후 정상 restart202.
+  재인증/bootstrap/settings qwen36 기존 endpoint 확인.
+- 마지막 저장 후속 답변을 정상 메시지 API로 재제출:
+  run e690dc57-c07c-42f8-8235-755b2bba8597 HTTP202/analyzing.
+  다음은 이 요청부터 확인. bf6b3e41는 FAILED. 중복 재제출 금지.
+- 모델 설계 채택/파일 생성/전체 XG-SIM은 아직 미완료.
+
+## 2026-09-10 참조 오류 재시도에 실제 선언 선택지 전달 (미배포)
+
+- provider 참조 validator가 generic undeclared 오류만 주고 실제 선택지를 잃던
+  부분 보강. typed source_sets의 선언 ID tuple을 별도 error context에 보존하고
+  retry feedback에 종류별 선택지를 전달. 종류별64개/ID80자/식별자 정규식 제한,
+  정확한 알려진 오류 문구만 처리. 임의 context/raw input은 출력하지 않음.
+- 선언 추가/자동 치환/ready 자동 승격 없음. 전체 설계 생성 방식을 분리한 것은
+  아니며 이 수정의 실제 모델 성공 여부는 아직 미확인.
+- native unknown-reference 통합 검사에 실제 선언 선택지 전달, payload 불변,
+  public diagnostic에 context 미노출 검사 추가. correction51tests/Ruff 통과.
+  미배포, 새 요청 없음. 최신 bf6b3e41는 FAILED, live 모델 요청 없음.
+
+## 2026-09-10 native 설계 최종 실패: 선언되지 않은 action 신호
+
+- bf6b3e41-dbe9-4231-b79b-b411c05518f6 최종 FAILED/agent_output_contract.
+  planning_native_design/schema_validation/native_ladder_unknown_reference.
+  ladder_rungs 2..8 action.target_id가 undeclared signal_id. 마지막progress960초,
+  서버 task169390 idle 확인. 새 파일/채택된 설계 없음. 더 기다릴 live 요청 없음.
+- 현재 provider는 source_sets로 io_points/timers/sequences.steps/sequence_id를
+  검증하며 retry feedback에도 올바른 선언 collection과 target_type 대응을 이미
+  안내한다. 단순히 동일 안내를 다시 덧붙이는 것으로 해결됐다고 주장하지 말 것.
+  다음은 실제 모델의 선언/참조 분리 생성 방안과 스키마 부담을 검토할 것.
+  이 실패 뒤 아직 재시작/새 모델 요청/소스 수정 없음. 전체 목표 미완료.
+
+## 2026-09-10 clarification provider 제약 반영 후 실제 요청
+
+- 서버 task160389 idle 및 Host activeOperation 없음 확인 후 정상 restart202.
+  재인증/bootstrap/settings qwen36/기존 endpoint 확인.
+- 마지막 후속 답변 그대로 정상 메시지 API 재제출:
+  run bf6b3e41-dbe9-4231-b79b-b411c05518f6 HTTP202/analyzing.
+  다음은 이 요청부터 확인. 이전5ba34a05는 FAILED. 중복 제출 금지.
+- 생성 성공/실제 XG5000 파일 및 XG-SIM 검증 완료 증거는 아직 없음.
+
+## 2026-09-10 질문 없는 clarification 실패 / provider 분기 제약 보강
+
+- run5ba34a05-b71f-466b-9b82-2f70930246bf 최종 FAILED:
+  planning_narrative/validator_rejected/planning_question_missing. 서버 task160389
+  idle, 마지막 heartbeat675초. 최종 설계나 파일 채택 없음. live 요청 없음.
+- 동적 provider clarification 분기는 open_questions 기본 빈 배열을 허용했으나
+  후속 readiness validator에서는 거절하고 있었음. provider schema도 필수/minItems1로
+  맞춤. ready 분기는 maxItems0. 질문 자동 생성이나 상태 자동 승격 없음.
+- provider schema 필수/min/max 검사 포함 correction50tests 통과. 미배포,
+  새 모델 요청 없음. 전체 생성·저장·재열기 및 XG-SIM은 여전히 미완료.
+
+## 2026-09-10 추가 질문 결과 확인 및 실제 후속 답변
+
+- fe48870a COMPLETED지만 needs_clarification, design 전체 빈 배열.
+  질문은 자동 6회 이후 동작, 별도 알람 리셋 입력, HMI/위치 표시 필요 여부.
+  주소 안내 수정의 native 단계 검증까지 도달하지 않음. 서버 task154458 idle.
+- 실사용 테스트 후속 답변을 정상 API로 보냄. 기존 자동 반복/6회는 시험 기준,
+  기존 리셋 조건, 요청 없는 추가 HMI/리셋 입력을 필수 질문으로 만들지 말 것을
+  명시. 사용자 새 답변으로 주장하지 말 것: Codex가 기존 요구를 근거로 보낸 테스트 입력.
+- run 5ba34a05-b71f-466b-9b82-2f70930246bf HTTP202/analyzing.
+  다음은 이 실행 추적. 중복 요청 금지. 전체 파일/시뮬레이션 목표 미완료.
+
+## 2026-09-10 주소 표기 안내 반영 후 실제 재검증
+
+- Qwen task150347 idle와 Host activeOperation 없음 확인 후 정상 restart202.
+  재인증/bootstrap/settings qwen36 및 기존 endpoint 유지 확인.
+- 기존 최신 사용자 메시지를 정상 API로 재제출, HTTP202:
+  run fe48870a-c1bd-4748-92da-eb7aaa092ad8, state analyzing.
+  다음은 이 요청부터 확인. 기존 d1ce7406은 FAILED이며 더 기다리지 말 것.
+- 주소 규칙 완화/자동 변환 없음. 실제 설계 생성 성공 여부는 아직 미확인.
+  별도 파일 생성/재열기 및 전체 XG-SIM 목표는 그대로 남아 있음.
+
+## 2026-09-10 실제 실행 설계 주소 형식 실패 / 안내 보강 미배포
+
+- d1ce7406-ee75-4674-b612-34bbe9f7e375 최종 FAILED(agent_output_contract),
+  planning_native_design/schema_validation. io_points 0..7 digital_input.address
+  string_pattern_mismatch. 마지막 progress1350초, 서버 task150347 idle 확인.
+  최종 설계 채택/파일 생성 없음. 더 기다릴 live 요청 없음.
+- Agent instructions와 provider input/writable address schema description에
+  compact bit 표기(P/M + 3~4자리 word + hex bit) 및 예시, dotted 금지,
+  모의 digital_input도 M 영역 가능, 사용자 주소 보존/위임 조건 명시.
+  실제 거절값은 진단에 없으므로 dotted 표기를 출력했다고 단정하지 않는다.
+  정규식 완화/주소 자동 변환/요구사항 변경 없음.
+- 50 correction tests 및 Ruff 통과. 아직 미배포/새 요청 없음.
+  다음은 정상 재시작 후 실제 검증. 전체 XG5000 생성·저장·재열기와
+  자동/수동 전체 XG-SIM은 여전히 미완료.
+
+## 2026-09-10 현재 요청 실행 설계 단계 진입
+
+- run d1ce7406-ee75-4674-b612-34bbe9f7e375 ANALYZING 유지,
+  elapsedSeconds360/stage planning_native_design 확인. 서버 task146249
+  is_processing=true. 기존 narrative task143592에서 다음 설계 생성으로 진행했다.
+- 아직 ready plan 채택/파일 생성/시뮬레이션 완료가 아니다. 이 run을 계속 확인하며
+  중복 요청하지 말 것. 완료 시 설계 내용 및 전체 요구 coverage를 검토해야 한다.
+
+## 2026-09-10 비질문 차단 반영 후 실제 요청 진행
+
+- 이전 run terminal 및 Qwen slot idle 확인 후 정상 Host restart202.
+  재인증/설정 qwen36, 100.64.0.1:8978/v1 확인, 기존 최신 메시지를 정상 API로 재제출.
+- run d1ce7406-ee75-4674-b612-34bbe9f7e375 HTTP202, 이후 ANALYZING/
+  planning_narrative 75초, 서버 task143592 is_processing=true 확인. 다음은 이 요청 확인.
+  중복 요청/중단 없음. 아직 파일 생성이나 전체 설계 성공 증거 없음.
+- 실제 사용자 화면 확인을 위해 computer-use 스킬 및 필수 참조를 다시 읽고
+  sky.list_apps 수행: timeout, 2초 후 재시도 app-server exited, 커널 초기화 후에도
+  app-server exited. 해당 도구의 입력은 중단. 화면 표시 성공으로 주장하지 말 것.
+
+## 2026-09-10 최신 계획 완료는 실행 완료가 아님 / 비질문 차단 수정
+
+- a8203138-65c8-45a0-9572-ea08355b1c04 COMPLETED이지만 plan_status는
+  needs_clarification. design 배열은 모두 비어 있으며 파일 생성/시뮬레이션 없음.
+- openDecisions에 실제 질문 대신 "모의 신호의 실제 물리 배선 및 NC 접점 정의는
+  불필요 (모의 신호 의미만 적용)", "실시간 성능 측정 또는 외부 통신은 범위 밖"을
+  넣어 필수 결정을 만들어 낸 실제 결함 확인. 사용자에게 다시 답변 요구하지 말 것.
+- Agent narrative validator에 명확한 한국어 범위 제외 서술 탐지 추가. 모델에
+  scope/assumptions로 재분류하고 실제 미결정을 재평가하도록 ModelRetry.
+  질문을 자동 삭제하거나 ready/사용자 근거를 자동 보충하지 않음.
+  실제 확인 요청과 다른 미해결 질문은 보존. 회귀 49 tests 통과.
+- 이 수정은 아직 미배포. 새 모델 요청 없음. XG5000 미실행, Edge 창 존재만
+  확인됐으며 사용자 화면 노출 증거는 아님. 전체 요구사항 미완료.
+
+## 2026-09-10 주소 위임 최초 전달 반영 및 실제 요청
+
+- 모델 idle 확인→정상 Host restart202→재인증/settings qwen36 확인.
+- 기존 최신 사용자 내용을 정상 API로 재제출:
+  run `a8203138-65c8-45a0-9572-ea08355b1c04` HTTP202/analyzing.
+  다음 확인은 이 실행부터. 기존5625bb99는 FAILED, 중복 요청 금지.
+- 전체 설계 생성/별도 파일 생성·재열기/전체 XG-SIM은 여전히 미완료.
+
+## 2026-09-10 주소 위임 결정의 최초 요청 전달 보강 (미배포)
+
+- 기존 반복 질문 거절용 주소 위임 탐지를 _stored_internal_address_delegation으로
+  분리해 정확한 해당 문장을 반환. 동일 판단을 최초 resolved instructions에도 전달.
+  CPU/내부 모의 조건 및 나중 위임 철회 처리 유지. 다른 결정/readiness 자동 보충 없음.
+- correction47tests 및 resolved context3tests/Ruff 통과. 미배포/새 모델 요청 없음.
+  최신5625bb99는 FAILED 유지. 이번 실패의 질문 원문은 보존되지 않았으므로
+  주소 질문이 최종 실패 원인이라고 확정한 것은 아님.
+
+## 2026-09-10 짧은 근거 참조 실제 실행 최종 실패
+
+- run5625bb99-e4e6-4f19-af4b-dc1a0d8a70a0 최종 FAILED:
+  planning_narrative/validator_rejected/planning_question_repeated.
+  마지막 heartbeat675초. 서버 task138043 is_processing=false 확인.
+- 이번 최종 오류는 enum이 아니라 이미 답한 사항을 반복 질문한 validator 거절.
+  전체 narrative/native plan 채택 없음, 파일 생성/변경 없음.
+  같은 요청 즉시 반복 대신 전달된 resolved context와 반복 질문 분기 확인 필요.
+  현재 살아 있는 모델 요청 없음. 목표 전체 미완료.
+
+## 2026-09-10 사용자에게 보이는 정상 웹 실행
+
+- 사용자가 웹/XG5000이 보이지 않는다고 지적. 이전 headless QA를 사용자가 보는
+  앱 실행과 명확히 구별할 것. XG5000 프로세스 없음 확인, 생성/시뮬레이션 미진행.
+- open_in_codex는 queued였음. 이후 정상 개발 Launcher -Web 실행 exit0.
+  실제 msedge PID8532 MainWindowTitle=ControlStudio - 프로필 1 - Microsoft Edge
+  창 확인. 사용자 화면 위치/전경까지 시각적으로 확인한 것은 아님.
+- 모델 요청 재제출/중단 없음. 최신 추적 run5625bb99 및 task135365 확인을 이어갈 것.
+
+## 2026-09-10 짧은 근거 참조 반영 후 실제 실행
+
+- 서버 idle 확인→정상 Host restart202→재인증/settings 확인.
+  qwen36/100.64.0.1:8978/v1 유지. 짧은 근거 ID 출력/정확 원문 복원 반영.
+- 기존 최신 사용자 내용을 정상 메시지 API로 재제출.
+  run `5625bb99-e4e6-4f19-af4b-dc1a0d8a70a0` HTTP202/analyzing.
+  다음 확인은 이 실행부터. 기존91faeb4a는 FAILED이며 중복 재제출 금지.
+  전체 생성/저장·재열기/다중 모드 XG-SIM은 아직 미완료.
+
+## 2026-09-10 긴 인용문 재출력을 짧은 근거 참조로 변경 (미배포)
+
+- run91faeb4a 최종 FAILED 확인: planning_narrative/schema_validation,
+  ready requirement_sources sequence/hardware_and_io/operating_modes/
+  performance_and_acceptance enum 오류. 서버 task132169 idle. 더 기다리지 말 것.
+- Qwen의 동적 StoredRequirementQuote enum을 q0/q1/... 참조로 변경.
+  enum description에 해당 실행의 저장된 정확 원문 매핑을 제공하고,
+  _StoredQuoteReference 값에 바인딩된 exact_quote만 normalization에서 복원.
+  원문 재작성 허용/없는 근거 보충/brief 변경/모델 대신 source 선택 없음.
+  Nemotron 기존 원문 enum은 유지. Qwen tool/prompted 둘 다 같은 타입 사용.
+- 필수 근거 누락 거절, paraphrase 거절, 원문 exact 복원/brief 불변 포함
+  correction47tests/Ruff 통과. instructions도 ID 선택 방식으로 갱신.
+  미배포/실모델 미요청. 전체 생성/파일/시뮬레이션 완료로 보지 말 것.
+
+## 2026-09-10 실제 진행 중 계획 요청의 새로고침 복원 수정
+
+- run91faeb4a-2524-4284-9f58-545c022d2966 ANALYZING/서버 task122462 live 확인.
+  live-restore.mjs 최초 검증에서 중지 버튼 timeout으로 실패 재현.
+- bootstrap.activeOperation은 정확한 해당 run/conversation/analyzing을 반환했으나
+  App의 currentEngineeringTarget 비교가 독립 planning conversation 복원을 거부.
+  과거 이벤트 차단 이후 실제 run도 화면에 복원되지 않던 회귀 발견.
+- restoreActiveOperation 조건에 현재 localStorage로 선택한 동일 new_project_planning
+  대화인 경우 추가. 다른 대상 engineering 대화의 기존 격리 판단은 유지.
+- npm build/typecheck/production-entry 성공. 실제 별도 headless Edge에서
+  최초 열기 및 reload 모두 중지 버튼 visible/enabled, composer disabled 확인.
+  중지 클릭/중복 요청 없음. live-restore.png 직접 확인. 모델 요청은 그대로 유지.
+
+## 2026-09-10 Qwen narrative HTTP500 단일 prompted fallback 반영/실행
+
+- Qwen3.6 이름/로컬 qwen36 alias의 narrative HTTP500에서만 동일 endpoint/model의
+  PromptedOutput로 1회 fallback. 기존 tool 방식이 기본이며 반복 500은 전파.
+  401/429/503은 fallback 없음. Nemotron502 정책 유지.
+- exact stored quote schema, normalize/authority/readiness validator 모두 유지.
+  Qwen prompted flag가 기존에 무시되던 분기 수정. 원인 확정이 아니라 제한된
+  대체 응답 방식이며, 사용자 서버 오류 로그 답변은 아직 없음.
+- FunctionModel 실 graph 테스트: tool500→prompted repeated delegated question
+  거절→prompted genuine question 통과, brief 불변. 500 2요청 한도 및
+  401/429/503 1요청 확인. correction47tests/Ruff 통과.
+- 모델 idle 확인→Host restart202→정상 API 기존 최신 사용자 내용 재제출.
+  새 run `91faeb4a-2524-4284-9f58-545c022d2966` HTTP202/analyzing.
+  이 실행부터 이어서 확인. 기존6b597f1d는 FAILED, 중복 제출하지 말 것.
+  전체 설계/생성/저장·재열기/전체 XG-SIM은 아직 미완료.
+
+## 2026-09-10 작업 기록 왕복 실제 브라우저 검증
+
+- 임시 inspect.mjs headless Edge 정상 UI에서 작업 기록→대동인덱스 재구성
+  테스트 0909 선택→5초 관찰→현재 대동인덱스 대화형 모의 프로젝트로 복귀
+  →5초 관찰 완료. 과거 대화 중지 버튼 없음, 복귀 후 composer enabled 확인.
+  브라우저 finally 종료, 요청 전송/프로젝트 변경 없음.
+- 최초복원/1440→390 최신 위치/과거 중간 위치 보존도 함께 재통과.
+- 설계 서버 HTTP500 원인/전체 생성/저장·재열기/다중 모드 XG-SIM은 미완료.
+  새 전체 모델 요청 없음. 서버 오류 줄에 대한 사용자 답변은 아직 없음.
+
+## 2026-09-10 HTTP500 분리 진단 및 작업 기록 복원 보강
+
+- 서버 idle 확인 후 qwen36 최소 도구 호출 및 native JSON 요청(128토큰,
+  thinking off) 둘 다 HTTP200. tool_calls1/27tokens, native stop/6tokens.
+  긴 narrative HTTP500 원인은 아직 미확인; 전체 모델 요청 재제출 없음.
+  사용자에게 task116405의 마지막 서버 오류 줄을 비동기로 요청함.
+- selectConversationHistory에서도 snapshot 없이 sequence0 replay하는 경로 확인.
+  bootstrap→대화 조회 뒤 같은 epoch인지 확인하고, 일치하는 activeOperation만
+  복원하며 snapshot.lastEventSequence를 replay 필터에 전달하도록 수정.
+- isHistoricalRunReplay 추출: 과거 run/token/progress 제외, 새 이벤트 및 과거
+  도구/근거/저장 메시지는 보존하는 회귀 테스트 통과. 실제 기록 선택 UI
+  재검증은 아직 남아 있음. 기존 최초복원/resize 실기 증거는 아래 절 참조.
+
+## 2026-09-10 안전한 native 응답 진단 Host 반영
+
+- task116405 idle 확인 후 정상 Host restart202 및 재인증 settings200 확인.
+  qwen36/100.64.0.1:8978/v1 유지. Host stderr numeric-shape allowlist 반영.
+- Web composer/permissions/evidence/request-permissions 4 scripts 모두 통과.
+  새 모델 요청은 제출하지 않음. 최신 전체 실행6b597f1d는 narrative HTTP500 FAILED.
+  다음 단계는 이 HTTP500의 원인 분리 또는 전체 실행 설계 생성 경로 개선이며,
+  진단 반영만으로 설계 생성 문제가 해결됐다고 보지 말 것.
+
+## 2026-09-10 실제 브라우저 UI 검증 및 복원/resize 수정
+
+- run6b597f1d-e452-4c71-9e08-738a35a0f149 최종 FAILED:
+  agent_runtime_provider_http_500, stage=planning_narrative. task116405 idle 확인.
+  더 기다리거나 중복 재제출하지 말 것. 새 계획/파일 없음.
+- CUA 실패 대신 임시 개발용 Playwright+headless Edge에서 정상 launcher handoff로
+  실제 localhost 앱 로그인/기존 대화 복원/렌더링 성공. 사용자 브라우저 탭 미변경.
+  별도 브라우저는 스크립트 finally에서 종료한다. npm 임시 설치 위치:
+  C:/Users/Administrator/AppData/Local/Temp/controlstudio-ui-qa-7f11b7f630284b38921ce8904668edda
+  inspect.mjs 및 desktop.png/mobile.png가 있음. 원문 로그는 최소화할 것.
+- 발견: bootstrap 최신 상태 복원 후 SSE sequence0 과거 run events가 다시
+  activeRunState를 ANALYZING으로 만들고 입력창을 잠금. startEventStream에
+  snapshotSequence 추가, bootstrap.lastEventSequence 이하 과거 run 상태/token/
+  progress는 현재 UI에 재적용하지 않음. 도구 이력 replay는 보존.
+  다른 대화 전환 경로의 snapshot watermark는 아직 추가 확인 필요.
+- 발견: 1440→390 resize시 최신 대화에서 오래된 위치로 밀림. 최신 따라가기
+  상태에서만 resize시 bottom 재정렬. 과거 읽는 상태는 강제 이동하지 않음.
+- npm run build/typecheck/production-entry 통과. 실제 Edge 재검증:
+  복원 후 5초 replay에도 composer enabled, 1440/390 가로 넘침 없음,
+  resize 최신 위치 유지, 과거 중간 지점 읽기 시 latest 강제 이동 없음.
+  최신 screenshot 직접 확인. 좁은 화면도 입력창 화면 내 유지.
+- Host stderr 진단 수정은 여전히 미배포. 모델 유휴 상태이므로 정상 재시작
+  후 반영 가능. 전체 설계/생성/저장·재열기/다중 모드 XG-SIM은 미완료.
+
+## 2026-09-10 Host stderr 필터로 native 응답 진단 유실 확인 및 수정 (미배포)
+
+- 현재 run `6b597f1d-e452-4c71-9e08-738a35a0f149` ANALYZING,
+  planning_narrative elapsed285초, 서버 task116405 is_processing=true 확인.
+  요청 중복 제출/재시작 없음. 이 실행을 먼저 이어서 확인할 것.
+- 기존 native response shape logger는 Host AgentSupervisor._drain_stderr에서
+  허용되지 않아 버려짐을 소스에서 확인. 이전 진단 보강만으로 Host 로그에
+  남는다고 가정하지 말 것. 현재 진행 중 프로세스는 여전히 그 버전이다.
+- Agent 출력은 고정 finish enum + 두 숫자의 한 줄 WARNING으로 변경하고,
+  Host에는 타임스탬프/모듈/정확한 문법/enum/9자리 이하 숫자를 fullmatch하는
+  allowlist만 추가. 임의 stderr 본문 전달 없음. Host 테스트 2개 및 Ruff 통과.
+  현재 모델 실행을 중단하지 않기 위해 미배포 상태로 둠.
+- 브라우저 cua.getState 두 번 모두 30초 timeout. 시각적 UI 검증은 미실행.
+  전체 다중 모드 runner 제한과 나머지 제품 완료 조건은 여전히 남아 있다.
+
+## 2026-09-10 잘린 native 응답의 같은 예산 재생성 제거 및 실제 재실행
+
+- _BoundedNativeDesignRetry에서 ValidationError + 마지막 응답 finish_reason=length인
+  경우 동일 예산 ModelRetry를 소모하지 않고 기존 상위 1회 확대 재시도로 전달한다.
+  원래 ValidationError cause 유지. finish=stop 문법 오류는 기존 수정 재시도 유지.
+  6000/12000 한도와 도메인/안전 검증은 변경하지 않았다.
+- FunctionModel 실제 agent graph 회귀: length 1요청, stop+invalid 2요청 확인.
+  native_output_correction 45 tests 및 Ruff 통과.
+- 모델 idle 확인 후 정상 Host restart202, 재인증/settings200 확인.
+  native 응답 진단 및 카운트 hold 수정도 함께 소스 런타임에 반영.
+- 기존 최신 user content를 정상 API로 재제출, run
+  `6b597f1d-e452-4c71-9e08-738a35a0f149` HTTP202/analyzing.
+  다음 턴은 이 실행부터 확인하고 중복 제출하지 말 것.
+  전체 설계 생성/저장·재열기/전체 다중 모드 XG-SIM은 아직 미완료.
+
+## 2026-09-10 native 재시도 응답 진단 보강 (미배포)
+
+- 인증된 settings 200/qwen36/100.64.0.1:8978/v1 및 모델 idle 확인.
+  최신 전체 run은 여전히 47b0878c FAILED이며 신규 요청은 제출하지 않았다.
+- native 최초/502 fallback/길이 확대 재시도에 공통 응답 shape 기록 연결.
+  finally에서 최근 2개 응답의 finish_reason/output_tokens/text_chars만 기록한다.
+  본문·추론은 기록하지 않는다. 모델 응답 형식 자체를 고친 것은 아니다.
+- 진단 단위 테스트 2개 및 Ruff 통과. 이번 수정은 미배포이며 실제 대형 응답
+  원인 분리/전체 설계 생성/저장·재열기/전체 XG-SIM 검증은 여전히 남아 있다.
+
+## 2026-09-10 카운트 유지 관찰 기간 보강 (미배포)
+
+- _verify_increments의 단순3회 읽기를 _hold_data_value 1초 반복 관찰로 연결.
+  마지막 샘플까지 값 유지/최소2샘플/elapsed 기록, 중간 불일치 즉시 실패,
+  레지스터 쓰기 없음. 기존 flat observation 필드 보존. sampled evidence이며
+  sub-poll 순간 변화의 부재를 증명하지 않는다.
+- 늦은 추가 카운트 실패 회귀 포함 MCP28 tests 통과.
+  전체 다중 모드 runner/step-dependent counter 지원을 대체하지 않는다.
+  Host 재시작/실기 미실행, 새 모델 요청 없음.
+
+## 2026-09-10 JSON 실패 분류 배포
+
+- 모델 idle 확인 후 정상 Host restart202 및 재인증/settings 조회 성공.
+  qwen36/100.64.0.1:8978/v1, 키/추가 헤더 없음 유지.
+- JSON 실패 분류 반영. 새 전체 모델 요청은 제출하지 않았다.
+  최신 run47b0878c는 FAILED. 실제 큰 응답의 EOF/문법 구분은 아직 미확인이다.
+
+## 2026-09-10 JSON 실패 분류 진단 추가 (미배포)
+
+- _output_contract_diagnostic의 json_invalid를 정적 loc 코드
+  unexpected_end_of_json / invalid_json_syntax로 구분. EOF parser prefix만 분류,
+  자유형 오류 메시지/응답/추론/키는 기록하지 않는다. EOF 자체는 서버의 length
+  종료 사유 증거와 다르므로 둘을 동일시하지 말 것.
+- Agent81 tests 통과. 아직 배포/실기 재요청 없음. 이 변경은 원인 분리를 위한
+  진단이며 생성 실패 해결이나 full runner 구현 완료가 아니다.
+
+## 2026-09-10 서버 JSON/비추론 분리 진단
+
+- idle 확인 후 동일 qwen36 endpoint에 작은 strict json_schema 요청(128토큰 한도,
+  enable_thinking=false 및 native 샘플링)을 보냈다. finish=stop,
+  content14chars/reasoning0chars/completion7tokens, 기대 객체 {ok:true} 일치.
+  서버 전체의 JSON/비추론 미지원은 아니라는 증거. 전체 설계 지원/성공 증거는 아님.
+- 큰 설계의 최종 json_invalid가 길이 제한인지 기타 형식 실패인지 구분할
+  terminal metadata 확보가 다음 진단 과제. 기존 host-restart.log에서 지정된
+  planning response shape/native truncated 로그 검색은 결과가 없었다.
+  최신 전체 run47b0878c는 FAILED 유지. 새 전체 요청 없음.
+
+## 2026-09-10 최신 실행 최종 JSON 실패
+
+- run47b0878c-edd5-4baf-b519-1095117c4ed4 최종 FAILED 확인.
+  stage=planning_native_design, schema_validation/structured_output_contract,
+  validationErrors=<root>:json_invalid. 마지막 heartbeat2250초.
+  서버 task104370/is_processing=false/n_prompt_tokens34499. 더 기다리지 말 것.
+- native instruct 및 12000 확대 재시도로도 유효 최종 객체 미확보.
+  실제 full plan 채택/파일 생성/모의 운전 없음. 같은 설정 반복 제출 대신
+  출력 생성 구조/응답 형식과 예산 원인을 추가 확인해야 한다.
+
+## 2026-09-10 現 native 출력 확대 재시도
+
+- run47b0878c-edd5-4baf-b519-1095117c4ed4는 planning_native_design 진행 중.
+  서버 task92354/is_processing=true/n_predict12000 확인(960초).
+  기존 명시적 length 응답에 대한 확대 재시도 경로. 중복 제출 없음.
+  최종 결과는 아직 없으며 같은 run부터 확인할 것.
+
+## 2026-09-10 nested coverage 안내 배포 및 실기 시작
+
+- 서버 idle 확인 후 정상 Host restart202, 재인증/settings 조회 성공.
+  qwen36/100.64.0.1:8978/v1/키 없음/추가 헤더 없음 유지.
+- 기존 최신 대화 답변을 정상 API로 재제출: run
+  `47b0878c-edd5-4baf-b519-1095117c4ed4`, HTTP202/analyzing.
+  이 요청 결과부터 확인. 이전 a2620311은 FAILED. 아직 실기 성공 없음.
+
+## 2026-09-10 nested native 오류의 coverage 안내 누락 수정 (미배포)
+
+- 실제 오류 loc는 native_design.io_points.10.signal_id인데 retry feedback의
+  coverage index 수집은 길이3/io_points 시작만 처리했다. 알려진 native_design
+  래퍼만 제거하여 직접/중첩 검증 모두 누락 network/safety 목록을 보완 안내에 반영.
+  원문 input echo/설계 자동수정/검증 완화 없음.
+- nested mixed 12 errors/뒤쪽 indices 누락 회귀 추가. Agent80 tests 통과.
+  현재 앱 재시작/실모델 재실행 전. 최신 a2620311은 FAILED이며 새 요청 없음.
+
+## 2026-09-10 native JSON 이후 안전 범위 검증 실패
+
+- run a2620311-3a30-47de-8cac-cda0915496d6 최종 FAILED, 서버 task73815 idle.
+  stage=planning_native_design, schema_validation/native_output_safety_coverage,
+  native_design.io_points.10.signal_id.every_digital_output_requires_an_explicit_safety_boundary.
+  마지막 heartbeat765초. JSON 파싱 이후 의미 검증 실패이며 설계 채택/파일 변경 없음.
+- 이 run은 더 기다리지 말 것. 기존 retry feedback는 이미 누락 io_points index와
+  affected_output_signal_ids 정확한 참조, 출력 삭제/재분류/가상 안전 하드웨어 금지를
+  안내한다. 같은 안내를 중복 추가하거나 안전 검사를 제거하지 말 것.
+  구조화된 의미 검증까지 진행됐지만 전체 설계/실사용 성공은 아니다.
+
+## 2026-09-10 사전 맥락 수정 후 실제 native 단계 도달
+
+- run a2620311-3a30-47de-8cac-cda0915496d6는 270초에 planning_native_design으로
+  전환. 서버 task69913/is_processing=true. narrative 반복 질문 경로를 통과한
+  이번 실행 증거이며 전체 설계 성공은 아니다. 같은 run 결과부터 확인할 것.
+
+## 2026-09-10 반복 질문 사전 맥락 배포 및 재실행
+
+- 모델 idle 확인 후 정상 /api/v1/host/restart HTTP202, 이후 인증된 settings 조회
+  성공으로 앱 재기동 확인. qwen36/100.64.0.1:8978/v1/키 없음/헤더 없음 유지.
+- 기존 최신 답변을 정상 대화 API로 재제출: HTTP202,
+  run `a2620311-3a30-47de-8cac-cda0915496d6`, analyzing.
+  이 요청을 먼저 확인하고 중복 제출하지 말 것. 아직 결과/설계 생성 성공 없음.
+
+## 2026-09-10 반복 질문 사전 맥락 수정 (미배포)
+
+- _stored_simulation_polarity_quote로 기존 근거 추출을 분리하고,
+  _resolved_simulation_instructions를 narrative 첫 호출 instructions에 연결.
+  저장된 명시적 PC ON/OFF 문장만 JSON 인용으로 전달하며 승인/실제 배선으로
+  해석하지 않도록 명시. 다른 미정 사항 보존, 이후 미정 수정은 추출하지 않음.
+  DB 보충/ready 강제/검증 완화 없음. 기존 반복 질문 validator 유지.
+- Agent 전체 79 tests/Ruff 통과. 아직 재시작/실모델 검증 전이다.
+  최신 실기 run086fabe7은 FAILED. 새 요청을 제출하지 않았다.
+
+## 2026-09-10 再실행 narrative 반복 질문으로 최종 실패
+
+- run `086fabe7-639e-4b7a-9a7e-0c9532c4fe6c` FAILED 확인.
+  stage=planning_narrative, validatorCode=planning_question_repeated,
+  reasonCode=validator_rejected. 마지막 heartbeat 495초, 서버 task64511 idle.
+  이 요청은 더 기다리지 말 것. native 단계 미도달로 instruct 변경 효과 미확인.
+- 최신 코드 전체 Agent 77 tests, MCP 27 tests 및 관련 Ruff 통과.
+  이는 실모델 성공/전체 자동·수동 구현 완료가 아니다.
+
+## 2026-09-10 앱 복구 및 native instruct 실기 재요청
+
+- Start-ControlStudio-Development.ps1 -NoOpen 정상 종료. 인증된 settings/model
+  조회 성공: http://100.64.0.1:8978/v1, qwen36, hasApiKey=false, customHeaderNames=[].
+  주의: /health는 SPA HTML을 반환하므로 그것만으로 readiness를 주장하지 말 것.
+- 서버 slot idle 확인 뒤 정상 대화 API로 기존 최신 사용자 메시지를 재제출했다.
+  run `086fabe7-639e-4b7a-9a7e-0c9532c4fe6c`, HTTP202/analyzing.
+  이 run 결과부터 확인. 이전 run13581695는 FAILED이며 다시 기다리지 말 것.
+  새 run의 native 단계 옵션 실제 적용 및 결과는 아직 미확인.
+
+## 2026-09-10 native Qwen instruct 설정 수정 — 실행 앱 연결 거부
+
+- _native_design_model_settings의 Qwen3.6/qwen36만 공식 instruct 설정
+  temperature=.7/top_p=.8/presence_penalty=1.5,
+  chat_template_kwargs.enable_thinking=false로 변경. 일반/tool/narrative 설정과
+  기존 6000/12000 한도 및 검증은 유지. 긴 reasoning이 유일 원인이라는 증거는 없으며
+  실제 실패에 대한 검증할 가설이다. 공식 모델 카드의 non-thinking/best-practices 확인.
+- test_qwen_sampling 5 tests 통과(일반 및 native 실제 MockTransport body 전달 포함),
+  runtime/tests Ruff 통과. 실모델 성공은 아직 미확인.
+- 정상 재시작을 위해 /api/launcher/handoff에 연결했으나 WinError10061.
+  재시작 API는 호출되지 않았다. localhost8767 앱 가용 상태 확인/복구 후 배포 확인과
+  실제 계획 재검증 필요. 이전 native 요청은 FAILED/서버 idle 확인된 상태다.
+
+## 2026-09-10 Qwen 요청 종료 및 유지 상태 관찰 수정
+
+- run `13581695-a136-448c-bb45-47a88fe43e84` 최종 FAILED 확인.
+  `agent_output_contract`, stage=planning_native_design,
+  reasonCode=schema_validation, validatorCode=structured_output_contract,
+  validationErrors=<root>:json_invalid. /slots task 49799 is_processing=false.
+  더 이상 이 요청을 기다리지 말 것. 설계/변경 채택 없음. 새 요청 제출 없음.
+- MCP native_simulation.py에 _hold_values 반복 관찰을 추가하고 타이머 완료 후
+  시작 유지 및 입력 완료 후 해제 전 경로에 연결했다. 관찰 중 mismatch는 즉시 실패,
+  입력 쓰기 없음, 최소 2 samples/1초 및 경과 시간 기록. 서브 폴링 순간 변화를
+  증명하지 않는다. 전체 다중 모드 runner 구현을 대체하지 않는다.
+- test_native_held_state.py 추가: 정상 반복 관찰, 중간 재동작 실패, 잘못된 기간,
+  실제 sequence 해제 전 연결 순서. 기존 STOP 복원 포함 7 tests 통과, Ruff 통과
+  (마지막 연결 테스트 추가 전 Ruff). 아직 Host 재시작/배포/실기 미실행.
+- 다음 작업은 native JSON 출력 실패의 원인 확인 및 수정, 전체 다중 모드 실행부,
+  별도 파일 생성/저장/재열기와 실제 UI/XG-SIM 검증이다.
+
+## 2026-09-09 native 출력 한도 확대 재시도
+
+- run `13581695-a136-448c-bb45-47a88fe43e84`는 23:38:16 KST/2070초에
+  ANALYZING/planning_native_design. 서버 task 37780/is_processing=true,
+  n_predict=12000 확인. 이전 task 31762는 6000 한도였다.
+- 현재 코드의 Qwen native 12000 한도는 마지막 response.finish_reason=length일 때만
+  실행하는 한 번의 확대 재시도 경로다. schema/근거 검사는 유지된다.
+  최종 성공/실패는 아직 없으며 이 동일 run부터 확인해야 한다. 중복 제출 없음.
+
+## 2026-09-09 native 설계 후속 요청 진행 확인
+
+- 같은 run `13581695-a136-448c-bb45-47a88fe43e84`가 23:27:16 KST/1410초에도
+  ANALYZING/planning_native_design이었다. /slots task는 29001에서 31762로
+  바뀌었고 is_processing=true/n_predict=6000이었다. 앱에서 중복 제출한 것이 아니다.
+- 최종 결과나 검증 성공 기록은 아직 없다. 이 턴은 실제 서버 작업을 확인한
+  verified wait이며 다음 턴도 동일 run의 terminal 결과부터 확인할 것.
+
+## 2026-09-09 Qwen 실제 native 설계 단계 도달
+
+- 같은 run `13581695-a136-448c-bb45-47a88fe43e84`가 23:20:45 KST/1020초에
+  planning_native_design으로 전환됐다. /slots에서 task 29001/is_processing=true,
+  n_predict 6000 확인. 이전 narrative task 23038과 다른 다음 요청이다.
+- 기존 샘플링 변경 후 실제 narrative가 ready 경로를 통과해 native 단계로 넘어간
+  증거다. 전체 native 설계 검증/프로젝트 생성/저장/재열기/XG-SIM 성공은 아니다.
+  실행 중인 동일 run부터 확인하고 중복 제출/재시작하지 말 것.
+
+## 2026-09-09 Qwen 재실행의 실제 진행 확인
+
+- 이전 목표 턴은 샘플링 코드 수정/검증과 실제 실행 제출로 progress였다.
+- 이번 턴은 run `13581695-a136-448c-bb45-47a88fe43e84`를 계속 확인한
+  verified wait다. 23:09:15 KST planning_narrative/330초/ANALYZING,
+  서버 /slots의 동일 task 23038이 is_processing=true였다. 서버 상태의
+  n_prompt_tokens도 12657→13519→13943→14461로 변했다. terminal 아님.
+  중복 실행/재시작하지 않았으며 다음 턴도 동일 run부터 확인할 것.
+- 원본과 작업 사본의 SHA-256을 실제 재확인했다. 둘 다
+  BEE3B1A6E69469C0E1384CB8D9D758FEF2F95A92F0CC7AC6486DEEA941A9A68F로
+  이전 원본과 같았다. 이는 보존 증거이며 신규 파일 생성/실기 완료 증거는 아니다.
+
+## 2026-09-09 Qwen3.6 호출 샘플링 정합성
+
+- 이전 턴은 STOP 복원 결함 수정/검증/배포로 progress였다. 현재 서버 /props에서
+  실제 모델이 unsloth Qwen3.6-35B-A3B-UD-IQ4_NL.gguf임을 확인했다.
+  context 196608, slot 1, 서버 기본 temperature 0.6/top_p 0.95/top_k 20/min_p 0.
+- 앱은 모든 일반 모델에 temperature=0을 덮어쓰고 있었다. 공식 Qwen 문서
+  https://huggingface.co/Qwen/Qwen3.6-35B-A3B#best-practices 의 정밀 코딩 권장에
+  맞춰 qwen36 및 Qwen3.6 이름만 temperature 0.6/top_p 0.95/presence_penalty 0,
+  top_k 20/min_p 0으로 변경했다. 다른 모델/토큰 한도/근거 검사는 유지한다.
+  이는 원인 가설에 따른 호출 설정 수정이며 실기 재질문 해결을 증명하지 않는다.
+- capability의 도구/스트림 검사도 같은 샘플링 함수를 쓰게 했다. 별칭 구분,
+  native/재시도 한도 유지, 실제 HTTP request body 전달 등 포함 Agent 77 tests/Ruff 통과.
+- 정상 Host 재시작 후 첫 capability 검사는 22:59:04 KST success=false였으며
+  계획 자동 제출은 실행되지 않았다(session 46371 종료). 같은 production runtime의
+  별도 진단 재검사는 23:02:50 KST 다섯 기능 모두 통과했다(session 85278 종료).
+  단독 성공으로 간헐 실패나 실제 계획 품질이 해결됐다고 보지 말 것.
+- /slots 조회로 실제 진행 중 요청의 temperature 0.6/top_p 0.95/top_k 20/min_p 0
+  적용도 확인했다. 원문/추론/키는 출력하지 않았다.
+- 동일 기존 대화/최신 답변으로 정상 API run
+  `13581695-a136-448c-bb45-47a88fe43e84` 제출(HTTP 202). 현재 결과부터 확인하고
+  실행 중이면 중복 요청/재시작하지 말 것.
+
+## 2026-09-09 신규 XG-SIM STOP 실패 시 입력 복원 금지
+
+- 이전 목표 턴은 코드 변경과 실제 실패 원인 확인이 있어 progress였다.
+  현재 최신 계획 run은 f545a59e의 FAILED이며 새 모델 요청은 하지 않았다.
+- 다중 모드 시험 실행부를 점검하다 NativeSimulationRunner.restore_baseline이
+  cpu_stopped 인자를 영수증에만 기록하고 실제 쓰기 차단에 사용하지 않음을 확인했다.
+  STOP 미확인 시 읽기/쓰기 없이 attempted=false, matched=false를 반환하고
+  캡처한 baseline을 보존하도록 수정했다. 명시적 True만 허용한다.
+- server의 restore_attempted도 STOP 확인 여부와 일치시켰다. STOP 실패를
+  입력 복원 성공 또는 복원 쓰기 시도로 표시하지 않는다. 정상 STOP 후 exact
+  write/readback 검사는 유지한다. MCP 23 tests와 Ruff 통과, 정상 Host restart 요청.
+- 이 수정은 전체 자동/수동 runner 구현·실기 성공을 대체하지 않는다.
+  질문 루프, 별도 생성/재열기, 다중 모드 XG-SIM, 화면 도구 복구는 여전히 남는다.
+
+## 2026-09-09 Qwen의 이미 답한 모의 극성 재질문 수정
+
+- `6ff268a2-b29d-4ae6-8248-11a80dcd9876`는 22:09:15 KST/240초에
+  COMPLETED지만 needs_clarification이었다. 바로 전 대화에서 명시한 모의
+  ON/OFF 정의를 다시 질문했다. 저장 supplemental_requirements에는 답이 있다.
+- explicit PC 모의 ON/OFF 정의에 한해서 동일 극성 선호 질문을 받으면
+  저장 원문을 ModelRetry로 돌려주도록 했다. 물리 NC 배선 질문, 미정 조건,
+  이후 극성 수정은 자동 해결하지 않는다. 질문 제거/ready 승격/brief 변경 없음.
+  실제 저장 brief와 질문으로 탐지 확인, 회귀 72 tests/Ruff 통과.
+- 정상 재시작 후 동일 최신 답변으로 `f545a59e-613a-4d86-832b-559495641ae5`
+  실행은 FAILED / planning_narrative / validator_rejected /
+  planning_question_repeated로 종료. 마지막 progress 22:45:43 KST/630초.
+  원문 피드백 후에도 실기 재질문이 해소되지 않았으므로 수정 완료로 보지 말 것.
+  기존 원본 및 작업 사본 변경, 신규 파일 생성, 전체 XG-SIM 없음.
+- CUA getState 반복 timeout. Windows computer-use list_windows도 timeout,
+  재시도에서는 app-server exited, 명시적 JS reset/재초기화 후에도 timeout.
+  화면 점검 도구 복구가 필요하며 이번 시각/사용자 조작 검증은 수행하지 못했다.
+  현재 live 계획 요청은 종료됐으므로 진행 중으로 보고하지 말 것.
+
+## 2026-09-09 사용자 로컬 Qwen 연결 및 작업 재개
+
+- 사용자가 `100.64.0.1` 로컬 모델 서버 연결과 작업 재개를 지시했다.
+  앞선 세 모델 제한과 별개로 이 연결의 `qwen36` 사용이 승인됐다.
+- `http://100.64.0.1:8978/v1/models` HTTP 200, 모델 `qwen36` 확인.
+  단독 production capability 검사는 다섯 기능 모두 통과했다.
+- 앱이 내려가 있어 기존 개발 실행기로 기동했다. 첫 Host 설정 저장 검사는
+  HTTP 422로 거부됐으나, 재검사 2026-09-09 21:45:42 KST에 completion,
+  streaming, toolCalling, toolResultContinuation, structuredOutput 모두 통과했다.
+  정상 설정 API 저장 HTTP 200, 후속 GET으로 qwen36/새 endpoint를 확인했다.
+  hasApiKey=false, customHeaderNames=[]: 이전 서버 인증을 전달하지 않았다.
+- 브라우저 자동화는 두 번 timeout 후 명시적 reset 및 재시도도 timeout이었다.
+  이번 화면 조작/시각 검증은 미완료. 정상 인증 Host 메시지 API로 기존 대화의
+  저장 요구를 이어갔다. run `1350879d-b827-4206-9425-9ea7d96151e2`는
+  planning_narrative에서 FAILED / validator_rejected / requirement_source_invalid로
+  종료됐다. 마지막 progress 21:54:00 KST / 450초. 모델 연결 성공은 별도 파일
+  생성·재열기·전체 XG-SIM 완료가 아니다.
+- Qwen narrative ToolOutput에도 exact stored quote 선택형 스키마를 적용했다.
+  기존 Nemotron만 선택형이고 Qwen은 자유 인용 문자열이던 차이를 수정한 것이다.
+  근거/권한 검사와 질문 status를 유지하며 저장 brief를 자동 채우지 않는다.
+  Qwen tool 응답의 의역 거부→정확 인용 재시도→정규화 회귀 검사 추가.
+  ready 필수 근거 누락 거부 및 ToolOutput 유지 회귀 검사도 추가해 Agent 전체
+  70 tests, Ruff 통과. Web 관련 4 scripts 및 typecheck 통과.
+- 정상 Host restart HTTP 202 후 새 Qwen 설정 유지 확인. 같은 요구로
+  `9d7682e5-4307-44e1-af45-4787ea253eae`는 22:03:57 KST / 300초에
+  COMPLETED지만 needs_clarification이다. 원문 인용 오류는 재현되지 않았고
+  모의 신호 ON/OFF 선호와 알람 표시 선호를 질문했다. native 설계 완료 아님.
+- 사용자가 위임한 PC 모의 설계 범위에서 버튼/준비/완료/비상정지발생/도어열림
+  각각 ON=해당 조건, OFF=조건 없음, 알람 문구는 이동 시간 초과/비상정지/도어 열림으로
+  정하고 기존 운전·복구 조건을 유지하도록 정상 대화 API에 답했다. 물리 배선 정의 아님.
+  run `6ff268a2-b29d-4ae6-8248-11a80dcd9876` 진행 중. 이 실행부터 확인할 것.
+
+## 2026-09-09 근거 항목 존재와 세부 결정 완료의 구분
+
+- 20:16 Ultra run `0034f385-e3c9-4775-970e-eb0a6b808dcc`는 FAILED:
+  planning_narrative / validator_rejected / planning_question_repeated.
+  마지막 fresh progress는 20:19:54/225초. 서버 오류가 아니라 출력 검사 실패다.
+  두 질문 guard가 같은 diagnostic을 쓰므로 어느 guard였는지는 단정할 수 없다.
+- 코드에서 다섯 필드의 exact source mapping이 있다는 이유만으로 모든
+  needs_clarification을 거부하던 포괄적 guard를 제거했다. 항목에 근거가 있어도
+  아직 미정인 복구/운전 세부 결정이 있을 수 있다. 알려진 내부 주소 위임을
+  다시 질문하는 specific guard는 유지한다. source/authority/readiness/native
+  검사나 승인 경계는 바꾸지 않으며 status를 자동 ready로 승격하지 않는다.
+- 미정 복구 조건을 실제 runtime에서 질문으로 보존하고 native pass를 실행하지
+  않는 회귀 테스트 추가. Agent 전체 68 tests/Ruff 통과, 정상 앱 재시작 반영.
+- 반영 후 `7e570542-643a-4253-a267-9ffa558ec959`는 20:26 COMPLETED지만
+  needs_clarification이다(전체 작업 완료 아님). 실제 화면에서 주소 배치 승인 방식,
+  알람 표현 방식 선호, 시험 시나리오 문서화 여부를 질문했다. blanket guard 제거가
+  질문을 숨기던 실패를 드러냈으나 불필요한 구현 선호 질문 문제는 남아 있다.
+- UI에서 주소/알람 표현은 검토용 설계안으로 제안하고 기존 동작 조건을 유지하며
+  시험 시나리오를 문서화하도록 답했다. 이 답변으로 이어진
+  `2fd17554-00c0-4e25-b224-ced0d6998762`는 planning_narrative HTTP 502로
+  FAILED. 마지막 progress 20:31:25/240초. 현재 실제 계획 run은 모두 종료됐다.
+  승인된 native 설계나 새 프로젝트 파일은 아직 없으며 기존 파일/PLC 변경 없음.
+- 이후 Gemma 31B와 26B의 production capability 검사도 다시 rate_limited로
+  종료됐다. live probe/plan 실행 없음. 세 모델 외 사용은 사용자 지시로 제외한다.
+  현재 blocker는 허용된 연결들의 실제 출력/사용량 제한이며 모델 변경 승인 부족이 아니다.
+
+## 2026-09-09 저녁 사용자 지정 세 모델로 재개
+
+- 사용자가 같은 서버에서 세 모델만 사용하도록 승인했다. 우선순위는
+  nemotron-3-ultra → gemma-4-31b-it → gemma-4-26b-a4b-it. 나머지는 제외한다.
+  이전의 '다른 모델 연결 승인 대기'는 더 이상 blocker가 아니다.
+- 서버 /models에서 이 세 모델의 등록을 실제 확인했다. Gemma 31B/26B는
+  현재 설정의 동일 endpoint/인증으로 production test_capabilities를 호출했지만
+  둘 다 safe failure_kind=rate_limited였다. 설정 저장/검사 우회는 하지 않았다.
+- Ultra의 짧은 실제 chat 요청은 HTTP 200이었다. 이는 계획 생성이나 도구 실행
+  성공을 증명하지 않는다. 기존 UI 대화에서 20:16 다시 실행한
+  `0034f385-e3c9-4775-970e-eb0a6b808dcc`는 planning_narrative/ANALYZING.
+  이 run의 현재 상태를 확인하고 실행 중이면 끊거나 중복 요청하지 말 것.
+- CUA 연결이 두 번 timeout이었으나 명시적 세션 reset 뒤 복구됐다.
+  모델 설정 화면은 열고 닫았을 뿐 모델/키/endpoint/동의 설정을 바꾸지 않았다.
+  실제 파일 생성/저장/재열기/전체 다중 모드 XG-SIM은 여전히 미완료다.
+
+## 2026-09-09 계획 상태별 근거 스키마와 502 복구
+
+- `2a7419a4-c1e3-4a66-acdc-e0cfb86a9730`는 14:34 FAILED:
+  planning_narrative / validator_rejected / requirement_source_missing. native 참조
+  보완 단계에 도달하지 못했다. 이전 절의 ANALYZING 기록은 이 결과로 대체한다.
+- Nemotron narrative는 concrete object root의 decision 아래 status-discriminated
+  ready/clarification 응답을 사용한다. ready는 저장 brief에서 비었거나 미정인
+  다섯 필드의 exact stored quote를 non-null 필수로 요구한다. clarification은
+  null/누락을 허용한다. 기존 확정 필드는 근거 재입력을 강요하지 않는다.
+  응답 정규화 후 기존 domain/authority/readiness 검사를 그대로 수행한다.
+  사용자 근거를 자동 선택하거나 brief/승인 상태를 채우지 않는다.
+- 정상 재시작 후 14:46 `37c0b039-01bd-4d8e-99b2-c826f738d49c`는
+  planning_narrative HTTP 502로 FAILED. 스키마 변경의 실제 성공 증거는 없다.
+- narrative에도 Nemotron HTTP 502에 한해서 같은 model/endpoint의 PromptedOutput
+  스키마 전달로 한 번 복구하도록 연결했다. 모든 validator/사용자 history/brief는
+  동일하다. fallback은 request_limit=2이며 반복 502/401/503이나 schema/authority
+  실패에 무한 재요청하지 않는다. 취소/명시적 truncation 경로는 유지한다.
+- Agent 전체 66 tests/Ruff 통과. ready에서 각 missing/null 필드 거부, 확정 필드
+  보존, envelope 정규화, 런타임 fallback 뒤 반복 주소 질문 거부/진짜 미정 조건
+  보존, 연속 502 bounded retry와 다른 HTTP 오류 비복구를 검사했다.
+- 정상 재시작 후 14:49 UI에서 같은 대화/요구로
+  `fd055304-e277-4461-be14-3b96b3e018f6` 실행, 최종 FAILED:
+  planning_narrative / model_api_error / provider_http_502. 마지막 progress는
+  14:52:23/150초였다. 현재 추가 실행 없음. 동일 연결 반복 재요청하지 말 것.
+  화면 대화/진행/중단 조작 확인;
+  이번 절에서 Web 소스 변경은 없다.
+- 후속 통합 회귀: blank brief + supplemental exact source → ready envelope →
+  실제 runtime native pass → 검토 artifact 변환이 mock model로 통과하며 DB/brief
+  backfill은 없다. 집중 37 tests 통과(전체 66 통과 뒤 이 테스트 1개 추가).
+- 전체 목표 미완료. 신규 파일 생성/저장/재열기 및 전체 다중 모드 XG-SIM 미완료.
+  기존 NativeSimulationRunner의 단일 mode/sequence 제한은 여전히 남아 있다.
+  원본/작업 사본/모델 연결 설정/실제 PLC 변경 없음.
+
+## 2026-09-09 native 참조 오류 위치 보완
+
+- `87d59ef8-d080-48be-8ca9-c5829dd4f105`는 최종 FAILED.
+  planning_native_design / schema_validation / native_ladder_unknown_reference,
+  validationErrors=native_design:value_error. 마지막 진행은 14:20:58/645초였다.
+  현재 모델 재요청 없음. 파일 생성/변경은 수락되지 않았다.
+- provider→domain 변환은 signal/timer/sequence/step ID를 유지한다. 기존 domain 오류는
+  생성된 rung ID와 unknown source type만 표시해 중첩 provider 필드 위치가 사라졌다.
+  provider 검증에서 선언 집합과 contact/action 참조를 대조하고 ladder_rungs index,
+  condition.terms 경로와 해당 source/target 필드에 오류를 연결했다.
+  coverage 누락과 unknown reference를 함께 수집하며 어떤 선언/참조도 자동 수정하지 않는다.
+- 재작성 안내는 signal_id/timer_id/step_id/sequence_reset_id의 선언 위치와 주소/상징 ID,
+  sequence ID/step ID 차이를 설명한다. safety 오류가 먼저 있어도 참조 안내를 포함한다.
+  diagnostics에는 기존 allowlisted native_ladder_unknown_reference와 안전한 field path만
+  사용하며 rejected input/context 또는 실제 참조 문자열은 되풀이하지 않는다.
+- Agent 62 tests/Ruff 통과. 중첩 경로·세 가지 동시 참조 오류·input 비노출·원문 불변,
+  safety와 혼합된 보완 안내를 검사했다. 전체 기준 설계와 기존 동작 시험도 통과한다.
+  이후 정상 앱 재시작으로 반영했다. 14:26 동일 대화/요구로
+  `2a7419a4-c1e3-4a66-acdc-e0cfb86a9730` 실행. 마지막 확인 14:29:33,
+  planning_narrative 150초 fresh progress, ANALYZING. 이 run부터 재확인할 것.
+  참조 보완의 실기 효과는 아직 미확인이다.
+- 전체 목표 미완료. 이번 턴의 초기 부분은 특정 live run의 fresh progress를 확인한
+  verified wait였고, terminal 확인 뒤 위 소스 변경을 수행했다. 원본/작업 사본/모델
+  설정/실제 PLC 변경 없음. 다른 모델 연결 비교는 계속 사용자 답변 대기다.
+
+## 2026-09-09 모의 구현 선택 지침과 진행 내역 실화면 수정
+
+- narrative 지침의 contact polarity 금지를 physical contact polarity로 구분하고,
+  내부 PC 모의 신호의 활성 상태는 사용자 지정이 없을 때 검토할 설계 제안임을 명시했다.
+  native 지침도 요청 동작을 구현하는 start-release/running 메모리와 새 설비 기능을
+  구분했다. 물리 I/O/안전 조건 생성이나 출력 역할 재분류를 허용하지 않는다.
+  이것이 이전 실패의 단일 원인이었다는 증거는 없다. Agent 60 tests/Ruff 통과.
+- 브라우저 정상 재시작으로 위 지침과 이전 MNE hold/STOP/복원 변경을 반영했다.
+  14:10 동일 요청 `87d59ef8-d080-48be-8ca9-c5829dd4f105` 실행.
+  14:14 이후 planning_native_design 진입 확인: 이번에는 narrative 반복 질문을 넘었다.
+  최종 결과는 아직 미확인이며 현재 실행 중이다. 동일 run의 최신 상태부터 확인할 것.
+- 실제 좁은 창에서 진행 내역을 열자 대화와 패널이 병렬로 찌그러지고 페이지가 다시
+  스크롤되는 문제 재현. conversation-split으로 배치를 분리하고 일반 대화는 패널을
+  열어도 viewport 높이를 유지한다. <=860px에서 패널이 대화 위에 열리고 대화는
+  visibility:hidden으로 뒤쪽 초점 접근도 막는다. 닫기/Escape 후 원래 버튼 초점 복원.
+  넓은 창에서는 좌우 배치, 디버그 문서 layout은 별도로 유지한다(실 넓은 창 미검증).
+- run.state 이벤트의 detail에 runId를 그대로 넣던 부분을 빈 보조 내용으로 바꿨다.
+  식별자는 내부 metadata/debug에 남는다. message.appended 내부 저장 알림은 일반
+  진행 내역에서 제외하고 debug에는 유지한다. 내역 글씨 10/8px를 13/12px로 조정.
+- Web typecheck/build/production entry 통과. 실제 browser reload 후 패널 열기,
+  식별자/저장 알림 기본 숨김, 읽을 수 있는 글씨, Escape 닫기와 입력창/중단 버튼 복원
+  확인. bundle index-R0g4prGa.js / index-CmvlAmDo.css.
+- 새 파일 생성/저장/재열기/전체 다중 모드 XG-SIM은 미완료. 모델/키/연결/원본/작업
+  사본/실제 PLC 변경 없음. 다른 연결 비교 질문에도 아직 답변이 없다.
+
+## 2026-09-09 실행 결과와 기존 MNE 시나리오의 입력 유지 관측 연결
+
+- `959c9622-87ec-4af2-837f-dac412e084bf`는 13:52:44 FAILED.
+  planning_narrative / validator_rejected / planning_question_repeated.
+  현재 active run 0. 입력 중복 제거 후에도 계획은 완성되지 않았다. 질문 삭제나
+  status 강제 승격은 적용하지 않았고, 모델 재요청도 추가하지 않았다.
+- 기존 compile_rung_patch_candidate → 공개 candidate → Host/API → Web 검토 →
+  verify_mne_rung_patch_profile 경로에 선택적 `hold_ms`를 연결했다. 각 단계 0..10000ms,
+  전체 30000ms 이하. 미지정 기존 profile의 canonical shape/digest는 바꾸지 않는다.
+  hold 자체는 compiler/candidate/profile digest에 포함된다. Web은 초 단위로 설명한다.
+- 최초 기대 출력 일치 이후 입력을 다시 쓰지 않고 같은 출력을 반복 관측한다. 유지 중
+  불일치를 한 번 관측하면 실패하며, 나중에 일치해도 성공으로 복구하지 않는다.
+  holdMs/holdObservedMs/holdSamples/observationKind를 반환하고 Host가 승인된 hold와
+  기간·최소 2회 표본을 대조한다. 과거 endpoint의 단일 matched 결과로 새 hold를 통과 못함.
+  이 방식은 polled steady state이며 짧은 pulse 부재나 엄밀한 시간 경계 증명이 아니다.
+- compiler의 입력 byte 격리를 관측 OUT뿐 아니라 전체 프로그램 OUT/SET/RST의 P/M
+  writer bytes까지 검사한다. MNE 서버 finally 복원은 STOP ok+verified일 때만 실행한다.
+  STOP 불확실 시 RUN 중 입력 복원을 하지 않고 기존 실패/격리 경로로 남긴다.
+- MCP 20 tests, Host 24 tests, focused Ruff 통과. 실제 compiler candidate를 Host
+  MneRungPatchCandidateV6로 검증해 hold와 digest 보존 확인(no device I/O).
+  Contracts/Web typecheck/build/production entry 통과, index-wrqqGeyq.js.
+- Python 운영 프로세스는 이 변경 이후 아직 재시작하지 않았다. 실 XG-SIM hold/STOP
+  실패 경계와 실제 검토 화면은 미검증이다. 다음 사용 전 정상 재시작으로 반영 필요.
+  이 경로는 기존 단일 MNE rung 후보용이며 신규 전체 다중 모드 NativeSimulationRunner,
+  D count 관측, 대동인덱스 파일 생성/저장/재열기/전체 XG-SIM 완료를 뜻하지 않는다.
+
+## 2026-09-09 계획 입력 중복 제거 후 실사용 요청 확인 중
+
+- narrative 요청은 동일 사용자 대화를 message_history와 user_clarifications JSON으로
+  중복 전송했다. 추가 JSON 사본을 제거하고 원문 history/current prompt 및 Host brief를
+  유지한다. 검증기의 user_clarifications 근거와 저장 원문은 변경하지 않는다.
+- _planning_user_history는 연속한 동일 사용자 메시지만 마지막 timestamp로 합친다.
+  A→B→A 변경 복귀, 공백을 포함한 서로 다른 원문은 유지한다. DB 기록은 그대로다.
+  100-message 한도 전에 합쳐 반복 재요청이 초기 조건을 밀어내는 것도 방지한다.
+- 실제 저장 대화 읽기 전용 측정: user 20→13 turns, history 3338→2470 chars,
+  중복 clarification JSON 2788 chars 제거. 모델 거절의 원인이 입력 길이였다는 증거는
+  없으며 이 수치는 입력 중복 제거 효과만 나타낸다. Agent 전체 60 tests/Ruff 통과.
+- Computer Use 지침에 따라 브라우저 정상 재시작으로 반영. 13:49 동일 요구 실행
+  `959c9622-87ec-4af2-837f-dac412e084bf`; 마지막 확인 13:50:16 신선한
+  planning_narrative progress 60초, ANALYZING. 실행 결과부터 확인하고 관측 timeout만으로
+  중단/재시작하지 않는다. 연결/모델/키/프로젝트 파일/실제 PLC 변경 없음.
+- 생성·저장·재열기·전체 다중 모드 XG-SIM은 여전히 미완료. 다른 모델 연결 비교는
+  사용자 답변 대기다. 진행 중 요청을 완료나 연결 복구 증거로 표시하지 않는다.
+
+## 2026-09-09 혼합 설계 오류 보완 안내와 좁은 대화 화면 수정
+
+- Agent retry feedback이 첫 diagnostic code만 보고 safety 보완 안내를 선택하는 결함을
+  수정했다. network+safety 누락이 함께 있으면 두 종류의 보완 안내와 각각의 전체
+  io_points index를 전달한다. 일반 오류 문장 8개 제한 뒤의 누락도 bounded index로
+  포함하며 rejected input/context는 노출하지 않는다. 검증·승인 기준은 그대로다.
+  test_native_output_correction 28 tests 및 focused Ruff 통과.
+- 정상 앱 재시작 뒤 동일 요구로 13:35 `f5e74847-bd10-41d6-abe2-2749c5ecfc6e`
+  요청. 13:38 FAILED, planning_narrative / model_api_error / provider_rejected.
+  native 단계 전 실패여서 위 안내 수정의 실기 효과는 아직 확인하지 못했다.
+  현재 실행 중인 모델 요청 없음. 다른 모델 연결 비교 질문에 답변도 아직 없음.
+- 실제 좁은 브라우저에서 바깥 페이지와 대화가 이중 스크롤되고 상단 조작부가 밀리는
+  문제 확인. 일반 대화 화면에만 viewport flex layout을 적용해 상단/입력창을 유지하고
+  대화 본문만 스크롤한다. 펼친 설정은 높이 제한 안에서 읽을 수 있다. 최신 요청보다
+  오래된 계획은 삭제하지 않고 요구사항·설정 안으로 옮겼다. live status 중복 문구는
+  화면 낭독기용으로 유지한다. 진행 내역/디버그 열린 별도 layout은 이번 수정 범위 아님.
+- Web typecheck/build/production entry 통과. 실 브라우저 새로고침 후 상단/입력창 표시,
+  이전 계획 기본 숨김, 설정 펼침/접힘 접근 확인. 배포 bundle index-BLLezhzu.js,
+  index-BU4bXDly.css. Computer Use 지침에 따라 브라우저 UI로 확인했다.
+- 전체 다중 모드 XG-SIM runner는 이번에 구현하지 않았다. 새 파일 생성·저장·재열기·
+  전체 XG-SIM도 미완료다. 원본/작업 사본/실제 PLC 변경 없으며 개발용 기준 설계를
+  사용자 승인이나 실제 모델 출력으로 대체하지 않았다.
+
+## 2026-09-09 전체 기준 설계 동작 시험과 reset/count 결함 수정
+
+- `test_daedong_reference_behavior.py`에 입력만 바꿀 수 있는 개발용 scan evaluator와
+  독립 기대값 기반 8개 시험을 추가했다. 즉시 rung 쓰기, 상호 배타적인 S-group step,
+  100ms tick을 가정한다. 이 가정과 실제 컴파일 mnemonic의 동작 일치는 XG-SIM에서
+  별도로 검증해야 한다. 이 코드는 실제 시뮬레이터 또는 runtime 대체품이 아니다.
+- 범위: 자동 6회와 DONE 유지, 수동 START 유지/해제/재입력, 5초 미완료 latch,
+  자동·수동 각각 E-stop/door latch 및 원인 해소/reset/new start, 운전 중 모드 변경과
+  reset 차단, STOP 해제만으로 재가동 금지, 안전 latch 제거 변이의 기대값 실패.
+- 추가 시험에서 운전 중 reset 버튼을 누르면 INCP의 reset-off 접점이 DONE 카운트를
+  누락시켰다(0 != 1로 실패 재현). `reset_permitted` OUT을 실제 정지·시작 해제·원인 해소
+  조건으로 만들고 MOV 0 / INCP에 그 비트의 반대 접점을 사용해 수정했다. 운전 중
+  무효 reset은 완료 횟수를 막지 않는다. 기준 설계는 이제 23 rungs다.
+- Agent 전체 57 tests / focused ruff / Test-Daedong-Reference.ps1 통과.
+  실제 artifact → Host → MCP 컴파일 성공, 기존 multi-mode runner는 여전히 미지원으로
+  거절한다. 운영 앱/사용자 계획 DB/프로젝트 파일은 변경하지 않았다.
+- 다음: 실제 전체 모드 시나리오를 입력/관측 단계로 연결하고 STOP·입력 복원을 유지할 것.
+  세밀한 reset 유지/원인 해소 순서 등 추가 경계와 vendor S/TON/INCP 관측이 남는다.
+  현재 모델 재요청은 실행하지 않았으며, 다른 연결 비교 질문에도 아직 답변이 없다.
+
+## 2026-09-09 전체 인덱서 기준 설계의 표현·컴파일 확인
+
+- `f294a1d3-7e32-4376-bc32-a11eab2ebfc6`는 13:05 FAILED. native 단계에서
+  io_points 10/13/14의 network 및 11/12/13/14의 safety coverage가 누락됐다.
+  이번은 내부 오류나 SDK 서버 오류가 아니라 모델의 불완전한 실행 설계다.
+  현재 실행 중인 요청은 없다. 같은 요청을 즉시 반복하지 않았다.
+- 다른 모델 연결로 비교 검증해도 되는지 비동기 질문을 보냈으나 아직 답변 없음.
+  연결/키/모델/전송 동의는 변경하지 않았다. 사용자 승인 없이 다른 연결로 보내지 말 것.
+- `gidong-agent/tests/daedong_index_reference.py`는 전체 사용자 동작을 대상으로 하는
+  개발용 기준 제안이다. 2-mode / 2-sequence / 3 alarms sharing one fault latch /
+  5-second timer / INCP+MOV 0 / stopped-only mode selection and reset /
+  released-start memory / latched run logic, 총 22 rungs. 모의 입력 M0000x,
+  프로그램 상태 M0010x, 이동 출력 M00200을 분리한다. 실제 계획 DB에 삽입하거나
+  사용자 승인/모델 생성/실기 증거로 둔갑시키지 않았다.
+- `gidong-platform/scripts/Test-Daedong-Reference.ps1`로 실제 artifact serializer와
+  Host schema를 거쳐 MCP mnemonic compiler까지 통과했다. 처음에는 raw domain dump를
+  넘겨 timer durationMs 파생값이 없었으므로 정식 artifact 경로로 수정했다.
+  정상 artifact 경로는 22-rung 전체 설계를 수용한다. 따라서 전체 동작이 형식상
+  표현 불가능하다고 단정할 근거는 없다. ruff 통과.
+- 다음은 기준 설계의 전체 동작을 독립 기대값으로 시험하고 full multi-mode XG-SIM
+  runner를 연결하는 일이다. 아직 기준 설계의 scan-level 동작도 검증 전이며 native
+  생성/저장/재열기/실제 XG-SIM은 미완료다. 기존 단일-mode runner는 이 설계를
+  의도대로 거부한다. 이 거부를 성공한 simulation으로 표시하지 말 것.
+
+## 2026-09-09 SDK 스트림 오류의 내부 오류 오분류 재현
+
+- `9f9954c4-96f4-486a-b029-419a9326f628`는 12:46 FAILED,
+  planning_narrative / runtime_invariant. 새 안전 로그는 `_consume_planning_stream`
+  line 14398, kind Exception이었다. 설계 검증 전 스트림 소비 위치다. 실제 예외가
+  아래 SDK APIError였다고 단정할 수는 없다.
+- 설치된 openai/_streaming.py는 HTTP 200 이후 error SSE를 받으면 SDK APIError를
+  직접 발생시킨다. 기존 `_agent_runtime_diagnostic`은 PydanticAI ModelAPIError만
+  인식해 이를 local runtime_invariant로 오분류했다. httpx.MockTransport로 실제
+  AsyncOpenAI → OpenAIChatModel → Agent.run → _consume_planning_stream을 통과하는
+  오류 SSE를 재현했고 SDK APIError가 직접 전파됨을 확인했다. 네트워크/키 사용 없음.
+- SDK APIError/APIConnectionError/APITimeoutError를 기존 안전 provider 분류에 연결했다.
+  HTTP 상태는 실제 정수 400–599만 전달하며 provider body/code/message는 계속 비공개다.
+  재시도/설정/검증 권한은 바꾸지 않았다. 공식 OpenAI 오류 문서를 대조했다:
+  https://developers.openai.com/api/docs/guides/error-codes
+  현재 호환 모델 서버의 실제 실패 원인 확정이나 복구 완료를 뜻하지 않는다.
+- Agent 49 tests / focused ruff 통과. 정상 UI 재시작으로 반영 후 동일 문구로
+  **12:53 `f294a1d3-7e32-4376-bc32-a11eab2ebfc6`** 실행 중.
+  이 실행 결과부터 확인한다. 원본/작업 사본/실제 PLC 변경 없음.
+
+## 2026-09-09 native 단계 내부 오류 위치 진단 보완
+
+- `33141b86-30d1-405f-a47c-5dff1b7c8853`는 12:37 FAILED,
+  stage=planning_native_design / runtime_error / runtime_invariant.
+  이전 output safety coverage와 다른 오류다. Host 로그는 종류만 남겨 실제 코드
+  발생 위치를 특정할 수 없었다. native 성공/파일 생성 증거 없음.
+- Agent의 `_agent_runtime_diagnostic`은 runtime invariant일 때 runtime.py 내부 함수명,
+  행 번호, 고정 허용 목록의 예외 종류만 별도 경고로 남긴다. Host stderr 전달은 날짜/
+  logger/고정 문구/함수 식별자/양의 행 번호/허용 예외 종류를 fullmatch한 줄만 수용한다.
+  예외 메시지, provider 응답, 경로, local variables는 전달하지 않는다. 사용자 화면에
+  진단 문자열을 추가하지 않았다. Agent 48 / Host 21 tests / focused ruff 통과.
+- 정상 앱 재시작으로 반영 후 동일 문구로 **12:43
+  `9f9954c4-96f4-486a-b029-419a9326f628`** 실행 중, planning_narrative 확인.
+  이 실행 결과부터 확인하고 진행 중 재시작/중복 요청하지 말 것. 같은 실사용 흐름으로
+  재현해 이 오류 위치부터 확인할 것.
+  진단을 보완했을 뿐 오류 자체가 수정됐다는 증거는 아직 없다.
+
+## 2026-09-09 재실행이 실행 설계 단계로 진행
+
+- 현재 `33141b86-30d1-405f-a47c-5dff1b7c8853`는 12:34 관측에서
+  planning_native_design으로 진행했다. 12:35 UI 새로고침 후에도 같은 요청의 진행과
+  중단 버튼을 복원했다. narrative 통과 증거이며 native 완료나 파일 생성 증거가 아니다.
+- NewProjectPlanReviewPanel의 기본 검토 완료 표시에서 actorId를 제거하고 기존 접힌
+  '계획 식별 정보'로 옮겼다. 기본 표시에는 '설계 검토 완료'와 시간만 남긴다.
+  승인 항목/권한 조건은 변경하지 않았다. Web build/typecheck/production entry 통과,
+  bundle `index-d7jo3OKr.js`. 실제 ready 검토 완료 화면은 아직 도달하지 못했다.
+- 현재 요청의 terminal 결과부터 확인할 것. 앱 프로세스는 재시작하지 않았다.
+
+## 2026-09-09 주소 질문의 출처 누락 우회 수정
+
+- `3f121018-8e28-4c82-b155-2455db2f76a9`는 12:25 COMPLETED지만
+  plan_status=needs_clarification이다. 내부 주소를 위임받았음을 문장에 인정하면서도
+  주소 매핑표 확정을 다시 요구했다. requirementSources에서 hardware_and_io를 빼고
+  나머지 4개만 반환해 기존 all-sources-resolved 검사를 피했다. native 생성 성공 아님.
+- Agent `_has_delegated_internal_address_question`으로 이 구체적인 반복을 출처 개수와
+  별개로 판정한다. 저장 brief의 CPU/내부 모의 사용/주소 제안 위임이 있고 질문이
+  내부 주소 확정을 되묻는 경우 ModelRetry. 나중의 주소 위임 철회는 존중한다.
+  실제 현재 brief에 대한 읽기 전용 판정 True 확인. 주소를 DB에 채우거나 다른 미해결
+  사용자 결정을 ready로 바꾸지 않는다. FunctionModel 전체 runtime에서 반복 질문 거절
+  → 진짜 미해결 복구 질문 수용 확인. Agent 47 tests / focused ruff 통과.
+- MCP 입력 바이트 격리는 network OUT/알람뿐 아니라 모든 signal SET/RST writer에도
+  적용한다. 내부 상태 비트를 입력으로 덮어쓰는 경우를 막고 별도 바이트는 허용하는
+  full-constructor 회귀 포함 MCP 14 tests / ruff 통과.
+- 정상 앱 재시작으로 두 소스 변경을 반영했다. 기존 계획 대화 복원 뒤 동일 문구로
+  **12:30 `33141b86-30d1-405f-a47c-5dff1b7c8853`** 실행 중이며 12:31
+  planning_narrative 15초 관측. 이 실행의 결과부터 확인하고 관측 지연 때문에
+  재시작하거나 중복 요청하지 말 것. 다음 실제 요청의 결과가 아직 필요하다.
+  자동·수동 전체 시나리오, 별도 파일 생성/저장/재열기/XG-SIM은 계속 미완료다.
+
+## 2026-09-09 실행 설계의 안전 조건 누락 확인 · 횟수 관측 구현
+
+- 12:03 `a044550b-49d9-426a-9e7c-72563cc772f1`는 narrative 통과 후
+  planning_native_design에서 12:16 FAILED. 이번 원인은 HTTP 오류가 아닌
+  native_output_safety_coverage: io_points 10, 13의 명시적 안전 경계 누락이다.
+  실제 UI에서도 실패와 후속 입력 복귀를 확인했다. 생성/저장 성공이 아니다.
+- Agent 수정: 안전 누락 재시도 피드백에 각 누락 index의 signal_id를 해당
+  safety_rules.affected_output_signal_ids에 포함하도록 구체화했다. 출력 삭제/
+  internal_bit 재분류/안전 장치 날조로 우회하지 않도록 명시한다. 내부 모의 입력과
+  프로그램이 쓰는 출력/래치는 바이트 쓰기 충돌을 피하도록 별도 M word 배치를 안내한다.
+  원문 요구와 안전 검사는 유지한다. 이 변경의 실제 모델 성공은 아직 미검증.
+- NativeSimulationRunner: 직접 모의 입력만으로 조건을 구성할 수 있는 INCP에 대해
+  독립적인 idle/pulse/reset 상태를 결정하고 6회 증가, 유지 중 추가 증가 없음,
+  6→0 reset을 실제 읽기로 관측하는 경로를 구현했다. 데이터 레지스터를 직접 써서
+  결과를 만들지 않는다. reset MOV는 초기 0에 대입해 성공으로 보지 않고 카운트 후 확인한다.
+  두 writer만 허용하고 겹치는 reset/증가, 독립 idle 없음, 계산된 step/timer 접점,
+  12개 초과 입력은 여전히 not_verified. 전체 자동/수동 상태기 지원을 뜻하지 않는다.
+  MCP 13 tests / ruff / Agent→Host→MCP 메모리 내 컴파일 파이프라인 통과.
+  회귀 시험은 모의 bridge 대체이며 실제 XG-SIM 실행 증거가 아니다.
+- Agent 45 tests / focused ruff 통과 후 정상 UI의 앱 다시 시작으로 반영했다.
+  기존 계획 대화 복원 후 동일 요구로 **12:19 `3f121018-8e28-4c82-b155-2455db2f76a9`**
+  실행 중. 12:20 관측 planning_narrative. 이 실행 결과부터 확인하고 진행 중에는
+  재시작/중복 요청하지 말 것. 원본/작업 사본/실제 PLC 변경 없음.
+
+
+## 2026-09-09 새 대화/계획 복원 실사용 확인 · 현재 요청
+
+- 11:49 `533cc555-98fe-4f6c-a191-4170690071da`는 narrative에서 HTTP 502로 실패했다.
+  그러므로 큰 native schema만의 문제라고 확정하지 않는다. native 502 fallback의 실제
+  성공도 아직 없다. 다만 전체 runtime을 통과하는 FunctionModel 테스트에서 첫 native
+  502 → prompted 전달 → 동일 검증 → ready 제안 반환을 확인했다. Agent 45 / ruff 통과.
+- 모델 설정창은 열어 점검 버튼 상태만 확인하고 저장/전송 동의 변경 없이 닫았다.
+  기본 응답은 정상 앱의 별도 일반 대화로 시험했다. conversation
+  `3f38122e-4567-4fcd-bedd-5456ee4dfd1e`, run `3387bb6a-5d6e-4fc2-bde0-be6f803b9643`
+  11:59:18 시작 → 11:59:59 COMPLETED, 짧은 인사 응답. PLC/파일 도구 사용 없는 대화다.
+  모델 전체가 불통이라는 증거는 없고 긴 계획 요청의 문제가 남는다.
+- 상단 '새 대화' 버튼 추가: 기존 기록 보존, targetScope=none, 실행/전송 중 비활성화.
+  첫 실사용에서 startFreshConversation의 targetlessAnalysisOpen 동기화 누락으로 입력이
+  막힌 것을 발견해 실제 생성된 conversation 기준으로 상태를 맞췄다. 좁은 화면에서는
+  브랜드 문구 대신 로고를 유지해 새 대화/기록/설정 버튼이 들어가도록 했다.
+- 새로고침 없는 새 대화 진입/입력, 실행 중 버튼 비활성화, 기존 계획 DB 보존과 작업 기록을
+  통한 양방향 복원을 실제 UI에서 확인했다. 계획 복원 시 잘못 표시되던 '읽기 전용' 문구도
+  planningSession을 별도로 판별해 수정했다. 다른 프로젝트의 실제 조회 전용 제한은 유지한다.
+  Web build/typecheck/entry와 composer/권한/evidence 검사 통과. bundle `index-DX0aiiBf.js`.
+- 원래 계획 conversation `4328c29c-a4a4-420b-8ed5-b53a834f49a0`로 복원 후 동일 문구로
+  재요청했다. **현재 run `a044550b-49d9-426a-9e7c-72563cc772f1`**, 12:03 시작,
+  planning_narrative 진행 중. 이 요청 결과부터 확인하며 관측 타임아웃만으로 재시작하지 말 것.
+  같은 원문 재요청이라 기본 폼을 채우거나 요구조건을 축소하지 않았다. 파일 생성/저장/
+  재열기/자동·수동 전체 XG-SIM 성공은 아직 없다.
+
+## 2026-09-09 정상 대화가 실행 설계 단계까지 진입
+
+- 11:39 `7eab5fd7-4ba7-48fc-92d3-826d0b9c214d`의 narrative는 통과했다.
+  DB agent.progress에서 11:43:29 planning_native_design 진입, 11:44:08 FAILED를
+  확인했다. 실패는 agent_runtime_provider_http_502 / stage=planning_native_design다.
+  따라서 반복 질문/요구사항 정리와 실행 설계 실패를 구분할 것. 파일 생성 성공은 아니다.
+- 실행 설계 요청은 약 40초 뒤 서버 502였다. 큰 constrained schema의 서버 처리 문제일
+  가능성을 시험하기 위해 Nemotron native 요청의 502에만 PromptedOutput 한 번 재시도를
+  추가했다. 동일 모델/endpoint/brief를 사용하며 `_make_native_planning_agent`가 두
+  전송 방식에 같은 타입, 지시, 설정, capability를 부여한다. fallback에도 기존
+  validate_native_design output validator를 다시 등록한다. 2차 실패는 전파하며 다른
+  HTTP 오류/다른 모델에는 이 fallback을 적용하지 않는다. 원인 확정/실기 성공 아님.
+- Agent 44 tests와 focused ruff 통과. native/prompted 양쪽에서 빈 설계를 거절함을
+  실제 factory로 확인했다. 기존 스키마 검사나 승인 권한을 완화하지 않았다.
+  정상 앱 UI 재시작으로 반영 중. 다음에는 같은 사용자 요청으로 이어갈 것.
+
+## 2026-09-09 계획 응답 전송과 잘림 복구
+
+- `596c7d5e-68fb-436f-aa57-785348cb6832`는 11:25 모델 서버 HTTP 502로 실패했다.
+  기존 파일 변경 없음. 질문 모순 수정 후 ready/native 성공 증거는 아직 없다.
+- 긴 non-stream 응답을 기다리는 경로를 변경했다. 설치된 PydanticAI Agent.run의
+  event_stream_handler는 model request를 스트리밍하면서 기존 graph/validator/retry를
+  유지한다는 로컬 구현을 확인했다. `_consume_planning_stream`으로 narrative 및
+  native 첫 실행/길이 초과 재시도 모두 연결했다. 부분 JSON/Thinking 이벤트를 사용자
+  화면이나 로그로 내보내지 않고 최종 검증된 plan만 공개한다.
+- `_run_narrative_with_truncation_retry`는 UnexpectedModelBehavior일 때 마지막
+  실제 ModelResponse.finish_reason이 length인 경우만 10000-token 예산으로 한 번
+  재시도한다. stop/기타 invalid JSON은 이 복구로 재시도하지 않으며 두 번째 실패는
+  전파한다. 첫 실패의 토큰 사용량도 합산한다. 앞선 root json_invalid가 실제 잘림인지
+  확정한 것은 아니다. 일반 HTTP 오류도 이 복구로 무제한 재시도하지 않는다.
+- Agent 42 tests 및 focused ruff 통과. 스트리밍에서도 semantic validator의 첫 응답
+  거절 → 수정 재시도가 실제 작동하는 FunctionModel 테스트 포함. 실제 외부 모델은
+  아직 미검증이며 정상 앱 재시작으로 반영 중. 다음 요청 결과부터 이어갈 것.
+- 실제 반영 후 11:28 `f9b98651-b450-463d-a319-f33598ede21d`는 11:32
+  planning_narrative / validator_rejected / structured_output_contract로 실패했다.
+  502가 아닌 출력 검사 실패이며 native 단계로 넘어간 증거는 없다.
+- 새로운 스트리밍 취소 테스트는 부분 JSON 수신 중 취소가 stream을 닫고 재시도하지
+  않음을 확인했다. 전체 Agent 43 통과. 기존 파일/PLC를 사용하는 테스트가 아니다.
+- NEW_PROJECT_PLANNING_INSTRUCTIONS를 짧은 단일 지침으로 재작성했다. 중복된
+  '모르는 항목' 및 주소 차단 강조 대신 사용자 결정(환경/역할/행동/시간/안전/완료 기준)과
+  구현 제안(위임된 내부 주소/명령 배치/시험 절차)을 분리했다. 원문 출처/ready coverage/
+  native human review/실행 권한 검사는 유지한다. 질문 모순 오류는 이제 고정 safe code
+  planning_question_repeated로 구별한다. Agent/Host allowlist만 확장, 원문 로그 없음.
+  정상 UI 재시작으로 이 후속 수정까지 반영했다. 현재 11:39
+  `7eab5fd7-4ba7-48fc-92d3-826d0b9c214d` ANALYZING이며 같은 conversation
+  `4328c29c-a4a4-420b-8ed5-b53a834f49a0`이다. 이 요청 결과부터 이어갈 것.
+  원문 출처, 수정된 짧은 지침, 스트리밍, 1회 길이 복구, 질문 모순 판정이 모두 반영됐다.
+- 이후 소스에만 추가한 표시 문구 정리: 완성 폼용 deterministic narrative의
+  'Host/typed native/collection/null' 설명을 사용자용 입출력·제어 로직 설명으로 바꿨다.
+  현재 대화는 이 shortcut을 쓰지 않으므로 현재 실행 때문에 재시작하지 말 것.
+
+## 2026-09-09 후속 답변의 권위 전달 누락 수정 · 기본 화면 정리
+
+- `ff11ee96-a48d-4c1e-8189-f28ee3d60c62`는 질문 반환으로만 완료했다. 빈 폼에서
+  서버가 하드웨어/운전/인수 기준 질문 3개를 추가하는 결함을 수정했다. 명시적 모델
+  질문이 있으면 이 일반 질문을 추가하지 않으며 ready coverage 검사는 유지한다.
+- 10:57 `268585c1-8650-4890-83d7-7355111001d5`도 11:02 주소를 다시 묻고 종료했다.
+  주소 위임 지시와 source schema 설명만 보완한 것으로는 실제 문제가 해결되지 않았다.
+- 추가 확인: `_trusted_context_instructions`의 현재 Host brief allowlist에 저장된
+  `supplemental_requirements`가 빠져 있었다. 이를 포함하고 후속 답변의 순서/명시적
+  정정 및 이전 모델 질문과 사용자 요구의 차이를 명시했다. 저장 brief를 임의로 채우거나
+  주소/실행 권한을 조작하지 않았다. 회귀 포함 Agent 38 tests 및 focused ruff 통과.
+- 정상 UI 재시작 후 같은 대화에서 11:04 `45b4779e-7358-488b-b7e9-ea53a28c41fe`
+  실행도 11:07 기존 주소 질문을 그대로 반복했다. 권위 목록 누락 수정만으로는 실기 해결이
+  아니다. 과거 assistant 질문/실패를 신규 narrative의 few-shot 응답으로 다시 전달하는
+  경로도 분리했다. `_planning_user_history`는 USER 입력만 순서대로 유지한다. 일반
+  engineering 대화는 기존 전체 이력을 유지하며 단순 동의를 확정 출처로 승격하지 않는다.
+  회귀 포함 Agent 39 tests와 focused ruff 통과.
+- 다시 정상 UI 재시작 후 11:09 `58757daa-420d-4389-bc8a-0e3bf90028c1`는 11:17 실패.
+  safe diagnostic은 planning_narrative / schema_validation / root json_invalid다.
+  토큰 잘림인지 여부는 현재 진단만으로 단정하지 않는다. 이력 분리의 실제 성공 증거 없음.
+  사용자가 모르는 주소를 대신 폼에 채우지 않고 내부 주소안을 제안해 달라는 일반 대화로
+  이어갔다.
+- DB의 최종 artifact를 읽어 11:02와 11:07 응답은 5개 requirementSources를 전부
+  해결됐다고 표시하면서도 주소 질문을 반복했음을 확인했다. `_planning_sources_resolve_narrative`
+  검사로 같은 기존 완성 brief 모순 검사에 연결했다. 메모리에서만 source coverage를
+  확인하며 persisted brief를 덮어쓰지 않는다. 모델은 정말 미답인 경우 해당 source를
+  바로잡아 질문할 수 있고 자동 ready 승격은 하지 않는다. Agent 40 / Host 20 / MCP 7 통과.
+  이 검사까지 정상 UI 재시작으로 반영했다. 11:20 현재 run
+  `596c7d5e-68fb-436f-aa57-785348cb6832` ANALYZING. 같은 대화에서 주소를 직접
+  입력하지 않고 저장된 요구사항으로 진행해 달라고 요청했다. 이 실행부터 확인하며
+  관측 타임아웃만으로 재시작/중복 제출하지 말 것.
+- 신규 계획의 큰 안내/설정 영역은 프로젝트 이름 + '요구사항 · 설정' summary로
+  기본 접힘 처리했다. 브라우저 실제 펼침/닫힘과 실행 중 새로고침 복원을 확인했다.
+  내부 단계/기존 설정 조작은 삭제하지 않았다. Web build/typecheck/entry 및 기존
+  composer/권한/evidence/대화 권한 검사 통과. 이후 completed 표시를 '답변 완료'로
+  바꾸고 재빌드/새로고침했다. bundle `index-Bi1nfmOu.js`. 파일 생성 완료 의미가 아니다.
+- 프로젝트 생성/저장/재열기/전체 XG-SIM 성공은 아직 없다. 아래 INCP preflight 차단은
+  실제 카운터 시험 구현이 아니다. 기존 runner는 모드/타이머/시퀀스/알람/복구 각 1개,
+  2-step release-required 시퀀스만 지원하며 자동 continuous profile을 거절한다.
+  이 제한을 단순 삭제하거나 수동 단일 예제를 자동·수동 6분할 성공으로 보고하지 말 것.
+
+## 2026-09-09 첫 정상 질문 반환 — 주소 위임 처리와 시뮬레이션 공백
+
+- 실제 run `82f595b4-26a4-4196-acc9-fec0c5578863`은 COMPLETED로 종료했다.
+  이는 native 생성 성공이 아니라 needs_clarification 답변 성공이다. 실제 화면에서
+  6분할/자동·수동/5초/정지·리셋/원본 보존을 정확히 요약했지만, 이미 위임한 M/T/D
+  주소 번호를 사용자에게 확정하라고 다시 물었다. 기본 폼을 대신 채우지 않았다.
+- NEW_PROJECT_PLANNING_INSTRUCTIONS 상단의 '미정 주소는 blocker'와 하단의
+  '주소는 후속 구현 단계' 지시가 충돌했다. 실제 배선 매핑과 내부 모의 주소 배정을
+  구분해, CPU와 모의 역할이 확인되면 내부 번호 누락만으로 질문하지 않게 수정했다.
+  narrative에는 역할 이름을 유지하고 후속 native pass가 검토할 주소안을 작성한다.
+  실제 배선/물리 I/O/기종/안전 동작을 임의로 확정하는 권한은 추가하지 않았다.
+- 중요한 미완료 기능: NativeSimulationRunner는 MOV만 검증하고 INCP를 무시했다.
+  증가 rung을 preflight에서 not_verified로 명시하고 verify_scenarios도 전체 preflight가
+  supported일 때만 진입하도록 막았다. 기존 기능을 확인하지 않고 전체 시뮬레이션이
+  통과한 것처럼 보고하는 경로를 차단한 것이지 카운터 시뮬레이션 구현 완료가 아니다.
+  INCP의 실제 펄스 1회/입력 유지/반복 증가/리셋 관측, 특히 sequence step과 결합된
+  완료 횟수 관측 구현이 남는다. 단순 입력 전용 예제를 전체 대동인덱스 검증으로 대체하지 말 것.
+- Agent 36개 / MCP 7개 tests 통과, focused ruff 통과. 새 시뮬레이션 테스트는 bridge나
+  장치 접근 없이 preflight 누락을 거절하는 테스트이며 실기/시뮬레이터 성공 증거가 아니다.
+  정상 앱 UI 재시작으로 두 수정을 반영 중이다. 다음은 주소를 직접 제공하지 않고
+  '모의 주소는 제안해 달라'는 정상 사용자 답변으로 이어갈 것.
+
+## 2026-09-09 원문 선택형 출처와 증가/초기화 충돌 검사
+
+- 실제 run `8943a709-9d5f-438a-b0e0-dad456c20260`은 planning_narrative의
+  requirement_source_invalid로 실패했다. 새 진단이 원문 출처 문제를 확인했으며
+  동일 오류를 허용하도록 검사를 완화하지 않았다.
+- Nemotron narrative NativeOutput은 이제 현재 Host brief에서 추출한 실제 문장을
+  공유 enum으로 제공한다. requirement_sources는 항목별 nullable 선택 객체로 받으므로
+  모델이 원문을 다시 작성하거나 동일 필드를 여러 번 제출할 필요가 없다. 응답 validator가
+  기존 field/quote 목록으로 변환한 뒤 종전 authority/readiness 검사를 그대로 적용한다.
+  원래 저장 brief 필드는 변경하지 않는다. 다른 모델의 ToolOutput 계약도 유지한다.
+  과거 원문/임의 paraphrase/알 수 없는 source 필드는 거절하는 회귀 테스트를 추가했다.
+- 루트 Annotated ValidateAs는 PydanticAI에서 response wrapper를 만들기 때문에 사용하지
+  않는다. NativeOutput에 provider BaseModel을 직접 넘기고 output validator에서 정규화한다.
+  FunctionModel 회귀에서 실제 factory의 schema 검증과 정규화까지 확인했다.
+- INCP와 MOV 0 reset은 같은 접점에 대해 반대 상태를 반드시 요구해야 한다. AND에서는
+  보장 접점을 합치고 OR에서는 모든 분기의 공통 접점만 인정한다. Agent 및 MCP가 독립
+  검사하며, 같은 조건의 증가/초기화와 OR 우회 조건을 거절한다. 일반적인 논리 동치
+  전체를 판정하는 SAT solver가 아니라 명시적인 상호 배제 조건을 요구하는 보수적 검사다.
+- Agent 35개 / MCP 6개 tests 통과, focused ruff 통과. 교차 검사 스크립트에 MCP 단독으로
+  초기화 누락/비영 초기화/동시 성립/OR 우회/물리 주소를 거절하는 테스트도 포함했고 통과했다.
+  native XG5000 실행/저장/재열기/시뮬레이션 증거는 아직 없다. 유한 횟수 범위의 동작도
+  실제 검증이 남는다. 정상 앱 UI 재시작으로 반영 중이며 다음 실제 모델 결과를 확인해야 한다.
+- 정상 UI 재시작 후 10:24 실제 run `4c0a3b5e-e1e2-4eb6-a211-dd3f7199f2c7`을 실행했다.
+  약 5분 뒤 planning_narrative / invented_controller로 실패했다. 원문 선택 오류가 아닌
+  다음 검사에서 실패한 것이며 실제 계획/생성 성공은 아니다.
+- 추가로 재현한 검사 결함: 사용자 XGK/XGB/XGI 선택에서 해당 제조사 LS Electric을
+  덧붙이는 것도 미정 기종으로 거절했다. 명시된 XG 계열 → 제조사 이름만 단방향으로
+  허용한다. LS만 지정해서 XGK를 선택하거나 XGK를 XGB로 바꾸는 것은 여전히 거절한다.
+  미지원 controller 이름은 고정 allowlist 이름으로만 모델 수정 피드백에 명시한다.
+  실제 실패가 LS 이름 때문이었는지는 단정하지 않는다. 회귀 포함 Agent 36개 통과.
+- 10:26 원본 파일 SHA256을 다시 읽어 기존
+  BEE3B1A6E69469C0E1384CB8D9D758FEF2F95A92F0CC7AC6486DEEA941A9A68F와 일치 확인했다.
+  working 사본은 이번 절에서 재해시하지 않았다.
+- 제조사 판정 보완까지 정상 UI 재시작으로 반영하고 10:34 실제 run
+  `82f595b4-26a4-4196-acc9-fec0c5578863`을 시작했다. 현재 실행은 이 run이며 같은
+  conversation `4328c29c-a4a4-420b-8ed5-b53a834f49a0`이다. 다음에는 이 결과를 먼저
+  확인하며 동일 요청을 중복 제출하거나 기존 실행을 관측 시간 초과만으로 재시작하지 않는다.
+
+## 2026-09-09 횟수 증가 생성 경로 구현 — 실제 XG5000 확인은 미완료
+
+- `17ff1227-8e93-4dd3-a3af-d67cca15e24a`는 planning_narrative의 validator_rejected /
+  structured_output_contract로 실패했다. NativeOutput 변경 뒤 JSON 해석 오류가 아닌
+  내용 검사에서 거절된 것이며 실제 계획 성공이 아니다. 요구사항 source 누락/잘못된 인용,
+  기본 brief 미확정, narrative 누락/질문 누락을 safe code로 구분하도록 Agent와 Host
+  allowlist를 확장했다. 원문이나 내부 추론은 로그에 추가하지 않았다.
+- 사용자 요구인 완료 횟수를 문구로만 남기지 않도록 typed `INCP destinationAddress`
+  동작을 Agent provider/domain → Host 계약 → TS 검토 화면 → MCP tool schema →
+  독립 native compiler → MNE 파서 및 build receipt의 rung 집계까지 연결했다.
+  내부 D+5자리 주소만 허용하며 INC 및 물리 P 출력 증가는 허용하지 않는다.
+  Agent/domain과 MCP 양쪽에서 레지스터당 증가 writer 1개 및 정확히 하나의 MOV 0
+  reset writer를 요구한다. UI에는 '횟수 +1 · 조건이 켜질 때 한 번'으로 표시한다.
+- 명령 근거: LS ELECTRIC XGK/XGB Instruction Manual 4.16.1 INC/INCP.
+  https://www.ls-electric.com/upload/customer/download/c4090ad3-f6a5-424a-a5fd-ef46a70eecd8/XGK_XGB_Instructions_Manual_Eng_V2.2.pdf
+  이 구현은 signed 16-bit 범위의 증가이며 무한 횟수를 보장하지 않는다. 모델 지시에
+  상승 조건/명시 reset/유한 범위 설명을 추가했다. 오버플로 정책과 증분·리셋 조건의
+  동시 성립, 실제 스캔/재시작 시 동작은 별도 검토/실행 검증이 남는다.
+- Agent 33개 / Host 20개 / MCP 5개 tests 통과. `scripts/Test-Increment-Pipeline.ps1`
+  교차 검사도 통과: Agent의 typed fixture를 Host가 검증/직렬화하고 MCP가 실제
+  `INCP D00100`와 `MOV 0 D00100`을 포함한 4-rung IL로 컴파일했다. model/PLC/UI 호출이나
+  프로젝트 파일 쓰기가 없는 검사다. 같은 D의 중복 증가/초기화 누락/비영 초기화도 거절한다.
+- TS contracts 빌드 후 웹 build/typecheck/entry 통과 (`index-NJiEmi8i.js`).
+  contracts는 web/node_modules에서 junction으로 연결되지만 dist 선언을 사용하므로,
+  shared TS 변경 시 packages/typescript/controlstudio-contracts에서 먼저 npm run build 필요.
+- 실제 XG5000에 INCP를 입력/저장/재읽기/시뮬레이션한 것은 아니다. 기존 대동인덱스 원본,
+  작업 사본 및 실제 PLC는 변경하지 않았다. imported COM identity 제약도 우회하지 않았다.
+  정상 앱 UI 재시작으로 반영 후 10:12 실제 후속 run
+  `8943a709-9d5f-438a-b0e0-dad456c20260`을 시작했다. 이 실행 결과부터 이어서 확인할 것.
+  같은 conversation `4328c29c-a4a4-420b-8ed5-b53a834f49a0`이며 빈 폼을 대신 채우지 않았다.
+
+## 2026-09-09 대화 요구사항 전달 2단계 — 출처 연결 및 새 실사용 진행
+
+- 아래 1단계의 미완료 source coverage를 연결했다. Agent narrative의 requirement_sources는
+  항목별로 Host에 저장된 사용자 원문을 정확히 인용해야 한다. 누락 필드, 중복 항목,
+  만들어 낸 인용, 미확정 문장, 단순 동의는 ready 근거가 되지 않는다. 원래 폼은 그대로
+  두고 native binding, authority 검사, artifact의 open decisions까지 같은 출처를 사용한다.
+  인용을 항목으로 분류한 것은 계획 검토 대상이지 의미적 정확성/실행 승인의 증명이 아니다.
+- Host도 출처를 독립 검증하며 새 출처는 plan digest에 포함된다. 비어 있는 새 필드는
+  직렬화에서 제외해 기존 artifact digest 호환성을 유지한다. legacy source 계약이 없는
+  기존 계획에 새 coverage 검사를 소급 적용하지 않지만 기존 scope 검사는 유지한다.
+- Agent 29개 / Host 20개 tests 통과. Agent에서 생성한 테스트 artifact를 Host typed model과
+  scope validator에 실제 전달하는 교차 검사도 통과했다. 이 fixture는 단순 모의 출력으로,
+  실제 모델의 6분할 인덱스 설계/파일 생성 성공 증거가 아니다.
+- 정상 앱 UI 재시작으로 1/2단계 Host와 Agent를 반영했다. 09:42 기본 입력 3개만으로
+  '대동인덱스 대화형 모의 프로젝트' 신규 대화를 시작했다. 실제 run
+  `79f943b4-e20e-4b43-af52-b3ba64561981`은 09:48 planning_narrative의
+  invented_controller 진단으로 실패했다. 첫 요청 성공이 아니다.
+  확인 과정에서 별도 재현한 결함: needs_clarification의 open_questions에 든 기종 예시도
+  확정 하드웨어로 판정했다. 하드웨어 literal 검사에서 해당 질문 필드만 제외했다.
+  다른 필드(본문/가정/제안) 검사, 전체 knowledge 출처 검사, ready/source 검사는 유지한다.
+  회귀 테스트 포함 Agent 30개 통과. 이 실제 실패가 질문 예시 때문인지는 단정하지 않았다.
+  정상 UI 재시작으로 질문 판정 수정까지 반영 후 09:50에 CPU/5초/자동·수동/리셋 조건을
+  폼이 아닌 채팅으로 전달했다. 실제 후속 run `33bbdcc5-dc8d-438e-9bde-84e47bae7074`,
+  conversation `4328c29c-a4a4-420b-8ed5-b53a834f49a0`이 진행 중이다.
+  DB 읽기 확인: hardware_and_io/operating_modes/performance_and_acceptance/sequence는
+  여전히 빈 값이며 supplemental_requirements에 사용자 원문 437자가 저장됐다.
+  다음에는 이 실행 결과를 먼저 확인한다. 중복 요청 또는 새 초기 폼 입력으로 재시작하지 않는다.
+- 위 후속 run은 09:55 planning_narrative / schema_validation / root json_invalid로
+  실패했다. 저장 원문 전달 성공과 실제 계획 성공은 구분할 것. Nemotron의 narrative만
+  PromptedOutput이 남아 있어 NativeOutput으로 변경했다. 다른 모델 ToolOutput과 기존
+  authority/readiness 검사는 유지한다. 실제 production factory로 native output mode 및
+  blocking question 응답을 확인하는 FunctionModel 회귀 포함 Agent 31개 통과.
+  이는 실제 모델 성공을 의미하지 않는다. 정상 앱 재시작으로 반영 후 09:58 저장된 조건으로
+  실제 run `17ff1227-8e93-4dd3-a3af-d67cca15e24a`를 시작했다. 이 실행이 현재 진행 중이다.
+  다음은 이 run 결과 확인을 우선하며 동일 요청을 중복 제출하지 않는다.
+- 별도 기능 공백: 현재 native rung action은 OUT/SET/RST/TON/MOV 상수 중심이다.
+  요구한 완료 횟수 증가를 직접 표현하는 counter action/domain/generator 경로는 없다.
+  읽기 ladder_graph가 CTR/INC를 해석한다고 새 프로그램 생성이 지원되는 것은 아니다.
+  횟수 요구를 문구로만 남기거나 제거해서 완료 처리하지 말 것.
+- 후속 실행 중 UI의 전체 단계 안내를 기본 접힘으로 바꾸고, 미완성 요구사항 대화를
+  무조건 2단계 계획 검토로 표시하던 것을 수정했다. 최신 ready artifact가 있고 그 뒤
+  새 요청이 없을 때만 계획 검토로 표시한다. 전체 4단계는 펼쳐볼 수 있다.
+  웹 build/typecheck/entry 통과(`index-CkjswxdV.js`), 실제 400px 브라우저에서 접힘/펼침과
+  진행 시간 갱신을 확인했다. Host 재시작 없이 reload해서 현재 실행을 유지했다.
+- 실사용 중 진행 시간이 첫 0ms에 고정되는 UI 버그를 발견했다. coalescing이 이전 detail을
+  우선해서 발생한 것으로, progress는 최신 detail을 쓰고 도구 활동은 기존 보존 규칙을 유지한다.
+  1초 미만의 ms 표시는 숨겼다. 회귀 test-composer-action 및 build/typecheck 통과.
+  웹 `index-DRPpz7g0.js`를 reload해 실행 유지 및 2분 30초 표시를 확인했다.
+- 아직 실제 새 파일 생성/저장/재열기/XG-SIM, 기존 대동인덱스 수정 완료가 아니다.
+  imported COM identity 제약을 우회하지 않았고 원본/작업 사본을 변경하지 않았다.
+
+## 2026-09-09 대화 요구사항 전달 1단계 — 원문 저장 및 기존 폼 지름길 수정
+
+- `ProjectBriefV1.supplemental_requirements`(웹 supplementalRequirements)를 추가했다.
+  planning의 일반 USER 후속 요청만 메시지/run과 동일 트랜잭션에서 원문 그대로 누적한다.
+  중복 operation, 실행 중 거절, SYSTEM 요청, structured form 요청은 중복 누적하지 않는다.
+  기본 폼의 빈 필드에 답변을 임의로 복제하지 않는다. 20000자 초과는 조용히 자르거나
+  일부만 저장하지 않고 전체 제출을 롤백한다. 웹 요구사항 편집에서 추가 내용을 펼쳐
+  확인/정리할 수 있고 폼 재제출 때도 유지된다.
+- 새 필드가 비어 있을 때 calculate_project_brief_digest는 해당 키를 제외해 기존 승인
+  해시를 유지한다. 실제 추가 답변이 생기면 해시가 바뀌어 이전 계획을 그대로 승인할 수 없다.
+- Agent native 입력은 Host의 저장 brief 전체이므로 추가 답변도 전달된다. Agent와 Host의
+  collection scope 근거 허용 범위에 이 실제 원문을 포함했다. 임의 paraphrase는 허용하지
+  않는다. 추가 답변이 있으면 `_complete_narrative_from_brief` 자동 확정 지름길과
+  '폼이 완성됐으니 질문 금지' 재시도 강제를 적용하지 않는다. 최신 답변을 해석해야 한다.
+- 미완료: native binding은 여전히 기본 폼 전체가 채워져야 진행된다. 다음 단계에서
+  누락 필드별로 실제 저장 사용자 원문의 인용을 검증하는 요구사항 coverage를 연결해야 한다.
+  단순히 complete 검사를 제거하거나 같은 답변을 모든 빈 필드에 넣는 방식은 사용하지 말 것.
+  이 1단계만으로 최초 빈 폼→대화 답변→파일 생성이 되는 것은 아니다.
+- Host 새 회귀 7개 포함 전체 17개 통과. Agent 전체 27개 통과. 두 저장소 focused ruff
+  통과. 웹의 추가 요구사항 편집까지 포함한 최종 build/typecheck/entry 확인도 통과했다
+  (`index-epPz8cxs.js`).
+  소스 변경만 했으며 이 단계의 Host/Agent를 정상 재시작으로 실제 앱에 반영하지 않았다.
+  실제 모델 요청/대동인덱스 파일 변경은 이 단계에서 하지 않았다. 기존 모델 실사용 실패,
+  imported 수정 연결 제약, 처음부터 생성 미완료 상태는 아래 절 그대로 유지된다.
+- 다음 단계 주의: `_bind_native_design_scope_to_project_brief`만 연결해서는 부족하다.
+  `derive_new_project_plan_artifact`도 빈 `_CORE_BRIEF_DECISIONS` 필드마다 차단 질문을
+  다시 생성하므로, 저장된 사용자 원문의 인용으로 해결된 항목을 이 단계에도 전달해야 한다.
+  제안 구현은 missing field별 exact source quote를 narrative에서 제출받아 Agent/Host가
+  실제 저장 brief/supplemental 원문과 대조하는 방식이다. 그 출처는 plan digest에 포함하고,
+  이전 artifact에서 새 출처 필드가 비어 있으면 기존 digest를 유지해야 한다.
+
+## 2026-09-09 자동 진행 후속 — 출력 누락 위치 수정, 실제 생성 비교 진행 중
+
+- Agent provider 설계에 출력 coverage의 위치 진단을 추가했다. 누락된 출력마다
+  `io_points.<index>.signal_id`를 수정 응답으로 전달한다. 입력 원문은 오류에 넣지 않으며,
+  출력 역할 변경/인터록 자동 보충/기존 domain 검사 완화는 하지 않는다.
+- 재현 시험에서 지시와 domain의 불일치를 확인했다. 지시는 M 모의 출력에서 안전 규칙을
+  생략할 수 있는 것으로 읽혔지만 domain은 모든 digital_output 및 writable P에 안전
+  규칙을 요구한다. 생성 지시/스키마 설명을 기존 domain 규칙과 일치시켰다.
+- `tests/test_native_output_correction.py` 4개 추가: 누락 위치, 다중 누락/입력 불변,
+  N/A 내부 비트와 출력 구분, NativeOutput의 잘못된 첫 응답→수정 응답→domain 통과.
+  이 마지막 테스트는 FunctionModel 회귀 시험이며 실제 모델/파일 생성 증거가 아니다.
+  Agent 전체 tests 26개 및 focused ruff 통과.
+- 실제 run `ef1d576a-4066-4330-843b-0e088dcd7538`(08:36→08:40)은 실패했다.
+  수정된 진단이 출력 index 10의 network와 safety 누락, index 11~13의 safety 누락을
+  드러냈지만 모델이 수정 응답에서도 해결하지 못했다. 파일 생성 성공으로 보지 말 것.
+- Native 설계 단계의 Nemotron-3-Ultra에만 제한된 reasoning 비교 설정을 적용했다:
+  enable_thinking/medium_effort/force_nonempty_content, reasoning_budget 4096,
+  max_tokens 18000(명시적 length에 한해 24000 재시도), 요청 timeout 600초.
+  각 native run request_limit 2 / total_tokens_limit 100000. 일반 대화/선택 설정,
+  저장된 모델 연결/인증 정보는 그대로다. 앞선 medium 시험은 timeout 300초로 실패했으므로
+  이번 비교의 실제 결과를 확인한 후 유지 여부를 판단할 것. 내부 추론은 읽거나 노출하지 않는다.
+  참고: https://build.nvidia.com/nvidia/nemotron-3-ultra-550b-a55b/modelcard
+- 정상 UI 재시작 후 run `81253371-f416-4982-8f8d-b2e33fd1f77b`를 08:45에 시작했다.
+  08:52에 `agent_runtime_provider_rejected`로 종료됐다. 안전 진단은 model_api_error이며
+  정확한 HTTP 상태/응답 내용은 없다. timeout 또는 schema 성공으로 단정하지 말 것.
+  동일 요청의 무변경 재시도는 하지 않았다. reasoning 비교 설정은 아직 소스에 남아 있으나
+  성공 증거가 없으므로 제품 완료/개선 검증으로 취급하지 말 것.
+- 일반 사용자 처음부터 생성 흐름의 별도 미완료 문제: narrative는 user_clarifications를
+  읽지만 `_bind_native_design_scope_to_project_brief`는 여전히 모든 폼 필드가 채워진
+  저장 brief만 받는다. `_complete_narrative_from_brief` 경로는 최신 대화 수정도 반영하지
+  않는다. 사용자 답변을 출처가 보존되는 요구사항 갱신으로 연결해야 하며, 한 답변을 모든
+  빈 필드에 복제하거나 native authority 검사를 우회해서 해결하지 말 것.
+  05:31의 수동 폼 입력 이후 실행은 대화만으로 초기 요구사항을 완성한 증거가 아니다.
+- 생성 대기 화면을 실제로 보고 composer 전송 버튼 자리에 중단 버튼을 옮겼다.
+  `ComposerActionButton`은 running이면 입력이 비어 있어도 취소 가능하고, 취소 응답
+  대기 중에는 중복 클릭을 막으며, 종료 뒤 전송/수정·저장 동작으로 돌아간다.
+  진행 안내의 중복 문장을 없애고 경과 시간을 분/초로 표시한다. 실행 UUID는 넣지 않는다.
+  Web test-composer-action / test-conversation-permissions 및 production build 통과
+  (`index-BRmE0Cuo.js`). 09:04 run `50209084-1aa0-41fb-8600-d024a7173a56`에서 새
+  composer 중단 버튼을 눌러 09:05 CANCELLED 및 입력창 복귀를 실제 확인했다.
+  이는 취소 UI 시험이지 생성 완료 증거가 아니다. 08:58의 이전 버튼 취소 시험 run
+  `1da90232-a164-438c-bc4f-d7e3fd3048c8`도 CANCELLED다. 진행 중 모델 run은 없다.
+- 09:00 정상 재시작에서 웹의 준비 대기가 만료됐지만 새 Host PID 19212는
+  09:00:47 시작 후 /api/health ready를 반환했다. 중복 실행하지 않고 tab.reload()로
+  복구했다. 브라우저 pressKey(Control+r)는 이 환경에서 페이지 갱신 증거가 되지 않았다.
+  CUA API 문서 복구 후 명시적 reload로 새 빌드를 실제 확인했다.
+- 마지막 표시 수정: CANCELLED + 정확한 detail `run cancelled`만 한국어로 표시하도록
+  바꿨다(Web state는 소문자 cancelled). 다른 종료 상세/실패 경고는 보존한다.
+  마지막 production build/typecheck/entry 확인도 통과했고 `index-LE0Lsyhi.js`를
+  tab.reload()로 반영했다. 문구만 재확인하려고 추가 모델 요청을 만들지는 않았다.
+
+## 2026-09-09 후속 동작 수정 — 기본 변경안 요청, XG5000 연결 제약 조사 중
+
+- Web 기본 권한을 `review_before_apply`로 분리했다. 대상이 변경 가능할 때만 기존
+  `offline_candidate_revision` 요청으로 전환하고, 연결 미확인/대상 없는 대화는
+  `analysis_only`로 제한한다. 기본값에서 직접 실행 권한을 만들지 않는다. 사용자가
+  명시적으로 변경 금지를 선택하면 계속 분석만 한다. 직접 수정 후 기본 검토로 복귀한다.
+  질문을 변경 요청으로 취급하지 않도록 Agent 지시와 일반 질문 완료 조건도 맞췄다.
+- 재시작 후 저장된 파일 분석 상태에서 XG5000 연결을 복구할 버튼을 현재 프로젝트에
+  추가했다. 기존 정확한 작업 사본 창 재사용과 원본/사본 일치 검사는 유지한다.
+- 실제 T0026 설정값 5→6 변경안을 기본 대화로 요청한 run
+  `e65ec5be-527c-42cb-aa19-8a43348e2879`(07:52)은 analysis_only로 접수됐다. 읽기 연결은
+  복구됐으나 수정 대상 증명이 없었기 때문이다. 07:54 모델이 분석 대신 도구/인자 객체를
+  반환하여 실패했다. 실제 변경안/파일 수정 성공이 아니다.
+- 읽기 재연결 시 strong identity 실패 진단(stage/code만, 원문 제외)을 기록하도록 추가했다.
+  07:59 실제 결과는 `vendor_project_identity / ACTIVE_OBJECT_NOT_FOUND`다.
+  MCP에 XG5000 4.82가 /Automation으로 시작해도 ROT 객체를 제공하지 않을 수 있다는
+  기존 기록이 있다. 원본 복사본의 native 읽기 증명을 COM 수정 증명으로 승격하지 않았다.
+  현재 imported 프로젝트의 실제 수정은 여전히 막힌다. new_build 전용 binding을 임의로
+  재사용하거나 검증용 unsafe profile을 활성화하지 않았다.
+- 신규 설계 응답은 PromptedOutput 대신 NativeOutput을 실제 서버에서 비교했다.
+  08:06 run `5ecf14f9-8b1f-4383-b090-15f71fe3a01d`는 08:10 unknown reference로 실패했다.
+  참조 필드 설명 및 코드 소유 검증 규칙만 노출하는 진단을 추가한 뒤 08:17 run
+  `f3d2f944-079d-4c0a-b6d6-243ab67396a1`도 08:21 출력 안전 조건 누락으로 실패했다
+  (`every_digital_output_requires_an_explicit_safety_boundary`). 서버가 응답 형식을 즉시
+  거부하지 않은 것과 유효한 설계 생성 성공을 혼동하지 말 것. 원본 입력이나 모델 내부
+  추론은 진단에 보관하지 않는다. 새 프로젝트 파일 생성/저장/XG-SIM은 아직 없다.
+  같은 요청을 변경 없이 반복하지 말 것. 내부 M 주소의 모의 출력도 digital_output 역할이면
+  안전 규칙 집합이 confirmed인 설계에서 전체 출력의 안전 조건 검사를 받는다.
+- 현재 회귀 검사: Agent focused 22개, Host 표시/진단 6개, MCP 진단 2개,
+  Web request-permissions/permissions 표시 및 production build 통과. 로컬 미커밋.
+
+## 2026-09-09 권한 UI 후속 — 하단 실행 방식 폼 제거
+
+- Codex 공식 Agent approvals & security와 Claude Code Desktop의 permission mode 문서를
+  비교했다. 두 제품에도 권한 선택은 있다. 요청 내용과 실행 권한을 구분하는 원칙을 적용했다.
+  참고: https://learn.chatgpt.com/docs/agent-approvals-security 및
+  https://code.claude.com/docs/en/desktop#choose-a-permission-mode
+- 하단의 긴 요청 방식 radio/검증 선택 폼과 중복 읽기·분석 상태 문구를 제거했다.
+  대화 상단의 작은 권한 버튼으로 분리하고 상세는 누를 때만 렌더링한다. 직접 수정
+  선택 시 버튼은 수정·저장으로 바뀐다. Escape 닫기/트리거 포커스 복귀, 바깥 클릭 닫기 지원.
+- 기존 analysis_only 기본값, 검토 후 변경안 적용, 한 번의 직접 수정 후 권한 초기화,
+  작업 사본 연결 확인 및 Host/MCP 승인 제약은 변경하지 않았다. 자연어 의도에 맞춰
+  변경 시점에 승인을 요청하는 전체 흐름은 아직 구현하지 않았다. UI 정리와 혼동하지 말 것.
+- Web typecheck/production build 및 test-conversation-permissions.mjs 통과. 실제 대동인덱스
+  기존 대화에서 메뉴 열기/닫기, 수정 불가 시 비활성 항목을 확인했다. 좁은 화면에서 메뉴가
+  왼쪽으로 잘리는 문제를 발견해 대화 헤더 기준 위치로 고쳤고 재확인했다. 키보드/접근성
+  포커스가 입력창으로 이동할 때도 닫히도록 focus-out 처리를 추가했다. 프로젝트 수정 요청은 보내지 않았다.
+
+## 2026-09-09 후속 실사용 — LD 읽기 복구, 사용자 화면 정리, 신규 생성 미완료
+
+아래 이전 절의 LD 읽기 실패와 재시작 뒤 연결 실패는 후속 수정으로 일부 복구됐다.
+전체 제품 완료는 아니다. 이 절의 소스는 아직 로컬 미커밋이며 원격 push하지 않았다.
+
+- 실제 대동인덱스 `초기동작` 읽기는 native clipboard 8192 bytes와 14 visual rows를
+  두 번 독립 캡처해 일치했다. CLI는 신선한 sequence/native format 및 정확한 foreground
+  physical copy에서만 ownerless clipboard를 수용한다. 다른 PID 소유, stale publication,
+  postmessage ownerless는 거부한다. 대상 프로그램·editor·프로젝트 hash 불변 검사는 유지했다.
+- Host가 정상 WIRE/opcode 0의 빈 operand를 거부하던 projection을 수정했다. 실제 웹에서
+  목록→LD 읽기→답변이 완료됐다(04:34 run `023ead58-d808-4e71-b1ae-234426e6aed7`,
+  04:46 자연어 첫 질문도 완료). 프로그램 목록 context 누락, 일반 검색의 전용 인자 gate,
+  도구 이름을 영어 문장으로 잘못 판단하던 한국어 검사, 실패 후 다른 도구 선택 gate도 수정했다.
+- 내용 정확성은 별도다. partial topology에서 마지막 행을 무조건 출력으로 단정한 답변을
+  발견했다. Host는 partial topology를 전달하고 Agent는 행≠완전한 rung, timer preset≠시간을
+  명시한다. partial만으로 무조건 출력을 단정하는 답변의 재작성 검사도 추가했다.
+  05:51 새 대화의 동일 자연어 첫 질문(run `5b7f8c00-27f6-4042-8d7d-31b433328a5a`)은
+  05:53 완료됐고 무조건 출력 단정과 timer preset=시간 오류가 재현되지 않았다.
+  답변은 여전히 행별 목록이 길어, 일반 설명의 기본 answer는 짧은 개요·핵심 3개 이내와
+  필요한 한계로 제한하고 상세 목록은 접힌 structured analysis에 두도록 지시를 추가했다.
+  이 간결한 응답 지시 이후의 실제 답변은 아직 확인 전이다.
+- 재시작 후 정확한 작업 파일의 유일한 검증된 소유 창을 기존 attach 경로로 재사용한다.
+  새 창을 계속 만들지 않는다. 관측된 원본과 작업 사본 SHA는 `bee3b1a6…a68f`로 동일했다.
+  기존 두 XG5000 창, 원본, 작업 사본과 오래된 격리·백업 기록은 보존했다.
+- 기본 UI는 대화·결과 중심이다. UUID/해시/기술 영수증은 펼쳐 보는 상세로 이동하고,
+  실제 근거 제목을 누르면 근거 패널이 열린다. 완료된 도구 과정은 한 줄로 접힌다.
+  새 프로젝트 대화에는 Host 내부 지시문 대신 당시 입력한 요구사항만 표시한다.
+  원본 메시지는 내부에 그대로 유지하며 현재 brief로 과거 입력을 덮어 표시하지 않는다.
+  계획 중 기존 프로젝트의 프로그램 목록은 숨겼다. 좁은/넓은 화면에서 추가로 드러난
+  개발 버전·디버깅 표시와 실패 안내도 정리했다. 최종 반응형 확인은 계속 필요하다.
+- 일반 사용자처럼 `대동인덱스 재구성 테스트 0909`를 요구사항부터 시작했다.
+  6분할 인덱스, 자동/수동/초기화, timeout alarm/reset, 내부 모의 신호만, 실제 PLC 연결 금지,
+  원본/사본 덮어쓰기 금지 조건이다. 현재 planning conversation은
+  `aebd609c-2771-4556-9281-01c70d088124`이며 새 파일은 아직 생성하지 않았다.
+- 초기 계획은 JSON 출력 불완전으로 실패했다. 후속 응답 예산/최종 내용 설정 수정 뒤
+  `58d97395-e92a-43a2-a395-e182810721e9`는 JSON 다음의 `invented_device_address`에서
+  거부됐다. 사람이 읽는 narrative에 불필요했던 native 주소 예시·래더 지시를 제거하고
+  별도 native design 단계와 분리했다. 승인·근거·실행 검사는 완화하지 않았다.
+  05:10 run `9dedc43a-317b-41b9-a489-471466ea5b0a`는 05:14에 실제 계획 생성으로 완료됐다.
+  계획은 확인 질문 5개가 남은 상태이며 실행 설계나 파일 생성 성공은 아니다.
+- 실제 생성된 계획이 78개 항목 전체와 같은 내용의 탐색 패널을 중복 렌더링하는 문제를
+  확인했다. 전체 중복 목록을 삭제하고 기존 섹션 탐색 패널 하나에 검토 기능을 옮겼다.
+  기본 화면은 접힌 계획서와 대화의 요약·확인 질문이다. 빈 실행 설계/비활성 체크박스
+  목록은 표시하지 않는다. 원래의 정확한 항목·섹션 검토 제출 조건은 유지한다.
+- 신규 계획 선택 후 새로고침이 이전 프로젝트 대화로 돌아가는 오류를 실기로 재현했다.
+  선택된 planning conversation을 startup 복원 대상으로 포함했고 새로고침 후 동일 계획과
+  질문이 유지됨을 실제 확인했다. workspace activation의 대상 일치 gate는 변경하지 않았다.
+  05:19에는 신호 수동 모의, 5초 timeout, 원샷 수동 이동, 정지 중 초기화와 모드 전환,
+  XG5000/XG-SIM 사용을 일반 문장으로 답해 후속 계획을 요청했다.
+
+- 05:25 run `605274d0-250f-4a5e-9999-dc80d6539007`도 완료됐지만 환경을 재질문했다.
+  대화 후속 답을 별도로 narrative에 전달하고 빈 필드와 충돌을 구분하는 지시를 수정했다.
+  양식 자동 반영은 아직 구현되지 않았다. 05:31에는 이미 답한 조건을 수동으로 양식에
+  반영해 실행 설계 단계까지 진입했다. 이를 정상 채팅 자동화 성공으로 기록하지 않는다.
+- `d91af238-5403-423f-a1e9-1345d0e9b355`는 native design의 단일 항목 all_of/any_of
+  표현을 schema가 거부했다. provider의 단일 그룹을 같은 의미의 contact로 정규화하고
+  executable domain의 기존 조건 제약은 유지했다. 빈 그룹은 계속 거부한다.
+- 이후 run `9d049de8-4106-421e-b8cf-605f0f4a3a14`는 05:40에 provider HTTP 502로 실패했다.
+  프로젝트 생성·쓰기 성공은 없다. 내부 전용 모의 프로젝트에서 사용자가 주소 배치를
+  맡긴 경우 M/T/S/D 구현 배치를 검토할 제안으로 허용하도록 native 지시를 분리했다.
+  물리 배선 추측이나 검토 우회 지시는 추가하지 않았다.
+- MCP 비동기 시작 완료가 상태 이벤트로 전달되지 않아 생성 기능이 계속 비활성이던
+  문제를 재현했다(수동 연결 새로고침 직후 정상 준비로 바뀜). 시작 완료/실패 때 기존
+  host.status 이벤트를 보내도록 수정했고 정상 재시작 뒤 별도 새로고침 없이 준비 표시를
+  확인했다. 과거 brief 메시지가 요구사항 수정 뒤 내부 프롬프트로 다시 보이던 문제는
+  서버 템플릿의 정확한 round-trip에 한해서 당시 요구사항을 복원 표시하도록 수정했다.
+
+- 05:42 run `d58c89ef-cd4f-49cd-825f-20e73ef438c9`는 05:46 native JSON 불완전으로
+  실패했다. 명시적인 finish_reason=length일 때만 tool-free native 설계를 더 큰 출력
+  예산으로 한 번 재요청하도록 수정했다. 잘린 JSON을 수용하거나 검사를 우회하지 않는다.
+- 05:58 run `74d0b63f-9e4b-4631-8d31-e9145f5a27ae`는 06:02 `native_sequence_structure`
+  검사로 실패했다. JSON 이후의 실행 설계 조건 검사 실패이며, 이 실행이 length 재요청을
+  탔는지는 확인하지 않았다. Provider 단계 주소 schema에도 기존 .00 reset 예약 규칙을
+  명시하고, start-release 조건의 상위 선언과 rung 양쪽 반영 지시를 구체화했다.
+- 후속 요청이 있는 이전 계획을 최신 확인 질문처럼 표시하지 않도록 계획 헤더를 수정했다.
+  실패 후 입력 보존 안내와 이전 계획 접기를 구분한다. 좁은 화면의 더 보기 메뉴에서
+  연결 버튼 텍스트가 줄바꿈되던 문제도 font/폭으로 수정했다. Web production build 통과.
+- 06:05 run `f044d87d-2d5f-45b1-9e7c-53bdc584c679`도 06:11 동일한
+  `native_sequence_structure`로 거부됐다. 예약 step/상위 선언 지시 강화만으로 해결되지
+  않았다. 실행 설계의 구체적인 실패 조건 식별과 생성 안정화가 남았다. 새 파일 생성,
+  검사, 저장, 재열기, XG-SIM은 수행되지 않았다.
+- 긴 사용자 입력(600자 초과)은 짧은 미리보기와 원문 펼치기로 표시한다. 실제 요구사항
+  펼치기/접기에서 마지막 성능·완료 기준과 PLC 연결 금지 원문까지 보존됨을 확인했다.
+  Assistant 실패·주의 문구는 이 접기 대상이 아니다. 계획의 사용자 안내에서 schema 필드
+  이름과 stale 등 내부 용어도 사람용 표현으로 바꿨다. 최신 Web build 통과.
+- 06:13 run `8e4613e9-ce9b-42ef-9b02-3b4be0e1ca6d`는 완료됐으나 여전히 긴 행별
+  답변과 OUT을 토글로 부르는 오류가 있었다. 간결한 답변 지시만으로 개선됐다고 볼 수 없다.
+  partial LD 행만으로 토글을 단정하지 않도록 검사와 테스트를 추가했다. 이후 06:20 run
+  `4a7adad4-c306-45d7-8bd6-3b14cf3707a8`는 06:21 engineering_analysis root JSON
+  형식 오류로 실패했다. 최신 토글 방지의 실기 통과나 기본 설명 품질 통과는 아직 없다.
+  잠시 시험한 700자 길이 거부 검사는 제거했다. 긴 답변 자체를 실행 실패로 만들지 않는다.
+- native sequence 오류를 한 코드로 묶던 진단은 예약 reset 단계, 그룹 불일치, 마지막 단계·
+  reset·recovery의 시작 해제 조건 누락으로 구분했다. 알려진 제품 규칙 코드만 Agent/Host
+  양쪽에서 허용하며 사용자 내용·모델 추론을 기록하지 않는다. 다음 실제 계획 시도의 구체
+  원인 식별에 사용한다. 연결 모델은 nemotron-3-ultra이며 다른 연결로 바꾸지 않았다.
+- 06:25 run `43d28116-d52d-469e-aa79-acdc8a62d8e0`는 06:34 실패했고 구체적인 원인은
+  `native_sequence_final_release_missing`이다. require_start_release 선언과 달리 마지막
+  단계 complete_all에 시작 신호의 역상 조건이 없다. Provider sequence의 restart_policy와
+  steps schema 설명에도 마지막 complete_all에 역상 START를 명시하도록 추가했다.
+  단순히 정책을 continuous로 바꾸거나 코드를 임의 추가해 검사를 우회하지 않는다.
+- Pydantic AI의 기본 출력 검증 재시도가 rejected input 전체를 오류와 함께 재전달하는
+  경로를 로컬 라이브러리 코드에서 확인했다. native Agent에만 오류 위치·규칙을 bounded
+  ModelRetry로 전달하는 capability를 추가했다. 실제 Pydantic AI FunctionModel 재시도
+  테스트에서 정상 교정과 rejected input 미포함을 확인했다. 43d run에는 미적용이며,
+  종료 뒤 정상 재시작으로 적용했다. 검사를 억제하거나 결과를 수용하지 않는다.
+- 넓은 화면에서 신규 설계 중에도 온라인 관찰 진입이 표시됨을 확인해 planning 중에는
+  숨겼다. 실제 PLC 관련 기능을 새 프로젝트 계획과 혼동하지 않게 하는 표시 변경이다.
+  Web production build 통과. viewport는 원래 크기로 복원했다.
+- 06:36 run `22005c57-6ae7-46e4-97e6-cb9057eb2939`는 06:41
+  `native_ladder_invalid_target` (`ladder_rungs.19.action.RST`)로 실패했다. 앞선 단계
+  의미 검사의 전체 통과를 뜻하지 않는다. provider action schema가 명령 4개×대상 4개를
+  모두 허용하고 domain에서만 잘못된 조합을 거부하던 불일치를 확인했다. provider schema를
+  OUT/RST→signal, TON→timer, SET→signal/step/sequence_reset의 구별된 union으로 바꿨다.
+  16개 조합을 기존 domain 결과와 비교해 동일 허용 집합임을 검사했다. 임의 명령 변환 없음.
+- 대화가 페이지 전체를 늘리던 레이아웃에 독립된 스크롤 영역과 입력창을 두었다. 새 대화
+  복원과 하단 열람 중에는 최신 메시지를 따라가고, 과거 기록으로 스크롤하면 자동 이동을
+  멈춘다. 이때만 최근 대화 이동 버튼을 표시한다. Web build 통과. 실제 좁은 화면에서
+  마지막 실패 답변·입력창 동시 표시, PageUp으로 과거 기록 읽기, 최근 대화 버튼으로 복귀와
+  버튼 숨김을 확인했다. 현재는 새 결과 수신 중 과거 열람 위치 유지까지 시험 중이다.
+- 06:47 run `2eb298f2-711f-4abb-979d-d0417b6483d9`는 06:56 control_networks 1,2의
+  permit_all이 비어 있어 거부됐다. Agent/Host/MCP 모두 비어 있지 않은 permit를 요구한다.
+  이를 완화하지 않았다. provider 설명에 OUT 구동 출력만 network로 만들고 SET/RST 내부
+  latch에는 불필요한 OUT network를 만들지 않으며 실제 brief 신호 조건이 필요함을 추가했다.
+  이 형식 안내 보완 이후의 실제 생성은 아직 확인 전이다.
+  결과가 도착해도 스크롤해 두었던 06:41 실패 기록 위치와 최근 대화 버튼이 유지됨을
+  스크린샷으로 확인했다. 원래 좁은 viewport 유지 중이다.
+- 명시적인 행 번호를 가진 3개 이상의 기술 목록만 별도 행별 로직 상세로 접는다. 일반
+  사용 지시는 접지 않는다. 목록 안의 미확인·미해결·주의 내용은 접힌 바깥에도 표시한다.
+  상세/행별 요청에는 처음부터 펼친다. 원문·실행·근거는 변경하지 않으며 Web helper 검사와
+  production build 통과. 06:16 실제 LD 답변에서 목록 접기/펼치기와 목록 밖의 분기 미해결
+  안내 유지를 확인했다. 원문의 잘못된 토글 서술도 기록에는 남아 있으며 표시 변경이
+  답변 정확성 수정이나 새로운 읽기 성공을 뜻하지 않는다.
+- 07:05 run `6752cb83-e0b2-47d0-a313-7da5342b3af7`는 07:14 RST.target_type literal
+  오류로 실패했다. schema가 허용 조합을 명시해도 현재 모델 출력이 이를 지키지 못했다.
+  신규 파일 생성 성공은 없다.
+- Native 설계에서도 기존에는 Nemotron 추론이 강제로 꺼져 있었다. [NVIDIA 모델 카드의
+  medium-effort 설정](https://build.nvidia.com/nvidia/nemotron-3-ultra-550b-a55b/modelcard)을
+  확인하고 설계 Agent에만 enable_thinking/medium_effort/force_nonempty_content를 켰다.
+  다른 모델, 일반 대화, 도구 선택의 설정은 유지했다. native 첫 출력 상한 16k와 요청 2회/
+  총 75k, 명시적 length 때만 추가 24k 출력 1회/총 50k로 제한한다. 결과 검사는 그대로다.
+  추론 내용은 사용자 UI나 진단에 출력하지 않는다. 이 설정은 아래 실기 실패 후 되돌렸다.
+
+- 07:19 run `e4d40e65-00c1-42ce-affe-796d6b443061`은 07:24에 native 설계 응답
+  `provider_timeout`으로 실패했다. 모델 연결의 기존 요청 제한은 300초이며 변경하지 않았다.
+  추론 실험의 생성 성공 근거가 없어 기본 final-only 6k, 명시적 length 재요청만 12k,
+  각 요청 묶음 2회/총 50k로 복원했다. 실제 신규 파일 생성은 여전히 없다.
+  timeout 안내는 연결 자체 실패와 구분하여 응답 대기 시간 초과와 입력 보존을 설명한다.
+  과거에 저장된 실패 메시지는 소급 덮어쓰지 않는다.
+- 실제 화면에서 긴 입력 접기/펼치기, 행별 설명 접기/펼치기, 접힌 설명 밖의 미확인 경고,
+  좁은 화면의 최근 대화 이동을 확인했다. 이전 메시지를 읽는 동안 실행이 종료돼도
+  강제로 맨 아래로 이동하지 않았다. 도구 활동 갱신도 최근 대화 자동 추적에 포함했다.
+  이것은 화면 확인이며 생성 실패나 과거 답변의 부정확한 설명이 해결됐다는 뜻이 아니다.
+
+Focused 검사: Agent 19개, Host WIRE 4개와 요구사항/실패 표시 5개, CLI clipboard 5개,
+Web evidence 표시 테스트 및 production typecheck/build 통과. 전체 suite나 실제 생성·검사·
+저장·재열기·XG-SIM 완료를 뜻하지 않는다. 현재 실행은 종료됐다. 신규 설계 생성의 모델
+응답 안정성과 대화 확인 답변의 요구사항 반영이 남아 있다. 같은 요청을 무작정 반복하지
+말고 이를 해결한 뒤 실제 신규 생성과 기존 프로젝트 수정 흐름을 계속 수행해야 한다.
+
 ## 2026-09-09 실사용 검증 — 채팅·열기 부분 통과, native LD 읽기 실패
 
 정상 개발 Launcher와 실제 모델(`nemotron-3-ultra`)을 실행하고 웹 화면에서 직접 질문·후속

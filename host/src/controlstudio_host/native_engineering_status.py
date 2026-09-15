@@ -26,9 +26,10 @@ _STATUS_KEYS = {
     "buildBundleId",
     "buildReceiptDigest",
     "reopenReceiptDigest",
-    "projectSha256",
     "completedStages",
     "remainingStages",
+    "reviewedProgram",
+    "reviewedRequirements",
     "statusDigest",
 }
 
@@ -54,13 +55,14 @@ class NativeEngineeringStatusV1(ApiModel):
     build_bundle_id: str = Field(min_length=1, max_length=256)
     build_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     reopen_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    project_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     completed_stages: tuple[
         Literal["reviewed_plan"],
         Literal["native_build"],
         Literal["independent_reopen"],
     ]
     remaining_stages: tuple[Literal["engineering_validation"]]
+    reviewed_program: dict[str, Any]
+    reviewed_requirements: dict[str, str | None]
     status_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @field_validator("objective")
@@ -90,6 +92,66 @@ class NativeEngineeringStatusV1(ApiModel):
             raise ValueError("native engineering status digest mismatched")
         return self
 
+    @field_validator("reviewed_program")
+    @classmethod
+    def require_exact_reviewed_program(cls, value: dict[str, Any]) -> dict[str, Any]:
+        required = {
+            "programName",
+            "language",
+            "instructionCount",
+            "rungCount",
+            "source",
+            "programCheckPassed",
+            "independentReopenVerified",
+        }
+        if set(value) != required:
+            raise ValueError("reviewed native program fields are not exact")
+        source = value.get("source")
+        if (
+            not isinstance(value.get("programName"), str)
+            or not value["programName"].strip()
+            or value.get("language") != "LD"
+            or not isinstance(source, list)
+            or not source
+            or len(source) > 20_000
+            or any(not isinstance(line, str) or not line.strip() for line in source)
+            or value.get("instructionCount") != len(source)
+            or not isinstance(value.get("rungCount"), int)
+            or isinstance(value.get("rungCount"), bool)
+            or value["rungCount"] < 1
+            or value.get("programCheckPassed") is not True
+            or value.get("independentReopenVerified") is not True
+        ):
+            raise ValueError("reviewed native program is invalid")
+        return value
+
+    @field_validator("reviewed_requirements")
+    @classmethod
+    def require_exact_reviewed_requirements(
+        cls,
+        value: dict[str, str | None],
+    ) -> dict[str, str | None]:
+        required = {
+            "machinePurpose",
+            "sequence",
+            "safetyAndInterlocks",
+            "operatingModes",
+            "performanceAndAcceptance",
+        }
+        if set(value) != required:
+            raise ValueError("reviewed requirement fields are not exact")
+        if not any(isinstance(item, str) and item.strip() for item in value.values()):
+            raise ValueError("reviewed requirements are empty")
+        for item in value.values():
+            if item is not None and (
+                not isinstance(item, str)
+                or not item.strip()
+                or item != item.strip()
+                or len(item) > 20_000
+            ):
+                raise ValueError("reviewed requirement text is invalid")
+        return value
+
 
 def validate_native_engineering_status(value: Any) -> dict[str, Any]:
     """Validate an exact wire projection, including its self-binding digest."""
@@ -107,6 +169,7 @@ def derive_native_engineering_status(
     handoff: dict[str, Any],
     reviewed_plan: dict[str, Any],
     project_brief: dict[str, Any],
+    native_project_result: dict[str, Any],
 ) -> dict[str, Any]:
     """Project reviewed intent and terminal native stages without raw receipts."""
 
@@ -145,11 +208,81 @@ def derive_native_engineering_status(
             append_criterion(item.get("verificationMethod"))
 
     acceptance = project_brief.get("performance_and_acceptance")
-    if not isinstance(acceptance, str) or not acceptance.strip():
-        raise ValueError("project brief performance_and_acceptance is missing")
-    append_criterion(acceptance)
+    if acceptance is not None:
+        if not isinstance(acceptance, str):
+            raise TypeError("project brief performance_and_acceptance is invalid")
+        append_criterion(acceptance)
     if not criteria:
         raise ValueError("native engineering completion criteria are empty")
+
+    reopen = native_project_result.get("reopenVerification")
+    receipt = reopen.get("receipt") if isinstance(reopen, dict) else None
+    program_readback = (
+        receipt.get("programReadback") if isinstance(receipt, dict) else None
+    )
+    if (
+        not isinstance(reopen, dict)
+        or reopen.get("state") != "verified"
+        or not isinstance(receipt, dict)
+        or receipt.get("status") != "REOPEN_VERIFIED"
+        or not isinstance(program_readback, dict)
+    ):
+        raise ValueError("verified native program handoff is unavailable")
+    source = program_readback.get("exactInstructionReadback")
+    reviewed_program = {
+        "programName": program_readback.get("programName"),
+        "language": program_readback.get("language"),
+        "instructionCount": len(source) if isinstance(source, list) else None,
+        "rungCount": program_readback.get("rungCount"),
+        "source": source,
+        "programCheckPassed": program_readback.get("programCheckPassed"),
+        "independentReopenVerified": True,
+    }
+    def reviewed_text(key: str) -> str | None:
+        value = project_brief.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise TypeError(f"project brief {key} is invalid")
+        canonical = value.strip()
+        return canonical or None
+
+    requirement_quotes: dict[str, list[str]] = {}
+    requirement_sources = reviewed_plan.get("requirementSources", [])
+    if not isinstance(requirement_sources, list):
+        raise TypeError("reviewed project plan requirement sources are invalid")
+    for source_item in requirement_sources:
+        if not isinstance(source_item, dict):
+            raise TypeError("reviewed project plan requirement source is invalid")
+        field = source_item.get("field")
+        quote = source_item.get("quote")
+        if not isinstance(field, str) or not isinstance(quote, str):
+            raise TypeError("reviewed project plan requirement source is invalid")
+        canonical_quote = quote.strip()
+        if canonical_quote and canonical_quote not in requirement_quotes.setdefault(
+            field, []
+        ):
+            requirement_quotes[field].append(canonical_quote)
+
+    def reviewed_requirement(field: str, brief_key: str) -> str | None:
+        quotes = requirement_quotes.get(field, [])
+        if quotes:
+            return "\n\n".join(quotes)
+        return reviewed_text(brief_key)
+
+    reviewed_requirements = {
+        "machinePurpose": reviewed_text("machine_purpose"),
+        "sequence": reviewed_requirement("sequence", "sequence"),
+        "safetyAndInterlocks": reviewed_requirement(
+            "safety_and_interlocks", "safety_and_interlocks"
+        ),
+        "operatingModes": reviewed_requirement(
+            "operating_modes", "operating_modes"
+        ),
+        "performanceAndAcceptance": reviewed_requirement(
+            "performance_and_acceptance", "performance_and_acceptance"
+        ),
+    }
 
     unsigned = {
         "schemaVersion": "1",
@@ -160,9 +293,10 @@ def derive_native_engineering_status(
         "buildBundleId": provenance.build_bundle_id,
         "buildReceiptDigest": provenance.build_receipt_digest,
         "reopenReceiptDigest": provenance.reopen_receipt_digest,
-        "projectSha256": provenance.project_sha256,
         "completedStages": list(_COMPLETED_STAGES),
         "remainingStages": list(_REMAINING_STAGES),
+        "reviewedProgram": reviewed_program,
+        "reviewedRequirements": reviewed_requirements,
     }
     return validate_native_engineering_status(
         {**unsigned, "statusDigest": _canonical_digest(unsigned)}

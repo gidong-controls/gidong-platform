@@ -804,6 +804,18 @@ MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
             """,
         ),
     ),
+    (
+        22,
+        "allow_planning_revision_after_engineering_handoff",
+        (
+            "DROP INDEX IF EXISTS idx_conversations_lineage_planning",
+            """
+            CREATE INDEX idx_conversations_lineage_planning
+            ON conversations(lineage_planning_conversation_id, created_at)
+            WHERE lineage_planning_conversation_id IS NOT NULL
+            """,
+        ),
+    ),
 )
 
 _CHANGE_TRANSACTION_OBSERVING_SCHEMA_VERSION = 19
@@ -1200,18 +1212,6 @@ class HostStore:
                 ).fetchone()
                 if planning is None or planning["workflow"] != "new_project_planning":
                     raise ValueError("engineering handoff planning conversation is invalid")
-                prior_handoff = connection.execute(
-                    """
-                    SELECT handoff_native_project_id FROM conversations
-                    WHERE lineage_planning_conversation_id = ?
-                    LIMIT 1
-                    """,
-                    (planning_conversation_id,),
-                ).fetchone()
-                if prior_handoff is not None:
-                    raise ValueError(
-                        "planning conversation already has an engineering handoff"
-                    )
                 active_run = connection.execute(
                     """
                     SELECT 1 FROM runs
@@ -1387,20 +1387,6 @@ class HostStore:
                     raise ProjectPlanReviewConflict(
                         "only new-project planning conversations can be reviewed"
                     )
-                handed_off = connection.execute(
-                    """
-                    SELECT 1 FROM conversations
-                    WHERE lineage_planning_conversation_id = ?
-                      AND handoff_native_project_id IS NOT NULL
-                    LIMIT 1
-                    """,
-                    (conversation_id,),
-                ).fetchone()
-                if handed_off is not None:
-                    raise ProjectPlanReviewConflict(
-                        "planning conversation is read-only after engineering handoff"
-                    )
-
                 latest = connection.execute(
                     """
                     SELECT id, sequence, metadata_json
@@ -1491,7 +1477,19 @@ class HostStore:
                 canonical_reviewed_section_ids = expected_section_ids
                 try:
                     expected_item_ids = project_plan_review_item_ids(artifact)
-                    validate_project_plan_scope_evidence(artifact, project_brief)
+                    requirement_messages = {
+                        str(row["id"]): str(row["content"])
+                        for row in connection.execute(
+                            "SELECT id, content FROM messages "
+                            "WHERE conversation_id = ? AND role = 'user'",
+                            (conversation_id,),
+                        ).fetchall()
+                    }
+                    validate_project_plan_scope_evidence(
+                        artifact,
+                        project_brief,
+                        requirement_messages=requirement_messages,
+                    )
                     artifact_attachment_digest = (
                         calculate_project_plan_attachment_revision_digest(
                             artifact.get("attachments", [])
@@ -1633,23 +1631,6 @@ class HostStore:
                 raise ProjectPlanReviewConflict(
                     "native project creation requires a planning conversation"
                 )
-            completed_handoff = connection.execute(
-                """
-                SELECT handoff_native_project_id
-                FROM conversations
-                WHERE lineage_planning_conversation_id = ?
-                LIMIT 1
-                """,
-                (conversation_id,),
-            ).fetchone()
-            if completed_handoff is not None and (
-                expected_handoff_native_project_id is None
-                or str(completed_handoff["handoff_native_project_id"])
-                != expected_handoff_native_project_id
-            ):
-                raise ProjectPlanReviewConflict(
-                    "planning conversation is read-only after engineering handoff"
-                )
             current_brief = _json_load(str(conversation["project_brief_json"]))
             if not current_brief:
                 raise ProjectPlanReviewConflict(
@@ -1715,7 +1696,19 @@ class HostStore:
             )
             try:
                 expected_item_ids = project_plan_review_item_ids(artifact)
-                validate_project_plan_scope_evidence(artifact, current_brief)
+                requirement_messages = {
+                    str(row["id"]): str(row["content"])
+                    for row in connection.execute(
+                        "SELECT id, content FROM messages "
+                        "WHERE conversation_id = ? AND role = 'user'",
+                        (conversation_id,),
+                    ).fetchall()
+                }
+                validate_project_plan_scope_evidence(
+                    artifact,
+                    current_brief,
+                    requirement_messages=requirement_messages,
+                )
                 artifact_attachment_digest = (
                     calculate_project_plan_attachment_revision_digest(
                         artifact.get("attachments", [])
@@ -2807,20 +2800,6 @@ class HostStore:
                     raise ConversationWorkflowConflict(
                         "message workflow does not match conversation workflow"
                     )
-                if workflow == "new_project_planning":
-                    handed_off = connection.execute(
-                        """
-                        SELECT 1 FROM conversations
-                        WHERE lineage_planning_conversation_id = ?
-                          AND handoff_native_project_id IS NOT NULL
-                        LIMIT 1
-                        """,
-                        (conversation_id,),
-                    ).fetchone()
-                    if handed_off is not None:
-                        raise ConversationWorkflowConflict(
-                            "planning conversation is read-only after engineering handoff"
-                        )
                 if project_brief is not None and workflow != "new_project_planning":
                     raise ConversationWorkflowConflict(
                         "project brief updates require new_project_planning"

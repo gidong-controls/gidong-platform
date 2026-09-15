@@ -4,6 +4,7 @@ import type { KnowledgeSource } from "../api/types";
 import { Icon } from "./Icon";
 
 export interface NewProjectBrief {
+  supplementalRequirements?: string;
   projectName: string;
   machinePurpose: string;
   sequence: string;
@@ -44,13 +45,13 @@ export function ProjectFlowStepper({
     { number: 2, label: "계획 검토", available: true, unavailableLabel: "" },
     {
       number: 3,
-      label: "XG5000 기술 구성",
+      label: "프로젝트 설정",
       available: nativeProjectAvailable,
       unavailableLabel: "현재 환경에서 비활성",
     },
     {
       number: 4,
-      label: "로직·프로그램 검사",
+      label: "프로그램 생성·검사",
       available: nativeProjectAvailable,
       unavailableLabel: "현재 환경에서 비활성",
     },
@@ -87,6 +88,9 @@ export function NewProjectBriefPanel({
   onManageKnowledge,
   onSubmit,
 }: NewProjectBriefPanelProps) {
+  const [supplementalRequirements, setSupplementalRequirements] = useState(
+    initialBrief?.supplementalRequirements ?? "",
+  );
   const [projectName, setProjectName] = useState(
     initialBrief?.projectName ?? "",
   );
@@ -171,11 +175,9 @@ export function NewProjectBriefPanel({
     >
       <div className="project-flow-heading">
         <div>
-          <p className="eyebrow">NEW PROJECT · PLANNING FIRST</p>
           <h2 id="new-project-brief-title">어떤 설비를 만들까요?</h2>
           <p>
-            CPU부터 고르는 대신 설비의 목적과 제약을 먼저 정리합니다. 모르는
-            선택 항목은 비워도 되며, 에이전트가 중요한 질문만 이어서 확인합니다.
+            만들고 싶은 동작과 지켜야 할 조건을 알려 주세요. 모르는 선택 항목은 비워도 됩니다.
           </p>
         </div>
         <button
@@ -203,6 +205,7 @@ export function NewProjectBriefPanel({
             return;
           }
           onSubmit({
+            supplementalRequirements,
             projectName: projectName.trim(),
             machinePurpose: machinePurpose.trim(),
             sequence: sequence.trim(),
@@ -214,6 +217,21 @@ export function NewProjectBriefPanel({
           });
         }}
       >
+        {initialBrief?.supplementalRequirements && (
+          <details>
+            <summary>대화에서 추가한 요구사항</summary>
+            <label>
+              <span>추가 답변을 확인하거나 정리할 수 있습니다.</span>
+              <textarea
+                value={supplementalRequirements}
+                onChange={(event) => setSupplementalRequirements(event.target.value)}
+                rows={6}
+                maxLength={20_000}
+                disabled={busy}
+              />
+            </label>
+          </details>
+        )}
         <label>
           <span>프로젝트 이름</span>
           <input
@@ -336,13 +354,13 @@ export function NewProjectBriefPanel({
           </div>
         </details>
 
+        <details className="brief-optional-details" open={missingAttachmentSourceIds.length > 0 || undefined}>
+          <summary>참고 자료 첨부{attachmentSourceIds.length ? ` · ${attachmentSourceIds.length}개 선택` : " · 선택"}</summary>
         <fieldset className="brief-attachments">
           <legend>계획에 참고 자료 첨부</legend>
           <div className="brief-attachment-heading">
             <p>
-              확인된 매뉴얼·표준·프로젝트 문서만 선택할 수 있습니다. 자료의
-              ID·해시·리비전은 계획서에 고정되며, 문서 내용은 승인된 사실이
-              아니라 인용이 필요한 참고 근거로 취급됩니다.
+              계획에 참고할 매뉴얼이나 설비 문서를 선택하세요.
             </p>
             <div>
               <button
@@ -426,7 +444,7 @@ export function NewProjectBriefPanel({
                 <Icon name="warning" size={17} />
                 <span>
                   <strong>현재 사용할 수 없는 첨부 자료</strong>
-                  <small>{sourceId} · 선택을 해제하거나 자료를 복구하세요.</small>
+                  <small>선택을 해제하거나 자료 관리에서 다시 확인해 주세요.</small>
                 </span>
               </label>
             ))}
@@ -443,12 +461,12 @@ export function NewProjectBriefPanel({
           </div>
           <small>{attachmentSourceIds.length}/20개 선택</small>
         </fieldset>
+        </details>
 
         <div className="new-project-brief-note">
           <Icon name="shield" size={17} />
           <span>
-            이 단계에서는 XG5000, 프로젝트 파일, PLC를 변경하지 않습니다.
-            먼저 요구사항과 안전 조건을 검토 가능한 계획으로 만듭니다.
+            먼저 계획을 만듭니다. 아직 프로젝트 파일이나 PLC는 변경하지 않습니다.
           </span>
         </div>
 

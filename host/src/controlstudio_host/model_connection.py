@@ -259,8 +259,8 @@ def validate_timeout(value: float) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ModelSettingsError("timeout_seconds must be a number")
     result = float(value)
-    if not 1 <= result <= 300:
-        raise ModelSettingsError("timeout_seconds must be between 1 and 300")
+    if not 1 <= result <= 3600:
+        raise ModelSettingsError("timeout_seconds must be between 1 and 3600")
     return result
 
 

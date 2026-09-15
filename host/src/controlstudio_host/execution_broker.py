@@ -507,7 +507,15 @@ def _ld_record_projection(value: Any) -> dict[str, Any]:
             maximum=2**31 - 1,
             nullable=True,
         ),
-        "value": _ld_text(value.get("value"), "LD record value"),
+        # A wire has no operand. Preserve its decoder-produced empty token;
+        # contacts/instructions still require a nonempty bounded operand.
+        "value": (
+            ""
+            if value.get("kind") == "WIRE"
+            and value.get("opcode") == "0"
+            and value.get("value") == ""
+            else _ld_text(value.get("value"), "LD record value")
+        ),
         "kind": _ld_text(value.get("kind"), "LD record kind"),
         "visual_row": _bounded_integer(
             value.get("visual_row"),
@@ -536,6 +544,41 @@ def _ld_record_projection(value: Any) -> dict[str, Any]:
             maximum_items=128,
         ),
     }
+
+
+def _ld_topology_projection(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {"status": "partial", "parallel_branches": []}
+    if not isinstance(value, Mapping) or set(value) != {"status", "parallel_branches"}:
+        raise MCPToolError("LD topology is invalid")
+    if value["status"] not in {"partial", "coordinate-derived"}:
+        raise MCPToolError("LD topology status is invalid")
+    branches = value["parallel_branches"]
+    if not isinstance(branches, list) or len(branches) > 10_000:
+        raise MCPToolError("LD topology branches are invalid")
+    projected = []
+    for branch in branches:
+        if not isinstance(branch, Mapping) or set(branch) != {
+            "trunk_visual_row", "visual_rows", "left_column", "right_column"
+        }:
+            raise MCPToolError("LD topology branch is invalid")
+        rows = branch["visual_rows"]
+        if not isinstance(rows, list) or not 1 <= len(rows) <= 10_000:
+            raise MCPToolError("LD topology branch rows are invalid")
+        projected.append({
+            "trunk_visual_row": _bounded_integer(branch["trunk_visual_row"], "LD trunk row", maximum=10_000),
+            "visual_rows": [_bounded_integer(row, "LD branch row", maximum=10_000) for row in rows],
+            "left_column": _bounded_integer(branch["left_column"], "LD branch left", maximum=4_095),
+            "right_column": _bounded_integer(branch["right_column"], "LD branch right", maximum=4_095),
+        })
+        current = projected[-1]
+        if (
+            current["left_column"] >= current["right_column"]
+            or current["trunk_visual_row"] not in current["visual_rows"]
+            or len(set(current["visual_rows"])) != len(current["visual_rows"])
+        ):
+            raise MCPToolError("LD topology branch association is invalid")
+    return {"status": value["status"], "parallel_branches": projected}
 
 
 def _ld_decoded_projection(value: Any, *, expected_name: str) -> dict[str, Any]:
@@ -605,7 +648,14 @@ def _ld_decoded_projection(value: Any, *, expected_name: str) -> dict[str, Any]:
                 ),
             }
         )
-    return {"name": name, "rows": projected_rows}
+    topology = _ld_topology_projection(value.get("topology"))
+    if any(
+        row not in seen_visual_rows
+        for branch in topology["parallel_branches"]
+        for row in branch["visual_rows"]
+    ):
+        raise MCPToolError("LD topology refers to an unknown row")
+    return {"name": name, "rows": projected_rows, "topology": topology}
 
 
 def _hardware_device(value: Any, label: str) -> str:

@@ -114,13 +114,16 @@ function EvidenceRefs({ values }: { values: string[] }) {
     return null;
   }
   return (
-    <ul className="engineering-analysis-evidence" aria-label="연결된 실행 근거">
+    <details className="engineering-analysis-technical">
+      <summary>참조 기록 {values.length}개</summary>
+    <ul className="engineering-analysis-evidence" aria-label="참조 기록 식별자">
       {values.map((value) => (
         <li key={value}>
           <code>{value}</code>
         </li>
       ))}
     </ul>
+    </details>
   );
 }
 
@@ -398,12 +401,12 @@ export function EngineeringAnalysisPanel({
     <section className="engineering-analysis" aria-label="구조화 엔지니어링 분석">
       <header className="engineering-analysis-header">
         <div>
-          <span className="eyebrow">Engineering Analysis v{analysis.schemaVersion}</span>
-          <h3>근거와 판단을 분리한 분석</h3>
+          <span className="eyebrow">상세 분석</span>
+          <h3>확인한 내용과 판단 근거</h3>
         </div>
         <div className="engineering-analysis-badges">
-          <span>분류 {classifiedCount}</span>
-          {analysis.schemaVersion === "2" && <span>구조 {structuredCount}</span>}
+          {classifiedCount > 0 && <span>판단 {classifiedCount}</span>}
+          {structuredCount > 0 && <span>구조 {structuredCount}</span>}
           <span>실행 근거 {analysis.evidenceRefs.length}</span>
           {analysis.unknowns.some((item) => item.blocking) && (
             <span className="analysis-blocking-badge">차단 미확인 있음</span>
@@ -644,9 +647,10 @@ export function EngineeringAnalysisPanel({
       )}
 
       {digest && (
-        <footer title={digest}>
-          분석 digest <code>{digest.slice(0, 12)}…</code>
-        </footer>
+        <details className="engineering-analysis-technical">
+          <summary>분석 기록 식별 정보</summary>
+          <code>{digest}</code>
+        </details>
       )}
     </section>
   );

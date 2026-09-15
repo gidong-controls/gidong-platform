@@ -356,6 +356,14 @@ class ProjectPlanIoPointV1(ApiModel):
     normal_state: Literal["on", "off", "unknown"]
     safe_state: Literal["on", "off", "not_applicable"]
 
+    @model_validator(mode="after")
+    def validate_safe_state(self) -> ProjectPlanIoPointV1:
+        if self.kind == "digital_input" and self.safe_state != "not_applicable":
+            raise ValueError("digital_input safe_state must be not_applicable")
+        if self.kind != "digital_input" and self.safe_state == "not_applicable":
+            raise ValueError("writable signal safe_state must be on or off")
+        return self
+
 
 class ProjectPlanOperatingModeV1(ApiModel):
     mode_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
@@ -377,7 +385,7 @@ class ProjectPlanControlNetworkV1(ApiModel):
     title: str
     mode_id: str | None = None
     step_id: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]*$")
-    permit_all: list[ProjectPlanSignalConditionV1] = Field(min_length=1, max_length=20)
+    permit_all: list[ProjectPlanSignalConditionV1] = Field(max_length=20)
     output_signal_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
 
     @field_validator("permit_all")
@@ -439,8 +447,13 @@ class ProjectPlanLadderMoveActionV1(ApiModel):
     destination_address: str = Field(pattern=r"^D\d{5}$")
 
 
+class ProjectPlanLadderIncrementActionV1(ApiModel):
+    instruction: Literal["INCP"]
+    destination_address: str = Field(pattern=r"^D\d{5}$")
+
+
 ProjectPlanLadderAction = Annotated[
-    ProjectPlanLadderActionV1 | ProjectPlanLadderMoveActionV1,
+    ProjectPlanLadderActionV1 | ProjectPlanLadderMoveActionV1 | ProjectPlanLadderIncrementActionV1,
     Field(discriminator="instruction"),
 ]
 
@@ -689,9 +702,20 @@ class ProjectPlanNativeCollectionScopeV1(ApiModel):
     safety_rules: ProjectPlanCollectionScopeDecisionV1
 
 
+class ProjectPlanIndexAcceptanceBindingsV1(ApiModel):
+    schema_version: Literal["controlstudio-index-acceptance-bindings/v1"] = "controlstudio-index-acceptance-bindings/v1"
+    signals: dict[str, str]
+    modes: dict[str, str]
+    alarms: dict[str, str]
+    timer_id: str = Field(min_length=1)
+
+
 class ProjectPlanNativeDesignV1(ApiModel):
     schema_version: Literal["2"] = "2"
     collection_scope: ProjectPlanNativeCollectionScopeV1 | None = None
+    index_acceptance_bindings: ProjectPlanIndexAcceptanceBindingsV1 | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
     io_points: list[ProjectPlanIoPointV1] = Field(max_length=500)
     operating_modes: list[ProjectPlanOperatingModeV1] = Field(max_length=50)
     control_networks: list[ProjectPlanControlNetworkV1] = Field(max_length=200)
@@ -709,6 +733,11 @@ class ProjectPlanNativeDesignV1(ApiModel):
 
     @model_validator(mode="after")
     def validate_unique_entity_identities(self) -> ProjectPlanNativeDesignV1:
+        io_by_id = {point.signal_id: point for point in self.io_points}
+        for network in self.control_networks:
+            output = io_by_id.get(network.output_signal_id)
+            if output is not None and output.kind == "digital_output" and not network.permit_all:
+                raise ValueError("digital_output control networks require explicit permit_all")
         collections = (
             (self.io_points, "signal_id", "ioPoints"),
             (self.operating_modes, "mode_id", "operatingModes"),
@@ -820,7 +849,22 @@ class ProjectPlanTechnicalConfigurationV1(ApiModel):
         return value.strip()
 
 
+class ProjectRequirementSourceV1(ApiModel):
+    field: Literal[
+        "sequence", "hardware_and_io", "safety_and_interlocks",
+        "operating_modes", "performance_and_acceptance",
+    ]
+    quote: str = Field(min_length=1, max_length=20_000)
+    message_id: str | None = Field(
+        default=None, min_length=1, max_length=200,
+        exclude_if=lambda value: value is None,
+    )
+
+
 class ProjectPlanArtifactV1(ApiModel):
+    requirement_sources: list[ProjectRequirementSourceV1] = Field(
+        default_factory=list, max_length=5, exclude_if=lambda value: not value,
+    )
     schema_version: Literal["2"] = "2"
     project_name: str
     status: Literal["needs_clarification", "ready_for_review"]
@@ -1463,6 +1507,7 @@ class ConversationMessageV1(ApiModel):
 
 
 class ProjectBriefV1(ApiModel):
+    supplemental_requirements: str = Field(default="", max_length=20_000)
     project_name: str = Field(min_length=1, max_length=200)
     machine_purpose: str = Field(min_length=1, max_length=10_000)
     sequence: str = Field(default="", max_length=20_000)
@@ -3281,11 +3326,21 @@ class MneRungPatchCandidateV6(ApiModel):
                 steps = scenario.get("steps") if isinstance(scenario, dict) and set(scenario) == {"steps"} else None
                 if not isinstance(steps, list) or not 2 <= len(steps) <= 16:
                     raise ValueError("candidate simulationProfile scenario steps are invalid")
+                if sum(
+                    step.get("hold_ms", 0) for step in steps
+                    if isinstance(step, dict) and type(step.get("hold_ms", 0)) is int
+                ) > 30_000:
+                    raise ValueError("candidate simulationProfile total hold time exceeds 30000 ms")
                 input_keys = set()
                 names: set[str] = set()
                 for index, step in enumerate(steps):
-                    if not isinstance(step, dict) or set(step) != {"name", "drive", "observe"}:
+                    if not isinstance(step, dict) or set(step) not in (
+                        {"name", "drive", "observe"}, {"name", "drive", "observe", "hold_ms"},
+                    ):
                         raise ValueError("candidate simulationProfile scenario step is invalid")
+                    hold_ms = step.get("hold_ms", 0)
+                    if type(hold_ms) is not int or not 0 <= hold_ms <= 10_000:
+                        raise ValueError("candidate simulationProfile hold_ms is invalid")
                     name, drive, observe = step.get("name"), step.get("drive"), step.get("observe")
                     if (
                         not isinstance(name, str)
@@ -3781,7 +3836,7 @@ class SaveModelSettingsRequestV1(ApiModel):
     model: str = Field(min_length=1, max_length=256)
     api_key: str | None = Field(default=None, max_length=2048)
     custom_headers: dict[str, str] | None = None
-    timeout_seconds: float = Field(default=60, ge=1, le=300)
+    timeout_seconds: float = Field(default=60, ge=1, le=3600)
     external_model_consent: bool = False
     insecure_http_consent: bool = False
 
@@ -4103,11 +4158,15 @@ class ResumeNativeProjectRequestV1(ApiModel):
     expected_request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     reopened_pid: int | None = Field(default=None, gt=0)
     reopened_hwnd: int | None = Field(default=None, gt=0)
+    run_simulation: bool = False
+    simulation_reviewed_plan: ReviewedProjectPlanBindingV1 | None = None
 
     @model_validator(mode="after")
     def validate_reopened_target(self) -> ResumeNativeProjectRequestV1:
         if (self.reopened_pid is None) != (self.reopened_hwnd is None):
             raise ValueError("reopenedPid and reopenedHwnd must be supplied together")
+        if self.simulation_reviewed_plan is not None and not self.run_simulation:
+            raise ValueError("simulationReviewedPlan requires runSimulation")
         return self
 
 

@@ -10,6 +10,7 @@ import type {
   NativeSimulationReceiptV3,
   NativeSimulationReceiptV4,
   NativeSimulationReceiptV5,
+  NativeSimulationScenarioReceiptV3,
   ReviewedProjectPlanBinding,
   XG5000Instance,
 } from "../api/types";
@@ -17,6 +18,7 @@ import { Icon } from "./Icon";
 
 interface NativeProjectPanelProps {
   onClose: () => void;
+  onCreateFromReviewedPlan?: () => void;
   onStatusChanged: (status: HostStatusResponse) => void;
   status: HostStatusResponse;
   onEngineeringReady: (
@@ -160,6 +162,74 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function isVerifiedStopUiState(value: unknown): boolean {
+  if (!isRecord(value) || !Array.isArray(value.samples)) {
+    return false;
+  }
+  const namedControls =
+    isRecord(value.selected_run) &&
+    isRecord(value.selected_stop) &&
+    typeof value.status_text === "string";
+  const ownerDrawnBand =
+    value.owner_drawn_status_root === true &&
+    value.selected_run === null &&
+    value.selected_stop === null &&
+    value.status_text === null &&
+    Array.isArray(value.sample_box) &&
+    value.sample_box.length === 4 &&
+    Array.isArray(value.sample_size) &&
+    value.sample_size.length === 2;
+  return (
+    value.verified === true &&
+    value.method === "xg5000-simulator-status-pane/v1" &&
+    value.classification === "STOP" &&
+    typeof value.pid === "number" &&
+    value.pid > 0 &&
+    typeof value.hwnd === "number" &&
+    value.hwnd > 0 &&
+    value.foreground_pid === value.pid &&
+    value.foreground_hwnd === value.hwnd &&
+    value.status_candidate_count === 1 &&
+    (namedControls || ownerDrawnBand) &&
+    value.geometry_verified === true &&
+    value.capture_method === "PIL.ImageGrab/foreground-status-pane" &&
+    value.consecutive_count === 3 &&
+    value.samples.length === 3 &&
+    value.samples.every((sample, index) => {
+      if (!isRecord(sample) || !Array.isArray(sample.dominant_rgb)) {
+        return false;
+      }
+      const rgb = sample.dominant_rgb;
+      return (
+        sample.index === index + 1 &&
+        sample.classification === "STOP" &&
+        typeof sample.pixel_count === "number" &&
+        sample.pixel_count > 0 &&
+        rgb.length === 3 &&
+        rgb.every((channel) => typeof channel === "number") &&
+        typeof sample.dominant_share === "number" &&
+        sample.dominant_share >= 0.7 &&
+        typeof sample.stop_share === "number" &&
+        sample.stop_share >= 0.8 &&
+        typeof sample.run_share === "number" &&
+        sample.run_share >= 0 &&
+        sample.run_share < 0.1 &&
+        typeof sample.offline_share === "number" &&
+        sample.offline_share >= 0 &&
+        sample.offline_share < 0.1 &&
+        typeof sample.stop_prototype_distance === "number" &&
+        sample.stop_prototype_distance >= 0 &&
+        sample.stop_prototype_distance <= 64 &&
+        Math.hypot(
+          (rgb[0] as number) - 229,
+          (rgb[1] as number) - 20,
+          rgb[2] as number,
+        ) <= 64
+      );
+    })
+  );
+}
+
 function isSupportedSimulationReceipt(
   value: unknown,
 ): value is NativeSimulationReceipt {
@@ -196,8 +266,7 @@ function isSupportedSimulationReceipt(
     !isRecord(stop.confirmation) ||
     !isRecord(postcondition) ||
     !isRecord(stopUiState) ||
-    !isRecord(stopUiState.selected_run) ||
-    !isRecord(stopUiState.selected_stop) ||
+    !isVerifiedStopUiState(stopUiState) ||
     !Array.isArray(stopUiState.samples) ||
     !stopUiState.samples.every(
       (sample) =>
@@ -248,6 +317,38 @@ function isSupportedSimulationReceipt(
     );
   }
   if (value.schemaVersion === "controlstudio-native-simulation-receipt/v5") {
+    if (
+      scenarioReceipt.schemaVersion ===
+        "controlstudio-native-simulation-scenarios/v4"
+    ) {
+      return (
+        scenarioReceipt.profile === "multi_mode_index/v1" &&
+        scenarioReceipt.status === "SCENARIOS_VERIFIED" &&
+        scenarioReceipt.outputBytesWritten === false &&
+        scenarioReceipt.scenarioCount === scenarioReceipt.scenarios.length &&
+        scenarioReceipt.scenarios.length > 0 &&
+        scenarioReceipt.scenarios.every(
+          (scenario) =>
+            isRecord(scenario) &&
+            scenario.status === "passed" &&
+            isRecord(scenario.assertions) &&
+            Object.keys(scenario.assertions).length > 0 &&
+            Object.values(scenario.assertions).every(
+              (assertion) => assertion === true,
+            ) &&
+            Array.isArray(scenario.observations) &&
+            scenario.observations.length > 0,
+        ) &&
+        scenarioReceipt.inputWrites.length > 0 &&
+        Array.isArray(coverage.inputSignalIds) &&
+        Array.isArray(coverage.modeIds) &&
+        Array.isArray(coverage.timerIds) &&
+        Array.isArray(coverage.sequenceIds) &&
+        Array.isArray(coverage.alarmIds) &&
+        Array.isArray(coverage.recoveryIds) &&
+        Array.isArray(coverage.processInterlockIds)
+      );
+    }
     return (
       scenarioReceipt.schemaVersion ===
         "controlstudio-native-simulation-scenarios/v3" &&
@@ -279,6 +380,21 @@ function isSupportedSimulationReceipt(
     );
   }
   return false;
+}
+
+function isVerifiedMultiModeIndexReceipt(
+  receipt: NativeSimulationReceipt,
+): boolean {
+  const scenarios = receipt.scenarioReceipt;
+  return (
+    receipt.schemaVersion === "controlstudio-native-simulation-receipt/v5" &&
+    scenarios.schemaVersion ===
+      "controlstudio-native-simulation-scenarios/v4" &&
+    scenarios.profile === "multi_mode_index/v1" &&
+    scenarios.status === "SCENARIOS_VERIFIED" &&
+    scenarios.scenarioCount === scenarios.scenarios.length &&
+    scenarios.scenarios.length > 0
+  );
 }
 
 function isExplicitHumanAcceptedTrial(value: unknown): boolean {
@@ -1040,7 +1156,9 @@ function areV4NetworkScenariosVerified(
 }
 
 function areV5MoveScenariosVerified(
-  receipt: NativeSimulationReceiptV5,
+  receipt: NativeSimulationReceiptV5 & {
+    scenarioReceipt: NativeSimulationScenarioReceiptV3;
+  },
   expected: ExpectedMoveRungCoverage[],
   inputSignalIds: Set<string>,
 ): boolean {
@@ -1214,8 +1332,11 @@ function isVerifiedCompletion(
     : undefined;
   const simulationNetworkEvidenceVerified =
     simulationReceipt !== undefined &&
-    ((simulationReceipt.schemaVersion ===
+    (isVerifiedMultiModeIndexReceipt(simulationReceipt) ||
+      (simulationReceipt.schemaVersion ===
       "controlstudio-native-simulation-receipt/v5" &&
+      simulationReceipt.scenarioReceipt.schemaVersion ===
+        "controlstudio-native-simulation-scenarios/v3" &&
       expectedNetworkRungs !== undefined &&
       expectedMovePlan !== undefined &&
       isV4NetworkCoverageVerified(simulationReceipt, expectedNetworkRungs) &&
@@ -1225,7 +1346,9 @@ function isVerifiedCompletion(
         expectedScenarioIds,
       ) &&
       areV5MoveScenariosVerified(
-        simulationReceipt,
+        simulationReceipt as NativeSimulationReceiptV5 & {
+          scenarioReceipt: NativeSimulationScenarioReceiptV3;
+        },
         expectedMovePlan.moves,
         expectedMovePlan.inputSignalIds,
       )) ||
@@ -1246,46 +1369,7 @@ function isVerifiedCompletion(
         )));
   const stopUiState =
     simulationReceipt?.simulator.stop.postcondition.ui_state;
-  const stopStatusEvidenceVerified =
-    stopUiState?.verified === true &&
-    stopUiState.method === "xg5000-simulator-status-pane/v1" &&
-    stopUiState.classification === "STOP" &&
-    stopUiState.pid > 0 &&
-    stopUiState.hwnd > 0 &&
-    stopUiState.foreground_pid === stopUiState.pid &&
-    stopUiState.foreground_hwnd === stopUiState.hwnd &&
-    stopUiState.status_candidate_count === 1 &&
-    (stopUiState.status_text === "L, SIMULATOR, 정상" ||
-      stopUiState.status_text === "L, SIMULATOR, NORMAL") &&
-    stopUiState.geometry_verified === true &&
-    stopUiState.capture_method === "PIL.ImageGrab/foreground-status-pane" &&
-    stopUiState.consecutive_count === 3 &&
-    stopUiState.selected_run.visible === true &&
-    stopUiState.selected_run.enabled === true &&
-    stopUiState.selected_stop.visible === true &&
-    stopUiState.selected_stop.enabled === true &&
-    Array.isArray(stopUiState.samples) &&
-    stopUiState.samples.length === 3 &&
-    stopUiState.samples.every(
-      (sample, index) =>
-        sample.index === index + 1 &&
-        sample.classification === "STOP" &&
-        sample.pixel_count > 0 &&
-        sample.dominant_rgb.length === 3 &&
-        sample.dominant_share >= 0.75 &&
-        sample.stop_share >= 0.85 &&
-        sample.run_share >= 0 &&
-        sample.run_share < 0.1 &&
-        sample.offline_share >= 0 &&
-        sample.offline_share < 0.1 &&
-        sample.stop_prototype_distance >= 0 &&
-        sample.stop_prototype_distance <= 64 &&
-        Math.hypot(
-          sample.dominant_rgb[0] - 229,
-          sample.dominant_rgb[1] - 20,
-          sample.dominant_rgb[2],
-        ) <= 64,
-    );
+  const stopStatusEvidenceVerified = isVerifiedStopUiState(stopUiState);
   const nativeSimulationVerified =
     simulation?.state === "verified" &&
     isExplicitHumanAcceptedTrial(simulation.trial) &&
@@ -1380,8 +1464,7 @@ function verifiedCompletionNotice(operation: NativeProjectOperation): string {
   const registration = operation.result?.workspaceRegistration;
   const confirmedScope = confirmedCollectionScopeSummary(operation);
   if (registration?.state === "captured_and_bound") {
-    const reopened = operation.result?.reopenVerification?.receipt?.reopenedProcess;
-    return `새 오프라인 프로젝트에 ${confirmedScope}만 구성한 뒤 보호 작업 복사본을 별도 XG5000 PID ${reopened?.pid ?? "—"}에서 다시 열어 mnemonic·LD 왕복·프로그램 검사·파일 hash를 재확인했습니다. PLC 연결·다운로드·쓰기는 수행하지 않았습니다.`;
+    return `새 오프라인 프로젝트에 ${confirmedScope}을 구성하고, 별도 XG5000 창에서 다시 열어 프로그램 내용과 검사 결과를 확인했습니다. 이제 이 프로젝트로 계속 작업할 수 있습니다.`;
   }
   if (registration?.state === "captured_not_bound") {
     return "새 오프라인 프로젝트를 만들고 정체성을 확인했습니다. 보호 복사본은 캡처했지만 XG5000에 열린 생성 원본과 별개이므로 분석 세션에는 자동 연결하지 않았습니다.";
@@ -1393,13 +1476,14 @@ function verifiedCompletionNotice(operation: NativeProjectOperation): string {
     return "현재 XG5000 창과 생성 파일을 다시 읽어 프로젝트 생성 완료를 확인했습니다. 생성 요청을 다시 실행하지 않았습니다.";
   }
   if (operation.result?.buildBundleReceipt) {
-    return `검토된 Engineering Plan ${operation.result.buildBundleReceipt.reviewedPlanDigest.slice(0, 12)}와 build bundle ${operation.result.buildBundleReceipt.bundleId.slice(0, 12)}로 ${confirmedScope}만 XG5000 프로그램에 구성하고, LD 변환·프로그램 검사·저장 readback을 확인했습니다.`;
+    return `검토한 설계에 따라 ${confirmedScope}을 XG5000 프로그램으로 만들고 검사와 저장을 마쳤습니다.`;
   }
   return "XG5000에서 새 오프라인 프로젝트를 만들고 정체성을 확인했습니다.";
 }
 
 export function NativeProjectPanel({
   onClose,
+  onCreateFromReviewedPlan,
   onStatusChanged,
   status,
   onEngineeringReady,
@@ -1508,6 +1592,9 @@ export function NativeProjectPanel({
     operation.result?.workspaceRegistration?.state === "captured_not_bound" &&
     operation.result?.reopenVerification !== undefined &&
     operation.result?.simulationVerification?.state !== "verified";
+  const retryAcknowledgedSimulation =
+    operation?.result?.simulationVerification?.trial?.state ===
+    "QUARANTINE_ACKNOWLEDGED";
   const reuseVerifiedReopen =
     operation?.result?.reopenVerification?.state === "verified";
   const storedResumeSourceIsValid =
@@ -1571,7 +1658,7 @@ export function NativeProjectPanel({
     setNotice("");
     void hostApi
       .getNativeProject(initialNativeProjectId, controller.signal)
-      .then((restored) => {
+      .then(async (restored) => {
         setOperation(restored);
         if (restored.state === "quarantined") {
           setNotice(
@@ -1579,6 +1666,33 @@ export function NativeProjectPanel({
           );
         } else if (isVerifiedCompletion(restored)) {
           setNotice(verifiedCompletionNotice(restored));
+          const reopenedProcess =
+            restored.result?.reopenVerification?.receipt?.reopenedProcess;
+          if (
+            !controller.signal.aborted &&
+            reopenedProcess &&
+            Number.isSafeInteger(reopenedProcess.pid) &&
+            Number.isSafeInteger(reopenedProcess.hwnd)
+          ) {
+            try {
+              await hostApi.attachXG5000({
+                pid: reopenedProcess.pid,
+                hwnd: reopenedProcess.hwnd,
+              });
+              if (!controller.signal.aborted) {
+                onStatusChanged(await hostApi.getStatus());
+              }
+            } catch (error) {
+              if (!controller.signal.aborted) {
+                setNotice(
+                  errorMessage(
+                    error,
+                    "프로젝트 생성은 완료됐지만 XG5000 분석 연결을 자동 복구하지 못했습니다.",
+                  ),
+                );
+              }
+            }
+          }
         } else if (
           restored.result?.simulationVerification?.trial?.state === "OBSERVING"
         ) {
@@ -1619,7 +1733,7 @@ export function NativeProjectPanel({
         }
       });
     return () => controller.abort();
-  }, [initialNativeProjectId]);
+  }, [initialNativeProjectId, onStatusChanged]);
 
   const engineeringWorkspaceReady = (() => {
     if (!operation || !isVerifiedCompletion(operation)) {
@@ -1659,6 +1773,43 @@ export function NativeProjectPanel({
       );
     } finally {
       setStartingEngineering(false);
+    }
+  };
+
+  const startNativeSimulation = async (): Promise<void> => {
+    const sourcePid = operation?.request.xg5000Pid;
+    const sourceHwnd = operation?.request.xg5000Hwnd;
+    if (
+      !operation ||
+      typeof sourcePid !== "number" ||
+      typeof sourceHwnd !== "number" ||
+      !operation.requestDigest ||
+      busy
+    ) {
+      return;
+    }
+    setBusy(true);
+    setNotice("");
+    try {
+      const next = await hostApi.resumeNativeProject(operation.nativeProjectId, {
+        pid: sourcePid,
+        hwnd: sourceHwnd,
+        expectedRequestDigest: operation.requestDigest,
+        runSimulation: true,
+        ...(reviewedPlan ? { simulationReviewedPlan: reviewedPlan } : {}),
+      });
+      setOperation(next);
+      setNotice(
+        next.result?.simulationVerification?.trial?.state === "OBSERVING"
+          ? "XG-SIM 시나리오와 안전 원복이 확인됐습니다. 실행 영수증을 검토한 뒤 채택 또는 원복을 선택해 주세요."
+          : next.result?.simulationVerification?.detail ??
+              "XG-SIM 실행 결과를 확인해 주세요.",
+      );
+      onStatusChanged(await hostApi.getStatus());
+    } catch (error) {
+      setNotice(errorMessage(error, "XG-SIM 사용자 시나리오를 실행하지 못했습니다."));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -2027,6 +2178,12 @@ export function NativeProjectPanel({
         pid: sourcePid,
         hwnd: sourceHwnd,
         expectedRequestDigest: operation.requestDigest,
+        ...(retryAcknowledgedSimulation
+          ? {
+              runSimulation: true,
+              ...(reviewedPlan ? { simulationReviewedPlan: reviewedPlan } : {}),
+            }
+          : {}),
         ...(!reuseVerifiedReopen && selectedReopenedInstance
           ? {
               reopenedPid: selectedReopenedInstance.pid,
@@ -2073,6 +2230,17 @@ export function NativeProjectPanel({
   const unsupportedSimulationReceipt =
     rawSimulationReceipt !== undefined && simulationReceipt === undefined;
   const simulationTrial = operation?.result?.simulationVerification?.trial;
+  const simulationProfilePreflight =
+    operation?.result?.simulationVerification?.preflight;
+  const simulationPlanRevision = operation?.result?.simulationPlanRevision;
+  const reviewedSimulationPlanAvailable = Boolean(
+    reviewedPlan &&
+      operation &&
+      reviewedPlan.conversationId === operation.request.reviewedPlan.conversationId &&
+      reviewedPlan.planDigest !== operation.request.reviewedPlan.planDigest &&
+      reviewedPlan.planDigest !==
+        simulationPlanRevision?.simulationReviewedPlan.planDigest,
+  );
   const explicitHumanAcceptance = isExplicitHumanAcceptedTrial(simulationTrial);
   const preTrialMigration = isPreTrialMigration(simulationTrial);
   const decisionNetworkRungs = operation
@@ -2093,24 +2261,34 @@ export function NativeProjectPanel({
     operation !== null &&
     operation !== undefined &&
     simulationReceipt !== undefined &&
-    decisionNetworkRungs !== undefined &&
-    decisionMovePlan !== undefined &&
-    isV4NetworkCoverageVerified(simulationReceipt, decisionNetworkRungs) &&
-    areV4NetworkScenariosVerified(
-      simulationReceipt,
-      decisionNetworkRungs,
-      decisionScenarioIds,
-    ) &&
-    ((simulationReceipt.schemaVersion ===
-      "controlstudio-native-simulation-receipt/v5" &&
-      areV5MoveScenariosVerified(
-        simulationReceipt,
-        decisionMovePlan.moves,
-        decisionMovePlan.inputSignalIds,
-      )) ||
-      (simulationReceipt.schemaVersion ===
-        "controlstudio-native-simulation-receipt/v4" &&
-        decisionMovePlan.moves.length === 0));
+    simulationTrial?.state === "OBSERVING" &&
+    simulationTrial.safeRestorationVerified === true &&
+    (isVerifiedMultiModeIndexReceipt(simulationReceipt) ||
+      (decisionNetworkRungs !== undefined &&
+        decisionMovePlan !== undefined &&
+        isV4NetworkCoverageVerified(simulationReceipt, decisionNetworkRungs) &&
+        areV4NetworkScenariosVerified(
+          simulationReceipt,
+          decisionNetworkRungs,
+          decisionScenarioIds,
+        ) &&
+        ((simulationReceipt.schemaVersion ===
+          "controlstudio-native-simulation-receipt/v5" &&
+          simulationReceipt.scenarioReceipt.schemaVersion ===
+            "controlstudio-native-simulation-scenarios/v3" &&
+          areV5MoveScenariosVerified(
+            simulationReceipt as NativeSimulationReceiptV5 & {
+              scenarioReceipt: Extract<
+                NativeSimulationReceiptV5["scenarioReceipt"],
+                { schemaVersion: "controlstudio-native-simulation-scenarios/v3" }
+              >;
+            },
+            decisionMovePlan.moves,
+            decisionMovePlan.inputSignalIds,
+          )) ||
+          (simulationReceipt.schemaVersion ===
+            "controlstudio-native-simulation-receipt/v4" &&
+            decisionMovePlan.moves.length === 0))));
   const confirmedControlScope = operation
     ? confirmedCollectionScopeSummary(operation)
     : "collectionScope의 confirmed 항목";
@@ -2138,14 +2316,14 @@ export function NativeProjectPanel({
             {simulationTrial?.state === "OBSERVING"
               ? "LS XG5000 · SIMULATION REVIEW"
               : simulationTrial?.state === "QUARANTINED"
-                ? "LS XG5000 · SIMULATION RECOVERY"
+                ? "XG-SIM 복구"
                 : simulationTrial?.state === "QUARANTINE_ACKNOWLEDGED"
                   ? "LS XG5000 · SIMULATION QUARANTINE"
                 : completedVerificationContinuation
-                    ? "LS XG5000 · SAVED PROJECT VERIFICATION"
+                    ? "저장된 프로젝트 확인"
                     : recoveryMode
                       ? "LS XG5000 · QUARANTINE RECOVERY"
-                      : "STEP 3 · LS XG5000 TECHNICAL SETUP"}
+                      : "3단계 · XG5000 프로젝트 만들기"}
           </p>
           <h2 id="native-project-title">
             {simulationTrial?.state === "OBSERVING"
@@ -2182,8 +2360,8 @@ export function NativeProjectPanel({
 
       <p className="native-project-explanation">
         {recoveryMode
-          ? "Host에 저장된 동일 작업의 파일과 XG5000 현재 상태만 다시 읽습니다. 생성 요청 재실행, 자동 재적용, PLC 연결·다운로드·쓰기는 수행하지 않습니다."
-          : "검토한 구조화 설계의 ladderRungs 순서·조건 분기·접점 극성·typed 명령만 XG5000의 빈 오프라인 프로젝트와 선택한 첫 프로그램에 적용합니다. 저장 뒤 보호 작업 복사본을 별도 새 XG5000 프로세스에서 다시 열어 rung IR/source digest·mnemonic·LD·프로그램 검사·파일 hash를 재확인하며 PLC 연결·다운로드·쓰기는 수행하지 않습니다."}
+          ? "중단된 작업의 파일과 XG5000 상태를 확인해 남은 단계부터 이어갑니다. 이미 끝난 생성 단계는 반복하지 않습니다."
+          : "검토한 설계를 새 오프라인 프로젝트로 만들고, 저장·재열기·XG-SIM 확인까지 진행합니다. 원본 프로젝트와 실제 PLC는 건드리지 않습니다."}
       </p>
 
       {operationLoading && (
@@ -2370,7 +2548,7 @@ export function NativeProjectPanel({
                 (multipleInstances && !selectedInstance)
               }
             >
-              {busy ? "XG5000 확인 및 생성 중…" : "오프라인 프로젝트 만들기"}
+              {busy ? "프로젝트 만들고 확인하는 중…" : "프로젝트 만들기"}
             </button>
           </div>
         </form>
@@ -2391,7 +2569,6 @@ export function NativeProjectPanel({
               />
             </span>
             <div>
-              <p className="eyebrow">작업 {operation.nativeProjectId}</p>
               <h3 id="native-project-result-title">
                 {isVerifiedCompletion(operation)
                   ? "프로젝트 생성 완료"
@@ -2418,7 +2595,66 @@ export function NativeProjectPanel({
 
           {typeof operation.result?.projectPath === "string" &&
             operation.result.projectPath && (
+            <>
+            <div className="native-project-user-summary">
+              <strong>{operation.request.projectName}</strong>
+              <p>
+                {simulationTrial?.state === "OBSERVING"
+                  ? "XG-SIM 확인 완료 · 결과를 검토해 주세요"
+                  : isVerifiedCompletion(operation)
+                    ? "저장·재열기·프로그램 검사 완료"
+                    : "프로젝트 파일을 만들었습니다"}
+              </p>
+              <p>{operation.request.plcSeries} · {operation.request.cpuModel} · {operation.request.language}</p>
+            </div>
+            <dl className="native-project-proof" data-testid="native-project-user-proof">
+              <div className="native-project-proof-wide">
+                <dt>파일</dt>
+                <dd>{operation.result.projectPath}</dd>
+              </div>
+              <div>
+                <dt>Program Check</dt>
+                <dd>
+                  {operation.result.buildBundleReceipt?.programReadback.programCheckPassed === true
+                    ? "통과"
+                    : "확인되지 않음"}
+                </dd>
+              </div>
+              <div>
+                <dt>독립 재열기</dt>
+                <dd>
+                  {operation.result.reopenVerification?.state === "verified"
+                    ? "확인 완료"
+                    : "확인되지 않음"}
+                </dd>
+              </div>
+              <div>
+                <dt>XG-SIM 시나리오</dt>
+                <dd>
+                  {simulationReceipt
+                    ? `${simulationReceipt.scenarioReceipt.scenarioCount}개 결과 확인`
+                    : simulationTrial?.state === "QUARANTINED"
+                      ? "격리됨 · 아래 복구 안내 확인 필요"
+                      : "아직 확인되지 않음"}
+                </dd>
+              </div>
+              <div className="native-project-proof-wide">
+                <dt>PLC 영향</dt>
+                <dd>
+                  {operation.result.controllerConnected === false &&
+                  operation.result.plcWritePerformed === false
+                    ? "연결 안 함 · 다운로드 안 함 · 쓰기 안 함"
+                    : operation.result.controllerConnected === true ||
+                        operation.result.plcWritePerformed === true
+                      ? "예상 밖의 PLC 영향 보고됨 · 사용 중지"
+                      : "PLC 무영향 증거가 아직 확인되지 않음"}
+                </dd>
+              </div>
+            </dl>
+            <details data-testid="native-project-technical-details">
+              <summary>기술 세부 정보</summary>
             <dl className="native-project-proof">
+              <div><dt>작업 식별자</dt><dd><code>{operation.nativeProjectId}</code></dd></div>
               <div>
                 <dt>프로젝트</dt>
                 <dd>{operation.request.projectName}</dd>
@@ -2492,8 +2728,17 @@ export function NativeProjectPanel({
                     <small>
                       simulation rung 순서 {simulationReceipt.programBinding.rungIds?.join(" → ") ?? "legacy"}
                     </small>
-                    {simulationReceipt.schemaVersion !==
-                    "controlstudio-native-simulation-receipt/v3" ? (
+                    {simulationReceipt.scenarioReceipt.schemaVersion ===
+                    "controlstudio-native-simulation-scenarios/v4" ? (
+                      simulationReceipt.scenarioReceipt.scenarios.map(
+                        (scenario) => (
+                          <small key={`scenario:${scenario.scenarioId}`}>
+                            {scenario.scenarioId} · {scenario.status}
+                          </small>
+                        ),
+                      )
+                    ) : simulationReceipt.schemaVersion !==
+                      "controlstudio-native-simulation-receipt/v3" ? (
                       simulationReceipt.scenarioReceipt.coverage.networkRungs.map(
                         (binding) => (
                           <small
@@ -2516,6 +2761,8 @@ export function NativeProjectPanel({
                     )}
                     {simulationReceipt.schemaVersion ===
                       "controlstudio-native-simulation-receipt/v5" &&
+                      simulationReceipt.scenarioReceipt.schemaVersion ===
+                        "controlstudio-native-simulation-scenarios/v3" &&
                       simulationAcceptanceEligible &&
                       simulationReceipt.scenarioReceipt.coverage.moveRungs.map(
                         (binding) => {
@@ -2653,17 +2900,16 @@ export function NativeProjectPanel({
                 </div>
               )}
             </dl>
+            </details>
+            </>
             )}
 
           {isVerifiedCompletion(operation) && (
             <section className="native-project-recovery">
               <div>
-                <p className="eyebrow">ENGINEERING HANDOFF</p>
                 <h4>이 프로젝트로 작업 시작</h4>
                 <p>
-                  현재 보호 작업 복사본과 연결된 읽기 전용 분석 세션을 사용해
-                  엔지니어링 대화를 엽니다. 새 XG5000 실행과 PLC 쓰기는 하지
-                  않습니다.
+                  만든 프로젝트의 동작을 질문하거나 수정할 내용을 알려 주세요.
                 </p>
               </div>
               {!engineeringWorkspaceReady && (
@@ -2672,7 +2918,41 @@ export function NativeProjectPanel({
                   이 버튼을 사용할 수 있습니다.
                 </p>
               )}
+              {reviewedSimulationPlanAvailable && onCreateFromReviewedPlan && (
+                <div className="native-project-recovery-warning" role="status">
+                  <strong>새로 검토한 설계가 있습니다.</strong>
+                  <p>
+                    시험 신호 연결만 바뀌었다면 기존 프로젝트에서 시험할 수 있습니다.
+                    입력·출력이나 프로그램 로직이 바뀌었다면 기존 프로젝트는 보존하고
+                    별도 프로젝트를 만들어야 합니다.
+                  </p>
+                  <button
+                    className="button secondary-button"
+                    type="button"
+                    disabled={busy || startingEngineering}
+                    onClick={onCreateFromReviewedPlan}
+                  >
+                    새 설계로 별도 프로젝트 만들기
+                  </button>
+                </div>
+              )}
               <div className="native-project-recovery-actions">
+                {(!operation.result?.simulationVerification ||
+                  operation.result.simulationVerification.state === "not_verified" ||
+                  reviewedSimulationPlanAvailable) && (
+                  <button
+                    className="button secondary-button"
+                    type="button"
+                    disabled={busy || !engineeringWorkspaceReady}
+                    onClick={() => void startNativeSimulation()}
+                  >
+                    {busy
+                      ? "XG-SIM 실행 중…"
+                      : reviewedSimulationPlanAvailable
+                        ? "기존 프로젝트에서 새 시험 설정 사용"
+                        : "XG-SIM 사용자 시나리오 실행"}
+                  </button>
+                )}
                 <button
                   className="button primary-button"
                   type="button"
@@ -2683,6 +2963,36 @@ export function NativeProjectPanel({
                     ? "엔지니어링 대화 여는 중…"
                     : "이 프로젝트로 작업 시작"}
                 </button>
+              </div>
+            </section>
+          )}
+
+          {simulationProfilePreflight?.schemaVersion ===
+            "controlstudio-native-simulation-profile-observation/v1" && (
+            <section className="native-project-recovery" aria-labelledby="native-simulation-profile-title">
+              <div>
+                <p className="eyebrow">XG-SIM 시험 준비</p>
+                <h4 id="native-simulation-profile-title">역할 바인딩 검토가 필요합니다</h4>
+                <p>
+                  프로젝트 생성·저장·독립 재열기 검증은 완료됐습니다. 시뮬레이터에는
+                  아무 명령도 보내지 않았습니다. 다음 설계 검토에서 기존 신호와 모드에
+                  맞는 시험 역할 바인딩을 작성하고 새 검토본을 승인해야 합니다.
+                </p>
+                {reviewedSimulationPlanAvailable && (
+                  <p className="native-project-recovery-warning">
+                    기존 프로그램과 동일한 최신 검토본이 선택됐습니다. 실행 시 Host가
+                    역할 바인딩 외 모든 실행 설계와 생성 영수증의 동일성을 다시 확인합니다.
+                  </p>
+                )}
+                <details>
+                  <summary>읽은 설계 ID 보기</summary>
+                  <p>
+                    모드 {simulationProfilePreflight.modeIds.join(", ") || "없음"}
+                    {" · 신호 "}{simulationProfilePreflight.signalIds.join(", ") || "없음"}
+                    {" · 알람 "}{simulationProfilePreflight.alarmIds.join(", ") || "없음"}
+                    {" · 타이머 "}{simulationProfilePreflight.timerIds.join(", ") || "없음"}
+                  </p>
+                </details>
               </div>
             </section>
           )}
@@ -2881,11 +3191,11 @@ export function NativeProjectPanel({
               </div>
 
               <section className="native-project-recovery-resume">
-                <p className="eyebrow">EXACT LD RESUME</p>
+                <p className="eyebrow">작업 이어서 완료</p>
                 <p>
-                  저장된 PID/HWND와 요청 digest가 일치할 때만 현재 입력된 LD를
-                  다시 읽어 Program Check와 저장만 재개합니다. 새 프로젝트 생성이나
-                  IL 삽입은 실행하지 않으며 자동 재시도도 하지 않습니다.
+                  선택한 XG5000 프로젝트의 현재 LD를 다시 확인합니다. 내용이 완전하면
+                  검사와 저장을 계속하고, 생성 중 첫 명령 하나만 빠진 상태가 정확히
+                  확인되면 그 한 행만 복구합니다. 그 밖의 내용은 수정하지 않습니다.
                 </p>
                 {!recoveryTargetMatchesStored && (
                   <p className="native-project-recovery-warning">
@@ -2905,8 +3215,8 @@ export function NativeProjectPanel({
                   onClick={() => void resumeNativeOperation()}
                 >
                   {busy
-                    ? "입력된 LD 검사·저장 재개 중…"
-                    : "입력된 LD에서 검사·저장 재개"}
+                    ? "LD 확인·복구·저장 중…"
+                    : "LD 확인 후 완료 계속"}
                 </button>
               </section>
             </section>
@@ -2918,52 +3228,47 @@ export function NativeProjectPanel({
               aria-labelledby="native-project-completed-verification-title"
             >
               <div>
-                <p className="eyebrow">SAVED PROJECT VERIFICATION</p>
+                <p className="eyebrow">남은 확인 단계</p>
                 <h4 id="native-project-completed-verification-title">
-                  저장된 프로젝트의 독립 재열기 검증 재개
+                  {retryAcknowledgedSimulation
+                    ? "XG-SIM 안전 복구 후 전체 시나리오 재실행"
+                    : "저장된 프로젝트의 독립 재열기 검증 재개"}
                 </h4>
                 <p>
-                  검사·저장은 확인됐지만 엔지니어링 준비가 완료되지 않았습니다.
-                  저장된 원본 대상과 request digest는 바꾸지 않습니다.
-                  {reuseVerifiedReopen
-                    ? " 검증된 재열기 session을 그대로 재사용해 저장된 프로젝트 내용을 다시 확인합니다."
-                    : " fresh XG5000 창을 직접 선택하거나, 선택할 창이 없으면 새 XG5000 창 하나를 열어 저장된 프로젝트 파일을 read-only로 다시 열고 내용을 확인합니다."}
-                  새 프로젝트 생성, IL 삽입, 자동 재시도는 하지 않습니다.
-                  같은 저장 작업이 남긴 미확인 재열기 실행만 정리합니다.
+                  {retryAcknowledgedSimulation
+                    ? "실패한 검증용 창만 저장 없이 닫고 보호 복사본을 원래 상태로 되돌린 뒤, 새 XG5000 창에서 전체 사용자 시나리오를 다시 실행합니다. 프로젝트를 처음부터 다시 만들지는 않습니다."
+                    : `프로젝트 생성과 저장은 끝났습니다. 마지막으로 저장된 내용을 별도 XG5000 창에서 다시 열어 확인합니다.${
+                        reuseVerifiedReopen
+                          ? " 이미 열린 확인용 창을 그대로 사용합니다."
+                          : " 확인용 창이 없으면 ControlStudio가 새 창을 엽니다."
+                      } 프로젝트를 처음부터 다시 만들지는 않습니다.`}
                 </p>
-              </div>
-
-              <div className="native-project-recovery-target">
-                <span>저장된 원본 XG5000 대상</span>
-                <strong>
-                  PID {operation.request.xg5000Pid ?? "—"} · HWND{" "}
-                  {operation.request.xg5000Hwnd ?? "—"}
-                </strong>
               </div>
 
               {!storedResumeSourceIsValid && (
                 <p className="native-project-recovery-warning">
-                  저장된 원본 PID/HWND 결속이 완전하지 않아 독립 재열기 검증을 재개할
-                  수 없습니다.
+                  저장된 원본 XG5000 창을 확인할 수 없어 이 단계를 계속할 수 없습니다.
                 </p>
               )}
 
               {reuseVerifiedReopen ? (
                 <p>
-                  저장된 검증 재열기 session을 Host가 다시 결속합니다. PID/HWND를
-                  바꾸거나 새 창을 선택하지 않습니다.
+                  {retryAcknowledgedSimulation
+                    ? "실패한 검증용 창과 XG-SIM 상태를 정리한 뒤 새 검증 창을 엽니다."
+                    : "이미 확인에 사용한 XG5000 창에서 저장된 내용을 다시 확인합니다."}
                 </p>
               ) : (
-                <>
+                <details>
+                  <summary>이미 열린 확인용 XG5000 창 사용</summary>
                   <label>
-                    <span>독립 재열기 검증에 사용할 fresh XG5000 창</span>
+                    <span>확인에 사용할 다른 XG5000 창</span>
                     <select
                       value={reopenedHwnd}
                       disabled={busy || instancesLoading}
                       onChange={(event) => setReopenedHwnd(event.target.value)}
                     >
                       <option value="">
-                        기존 재열기 창 선택 · 선택하지 않으면 새 창으로 열기
+                        선택하지 않음 · 새 창으로 열기
                       </option>
                       {instances
                         .filter(
@@ -2987,8 +3292,8 @@ export function NativeProjectPanel({
                   {selectedReopenedInstance &&
                     !reopenedTargetIsIndependent && (
                       <p className="native-project-recovery-warning">
-                        저장된 원본 PID는 독립 재열기 대상으로 사용할 수 없습니다.
-                        fresh XG5000 창을 선택해 주세요.
+                        프로젝트를 만든 원래 창은 확인용 창으로 사용할 수 없습니다.
+                        다른 창을 선택하거나 선택을 비워 두세요.
                       </p>
                     )}
                   {instances.length > 0 &&
@@ -2997,12 +3302,11 @@ export function NativeProjectPanel({
                         instance.pid !== operation.request.xg5000Pid,
                     ) && (
                       <p className="native-project-recovery-warning">
-                        선택할 fresh XG5000 창이 없습니다. “저장된 프로젝트 다시
-                        열기”를 누르면 Host가 새 창 하나를 열어 저장된 파일 내용을
-                        확인합니다.
+                        사용할 다른 창이 없습니다. 아래 버튼을 누르면 새 창에서
+                        저장된 파일을 확인합니다.
                       </p>
                     )}
-                </>
+                </details>
               )}
 
               <div className="native-project-recovery-actions">
@@ -3028,7 +3332,7 @@ export function NativeProjectPanel({
                   >
                     {busy
                       ? "저장된 프로젝트 다시 여는 중…"
-                      : "저장된 프로젝트 다시 열기"}
+                      : "저장된 프로젝트 확인 계속"}
                   </button>
                 ) : (
                   <button
@@ -3045,7 +3349,9 @@ export function NativeProjectPanel({
                   >
                     {busy
                       ? "저장된 검증 흐름 재개 중…"
-                      : "독립 재열기 검증 재개"}
+                      : retryAcknowledgedSimulation
+                        ? "안전 복구 후 XG-SIM 다시 실행"
+                        : "저장된 프로젝트 확인 계속"}
                   </button>
                 )}
               </div>

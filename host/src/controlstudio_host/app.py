@@ -12,7 +12,7 @@ import re
 import secrets
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
@@ -28,6 +28,7 @@ from . import __version__
 from .agent_client import (
     AgentSupervisor,
     SubprocessAgentClient,
+    _bounded_design_failure_diagnostics,
     build_historical_evidence_bundle,
     project_historical_evidence,
 )
@@ -259,11 +260,17 @@ from .native_projects import (
     NativeProjectService,
     NativeProjectSpec,
     _native_simulation_trial_id,
+    planning_native_failure_observation,
     validated_new_build_workspace_provenance,
 )
 from .native_session_identity import (
     fresh_native_trial_identity,
+    native_trial_resume_matches_expected,
     native_trial_session_identity,
+)
+from .planning_drafts import (
+    ProjectDesignDraftRepository,
+    ProjectDesignDraftService,
 )
 from .project_planning import (
     build_project_plan_revision,
@@ -800,6 +807,12 @@ _AGENT_TOOL_FAILURE_REASON_BY_CODE: dict[str, str] = {
         "실행 사전조건을 충족하지 못해 작업 사본을 변경하지 않았습니다."
     ),
     "change_execution_failed": "직접 변경 transaction이 실패 상태로 종료되었습니다.",
+    "design_revision_conflict": "설계 초안이 갱신되어 현재 내용을 다시 확인해야 합니다.",
+    "design_edit_not_applied": "요청한 설계 수정을 적용하지 못했습니다.",
+    "design_edit_unchanged": "기존 내용과 같아 초안을 변경하지 않았습니다.",
+    "design_edit_scope_rejected": "현재 수정 범위 제한으로 해당 변경을 적용하지 못했습니다.",
+    "design_edit_schema_invalid": "설계 내용 형식이 맞지 않아 해당 수정을 적용하지 못했습니다.",
+    "design_publish_blocked": "검사를 통과하지 못해 검토안을 확정하지 않았습니다.",
 }
 _AGENT_TOOL_FAILURE_REASON_BY_KIND: dict[str, str] = {
     "tool_error": "도구가 요청을 처리하지 못했습니다.",
@@ -842,6 +855,52 @@ def _agent_tool_activity_projection(
     """Return the Host-owned compact-card fields for one durable tool event."""
 
     canonical_tool_name = AGENT_TOOL_NAMES.get(tool_name, tool_name)
+    design_activity = {
+        "design.inspect": (
+            "설계 진행 상태 확인",
+            "다음 작업 판단",
+            "저장된 설계 초안과 남은 작업을 확인했습니다.",
+        ),
+        "design.read": (
+            "설계 내용 확인",
+            "부분 설계 검토",
+            "수정에 필요한 설계 부분을 확인했습니다.",
+        ),
+        "design.edit": (
+            "설계 내용 작성",
+            "부분 설계 수정",
+            "설계 초안의 필요한 부분을 저장했습니다.",
+        ),
+        "design.check": (
+            "설계 오류 검사",
+            "설계 검증",
+            "현재 설계의 참조와 실행 가능성을 검사했습니다.",
+        ),
+        "design.move_ladder_rung": (
+            "프로그램 실행 순서 수정",
+            "래더 순서 조정",
+            "설계 초안의 래더 실행 순서를 변경했습니다.",
+        ),
+        "design.publish_review": (
+            "검토안 확정",
+            "검토 준비",
+            "검사를 통과한 설계를 사용자 검토안으로 확정했습니다.",
+        ),
+    }.get(
+        "design.edit"
+        if canonical_tool_name.startswith("design.edit_")
+        else canonical_tool_name
+    )
+    if design_activity is not None:
+        label, role, result = design_activity
+        projection = {
+            "activity_label": label,
+            "activity_role": role,
+            "activity_target": "현재 프로젝트 설계 초안",
+        }
+        if event_type == "tool.completed":
+            projection["activity_result"] = result
+        return projection
     if canonical_tool_name == "change.propose_offline":
         if change_request_scope == "permanent_offline_revision":
             result = {
@@ -1180,6 +1239,12 @@ def _agent_tool_evidence_ref(
         ):
             raise ValueError(f"{canonical_tool_name} evidence contract digest is invalid")
         evidence["receipt"] = evidence_contract
+        if canonical_tool_name == "program.read_ld":
+            program_name = evidence_contract.get("programName")
+            if isinstance(program_name, str) and 0 < len(program_name) <= 512:
+                evidence["title"] = f"{program_name} · 래더 읽기"
+                evidence["summary"] = f"{program_name} 프로그램에서 접점과 명령을 읽었습니다."
+                evidence["location"] = {"vendor": "LS", "program": program_name}
     if canonical_tool_name in {"project.search", "workspace.search"}:
         if not isinstance(evidence_context, dict) or not isinstance(
             evidence_contract,
@@ -1342,6 +1407,47 @@ def _planning_prompt_from_brief(brief: ProjectBriefV1) -> str:
             _LEGACY_PROJECT_BRIEF_FOOTER,
         )
     )
+
+
+def _planning_message_display(content: str, value: Any) -> str:
+    """Show the entered brief, keeping execution instructions in stored content."""
+    try:
+        brief = ProjectBriefV1.model_validate(value)
+    except (ValueError, TypeError):
+        brief = None
+    if brief is None or content != _planning_prompt_from_brief(brief):
+        # Older messages did not store a per-message brief. Reconstruct only
+        # an exact round-trip of our own template, never from the latest brief.
+        body, marker, tail = content.rpartition("\n사용자가 첨부한 자료 ID: ")
+        attachment_text, separator, footer = tail.partition("\n\n")
+        if not marker or not separator or footer != _LEGACY_PROJECT_BRIEF_FOOTER:
+            return content
+        historical = _parse_legacy_project_brief(body + "\n\n" + footer)
+        if historical is None:
+            return content
+        try:
+            brief = ProjectBriefV1.model_validate({
+                **historical.model_dump(),
+                "attachment_source_ids": [] if attachment_text == _LEGACY_UNKNOWN_VALUE
+                else attachment_text.split(", "),
+            })
+        except ValueError:
+            return content
+        if _planning_prompt_from_brief(brief) != content:
+            return content
+    sections = [f"{brief.project_name} 프로젝트를 만들고 싶습니다.", brief.machine_purpose]
+    for label, text in (
+        ("동작 순서", brief.sequence),
+        ("하드웨어·입출력", brief.hardware_and_io),
+        ("안전·운영 조건", brief.safety_and_interlocks),
+        ("운전·복구", brief.operating_modes),
+        ("성능·완료 기준", brief.performance_and_acceptance),
+    ):
+        if text:
+            sections.append(f"{label}\n{text}")
+    if brief.attachment_source_ids:
+        sections.append(f"참고 자료 {len(brief.attachment_source_ids)}개 첨부")
+    return "\n\n".join(sections)
 
 
 def _require_offline_operand_mission_plan(
@@ -2051,6 +2157,9 @@ def _event_frame_v1(event: StoredEvent) -> str:
         # Re-project every replay so a new compact card never exposes that
         # historical path, endpoint, or provider diagnostic.
         event_payload.pop("failure_reason", None)
+        # Validation details remain durable for support/audit retrieval but are
+        # not part of the ordinary browser activity card.
+        event_payload.pop("diagnostics", None)
         event_payload.update(_agent_tool_failure_projection(event.payload))
     payload = {
         "eventId": f"event-{event.sequence}",
@@ -2175,7 +2284,14 @@ def _conversation_v1(
         ConversationMessageV1(
             message_id=item.id,
             role=item.role.value,
-            content=item.content,
+            content=(
+                _planning_message_display(
+                    item.content,
+                    item.metadata.get("project_brief", detail.project_brief),
+                )
+                if item.role.value == "user" and item.metadata.get("structured_project_brief") is True
+                else item.content
+            ),
             created_at=item.created_at,
             run_id=(
                 str(item.metadata["run_id"])
@@ -3017,6 +3133,26 @@ def _change_transaction_v1(value: ChangeTransaction) -> ChangeTransactionV1:
     )
 
 
+def _public_native_project_result(value: dict[str, Any]) -> dict[str, Any]:
+    """Serialize embedded workspace contracts with the public camelCase schema."""
+
+    result = deepcopy(value)
+    workspace_paths = (
+        ("workspaceRegistration", "workspace"),
+        ("reopenVerification", "workspace"),
+        ("simulationVerification", "workspace"),
+    )
+    for parent_name, workspace_name in workspace_paths:
+        parent = result.get(parent_name)
+        workspace = parent.get(workspace_name) if isinstance(parent, dict) else None
+        if isinstance(workspace, dict):
+            parent[workspace_name] = _local_workspace_v1(workspace).model_dump(
+                mode="json",
+                by_alias=True,
+            )
+    return result
+
+
 def _native_project_operation_v1(
     value: NativeProjectOperation,
 ) -> NativeProjectOperationV1:
@@ -3029,7 +3165,7 @@ def _native_project_operation_v1(
         request=value.request,
         plan_digest=value.plan_digest,
         destination_directory=value.destination_directory,
-        result=value.result,
+        result=_public_native_project_result(value.result),
         error_code=value.error_code,
         error_detail=value.error_detail,
         created_at=value.created_at,
@@ -3374,6 +3510,61 @@ def _validated_engineering_session_result(
     return raw_session
 
 
+async def _find_existing_workspace_session(
+    mcp: MCPGateway,
+    workspace: LocalWorkspaceV1,
+) -> dict[str, Any] | None:
+    """Reuse a uniquely proven live file, never a matching window title alone."""
+
+    observed = await mcp.call_read_tool("xg5000.instances", {})
+    instances = observed.get("instances") if isinstance(observed, dict) else None
+    if not isinstance(instances, list) or len(instances) > 8:
+        raise HTTPException(
+            status_code=409,
+            detail="열려 있는 프로젝트를 자동으로 선택하지 못했습니다. 연결할 창을 선택해 주세요.",
+        )
+    matches: list[dict[str, Any]] = []
+    seen: set[tuple[int, int]] = set()
+    for instance in instances:
+        if not isinstance(instance, dict):
+            continue
+        pid, hwnd = instance.get("pid"), instance.get("hwnd")
+        if (
+            isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0
+            or isinstance(hwnd, bool) or not isinstance(hwnd, int) or hwnd <= 0
+            or (pid, hwnd) in seen
+        ):
+            continue
+        seen.add((pid, hwnd))
+        try:
+            result = await mcp.call_read_tool(
+                "xg5000.attach",
+                {
+                    "pid": pid,
+                    "hwnd": hwnd,
+                    "access_profile": "analysis",
+                    "workspace_id": workspace.workspace_id,
+                    "project_path": workspace.working_copy.path,
+                    "project_hash": workspace.working_copy.current_sha256,
+                },
+            )
+        except MCPToolError:
+            continue
+        validated = _validated_engineering_session_result(
+            result, pid=pid, hwnd=hwnd,
+            project_path=workspace.working_copy.path,
+            project_hash=workspace.working_copy.current_sha256,
+        )
+        if validated is not None:
+            matches.append(validated)
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail="같은 작업 사본을 연 창이 여러 개입니다. 이어서 작업할 창을 선택해 주세요.",
+        )
+    return matches[0] if matches else None
+
+
 async def _revalidate_exact_engineering_session(
     mcp: MCPGateway,
     *,
@@ -3525,6 +3716,64 @@ def _reconciled_terminal_checkpoint(
         ):
             return candidate
     return None
+
+
+def _planning_requirement_message_sources(
+    messages: Sequence[Message],
+    *,
+    retained_message_ids: set[str],
+    narrative_adoption_boundary_message_id: str | None = None,
+) -> list[dict[str, str]]:
+    """Keep explicit provenance plus user messages after narrative adoption."""
+
+    reviewed = next(
+        (
+            item
+            for item in reversed(messages)
+            if item.project_plan_review is not None
+            and isinstance(item.metadata.get("plan_artifact"), dict)
+        ),
+        None,
+    )
+    source_ids = set(retained_message_ids)
+    if reviewed is not None:
+        source_ids.update(
+            source.get("messageId")
+            for source in reviewed.metadata["plan_artifact"].get(
+                "requirementSources", []
+            )
+            if isinstance(source, dict)
+            and isinstance(source.get("messageId"), str)
+        )
+    reviewed_index = next(
+        (
+            index
+            for index, item in enumerate(messages)
+            if reviewed is not None and item.id == reviewed.id
+        ),
+        -1,
+    )
+    adoption_index = next(
+        (
+            index
+            for index, item in enumerate(messages)
+            if narrative_adoption_boundary_message_id is not None
+            and item.id == narrative_adoption_boundary_message_id
+            and item.role is MessageRole.USER
+        ),
+        -1,
+    )
+    boundary_index = adoption_index if adoption_index >= 0 else reviewed_index
+    return [
+        {"message_id": item.id, "content": item.content}
+        for index, item in enumerate(messages)
+        if item.role is MessageRole.USER
+        and not bool(item.metadata.get("structured_project_brief"))
+        and (
+            item.id in source_ids
+            or index > boundary_index
+        )
+    ]
 
 
 def _is_exact_terminal_mne_no_mutation_abort(
@@ -3814,6 +4063,16 @@ async def _rebind_terminal_check_only_session(
     )
 
 
+def _safe_identity_diagnostic(session: dict[str, Any]) -> dict[str, str]:
+    metadata = session.get("metadata")
+    diagnostic = metadata.get("strong_identity_diagnostic") if isinstance(metadata, dict) else None
+    if not isinstance(diagnostic, dict):
+        return {}
+    return {key: value for key, value in diagnostic.items()
+            if key in {"stage", "code"} and isinstance(value, str)
+            and re.fullmatch(r"[A-Za-z0-9_]{1,80}", value)}
+
+
 def _agent_runtime_user_message(diagnostic: AgentRuntimeDiagnostic) -> str:
     """Return the bounded user-facing message for a sidecar runtime diagnostic."""
 
@@ -3826,6 +4085,11 @@ def _agent_runtime_user_message(diagnostic: AgentRuntimeDiagnostic) -> str:
         return (
             f"모델 서버가 HTTP {diagnostic.reason_code.removeprefix('provider_http_')} "
             "오류를 반환해 실행을 완료하지 못했습니다. 실제 변경은 수행되지 않았습니다."
+        )
+    if diagnostic.reason_code == "provider_timeout":
+        return (
+            "모델 응답을 기다리는 시간이 초과되어 이번 요청을 완료하지 못했습니다. "
+            "입력한 내용은 대화에 남아 있습니다."
         )
     if diagnostic.exception_kind in {"model_transport", "model_api_error"}:
         return "모델 연결이 완료되지 않아 에이전트 실행을 종료했습니다."
@@ -3883,20 +4147,12 @@ def create_app(
         development_model_custom_headers = {
             "x-litellm-api-key": development_model_api_key,
         }
-    development_model_matches = (
-        development_model_custom_headers is not None
-        and configured_model is not None
-        and configured_model.base_url == development_model_base_url
-        and configured_model.model == development_model_name
-        and configured_model.timeout_seconds == config.development_model_timeout_seconds
-        and configured_model.secrets.api_key == development_model_api_key
-        and configured_model.secrets.custom_headers
-        == development_model_custom_headers
-    )
+    # Development defaults bootstrap an empty installation. A user-selected
+    # endpoint and its verification receipt remain authoritative on restart.
     if (
         development_model_custom_headers is not None
         and model_settings_readable
-        and not development_model_matches
+        and configured_model is None
     ):
         assert development_model_base_url is not None
         assert development_model_name is not None
@@ -3924,6 +4180,10 @@ def create_app(
     )
     native_project_repository = NativeProjectRepository(config.database_path)
     native_project_service = NativeProjectService(native_project_repository, mcp)
+    project_design_draft_repository = ProjectDesignDraftRepository(config.database_path)
+    project_design_draft_service = ProjectDesignDraftService(
+        project_design_draft_repository
+    )
     run_tasks: dict[str, asyncio.Task[None]] = {}
     active_change_executions: set[str] = set()
     run_submission_lock = asyncio.Lock()
@@ -4242,8 +4502,16 @@ def create_app(
     def accepted_native_project_handoff(
         native_project_id: str,
         engineering_target: tuple[str, str, str],
+        *,
+        engineering_session: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """Reconstruct accepted plan/build/simulation lineage from Host authority."""
+
+        target_session = (
+            engineering_session
+            if engineering_session is not None
+            else active_engineering_session
+        )
 
         candidate = native_project_repository.get(native_project_id)
         if candidate is None:
@@ -4280,6 +4548,17 @@ def create_app(
         assert isinstance(workspace_registration, dict)
 
         reopen_receipt = reopen_verification.get("receipt")
+        simulation_verification = result.get("simulationVerification")
+        simulation_trial = (
+            simulation_verification.get("trial")
+            if isinstance(simulation_verification, dict)
+            else None
+        )
+        simulation_receipt = (
+            simulation_verification.get("receipt")
+            if isinstance(simulation_verification, dict)
+            else None
+        )
         workspace = workspace_registration.get("workspace")
         source = workspace.get("source") if isinstance(workspace, dict) else None
         working_copy = (
@@ -4430,16 +4709,40 @@ def create_app(
         project_sha256 = working_copy.get("current_sha256")
         project_path = working_copy.get("path")
         reopen_project = reopen_receipt.get("projectReadback")
+        accepted_simulation = bool(
+            isinstance(simulation_verification, dict)
+            and simulation_verification.get("state") == "verified"
+            and isinstance(simulation_trial, dict)
+            and simulation_trial.get("state") == "ACCEPTED"
+            and simulation_trial.get("safeRestorationVerified") is True
+            and isinstance(simulation_receipt, dict)
+            and simulation_receipt.get("schemaVersion")
+            == "controlstudio-native-simulation-receipt/v5"
+            and simulation_receipt.get("status") == "SIMULATION_VERIFIED"
+            and simulation_receipt.get("buildBundleId") == bundle_id
+            and simulation_receipt.get("reviewedPlanDigest") == reviewed_plan_digest
+        )
+        active_project_readback = (
+            simulation_receipt.get("projectReadback")
+            if accepted_simulation and isinstance(simulation_receipt, dict)
+            else reopen_project
+        )
+        active_project_unchanged = (
+            active_project_readback.get("projectUnchangedDuringRuntime") is True
+            if accepted_simulation and isinstance(active_project_readback, dict)
+            else isinstance(active_project_readback, dict)
+            and active_project_readback.get("projectUnchanged") is True
+        )
         build_program = build_receipt.get("programReadback")
         try:
             active_project_path_matches = bool(
                 isinstance(project_path, str)
                 and project_path
-                and isinstance(active_engineering_session, dict)
+                and isinstance(target_session, dict)
                 and os.path.normcase(
                     str(
                         Path(
-                            str(active_engineering_session.get("project_path") or "")
+                            str(target_session.get("project_path") or "")
                         ).resolve()
                     )
                 )
@@ -4456,13 +4759,13 @@ def create_app(
             or re.fullmatch(r"[0-9a-f]{64}", build_project_sha256) is None
             or not isinstance(build_program, dict)
             or build_program.get("savedProjectSha256") != build_project_sha256
-            or not isinstance(reopen_project, dict)
-            or reopen_project.get("projectSha256") != project_sha256
-            or reopen_project.get("projectUnchanged") is not True
-            or not isinstance(active_engineering_session, dict)
-            or active_engineering_session.get("session_id")
+            or not isinstance(active_project_readback, dict)
+            or active_project_readback.get("projectSha256") != project_sha256
+            or not active_project_unchanged
+            or not isinstance(target_session, dict)
+            or target_session.get("session_id")
             != engineering_session_id
-            or active_engineering_session.get("project_hash") != project_sha256
+            or target_session.get("project_hash") != project_sha256
             or not active_project_path_matches
         ):
             raise NativeProjectConflict(
@@ -4582,6 +4885,7 @@ def create_app(
                 handoff=stored_handoff,
                 reviewed_plan=reviewed_artifact,
                 project_brief=planning_detail.project_brief,
+                native_project_result=operation.result,
             )
         except (TypeError, ValueError) as exc:
             raise NativeProjectConflict(
@@ -4705,6 +5009,17 @@ def create_app(
             assert isinstance(expected_revision_id, str)
             assert isinstance(expected_path, str)
             assert isinstance(expected_hash, str)
+
+            # An older accepted build must never replace the planning screen
+            # after that same conversation has produced a newer native
+            # lineage.  The newer operation may still be finishing its saved
+            # build verification, so advertising the older handoff would show
+            # a false success card and hide the actual continuation action.
+            latest_lineage = native_project_repository.latest_for_planning_conversation(
+                planning_conversation_id
+            )
+            if latest_lineage is not None and latest_lineage.id != candidate.id:
+                continue
 
             current_target_matches = False
             if (
@@ -5067,6 +5382,7 @@ def create_app(
         holder_token = str(uuid.uuid4())
         native_trial_operation: NativeProjectOperation | None = None
         quarantined_reviewed_close = False
+        quarantined_native_reviewed_close: NativeProjectOperation | None = None
         allowed_change_transaction_id: str | None = None
         try:
             raw_body = await request.json()
@@ -5089,6 +5405,39 @@ def create_app(
         elif request.url.path == "/api/v1/xg5000/reviewed-no-save-close":
             recovery_authority = store.selected_target_recovery_authority()
             if (
+                recovery_authority is not None
+                and recovery_authority.get("owner_kind") == "native_project_create"
+                and recovery_authority.get("state") == "QUARANTINED"
+            ):
+                native_operation = native_project_repository.get(
+                    str(recovery_authority.get("operation_id") or "")
+                )
+                requested_pid = (
+                    raw_body.get("pid") if isinstance(raw_body, dict) else None
+                )
+                requested_hwnd = (
+                    raw_body.get("hwnd") if isinstance(raw_body, dict) else None
+                )
+                if (
+                    native_operation is None
+                    or native_operation.state != "QUARANTINED"
+                    or requested_pid != native_operation.request.get("xg5000Pid")
+                    or requested_hwnd != native_operation.request.get("xg5000Hwnd")
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            "reviewed close target does not match the current "
+                            "quarantined native-project recovery"
+                        ),
+                    )
+                owner_kind = "native_project_create"
+                operation_id = native_operation.operation_id
+                request_identity = _native_project_target_lease_identity(
+                    native_operation
+                )
+                quarantined_native_reviewed_close = native_operation
+            elif (
                 recovery_authority is None
                 or recovery_authority.get("owner_kind") != "offline_change"
                 or recovery_authority.get("state") != ChangeTransactionState.QUARANTINED.value
@@ -5154,7 +5503,11 @@ def create_app(
             owner_kind = "workspace_resume"
         else:
             owner_kind = "engineering_attach"
-        if native_trial_operation is None and not quarantined_reviewed_close:
+        if (
+            native_trial_operation is None
+            and not quarantined_reviewed_close
+            and quarantined_native_reviewed_close is None
+        ):
             request_identity = {
                 "route": request.url.path,
                 "request": raw_body if isinstance(raw_body, dict) else {},
@@ -5196,9 +5549,12 @@ def create_app(
             yield
         finally:
             if lease_acquired:
+                leased_native_operation = (
+                    native_trial_operation or quarantined_native_reviewed_close
+                )
                 current_native_operation = (
-                    native_project_repository.get(native_trial_operation.operation_id)
-                    if native_trial_operation is not None
+                    native_project_repository.get(leased_native_operation.operation_id)
+                    if leased_native_operation is not None
                     else None
                 )
                 if (
@@ -5208,7 +5564,17 @@ def create_app(
                     store.park_target_operation_lease(
                         operation_id=operation_id,
                         holder_token=holder_token,
-                        reason="native_simulation_trial_requires_decision_or_recovery",
+                        reason=(
+                            "quarantined_native_reviewed_close_requires_recovery"
+                            if quarantined_native_reviewed_close is not None
+                            else "native_simulation_trial_requires_decision_or_recovery"
+                        ),
+                    )
+                elif quarantined_native_reviewed_close is not None:
+                    store.release_target_operation_lease(
+                        operation_id=operation_id,
+                        holder_token=holder_token,
+                        reason="quarantined_native_project_reviewed_no_save_closed",
                     )
                 elif quarantined_reviewed_close:
                     store.park_target_operation_lease(
@@ -6733,7 +7099,7 @@ def create_app(
         store.release_terminal_native_target_operation_leases()
         store.supersede_stale_target_lease_for_durable_change_recovery()
 
-        async def start_mcp() -> None:
+        async def initialize_mcp_and_workspace() -> None:
             nonlocal active_workspace
             try:
                 await mcp.start()
@@ -6793,6 +7159,19 @@ def create_app(
                         type(exc).__name__,
                     )
                 break
+
+        async def start_mcp() -> None:
+            try:
+                await initialize_mcp_and_workspace()
+            finally:
+                task = asyncio.current_task()
+                if task is None or not task.cancelling():
+                    # Startup is asynchronous. Browsers may have bootstrapped
+                    # while tools were starting and need a fresh readiness view.
+                    store.append_event(
+                        event_type="host.status",
+                        payload=current_status_v1().model_dump(mode="json", by_alias=True),
+                    )
 
         mcp_start_task = asyncio.create_task(
             start_mcp(),
@@ -6897,6 +7276,8 @@ def create_app(
     app.state.change_executor = change_executor
     app.state.native_project_repository = native_project_repository
     app.state.native_project_service = native_project_service
+    app.state.project_design_draft_repository = project_design_draft_repository
+    app.state.project_design_draft_service = project_design_draft_service
     app.state.active_change_executions = active_change_executions
     app.state.request_shutdown = None
     app.state.request_restart = None
@@ -8610,6 +8991,11 @@ def create_app(
                         )
                     )
                 except (NativeProjectConflict, ProjectPlanReviewConflict, ValueError) as exc:
+                    logger.warning(
+                        "native engineering handoff precondition failed: %s",
+                        exc,
+                        exc_info=True,
+                    )
                     raise AgentRunPreconditionError(
                         "accepted native-project mission handoff is no longer exact"
                     ) from exc
@@ -8673,6 +9059,8 @@ def create_app(
             planning_brief: dict[str, Any] | None = None
             planning_project_brief_digest: str | None = None
             planning_attachment_revision_digest: str | None = None
+            planning_native_failure: dict[str, Any] | None = None
+            planning_retained_narrative: dict[str, Any] | None = None
             previous_plan_snapshot = None
             if workflow == "new_project_planning":
                 previous_plan_snapshot = latest_project_plan_snapshot(history)
@@ -8685,17 +9073,57 @@ def create_app(
                         raise AgentRunPreconditionError(
                             f"첨부 자료를 사용할 수 없습니다: {exc}"
                         ) from exc
-                    planning_brief = {
-                        **detail.project_brief,
-                        "attachments": planning_attachments,
-                    }
                     planning_project_brief_digest = calculate_project_brief_digest(
                         detail.project_brief
                     )
+                    retained_narrative_context = (
+                        project_design_draft_service.retained_narrative_context(
+                            conversation_id,
+                            brief_digest=planning_project_brief_digest,
+                        )
+                    )
+                    planning_retained_narrative = (
+                        retained_narrative_context["narrative"]
+                        if retained_narrative_context is not None
+                        else None
+                    )
+                    requirement_message_sources = (
+                        _planning_requirement_message_sources(
+                            detail.messages,
+                            retained_message_ids=(
+                                project_design_draft_service
+                                .retained_requirement_message_ids(conversation_id)
+                            ),
+                            narrative_adoption_boundary_message_id=(
+                                retained_narrative_context.get(
+                                    "adoption_boundary_message_id"
+                                )
+                                if retained_narrative_context is not None
+                                else None
+                            ),
+                        )
+                    )
+                    planning_brief = {
+                        **detail.project_brief,
+                        "attachments": planning_attachments,
+                        "requirement_message_sources": requirement_message_sources,
+                    }
                     planning_attachment_revision_digest = (
                         calculate_project_plan_attachment_revision_digest(
                             planning_attachments
                         )
+                    )
+                    planning_native_failure = planning_native_failure_observation(
+                        native_project_repository.latest_for_planning_conversation(
+                            conversation_id
+                        ),
+                        conversation_id=conversation_id,
+                        current_project_brief_digest=planning_project_brief_digest,
+                        current_plan_digest=(
+                            previous_plan_snapshot.plan_digest
+                            if previous_plan_snapshot is not None
+                            else None
+                        ),
                     )
                 else:
                     raise AgentRunPreconditionError(
@@ -8727,6 +9155,49 @@ def create_app(
                 if workflow == "engineering"
                 else None
             )
+            if (
+                stored_engineering_mission is not None
+                and not engineering_mission_continue
+                and stored_engineering_mission.change_transaction_id is None
+            ):
+                # A new user request must not be captured by an active mission
+                # left behind by a failed Agent run.  Validate the durable record
+                # before ignoring it, and retain it until the new run checkpoints;
+                # that gives us crash-safe, journaled replacement rather than an
+                # eager destructive delete.
+                try:
+                    failed_mission_candidate, failed_mission_digest = (
+                        _canonical_engineering_mission(
+                            stored_engineering_mission.engineering_mission
+                        )
+                    )
+                except (TypeError, ValueError):
+                    failed_mission_candidate = None
+                    failed_mission_digest = ""
+                previous_mission_run = store.get_run(
+                    stored_engineering_mission.updated_by_run_id
+                )
+                if (
+                    failed_mission_candidate is not None
+                    and hmac.compare_digest(
+                        failed_mission_digest,
+                        stored_engineering_mission.digest,
+                    )
+                    and previous_mission_run is not None
+                    and previous_mission_run.conversation_id == conversation_id
+                    and previous_mission_run.state is RunState.FAILED
+                    and failed_mission_candidate.get("status") == "active"
+                ):
+                    store.append_event(
+                        event_type="engineering_mission.replacement_started",
+                        conversation_id=conversation_id,
+                        run_id=run_id,
+                        payload={
+                            "previous_run_id": previous_mission_run.id,
+                            "reason": "failed_run_new_user_request",
+                        },
+                    )
+                    stored_engineering_mission = None
             if targetless_analysis_run and stored_engineering_mission is not None:
                 raise AgentRunPreconditionError(
                     "대상 없는 분석 대화에는 대상 결속 mission을 재사용할 수 없습니다."
@@ -9242,7 +9713,7 @@ def create_app(
                 }
                 if mission_status == "completed":
                     allow_evidence_free_general_completion = bool(
-                        change_request_scope == "analysis_only"
+                        change_request_scope in {"analysis_only", "offline_candidate_revision"}
                         and not engineering_mission_continue
                         and engineering_mission_snapshot is None
                         and not agent_tool_event_observed
@@ -9519,6 +9990,10 @@ def create_app(
                     # is a closed Host vocabulary; the fallback is the closed
                     # failure_kind vocabulary above.
                     safe_payload.update(_agent_tool_failure_projection(payload))
+                    if tool_name.startswith("design."):
+                        diagnostics = _bounded_design_failure_diagnostics(payload)
+                        if diagnostics:
+                            safe_payload["diagnostics"] = diagnostics
                 evidence_contract = payload.get("evidence_contract")
                 if evidence_contract is not None and not isinstance(
                     evidence_contract,
@@ -9619,6 +10094,37 @@ def create_app(
                 )
 
             runtime = runtime_factory(settings, execution_broker)
+            bind_design_tools = getattr(runtime, "bind_design_tools", None)
+            if (
+                callable(bind_design_tools)
+                and workflow == "new_project_planning"
+                and planning_project_brief_digest is not None
+                and detail.project_brief is not None
+            ):
+                exact_project_brief = {
+                    **deepcopy(detail.project_brief),
+                    "requirement_message_sources": deepcopy(
+                        requirement_message_sources
+                    ),
+                }
+
+                async def execute_design_tool(
+                    tool_name: str,
+                    arguments: Mapping[str, Any],
+                ) -> dict[str, Any]:
+                    return await project_design_draft_service.execute(
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        conversation_id=conversation_id,
+                        run_id=run_id,
+                        brief_digest=planning_project_brief_digest,
+                        project_brief=exact_project_brief,
+                    )
+
+                bind_design_tools(
+                    catalog=project_design_draft_service.tool_catalog,
+                    execute=execute_design_tool,
+                )
             bind_knowledge_snapshot = getattr(runtime, "bind_knowledge_snapshot", None)
             if callable(bind_knowledge_snapshot):
 
@@ -10168,6 +10674,16 @@ def create_app(
                         )
                         if request_message is not None
                         else False,
+                        **(
+                            {"native_failure_observation": planning_native_failure}
+                            if planning_native_failure is not None
+                            else {}
+                        ),
+                        **(
+                            {"retained_design_narrative": planning_retained_narrative}
+                            if planning_retained_narrative is not None
+                            else {}
+                        ),
                     }
                     if workflow == "new_project_planning"
                     else {
@@ -10357,6 +10873,11 @@ def create_app(
                         validate_project_plan_scope_evidence(
                             current_plan_artifact,
                             detail.project_brief,
+                            requirement_messages={
+                                item.id: item.content
+                                for item in detail.messages
+                                if item.role is MessageRole.USER
+                            },
                         )
                     except (TypeError, ValueError) as exc:
                         raise AgentOutputContractError(
@@ -10646,10 +11167,9 @@ def create_app(
                     )
                 else:
                     user_message = (
-                        "모델 응답이 ControlStudio의 근거·안전 출력 계약을 충족하지 "
-                        "못해 계획을 저장하지 않았습니다. 실제 변경은 수행되지 "
-                        "않았습니다. 요구사항을 더 구체화하거나 다른 모델로 다시 "
-                        "시도해 주세요."
+                        "계획서 생성을 완료하지 못했습니다. 입력한 요구사항은 "
+                        "남아 있으며 프로젝트 파일은 변경하지 않았습니다. "
+                        "아래 대화에서 다시 요청할 수 있습니다."
                     )
                 error_code = "agent_output_contract"
                 error_detail = (
@@ -10721,10 +11241,15 @@ def create_app(
                 )
                 logger.error(
                     "agent run %s failed (type=%s, provider_detail_suppressed=true, "
-                    "credential_material_detected=%s)",
+                    "credential_material_detected=%s, internal_protocol_reason=%s)",
                     run_id,
                     type(exc).__name__,
                     credential_material_detected,
+                    (
+                        str(exc)
+                        if isinstance(exc, AgentProtocolError)
+                        else "suppressed"
+                    ),
                 )
                 user_message = "에이전트 실행에 실패했습니다. 모델 연결과 MCP 상태를 확인해 주세요."
                 error_code = type(exc).__name__
@@ -10984,6 +11509,7 @@ def create_app(
                         "actor_id": _request_actor_id(request),
                         "workflow": body.workflow,
                         "structured_project_brief": body.project_brief is not None,
+                        **({"project_brief": project_brief} if project_brief is not None else {}),
                         **(
                             {"change_request_scope": (effective_change_request_scope)}
                             if effective_change_request_scope is not None
@@ -13930,6 +14456,17 @@ def create_app(
                     project_path=workspace.working_copy.path,
                     project_hash=workspace.working_copy.current_sha256,
                 )
+        if reused_session is None:
+            # Restart clears the in-memory session, not the user's XG5000
+            # windows. Prove the existing file binding before opening another
+            # copy; a stale caption or cached PID cannot authorize this reuse.
+            try:
+                reused_session = await _find_existing_workspace_session(mcp, workspace)
+            except MCPToolError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail="열려 있는 프로젝트를 확인하지 못했습니다. 기존 창을 보존했습니다.",
+                ) from exc
         if reused_session is not None:
             session = bind_engineering_session(reused_session)
             launch = None
@@ -13956,6 +14493,7 @@ def create_app(
                 "working_hash": workspace.working_copy.current_sha256,
                 "xg5000_window_detected": bool(launch and launch.window_detected),
                 "engineering_session_attached": True,
+                "strong_identity_diagnostic": _safe_identity_diagnostic(session),
             },
         )
         store.append_event(
@@ -15303,6 +15841,15 @@ def create_app(
                     },
                 )
             except MCPToolError as exc:
+                store.append_event(
+                    event_type="native_simulation.acceptance_attach_failed",
+                    payload={
+                        "nativeProjectId": candidate.id,
+                        "reason": str(exc)[:600],
+                        "pid": expected_pid,
+                        "hwnd": expected_hwnd,
+                    },
+                )
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="independently reopened XG5000 target is unavailable before acceptance",
@@ -15322,6 +15869,7 @@ def create_app(
                 reopened_workspace,
             )
             expected_resume = {
+                "purpose": "native_trial",
                 "native_project_id": candidate.id,
                 "trial_id": candidate_trial.get("trialId"),
                 "receipt_digest": stored_receipt_digest,
@@ -15339,7 +15887,9 @@ def create_app(
             identity_matches = bool(
                 refreshed_identity is not None
                 and refreshed_identity["title"] == expected_title
-                and refreshed_identity["native_trial_resume"] == expected_resume
+                and native_trial_resume_matches_expected(
+                    refreshed_identity["native_trial_resume"], expected_resume
+                )
             )
             try:
                 stored_hash_matches = (
@@ -15348,6 +15898,31 @@ def create_app(
                 )
             except (KeyError, TypeError, ValueError):
                 stored_hash_matches = False
+            identity_check = {
+                "nativeProjectId": candidate.id,
+                "identityPresent": refreshed_identity is not None,
+                "titleMatches": bool(
+                    refreshed_identity is not None
+                    and refreshed_identity["title"] == expected_title
+                ),
+                "resumeMatches": bool(
+                    refreshed_identity is not None
+                    and native_trial_resume_matches_expected(
+                        refreshed_identity["native_trial_resume"], expected_resume
+                    )
+                ),
+                "storedHashMatches": stored_hash_matches,
+                "sessionReadReady": _engineering_session_read_ready(refreshed),
+                "proofMethod": (
+                    refreshed_identity["project_identity_proof"].get("method")
+                    if refreshed_identity is not None
+                    else None
+                ),
+            }
+            store.append_event(
+                event_type="native_simulation.acceptance_identity_check",
+                payload=identity_check,
+            )
             if (
                 not identity_matches
                 or not stored_hash_matches
@@ -15521,6 +16096,58 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="only a quarantined or unbound completed native project can be resumed")
         holder_token = str(uuid.uuid4())
         try:
+            simulation_plan_revision = None
+            if body.simulation_reviewed_plan is not None:
+                binding = body.simulation_reviewed_plan
+                current_brief_digest, current_attachment_digest = (
+                    current_project_plan_authority_digests(binding.conversation_id)
+                )
+                if (
+                    binding.project_brief_digest != current_brief_digest
+                    or binding.attachment_revision_digest != current_attachment_digest
+                ):
+                    raise ProjectPlanReviewConflict(
+                        "simulation plan brief or attachment revisions changed after review"
+                    )
+                _review, simulation_artifact = store.require_reviewed_project_plan(
+                    conversation_id=binding.conversation_id,
+                    message_id=binding.message_id,
+                    plan_digest=binding.plan_digest,
+                    reviewed_section_ids=binding.reviewed_section_ids,
+                    reviewed_item_ids=binding.reviewed_item_ids,
+                    project_brief_digest=binding.project_brief_digest,
+                    attachment_revision_digest=binding.attachment_revision_digest,
+                    expected_handoff_native_project_id=operation.operation_id,
+                )
+                stored = operation.request
+                candidate_spec = NativeProjectSpec(
+                    operation_id=operation.operation_id,
+                    project_name=str(stored["projectName"]),
+                    workspace_parent=Path(str(stored["workspaceParent"])),
+                    plc_series=str(stored["plcSeries"]),
+                    cpu_model=str(stored["cpuModel"]),
+                    program_name=str(stored["programName"]),
+                    language=str(stored["language"]),
+                    description=str(stored["description"]),
+                    xg5000_pid=int(stored["xg5000Pid"]),
+                    xg5000_hwnd=int(stored["xg5000Hwnd"]),
+                    planning_conversation_id=binding.conversation_id,
+                    planning_message_id=binding.message_id,
+                    planning_plan_digest=binding.plan_digest,
+                    reviewed_section_ids=tuple(binding.reviewed_section_ids),
+                    reviewed_item_ids=tuple(binding.reviewed_item_ids),
+                    project_brief_digest=binding.project_brief_digest,
+                    attachment_revision_digest=binding.attachment_revision_digest,
+                    planning_artifact=simulation_artifact,
+                )
+                candidate_bundle = native_project_service.build_bundle(candidate_spec)
+                simulation_plan_revision = (
+                    native_project_service.prepare_simulation_plan_revision(
+                        operation,
+                        candidate_bundle,
+                        actor_id=_request_actor_id(request),
+                    )
+                )
             store.acquire_target_operation_lease(
                 operation_id=operation.operation_id,
                 # Resume continues the original native-project lifecycle.  Keeping
@@ -15538,8 +16165,14 @@ def create_app(
                 expected_request_digest=body.expected_request_digest,
                 reopened_pid=body.reopened_pid,
                 reopened_hwnd=body.reopened_hwnd,
+                run_simulation=body.run_simulation,
+                simulation_plan_revision=simulation_plan_revision,
             )
-        except (NativeProjectConflict, NativeProjectPreconditionError) as exc:
+        except (
+            NativeProjectConflict,
+            NativeProjectPreconditionError,
+            ProjectPlanReviewConflict,
+        ) as exc:
             store.park_target_operation_lease(
                 operation_id=operation.operation_id,
                 holder_token=holder_token,
@@ -15848,6 +16481,11 @@ def create_app(
                 else await mcp.call_read_tool("xg5000.attach", arguments)
             )
         except (MCPToolError, NativeProjectConflict) as exc:
+            logger.warning(
+                "XG5000 analysis rebind failed: %s",
+                exc,
+                exc_info=True,
+            )
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -15888,6 +16526,58 @@ def create_app(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=detail,
             )
+        if saved_build_rebind_operation_id is not None:
+            handoff_conversation = store.get_engineering_handoff_conversation(
+                saved_build_rebind_operation_id
+            )
+            if handoff_conversation is not None:
+                try:
+                    if not (
+                        isinstance(active_workspace, dict)
+                        and isinstance(active_workspace.get("workspace_id"), str)
+                        and isinstance(active_workspace.get("revision_id"), str)
+                        and isinstance(validated.get("session_id"), str)
+                    ):
+                        raise NativeProjectConflict(
+                            "saved-build analysis rebind has no exact conversation target"
+                        )
+                    rebound_target = (
+                        str(active_workspace["workspace_id"]),
+                        str(active_workspace["revision_id"]),
+                        str(validated["session_id"]),
+                    )
+                    planning_conversation_id, raw_provenance = (
+                        accepted_native_project_handoff(
+                            saved_build_rebind_operation_id,
+                            rebound_target,
+                            engineering_session=validated,
+                        )
+                    )
+                    provenance = EngineeringConversationHandoffV1.model_validate(
+                        raw_provenance
+                    ).model_dump(mode="json", by_alias=True)
+                    store.create_engineering_handoff_conversation(
+                        title=handoff_conversation.title,
+                        native_project_id=saved_build_rebind_operation_id,
+                        planning_conversation_id=planning_conversation_id,
+                        workspace_id=rebound_target[0],
+                        revision_id=rebound_target[1],
+                        engineering_session_id=rebound_target[2],
+                        provenance=provenance,
+                    )
+                except (NativeProjectConflict, TypeError, ValueError) as exc:
+                    logger.warning(
+                        "saved-build engineering conversation rebind failed: %s",
+                        exc,
+                        exc_info=True,
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            "완료된 프로젝트의 에이전트 대화를 현재 XG5000 "
+                            "읽기 세션에 다시 연결하지 못했습니다."
+                        ),
+                    ) from exc
         clear_ls_controller_target()
         session = bind_engineering_session(validated)
         store.append_event(
@@ -16094,6 +16784,51 @@ def create_app(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="MCP reviewed close receipt context does not match the confirmed target",
             )
+        recovery_authority = store.selected_target_recovery_authority()
+        if (
+            recovery_authority is not None
+            and recovery_authority.get("owner_kind") == "native_project_create"
+            and recovery_authority.get("state") == "QUARANTINED"
+        ):
+            quarantined_operation = native_project_repository.get(
+                str(recovery_authority.get("operation_id") or "")
+            )
+            if (
+                quarantined_operation is not None
+                and quarantined_operation.state == "QUARANTINED"
+                and quarantined_operation.request.get("xg5000Pid") == body.pid
+                and quarantined_operation.request.get("xg5000Hwnd") == body.hwnd
+            ):
+                abandoned_result = dict(quarantined_operation.result)
+                recovery = (
+                    dict(abandoned_result.get("recovery"))
+                    if isinstance(abandoned_result.get("recovery"), dict)
+                    else {}
+                )
+                recovery["reviewedNoSaveClose"] = {
+                    "binding": dict(binding),
+                    "receiptDigest": receipt_digest,
+                }
+                abandoned_result["recovery"] = recovery
+                native_project_repository.resolve_quarantine(
+                    quarantined_operation.operation_id,
+                    state="FAILED",
+                    result=abandoned_result,
+                    error_code="NATIVE_PROJECT_REVIEWED_NO_SAVE_CLOSED",
+                    error_detail=(
+                        "The exact quarantined XG5000 target was explicitly closed "
+                        "without saving; the incomplete native build was abandoned."
+                    ),
+                )
+                store.append_event(
+                    event_type="native_project.reviewed_no_save_abandoned",
+                    payload={
+                        "nativeProjectId": quarantined_operation.id,
+                        "operationId": quarantined_operation.operation_id,
+                        "binding": dict(binding),
+                        "receiptDigest": receipt_digest,
+                    },
+                )
         store.append_event(
             event_type="xg5000.reviewed_no_save_closed",
             payload={

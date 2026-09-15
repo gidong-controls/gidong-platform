@@ -357,7 +357,7 @@ export function ModelSettingsDialog({
               <input
                 type="number"
                 min={10}
-                max={300}
+                max={3600}
                 value={form.timeoutSeconds}
                 onChange={(event) =>
                   setForm((current) => ({

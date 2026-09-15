@@ -620,6 +620,7 @@ export interface ConversationPage {
 }
 
 export interface ProjectBrief {
+  supplementalRequirements?: string;
   projectName: string;
   machinePurpose: string;
   sequence: string;
@@ -1229,6 +1230,25 @@ export interface NativeSimulationScenarioReceiptV3
   };
 }
 
+export interface NativeSimulationScenarioReceiptV4
+  extends NativeSimulationScenarioReceiptBase {
+  schemaVersion: "controlstudio-native-simulation-scenarios/v4";
+  profile: "multi_mode_index/v1";
+  coverage: {
+    collectionScope: Record<string, string>;
+    inputSignalIds: string[];
+    modeIds: string[];
+    networkIds: string[];
+    outputSignalIds: string[];
+    timerIds: string[];
+    sequenceIds: string[];
+    stepIds: string[];
+    alarmIds: string[];
+    recoveryIds: string[];
+    processInterlockIds: string[];
+  };
+}
+
 export interface NativeSimulationReceiptBase {
   status: "SIMULATION_VERIFIED";
   buildBundleId: string;
@@ -1267,7 +1287,7 @@ export interface NativeSimulationReceiptBase {
   };
   simulator: {
     product: "XG-SIM";
-    bridge: "XimUtil.DeviceInterface";
+    bridge: "XimUtil.DeviceInterface" | "XGT_FENET_SIMULATOR";
     programWritePerformed: true;
     cpuRunVerified: true;
     cpuStopped: true;
@@ -1294,7 +1314,7 @@ export interface NativeSimulationReceiptBase {
           dpi: number;
           main_rect: [number, number, number, number];
           status_candidate_count: 1;
-          status_text: "L, SIMULATOR, 정상" | "L, SIMULATOR, NORMAL";
+          status_text: "L, SIMULATOR, 정상" | "L, SIMULATOR, NORMAL" | null;
           status_rect: [number, number, number, number];
           status_relative_rect: [number, number, number, number];
           status_bottom_gap: number;
@@ -1306,13 +1326,16 @@ export interface NativeSimulationReceiptBase {
             visible: true;
             enabled: true;
             rect: [number, number, number, number];
-          };
+          } | null;
           selected_stop: {
             text: string;
             visible: true;
             enabled: true;
             rect: [number, number, number, number];
-          };
+          } | null;
+          owner_drawn_status_root?: true;
+          sample_box?: [number, number, number, number];
+          sample_size?: [number, number];
           samples: Array<{
             index: number;
             classification: "STOP";
@@ -1358,7 +1381,9 @@ export interface NativeSimulationReceiptV4 extends NativeSimulationReceiptBase {
 
 export interface NativeSimulationReceiptV5 extends NativeSimulationReceiptBase {
   schemaVersion: "controlstudio-native-simulation-receipt/v5";
-  scenarioReceipt: NativeSimulationScenarioReceiptV3;
+  scenarioReceipt:
+    | NativeSimulationScenarioReceiptV3
+    | NativeSimulationScenarioReceiptV4;
 }
 
 export type NativeSimulationReceipt =
@@ -1426,10 +1451,32 @@ export interface NativeProjectResult {
   simulationVerification?: {
     state: "verified" | "not_verified" | "quarantined";
     detail: string;
+    preflight?: {
+      schemaVersion: "controlstudio-native-simulation-profile-observation/v1";
+      reasonCode:
+        | "EXPLICIT_INDEX_ACCEPTANCE_BINDINGS_REQUIRED"
+        | "INDEX_ACCEPTANCE_BINDINGS_REJECTED";
+      requiredDesignSection: "index_acceptance_bindings";
+      profilePresent: boolean;
+      signalIds: string[];
+      modeIds: string[];
+      alarmIds: string[];
+      timerIds: string[];
+      bindings?: Record<string, unknown> | null;
+    };
     receipt?: NativeSimulationReceipt;
     session?: Record<string, unknown>;
     trial?: NativeSimulationTrial;
   };
+  simulationPlanRevision?: {
+    schemaVersion: "controlstudio-native-simulation-plan-revision/v1";
+    nativeProjectId: string;
+    baseBuildBundleId: string;
+    baseReviewedPlanDigest: string;
+    simulationReviewedPlan: ReviewedProjectPlanBinding;
+    candidateBundleId: string;
+    receiptDigest: string;
+  } & Record<string, unknown>;
   recovery?: Record<string, unknown>;
   [key: string]: unknown;
 }
@@ -1488,6 +1535,8 @@ export interface ResumeNativeProjectRequest {
   expectedRequestDigest: string;
   reopenedPid?: number;
   reopenedHwnd?: number;
+  runSimulation?: boolean;
+  simulationReviewedPlan?: ReviewedProjectPlanBinding;
 }
 
 export interface NativeProjectResumedResponse {
@@ -2050,6 +2099,7 @@ export interface MneRungXgSimScenarioStep {
   name: string;
   drive: Record<string, 0 | 1>;
   observe: Record<string, 0 | 1>;
+  hold_ms?: number;
 }
 
 export interface MneRungXgSimScenarioProfile {
@@ -2480,9 +2530,15 @@ export interface EngineeringPlanLadderMoveAction {
   destinationAddress: string;
 }
 
+export interface EngineeringPlanLadderIncrementAction {
+  instruction: "INCP";
+  destinationAddress: string;
+}
+
 export type EngineeringPlanLadderAction =
   | EngineeringPlanLadderTargetAction
-  | EngineeringPlanLadderMoveAction;
+  | EngineeringPlanLadderMoveAction
+  | EngineeringPlanLadderIncrementAction;
 
 export interface EngineeringPlanLadderRung {
   rungId: string;
@@ -2594,9 +2650,18 @@ export interface CompiledEngineeringPlanNativeCollectionScope {
   safetyRules: CompiledEngineeringPlanCollectionScopeDecision;
 }
 
+export interface EngineeringPlanIndexAcceptanceBindings {
+  schemaVersion: "controlstudio-index-acceptance-bindings/v1";
+  signals: Record<string, string>;
+  modes: Record<string, string>;
+  alarms: Record<string, string>;
+  timerId: string;
+}
+
 export interface EngineeringPlanNativeDesign {
   schemaVersion: "2";
   collectionScope?: EngineeringPlanNativeCollectionScope;
+  indexAcceptanceBindings?: EngineeringPlanIndexAcceptanceBindings;
   ioPoints: EngineeringPlanIoPoint[];
   operatingModes: EngineeringPlanOperatingMode[];
   controlNetworks: EngineeringPlanControlNetwork[];
@@ -2637,6 +2702,11 @@ export interface EngineeringPlanAttachment {
  * plan review cannot silently turn an agent assumption into a requirement.
  */
 export interface NewProjectEngineeringPlan {
+  requirementSources?: Array<{
+    field: "sequence" | "hardware_and_io" | "safety_and_interlocks" | "operating_modes" | "performance_and_acceptance";
+    quote: string;
+    messageId?: string;
+  }>;
   schemaVersion: "2";
   projectName: string;
   status: EngineeringPlanStatus;

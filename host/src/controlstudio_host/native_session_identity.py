@@ -11,7 +11,7 @@ from typing import Any
 
 from .api_models import LocalWorkspaceV1, NewBuildWorkspaceProvenanceV1
 
-_PROOF_FIELDS = {
+_ROT_PROOF_FIELDS = {
     "method",
     "same_active_object",
     "stable_repeat",
@@ -23,6 +23,7 @@ _PROOF_FIELDS = {
     "process_create_time",
     "version",
 }
+_NATIVE_FILE_PROOF_FIELDS = _ROT_PROOF_FIELDS - {"project_tree_hwnd"}
 _WORKSPACE_FIELDS = {
     "workspace_id",
     "project_path",
@@ -31,6 +32,7 @@ _WORKSPACE_FIELDS = {
     "project_identity_digest",
 }
 _RESUME_FIELDS = {
+    "purpose",
     "native_project_id",
     "trial_id",
     "receipt_digest",
@@ -64,6 +66,52 @@ def _workspace_digest(workspace: LocalWorkspaceV1) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _selected_pid_identity_proof_is_strong(proof: dict[str, Any]) -> bool:
+    """Recognize both exact identity proofs emitted by the MCP adapter."""
+
+    method = proof.get("method")
+    if method == "same_rot_object_project_tree_and_path_v1":
+        return bool(
+            set(proof) == _ROT_PROOF_FIELDS
+            and proof.get("same_active_object") is True
+            and isinstance(proof.get("project_tree_hwnd"), int)
+            and proof["project_tree_hwnd"] > 0
+        )
+    if method == "selected_pid_exact_window_title_native_file_use_v1":
+        return bool(
+            set(proof) == _NATIVE_FILE_PROOF_FIELDS
+            and proof.get("same_active_object") is False
+        )
+    return False
+
+
+def native_trial_resume_matches_expected(
+    observed: Any,
+    expected: dict[str, Any],
+) -> bool:
+    """Compare a resumed identity while tolerating OS timestamp precision.
+
+    MCP independently reads the process creation timestamp and already rejects
+    a difference of one millisecond or more from the Host-signed value.  Do not
+    subsequently require bit-identical floating-point serialization.
+    """
+
+    if not isinstance(observed, dict) or set(observed) != set(expected):
+        return False
+    try:
+        observed_time = float(observed["process_create_time"])
+        expected_time = float(expected["process_create_time"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if abs(observed_time - expected_time) >= 0.001:
+        return False
+    return all(
+        observed.get(field) == value
+        for field, value in expected.items()
+        if field != "process_create_time"
+    )
+
+
 def native_trial_session_identity(
     session: Any,
     workspace: LocalWorkspaceV1,
@@ -91,14 +139,10 @@ def native_trial_session_identity(
         valid = (
             workspace.source_kind == "new_build"
             and isinstance(provenance, NewBuildWorkspaceProvenanceV1)
-            and set(proof) == _PROOF_FIELDS
-            and proof["method"] == "same_rot_object_project_tree_and_path_v1"
-            and proof["same_active_object"] is True
+            and _selected_pid_identity_proof_is_strong(proof)
             and proof["stable_repeat"] is True
             and proof["pid"] == pid
             and proof["main_hwnd"] == hwnd
-            and isinstance(proof["project_tree_hwnd"], int)
-            and proof["project_tree_hwnd"] > 0
             and _path(proof["project_path"]) == project_path
             and str(proof["project_hash"]).casefold() == project_hash
             and float(proof["process_create_time"]) > 0
@@ -118,6 +162,7 @@ def native_trial_session_identity(
             and str(uuid.UUID(resume["trial_id"])) == resume["trial_id"]
             and str(uuid.UUID(resume["authorization_id"])) == resume["authorization_id"]
             and re.fullmatch(r"[0-9a-f]{64}", str(resume["receipt_digest"])) is not None
+            and resume["purpose"] == "native_trial"
             and resume["source_kind"] == "new_build"
             and resume["provenance_receipt_digest"] == provenance.receipt_digest
             and resume["workspace_id"] == workspace.workspace_id

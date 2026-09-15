@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import socket
 import sqlite3
 import uuid
 from collections.abc import Iterator
@@ -50,9 +52,49 @@ class NativeProjectConflict(RuntimeError):
 class NativeProjectPreconditionError(RuntimeError):
     """The requested local path or XG5000 target was not safe to use."""
 
+    def __init__(
+        self, message: str, *, diagnostic_code: str = "native_check_failed",
+        repair_section: str | None = None, repair_item_ids: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.diagnostic_code = diagnostic_code
+        self.repair_section = repair_section
+        self.repair_item_ids = repair_item_ids
+
 
 class NativeProjectEvidenceError(RuntimeError):
     """MCP returned evidence that did not prove the requested native project."""
+
+
+def _index_acceptance_scenario_ids(design: dict[str, Any]) -> set[str]:
+    """Expected trials belong to the reviewed plan, never to receipt claims."""
+    binding = design.get("indexAcceptanceBindings")
+    fault_ids = {"alarm_emergency", "alarm_door", "alarm_timeout"}
+    if binding is not None:
+        roles = binding.get("alarms") if isinstance(binding, dict) else None
+        alarms = design.get("alarms")
+        if not isinstance(alarms, list) or any(
+            not isinstance(item, dict) or not isinstance(item.get("alarmId"), str)
+            for item in alarms
+        ):
+            raise NativeProjectEvidenceError("multi-mode reviewed alarms are invalid")
+        reviewed_faults = {item["alarmId"] for item in alarms}
+        if (
+            not isinstance(roles, dict)
+            or set(roles) != {"emergency", "door", "timeout"}
+            or any(not isinstance(value, str) or not value for value in roles.values())
+            or len(set(roles.values())) != 3
+            or len(alarms) != 3
+            or set(roles.values()) != reviewed_faults
+        ):
+            raise NativeProjectEvidenceError("multi-mode fault bindings do not cover reviewed alarms")
+        fault_ids = set(roles.values())
+    return {
+        "acceptance:auto_six_completions", "acceptance:mode_mutual_exclusion",
+        "acceptance:operator_stop", "acceptance:manual_hold_single_move",
+        "acceptance:stopped_counter_reset",
+        *(f"acceptance:fault_recovery:{identity}" for identity in fault_ids),
+    }
 
 
 def _native_create_failed_before_confirmation(error: object) -> bool:
@@ -60,6 +102,11 @@ def _native_create_failed_before_confirmation(error: object) -> bool:
     return any(
         marker in value
         for marker in (
+            # MCP validates the signed/reviewed build bundle before issuing
+            # any XG5000 command.  Contract/digest failures therefore prove a
+            # non-mutation just as strongly as target preflight failures and
+            # must not strand the user in quarantine reconciliation.
+            "NATIVE_BUILD_BUNDLE_",
             "XG5000_ELEVATION_MISMATCH:",
             "XG5000_PROJECT_STATE_UNVERIFIED:",
         )
@@ -146,7 +193,11 @@ def _validated_name(field: str, value: object, *, maximum: int) -> str:
     return result
 
 
-def _validate_native_project_request(request: _NativeProjectRequest) -> _NativeProjectRequest:
+def _validate_native_project_request(
+    request: _NativeProjectRequest,
+    *,
+    require_destination_access: bool = True,
+) -> _NativeProjectRequest:
     project_name = _validated_name("project_name", request.project_name, maximum=80)
     program_name = _validated_name("program_name", request.program_name, maximum=80)
     plc_series = _validated_text("plc_series", request.plc_series, maximum=32)
@@ -160,12 +211,20 @@ def _validate_native_project_request(request: _NativeProjectRequest) -> _NativeP
     raw_directory = Path(request.destination_directory).expanduser()
     if not raw_directory.is_absolute():
         raise NativeProjectPreconditionError("destination_directory must be absolute")
-    try:
-        directory = raw_directory.resolve(strict=True)
-    except OSError as exc:
-        raise NativeProjectPreconditionError("destination_directory does not exist") from exc
-    if not directory.is_dir() or directory.is_symlink():
-        raise NativeProjectPreconditionError("destination_directory must be a real directory")
+    if require_destination_access:
+        try:
+            directory = raw_directory.resolve(strict=True)
+        except OSError as exc:
+            raise NativeProjectPreconditionError("destination_directory does not exist") from exc
+        if not directory.is_dir() or directory.is_symlink():
+            raise NativeProjectPreconditionError("destination_directory must be a real directory")
+    else:
+        # A completed native build may deliberately leave its original
+        # destination under a private XG5000 lease while verification proceeds
+        # against the protected workspace copy. The immutable stored plan and
+        # creation receipt already bind this absolute path, so digest replay
+        # must not require fresh directory traversal.
+        directory = Path(os.path.abspath(str(raw_directory)))
     return _NativeProjectRequest(
         project_name=project_name,
         destination_directory=directory,
@@ -196,8 +255,12 @@ def _native_project_plan_digest(
     pid: int,
     hwnd: int,
     build_bundle: dict[str, Any],
+    require_destination_access: bool = True,
 ) -> str:
-    validated = _validate_native_project_request(request)
+    validated = _validate_native_project_request(
+        request,
+        require_destination_access=require_destination_access,
+    )
     if pid <= 0 or hwnd <= 0:
         raise NativeProjectPreconditionError("pid and hwnd must be positive integers")
     payload = {
@@ -273,6 +336,157 @@ class NativeProjectRecoveryEvidence:
     observed_project_path: Path | None = None
 
 
+def planning_native_failure_observation(
+    operation: NativeProjectOperation | None,
+    *,
+    conversation_id: str,
+    current_project_brief_digest: str,
+    current_plan_digest: str | None,
+) -> dict[str, Any] | None:
+    """Project one bounded, lineage-bound native failure for planning repair.
+
+    Free-form native error details are deliberately excluded.  The projection
+    reports what failed and how strongly it was observed, never that the PLC
+    design is necessarily at fault.
+    """
+
+    if operation is None:
+        return None
+    reviewed = operation.request.get("reviewedPlan")
+    if not isinstance(reviewed, dict):
+        return None
+    planning_id = reviewed.get("conversationId")
+    message_id = reviewed.get("messageId")
+    reviewed_digest = reviewed.get("planDigest")
+    brief_digest = reviewed.get("projectBriefDigest")
+    build_bundle = operation.request.get("buildBundle")
+    bundle_reviewed = (
+        build_bundle.get("reviewedPlan") if isinstance(build_bundle, dict) else None
+    )
+    if (
+        planning_id != conversation_id
+        or not isinstance(message_id, str)
+        or not message_id
+        or not isinstance(reviewed_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", reviewed_digest) is None
+        or not isinstance(brief_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", brief_digest) is None
+        or not isinstance(current_project_brief_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", current_project_brief_digest) is None
+        or (
+            bundle_reviewed is not None
+            and bundle_reviewed != reviewed
+        )
+    ):
+        return None
+
+    result = operation.result
+    simulation = result.get("simulationVerification")
+    reopen = result.get("reopenVerification")
+    simulation_failure = (
+        simulation.get("failure") if isinstance(simulation, dict) else None
+    )
+    failure_kind: str | None = None
+    observation_strength = "status_only"
+    details: dict[str, Any] = {}
+    simulation_preflight = (
+        simulation.get("preflight") if isinstance(simulation, dict) else None
+    )
+    if (
+        isinstance(simulation_preflight, dict)
+        and simulation_preflight.get("schemaVersion")
+        == "controlstudio-native-simulation-profile-observation/v1"
+        and simulation_preflight.get("reasonCode")
+        in {
+            "EXPLICIT_INDEX_ACCEPTANCE_BINDINGS_REQUIRED",
+            "INDEX_ACCEPTANCE_BINDINGS_REJECTED",
+        }
+        and simulation_preflight.get("requiredDesignSection")
+        == "index_acceptance_bindings"
+    ):
+        failure_kind = "native_simulation_profile"
+        observation_strength = "structured_preflight_observation"
+        details = {"acceptanceProfile": _json_load(_json_dump(simulation_preflight))}
+    if (
+        failure_kind is None
+        and operation.state == "COMPLETED"
+        and result.get("engineeredProgramReady") is True
+        and result.get("workspaceBound") is True
+    ):
+        # Successful current evidence suppresses any stale embedded runtime
+        # failure. A structured profile preflight remains actionable because
+        # it describes a trial that did not start, not a failed build.
+        return None
+    if failure_kind is None and isinstance(simulation_failure, dict):
+        classification = simulation_failure.get("classification")
+        phase = simulation_failure.get("phase")
+        runtime_error = simulation_failure.get("runtimeError")
+        if (
+            classification
+            in {"PRE_DISPATCH_READ_FAILURE", "UNRESOLVED_RUNTIME_FAILURE"}
+            and isinstance(phase, str)
+            and isinstance(runtime_error, dict)
+            and isinstance(runtime_error.get("code"), str)
+        ):
+            failure_kind = "native_simulation"
+            observation_strength = "structured_failure_receipt"
+            details = {
+                "classification": classification,
+                "phase": phase,
+                "runtimeErrorCode": runtime_error["code"],
+                "projectUnchanged": simulation_failure.get("projectUnchanged") is True,
+                "safeRestorationVerified": bool(
+                    isinstance(simulation_failure.get("recovery"), dict)
+                    and simulation_failure["recovery"].get("restorationVerified") is True
+                ),
+                **(
+                    {"scenarioObservation": _json_load(_json_dump(
+                        simulation_failure["scenarioObservation"]
+                    ))}
+                    if isinstance(simulation_failure.get("scenarioObservation"), dict)
+                    else {}
+                ),
+            }
+    if failure_kind is None and isinstance(simulation, dict) and simulation.get("state") in {
+        "not_verified",
+        "quarantined",
+    }:
+        failure_kind = "native_simulation"
+    if failure_kind is None and isinstance(reopen, dict) and reopen.get("state") != "verified":
+        failure_kind = "independent_reopen"
+    if failure_kind is None and operation.state in {"FAILED", "QUARANTINED"}:
+        failure_kind = (
+            "native_creation" if operation.state == "FAILED" else "native_outcome_uncertain"
+        )
+    if failure_kind is None:
+        # A newest successful lineage suppresses every older failure.
+        return None
+
+    return {
+        "schemaVersion": "controlstudio-planning-native-failure/v1",
+        "operationId": operation.operation_id,
+        "planningConversationId": conversation_id,
+        "planningMessageId": message_id,
+        "reviewedPlanDigest": reviewed_digest,
+        "projectBriefDigest": brief_digest,
+        "briefRelation": (
+            "current_project_brief"
+            if brief_digest == current_project_brief_digest
+            else "previous_project_brief"
+        ),
+        "revisionRelation": (
+            "current_reviewed_plan"
+            if current_plan_digest == reviewed_digest
+            else "previous_reviewed_plan"
+        ),
+        "operationState": operation.state,
+        "failureKind": failure_kind,
+        "observationStrength": observation_strength,
+        "errorCode": operation.error_code,
+        **details,
+    }
+
+
 class NativeProjectGateway(Protocol):
     async def call_read_tool(
         self,
@@ -344,12 +558,12 @@ def _native_simulator_stop_state_verified(value: Any) -> bool:
     selected_stop = value.get("selected_stop")
     run_rect = rect(selected_run.get("rect")) if isinstance(selected_run, dict) else None
     stop_rect = rect(selected_stop.get("rect")) if isinstance(selected_stop, dict) else None
+    sample_box = rect(value.get("sample_box"))
+    sample_size = value.get("sample_size")
     if (
         main_rect is None
         or status_rect is None
         or relative_rect is None
-        or run_rect is None
-        or stop_rect is None
     ):
         return False
     expected_relative = [
@@ -358,16 +572,40 @@ def _native_simulator_stop_state_verified(value: Any) -> bool:
         status_rect[2] - main_rect[0],
         status_rect[3] - main_rect[1],
     ]
-    geometry_consistent = bool(
+    base_geometry_consistent = bool(
         main_rect[0] <= status_rect[0] < status_rect[2] <= main_rect[2]
         and main_rect[1] <= status_rect[1] < status_rect[3] <= main_rect[3]
         and relative_rect == expected_relative
         and value.get("status_bottom_gap") == main_rect[3] - status_rect[3]
+    )
+    named_controls_consistent = bool(
+        value.get("owner_drawn_status_root") is not True
+        and run_rect is not None
+        and stop_rect is not None
         and run_rect[1] == stop_rect[1]
         and run_rect[3] == stop_rect[3]
         and run_rect[2] <= stop_rect[0]
     )
-    if not geometry_consistent:
+    owner_drawn_consistent = bool(
+        value.get("owner_drawn_status_root") is True
+        and value.get("status_text") is None
+        and selected_run is None
+        and selected_stop is None
+        and sample_box is not None
+        and isinstance(sample_size, list)
+        and len(sample_size) == 2
+        and all(isinstance(component, int) and component > 0 for component in sample_size)
+        and sample_size
+        == [sample_box[2] - sample_box[0], sample_box[3] - sample_box[1]]
+        and status_rect[0] <= sample_box[0] < sample_box[2] <= status_rect[2]
+        and sample_box[1] == status_rect[1]
+        and status_rect[1] < sample_box[3] <= status_rect[3]
+        and sample_size[0] >= 60
+        and 2 <= sample_size[1] <= 8
+    )
+    if not base_geometry_consistent or not (
+        named_controls_consistent or owner_drawn_consistent
+    ):
         return False
 
     samples_verified = bool(
@@ -386,9 +624,9 @@ def _native_simulator_stop_state_verified(value: Any) -> bool:
                 for component in sample["dominant_rgb"]
             )
             and is_number(sample.get("dominant_share"))
-            and sample["dominant_share"] >= 0.75
+            and sample["dominant_share"] >= 0.70
             and is_number(sample.get("stop_share"))
-            and sample["stop_share"] >= 0.85
+            and sample["stop_share"] >= 0.80
             and is_number(sample.get("run_share"))
             and 0 <= sample["run_share"] < 0.10
             and is_number(sample.get("offline_share"))
@@ -421,18 +659,26 @@ def _native_simulator_stop_state_verified(value: Any) -> bool:
         and isinstance(value.get("dpi"), int)
         and value["dpi"] >= 96
         and value.get("status_candidate_count") == 1
-        and value.get("status_text")
-        in {"L, SIMULATOR, 정상", "L, SIMULATOR, NORMAL"}
+        and (
+            value.get("status_text")
+            in {"L, SIMULATOR, 정상", "L, SIMULATOR, NORMAL"}
+            if named_controls_consistent
+            else value.get("status_text") is None
+        )
         and value.get("geometry_verified") is True
         and value.get("capture_method")
         == "PIL.ImageGrab/foreground-status-pane"
         and value.get("consecutive_count") == 3
-        and isinstance(selected_run, dict)
-        and selected_run.get("visible") is True
-        and selected_run.get("enabled") is True
-        and isinstance(selected_stop, dict)
-        and selected_stop.get("visible") is True
-        and selected_stop.get("enabled") is True
+        and (
+            isinstance(selected_run, dict)
+            and selected_run.get("visible") is True
+            and selected_run.get("enabled") is True
+            and isinstance(selected_stop, dict)
+            and selected_stop.get("visible") is True
+            and selected_stop.get("enabled") is True
+            if named_controls_consistent
+            else owner_drawn_consistent
+        )
         and samples_verified
     )
 
@@ -483,7 +729,7 @@ def _native_simulation_failure_projection(
     ):
         return None
     failure = raw.get("simulation_failure")
-    if not isinstance(failure, dict) or set(failure) != {
+    required_failure_fields = {
         "schemaVersion",
         "classification",
         "phase",
@@ -495,7 +741,12 @@ def _native_simulation_failure_projection(
         "projectHashBefore",
         "projectHashAfter",
         "projectUnchanged",
-    }:
+    }
+    if (
+        not isinstance(failure, dict)
+        or not required_failure_fields <= set(failure)
+        or not (set(failure) - required_failure_fields) <= {"scenarioObservation"}
+    ):
         return None
     runtime_error = failure.get("runtimeError")
     dispatch = failure.get("dispatch")
@@ -503,6 +754,45 @@ def _native_simulation_failure_projection(
     recovery = failure.get("recovery")
     hash_after = failure.get("projectHashAfter")
     project_unchanged = failure.get("projectUnchanged")
+    scenario_observation = failure.get("scenarioObservation")
+    if scenario_observation is not None:
+        if (
+            not isinstance(scenario_observation, dict)
+            or set(scenario_observation)
+            != {
+                "observationLabel",
+                "inputAssignment",
+                "inputAssignmentScope",
+                "expected",
+                "observed",
+                "observationKind",
+            }
+            or not isinstance(scenario_observation.get("observationLabel"), str)
+            or not 1 <= len(scenario_observation["observationLabel"]) <= 160
+            or scenario_observation.get("inputAssignmentScope")
+            != "last_requested_write"
+            or scenario_observation.get("observationKind")
+            not in {"polled_timeout", "sampled_hold_mismatch"}
+        ):
+            return None
+        for name in ("inputAssignment", "expected", "observed"):
+            values = scenario_observation.get(name)
+            if (
+                not isinstance(values, dict)
+                or len(values) > 64
+                or any(
+                    not isinstance(identity, str)
+                    or not 1 <= len(identity) <= 80
+                    or isinstance(value, bool)
+                    or value is not None and (
+                        not isinstance(value, int) or not -(2**31) <= value < 2**31
+                    )
+                    for identity, value in values.items()
+                )
+                or name == "inputAssignment"
+                and any(value not in {0, 1} for value in values.values())
+            ):
+                return None
     if (
         failure.get("schemaVersion")
         != "controlstudio-native-simulation-failure/v1"
@@ -590,6 +880,11 @@ def _native_simulation_failure_projection(
         "projectHashBefore": project_hash,
         "projectHashAfter": hash_after,
         "projectUnchanged": project_unchanged,
+        **(
+            {"scenarioObservation": _json_load(_json_dump(scenario_observation))}
+            if scenario_observation is not None
+            else {}
+        ),
     }
 
 
@@ -1435,6 +1730,7 @@ def _compile_native_program(
                 "timer identity, address, TON base, preset, or duration is invalid"
             )
         timer_number = int(address[1:])
+        expected_base = None
         if normalized_series == "XGK":
             expected_base = (
                 100
@@ -1447,14 +1743,24 @@ def _compile_native_program(
             )
             timer_supported = expected_base == time_base
         elif normalized_series == "XGB":
-            expected_base = 100 if timer_number <= 191 else 10 if timer_number <= 200 else 1
+            expected_base = (
+                100 if timer_number <= 191 else 10 if timer_number <= 200
+                else 1 if timer_number <= 255 else None
+            )
             timer_supported = timer_number <= 255 and expected_base == time_base
         else:
             timer_supported = False
         if not timer_supported:
+            timer_hint = (
+                f"; {address} requires timeBaseMs={expected_base}. "
+                "Preserve durationMs and set presetTicks=durationMs/timeBaseMs "
+                "when it is an integer, or choose an address in the matching time-base area."
+                if expected_base is not None
+                else "; choose a timer address inside the supported default timer area"
+            )
             raise NativeProjectPreconditionError(
                 f"timer {address} does not match the {normalized_series} "
-                "new-project default timer area"
+                f"new-project default timer area{timer_hint}"
             )
         timer_by_id[timer_id] = timer
         timer_addresses.add(address)
@@ -1541,8 +1847,9 @@ def _compile_native_program(
         step_id: object = None,
         leading: tuple[str, str, str] | None = None,
         trailing: tuple[tuple[str, str, str], ...] = (),
+        allow_empty: bool = False,
     ) -> list[tuple[str, str]]:
-        if not isinstance(values, list) or not values:
+        if not isinstance(values, list) or (not values and not allow_empty):
             raise NativeProjectPreconditionError(f"{context} conditions are empty")
         source_conditions = [condition(value, context=context) for value in values]
         source_keys = [
@@ -1622,12 +1929,17 @@ def _compile_native_program(
                 ),
             )
         if parsed["restartPolicy"] == "require_start_release":
+            command_conditions = list(start_conditions) + [
+                item for item in sequence["steps"][0]["completeAll"]
+                if isinstance(item, dict)
+                and io_by_id.get(str(item.get("signalId")), {}).get("kind") == "digital_input"
+            ]
             release_conditions = {
                 (
                     str(item["signalId"]),
                     "off" if item["state"] == "on" else "on",
                 )
-                for item in start_conditions
+                for item in command_conditions
                 if isinstance(item, dict)
             }
             final_conditions = {
@@ -1786,12 +2098,17 @@ def _compile_native_program(
             sequence = sequence_by_id[sequence_id]["value"]
             if sequence_by_id[sequence_id]["restartPolicy"] != "require_start_release":
                 continue
+            command_conditions = list(sequence["startAll"]) + [
+                item for item in sequence["steps"][0]["completeAll"]
+                if isinstance(item, dict)
+                and io_by_id.get(str(item.get("signalId")), {}).get("kind") == "digital_input"
+            ]
             release_conditions = {
                 (
                     str(item["signalId"]),
                     "off" if item["state"] == "on" else "on",
                 )
-                for item in sequence["startAll"]
+                for item in command_conditions
                 if isinstance(item, dict)
             }
             if release_conditions.isdisjoint(recovery_pairs):
@@ -1828,7 +2145,7 @@ def _compile_native_program(
             or output is None
             or output.get("kind") not in {"digital_output", "internal_bit"}
             or not isinstance(permits, list)
-            or not permits
+            or (not permits and output.get("kind") != "internal_bit")
             or (mode_id is not None and mode_id not in mode_by_id)
             or (network.get("stepId") is not None and network.get("stepId") not in step_by_id)
         ):
@@ -1842,6 +2159,7 @@ def _compile_native_program(
         conditions(
             permits,
             context=f"network {network_id}",
+            allow_empty=output.get("kind") == "internal_bit",
             mode_id=mode_id,
             step_id=network.get("stepId"),
             trailing=trailing,
@@ -1967,6 +2285,18 @@ def _compile_native_program(
         if not isinstance(value, dict):
             raise NativeProjectPreconditionError("ladder action is incomplete")
         instruction = value.get("instruction")
+        if instruction == "INCP":
+            destination_address = value.get("destinationAddress")
+            if (
+                set(value) != {"instruction", "destinationAddress"}
+                or not isinstance(destination_address, str)
+                or re.fullmatch(r"D\d{5}", destination_address) is None
+            ):
+                raise NativeProjectPreconditionError("INCP action is invalid")
+            return (
+                f"INCP {destination_address}",
+                ("INCP", "data_register", destination_address),
+            )
         if instruction == "MOV":
             if set(value) != {
                 "instruction",
@@ -2307,9 +2637,66 @@ def _compile_native_program(
             all(guarantees(condition_value, required) for required in requirements)
             for requirements in owners
         ):
-            raise NativeProjectPreconditionError(
-                "SET step or sequence-reset rung is not bound to reviewed sequence logic"
+            offending_ids = tuple(
+                rung["rungId"] for rung in ladder_rungs
+                if rung.get("condition") == condition_value
+                and tuple(rung["action"].get(key) for key in
+                          ("instruction", "targetType", "targetId")) == action_identity
             )
+            raise NativeProjectPreconditionError(
+                "SET step or sequence-reset rung is not bound to reviewed sequence logic: "
+                + ", ".join(offending_ids)
+                + ". Patch the rung to satisfy its declared sequence/recovery contract, "
+                "or remove it if redundant; preserve other sequence logic.",
+                diagnostic_code="unbound_sequence_rung",
+                repair_section="ladder_rungs", repair_item_ids=offending_ids,
+            )
+
+    def positive_step_contacts(value: object) -> set[str]:
+        if not isinstance(value, dict):
+            return set()
+        if value.get("kind") == "contact":
+            if value.get("sourceType") == "step" and value.get("state") == "on":
+                source_id = value.get("sourceId")
+                return {source_id} if isinstance(source_id, str) else set()
+            return set()
+        terms = value.get("terms")
+        if not isinstance(terms, list):
+            return set()
+        return set().union(*(positive_step_contacts(term) for term in terms))
+
+    # XG5000 executes rungs top-to-bottom in one scan.  If a sequence-reset
+    # rung consumes a terminal step before a later pulse/data rung reads that
+    # same step, the later rung can never observe the completion edge.  This
+    # exact ordering produced a visually plausible program whose D counter
+    # remained zero in XG-SIM.  Reject it while the draft is still editable so
+    # the agent can move the observer before the consuming reset rung.
+    for observer_index, observer_rung in enumerate(ladder_rungs):
+        assert isinstance(observer_rung, dict)
+        observer_action = observer_rung.get("action")
+        if not isinstance(observer_action, dict) or observer_action.get(
+            "instruction"
+        ) not in {"INCP", "MOV"}:
+            continue
+        observed_steps = positive_step_contacts(observer_rung.get("condition"))
+        if not observed_steps:
+            continue
+        for reset_index, reset_rung in enumerate(ladder_rungs[:observer_index]):
+            assert isinstance(reset_rung, dict)
+            reset_action = reset_rung.get("action")
+            if (
+                isinstance(reset_action, dict)
+                and reset_action.get("instruction") == "SET"
+                and reset_action.get("targetType") == "sequence_reset"
+                and observed_steps.intersection(
+                    positive_step_contacts(reset_rung.get("condition"))
+                )
+            ):
+                raise NativeProjectPreconditionError(
+                    "ladder rung order consumes a sequence completion step before "
+                    f"data observer {observer_rung['rungId']}; move the observer before "
+                    f"{reset_rung['rungId']}"
+                )
 
     instructions.append("END")
     source = "\n".join(instructions)
@@ -2665,26 +3052,44 @@ class NativeProjectRepository:
                     if isinstance(reviewed_plan, dict)
                     else None
                 )
+                planning_message_id = (
+                    reviewed_plan.get("messageId")
+                    if isinstance(reviewed_plan, dict)
+                    else None
+                )
+                reviewed_plan_digest = (
+                    reviewed_plan.get("planDigest")
+                    if isinstance(reviewed_plan, dict)
+                    else None
+                )
                 if (
                     not isinstance(planning_conversation_id, str)
                     or not planning_conversation_id.strip()
+                    or not isinstance(planning_message_id, str)
+                    or not planning_message_id.strip()
+                    or not isinstance(reviewed_plan_digest, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", reviewed_plan_digest) is None
                 ):
                     raise NativeProjectConflict(
                         "native project planning conversation identity is missing"
                     )
-                completed_handoff = connection.execute(
+                completed_handoffs = connection.execute(
                     """
-                    SELECT handoff_native_project_id
+                    SELECT handoff_native_project_id, engineering_handoff_json
                     FROM conversations
                     WHERE lineage_planning_conversation_id = ?
-                    LIMIT 1
                     """,
                     (planning_conversation_id,),
-                ).fetchone()
-                if completed_handoff is not None:
-                    raise NativeProjectConflict(
-                        "planning conversation already has an engineering handoff"
-                    )
+                ).fetchall()
+                for completed_handoff in completed_handoffs:
+                    handoff = _json_load(str(completed_handoff["engineering_handoff_json"] or "{}"))
+                    if (
+                        handoff.get("planningMessageId") == planning_message_id
+                        and handoff.get("reviewedPlanDigest") == reviewed_plan_digest
+                    ):
+                        raise NativeProjectConflict(
+                            "reviewed plan revision already has an engineering handoff"
+                        )
                 lineage_rows = connection.execute(
                     """
                     SELECT operation_id, state, request_json, result_json
@@ -2703,6 +3108,14 @@ class NativeProjectRepository:
                         or lineage_review.get("conversationId")
                         != planning_conversation_id
                     ):
+                        continue
+                    if (
+                        lineage_review.get("messageId") != planning_message_id
+                        or lineage_review.get("planDigest") != reviewed_plan_digest
+                    ):
+                        # A newer reviewed plan is a distinct immutable build
+                        # lineage. Preserve the older operation and allow the
+                        # new revision to create its own project copy.
                         continue
                     lineage_state = str(lineage_row["state"])
                     blocks_new_creation = lineage_state in {
@@ -3302,6 +3715,23 @@ class NativeProjectRepository:
             ).fetchone()
         return self._from_row(row) if row is not None else None
 
+    def latest_for_planning_conversation(
+        self, conversation_id: str
+    ) -> NativeProjectOperation | None:
+        """Return the newest immutable native lineage for one planning conversation."""
+
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM native_project_operations
+                WHERE json_extract(request_json, '$.reviewedPlan.conversationId') = ?
+                ORDER BY created_at DESC, operation_id DESC
+                LIMIT 1
+                """,
+                (conversation_id,),
+            ).fetchone()
+        return self._from_row(row) if row is not None else None
+
     def completed_unbound_for_reviewed_plan(
         self,
         *,
@@ -3525,6 +3955,124 @@ class NativeProjectService:
     def build_bundle(spec: NativeProjectSpec) -> dict[str, Any]:
         return _native_build_bundle(NativeProjectService._canonicalize_local_request(spec))
 
+    def prepare_simulation_plan_revision(
+        self,
+        operation: NativeProjectOperation,
+        candidate_bundle: dict[str, Any],
+        *,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        """Authorize a reviewed binding-only overlay for one immutable build."""
+
+        base_bundle = operation.request.get("buildBundle")
+        base_artifact = (
+            base_bundle.get("engineeringPlan") if isinstance(base_bundle, dict) else None
+        )
+        candidate_artifact = candidate_bundle.get("engineeringPlan")
+        base_compiled = base_bundle.get("compiledProgram") if isinstance(base_bundle, dict) else None
+        candidate_compiled = candidate_bundle.get("compiledProgram")
+        reopen = operation.result.get("reopenVerification")
+        registration = operation.result.get("workspaceRegistration")
+        workspace = registration.get("workspace") if isinstance(registration, dict) else None
+        working = workspace.get("working_copy") if isinstance(workspace, dict) else None
+        reopen_receipt = reopen.get("receipt") if isinstance(reopen, dict) else None
+        build_receipt = operation.result.get("buildBundleReceipt")
+        destination = Path(operation.destination_directory).resolve()
+        project_name = operation.request.get("projectName")
+        expected_path = (
+            destination / f"{project_name}.xgwx"
+            if isinstance(project_name, str) and project_name
+            else destination / "invalid.xgwx"
+        ).resolve()
+        if (
+            operation.state != "COMPLETED"
+            or not isinstance(base_bundle, dict)
+            or not isinstance(base_artifact, dict)
+            or not isinstance(candidate_artifact, dict)
+            or not isinstance(base_compiled, dict)
+            or candidate_compiled != base_compiled
+            or not isinstance(reopen, dict)
+            or reopen.get("state") != "verified"
+            or not isinstance(reopen_receipt, dict)
+            or not isinstance(build_receipt, dict)
+            or not _stored_creation_receipt_matches_reviewed_build(
+                operation.result,
+                request=operation.request,
+                operation_plan_digest=operation.plan_digest,
+                expected_path=expected_path,
+                destination=destination,
+            )
+            or not isinstance(working, dict)
+            or working.get("current_sha256") != operation.result.get("projectSha256")
+        ):
+            raise NativeProjectConflict(
+                "simulation plan requires the exact completed build and verified reopen receipt"
+            )
+        base_reviewed = base_bundle.get("reviewedPlan")
+        candidate_reviewed = candidate_bundle.get("reviewedPlan")
+        if (
+            not isinstance(base_reviewed, dict)
+            or not isinstance(candidate_reviewed, dict)
+            or base_reviewed.get("conversationId")
+            != candidate_reviewed.get("conversationId")
+        ):
+            raise NativeProjectConflict(
+                "simulation plan must belong to the native build planning conversation"
+            )
+        base_design = base_artifact.get("design")
+        candidate_design = candidate_artifact.get("design")
+        if not isinstance(base_design, dict) or not isinstance(candidate_design, dict):
+            raise NativeProjectConflict("simulation plan design is unavailable")
+        bindings = candidate_design.get("indexAcceptanceBindings")
+        if not isinstance(bindings, dict):
+            raise NativeProjectConflict(
+                "simulation plan requires reviewed indexAcceptanceBindings"
+            )
+        base_design_without_binding = _json_load(_json_dump(base_design))
+        candidate_design_without_binding = _json_load(_json_dump(candidate_design))
+        base_design_without_binding.pop("indexAcceptanceBindings", None)
+        candidate_design_without_binding.pop("indexAcceptanceBindings", None)
+        base_executable = {
+            "projectName": base_artifact.get("projectName"),
+            "technicalConfiguration": base_artifact.get("technicalConfiguration"),
+            "attachments": base_artifact.get("attachments"),
+            "design": base_design_without_binding,
+        }
+        candidate_executable = {
+            "projectName": candidate_artifact.get("projectName"),
+            "technicalConfiguration": candidate_artifact.get("technicalConfiguration"),
+            "attachments": candidate_artifact.get("attachments"),
+            "design": candidate_design_without_binding,
+        }
+        if candidate_executable != base_executable:
+            raise NativeProjectConflict(
+                "simulation plan changed executable design, technical configuration, or attachments"
+            )
+        receipt = {
+            "schemaVersion": "controlstudio-native-simulation-plan-revision/v1",
+            "nativeProjectId": operation.operation_id,
+            "baseBuildBundleId": base_bundle.get("bundleId"),
+            "baseReviewedPlanDigest": base_reviewed.get("planDigest"),
+            "baseBuildReceiptDigest": _json_digest(build_receipt),
+            "baseReopenReceipt": _json_load(_json_dump(reopen_receipt)),
+            "baseReopenReceiptDigest": _json_digest(reopen_receipt),
+            "projectSha256": operation.result.get("projectSha256"),
+            "simulationReviewedPlan": candidate_reviewed,
+            "candidateBundleId": candidate_bundle.get("bundleId"),
+            "sourceSha256": base_compiled.get("sourceSha256"),
+            "ladderIrSha256": base_compiled.get("ladderIrSha256"),
+            "rungIds": base_compiled.get("rungIds"),
+            "indexAcceptanceBindings": bindings,
+        }
+        receipt_digest = _json_digest(receipt)
+        authorization = self._authorization(
+            actor_id=actor_id,
+            plan_digest=receipt_digest,
+            build_bundle_id=str(base_bundle.get("bundleId") or ""),
+            allowed_operation="project.verify_native_simulation",
+        )
+        return {**receipt, "receiptDigest": receipt_digest, "authorization": authorization}
+
     def replay_if_exists(
         self,
         spec: NativeProjectSpec,
@@ -3722,6 +4270,8 @@ class NativeProjectService:
         existing_session: dict[str, Any] | None = None,
         reopen_verification: dict[str, Any] | None = None,
         simulation_verification: dict[str, Any] | None = None,
+        simulation_plan_revision: dict[str, Any] | None = None,
+        run_simulation: bool = False,
         allow_saved_no_source_recovery: bool = False,
     ) -> tuple[NativeProjectOperation, bool]:
         post_create_stage = "workspace_capture"
@@ -3753,12 +4303,52 @@ class NativeProjectService:
                 )
             result["reopenVerification"] = reopen_verification
             self._repository.checkpoint_execution(spec.operation_id, result)
-            # Offline engineering acceptance is complete once the exact LD
-            # build passed Program Check, was saved, and the protected copy was
-            # independently reopened/read back. XG-SIM remains a separate,
-            # opt-in future workflow and is never launched from create/resume.
+            if run_simulation and simulation_verification is None:
+                post_create_stage = "native_simulation"
+                simulation_verification = await self._verify_native_simulation(
+                    reopen_verification=reopen_verification,
+                    build_bundle=build_bundle,
+                    trial_id=_native_simulation_trial_id(
+                        spec.operation_id,
+                        str(build_bundle.get("bundleId") or ""),
+                    ),
+                    simulation_plan_revision=simulation_plan_revision,
+                    base_build_receipt=result.get("buildBundleReceipt"),
+                )
+            if simulation_verification is not None:
+                result["simulationVerification"] = simulation_verification
+                if simulation_plan_revision is not None:
+                    result["simulationPlanRevision"] = {
+                        key: value
+                        for key, value in simulation_plan_revision.items()
+                        if key != "authorization"
+                    }
+                self._repository.checkpoint_execution(spec.operation_id, result)
+            simulation_trial = (
+                simulation_verification.get("trial")
+                if isinstance(simulation_verification, dict)
+                else None
+            )
+            simulation_profile_preflight = (
+                simulation_verification.get("preflight")
+                if isinstance(simulation_verification, dict)
+                else None
+            )
+            simulation_profile_not_ready = bool(
+                isinstance(simulation_profile_preflight, dict)
+                and simulation_profile_preflight.get("schemaVersion")
+                == "controlstudio-native-simulation-profile-observation/v1"
+            )
             result["engineeredProgramReady"] = (
                 reopen_verification.get("state") == "verified"
+                and (
+                    not run_simulation
+                    or simulation_profile_not_ready
+                    or (
+                        isinstance(simulation_trial, dict)
+                        and simulation_trial.get("state") == "ACCEPTED"
+                    )
+                )
             )
             result["workspaceBound"] = result["engineeredProgramReady"]
             if result["workspaceBound"]:
@@ -3767,10 +4357,23 @@ class NativeProjectService:
                     "The protected working copy is open in the independently verified "
                     "fresh XG5000 process and is the active engineering target."
                 )
+            elif isinstance(registration, dict):
+                registration["state"] = "captured_not_bound"
+                registration["detail"] = (
+                    "The protected copy is independently verified; XG-SIM runtime "
+                    "evidence still requires completion or an explicit decision."
+                )
             result["workspaceBindingReason"] = (
                 "The exact reviewed LD build passed Program Check, save, and independent "
+                "reopen/readback verification; XG-SIM did not start because its explicit "
+                "reviewed role-binding profile is unavailable or invalid."
+                if simulation_profile_not_ready
+                else "The exact reviewed LD build passed Program Check, save, and independent "
                 "reopen/readback verification."
                 if result["engineeredProgramReady"]
+                else "The independent reopen is verified and the requested XG-SIM "
+                "trial is awaiting verified completion or an explicit decision."
+                if run_simulation
                 else "The created source artifact was captured, but independent "
                 "fresh-process readback did not complete."
             )
@@ -3810,6 +4413,8 @@ class NativeProjectService:
         expected_request_digest: str,
         reopened_pid: int | None,
         reopened_hwnd: int | None,
+        run_simulation: bool = False,
+        simulation_plan_revision: dict[str, Any] | None = None,
     ) -> NativeProjectOperation:
         """Continue the saved build without recreating or editing its source."""
 
@@ -3848,7 +4453,11 @@ class NativeProjectService:
         except (KeyError, TypeError, ValueError, OSError) as exc:
             raise NativeProjectConflict("stored completed native-project binding is invalid") from exc
         if _native_project_plan_digest(
-            native_request, pid=pid, hwnd=hwnd, build_bundle=build_bundle
+            native_request,
+            pid=pid,
+            hwnd=hwnd,
+            build_bundle=build_bundle,
+            require_destination_access=False,
         ) != operation.plan_digest:
             raise NativeProjectConflict("stored native project plan digest is stale")
         result = dict(operation.result)
@@ -3858,11 +4467,413 @@ class NativeProjectService:
         simulation_trial = (
             simulation.get("trial") if isinstance(simulation, dict) else None
         )
+        simulation_detail = (
+            str(simulation.get("detail") or "")
+            if isinstance(simulation, dict)
+            else ""
+        )
+        stale_session_pre_dispatch = bool(
+            run_simulation
+            and isinstance(simulation, dict)
+            and simulation.get("state") == "quarantined"
+            and not isinstance(simulation.get("receipt"), dict)
+            and not isinstance(simulation.get("failure"), dict)
+            and isinstance(simulation_trial, dict)
+            and simulation_trial.get("state")
+            in {"QUARANTINED", "QUARANTINE_ACKNOWLEDGED"}
+            and simulation_trial.get("safeRestorationVerified") is False
+            and (
+                "session not found" in simulation_detail
+                or (
+                    "requires capability 'simulate'" in simulation_detail
+                    and "session profile 'analysis'" in simulation_detail
+                )
+                or (
+                    "simulatorActionPerformed': False" in simulation_detail
+                    and "native simulation acceptance currently supports at most one "
+                    in simulation_detail
+                )
+                or (
+                    "XGSIM_START_DISPATCH_UNVERIFIED" in simulation_detail
+                    and "'programWrite': 'not_attempted'" in simulation_detail
+                    and "'cpuRun': 'not_attempted'" in simulation_detail
+                    and "'restore': 'not_attempted'" in simulation_detail
+                    and "'projectUnchanged': True" in simulation_detail
+                )
+                or (
+                    "phase': 'simulator_start'" in simulation_detail
+                    and "MENU_PATH_NOT_FOUND" in simulation_detail
+                    and "'programWrite': 'not_attempted'" in simulation_detail
+                    and "'cpuRun': 'not_attempted'" in simulation_detail
+                    and "'restore': 'not_attempted'" in simulation_detail
+                    and "'projectUnchanged': True" in simulation_detail
+                )
+                or (
+                    "phase': 'target_status_before_program_write'" in simulation_detail
+                    and "'programWrite': 'not_attempted'" in simulation_detail
+                    and "'cpuRun': 'not_attempted'" in simulation_detail
+                    and "'restore': 'not_attempted'" in simulation_detail
+                    and "'projectUnchanged': True" in simulation_detail
+                )
+            )
+        )
+        recoverable_closed_post_write_failure = bool(
+            run_simulation
+            and isinstance(simulation, dict)
+            and simulation.get("state") == "quarantined"
+            and not isinstance(simulation.get("receipt"), dict)
+            and isinstance(simulation_trial, dict)
+            and simulation_trial.get("state")
+            in {"QUARANTINED", "QUARANTINE_ACKNOWLEDGED"}
+            and simulation_trial.get("safeRestorationVerified") is False
+            and (
+                (
+                    "'programWrite': 'attempted'" in simulation_detail
+                    and "'projectUnchanged': False" in simulation_detail
+                    and (
+                        (
+                            "phase': 'post_write_native_readback'" in simulation_detail
+                            and "'cpuRun': 'not_attempted'" in simulation_detail
+                            and "'capture': 'not_attempted'" in simulation_detail
+                            and "'restore': 'not_attempted'" in simulation_detail
+                        )
+                        or (
+                            "phase': 'target_status_after_program_write'" in simulation_detail
+                            and "'cpuRun': 'not_attempted'" in simulation_detail
+                            and "'capture': 'not_attempted'" in simulation_detail
+                            and "'cpuStop': 'attempted'" in simulation_detail
+                            and "'restore': 'not_attempted'" in simulation_detail
+                        )
+                        or (
+                            (
+                                "phase': 'scenario_observation'" in simulation_detail
+                                or "phase': 'cpu_stop'" in simulation_detail
+                            )
+                            and "'cpuRun': 'attempted'" in simulation_detail
+                            and "'capture': 'attempted'" in simulation_detail
+                            and "'cpuStop': 'attempted'" in simulation_detail
+                            and (
+                                (
+                                    "'restore': 'not_attempted'" in simulation_detail
+                                    and "'failureStages': ['cpu_stop', 'baseline_restore']"
+                                    in simulation_detail
+                                )
+                                or (
+                                    # The simulator can return a scenario
+                                    # mismatch after it has nevertheless
+                                    # stopped the CPU and restored every input
+                                    # byte successfully.  The Host deliberately
+                                    # keeps the trial quarantined because the
+                                    # XG5000 project file was changed by the
+                                    # simulation download, but that is a
+                                    # recoverable closed-world state: after user
+                                    # acknowledgement, close only the exact
+                                    # verification PID/HWND without saving and
+                                    # restore the protected source baseline.
+                                    "phase': 'scenario_observation'"
+                                    in simulation_detail
+                                    and "'restore': 'attempted'"
+                                    in simulation_detail
+                                    and "'restorationVerified': True"
+                                    in simulation_detail
+                                    and "'failureStages': []"
+                                    in simulation_detail
+                                )
+                            )
+                        )
+                    )
+                )
+                # Older Host builds could reject a fully stopped/restored MCP
+                # receipt solely because their validator required UIA RUN/STOP
+                # child controls that V4.82 does not expose.  The raw receipt
+                # is not retained in that legacy result, so recover it through
+                # the same exact-PID reviewed no-save close + source-baseline
+                # restoration boundary before retrying with the fixed validator.
+                or "multi-mode XG-SIM receipt does not cover the exact reviewed build"
+                in simulation_detail
+            )
+        )
+        if recoverable_closed_post_write_failure:
+            stored_reopen_session = (
+                reopen.get("session") if isinstance(reopen, dict) else None
+            )
+            failed_pid = (
+                stored_reopen_session.get("pid")
+                if isinstance(stored_reopen_session, dict)
+                else None
+            )
+            raw_instances = await self._gateway.call_read_tool("xg5000.instances", {})
+            instances = (
+                raw_instances.get("instances")
+                if isinstance(raw_instances, dict)
+                else None
+            )
+            failed_instance = (
+                next(
+                    (
+                        item
+                        for item in instances
+                        if isinstance(item, dict)
+                        and item.get("pid") == failed_pid
+                        and item.get("hwnd")
+                        == (
+                            stored_reopen_session.get("hwnd")
+                            if isinstance(stored_reopen_session, dict)
+                            else None
+                        )
+                    ),
+                    None,
+                )
+                if isinstance(instances, list)
+                else None
+            )
+            failed_target_absent = bool(
+                isinstance(failed_pid, int)
+                and isinstance(instances, list)
+                and not any(
+                    isinstance(item, dict) and item.get("pid") == failed_pid
+                    for item in instances
+                )
+            )
+            simulator_endpoint_absent = False
+            try:
+                with socket.create_connection(("127.0.0.1", 2004), timeout=0.4):
+                    pass
+            except OSError:
+                simulator_endpoint_absent = True
+            recovery_close_receipt: dict[str, Any] | None = None
+            stopped_and_restored_runtime_failure = bool(
+                "phase': 'scenario_observation'" in simulation_detail
+                and "'cpuStop': 'attempted'" in simulation_detail
+                and "'restore': 'attempted'" in simulation_detail
+                and "'restorationVerified': True" in simulation_detail
+                and "'failureStages': []" in simulation_detail
+            )
+            if (
+                simulation_trial.get("state") == "QUARANTINE_ACKNOWLEDGED"
+                # A successful CPU STOP + exact input restoration receipt is
+                # sufficient to close the exact failed verification window.
+                # SimCore normally exits as a consequence of that reviewed
+                # close, so requiring its port to be absent *before* closing
+                # creates an unrecoverable circular dependency.
+                and (
+                    simulator_endpoint_absent
+                    or stopped_and_restored_runtime_failure
+                )
+                and isinstance(failed_instance, dict)
+                and isinstance(stored_reopen_session, dict)
+                and isinstance(failed_instance.get("process_create_time"), (int, float))
+                and not isinstance(failed_instance.get("process_create_time"), bool)
+            ):
+                # Acknowledging an unresolved runtime trial authorizes disposal
+                # of only its exact verification window.  Close it through the
+                # reviewed no-save boundary (never terminate it), then require
+                # both the bound close receipt and fresh process absence before
+                # touching the protected working copy.  This makes retry a
+                # complete recovery action instead of stranding ordinary users
+                # behind an internal "current-state proof" requirement.
+                close_arguments: dict[str, Any] = {
+                    "pid": int(failed_instance["pid"]),
+                    "hwnd": int(failed_instance["hwnd"]),
+                    "process_create_time": float(failed_instance["process_create_time"]),
+                    "confirm_no_save": True,
+                    "timeout_seconds": 45.0,
+                }
+                for field in ("session_id", "project_path", "project_hash"):
+                    value = stored_reopen_session.get(field)
+                    if isinstance(value, str) and value:
+                        close_arguments[field] = value
+                raw_close = await self._gateway.call_workspace_tool(
+                    "xg5000.reviewed_no_save_close",
+                    close_arguments,
+                )
+                close_binding = (
+                    raw_close.get("reviewed_binding")
+                    if isinstance(raw_close, dict)
+                    else None
+                )
+                if (
+                    not isinstance(raw_close, dict)
+                    or raw_close.get("operation") != "xg5000.reviewed_no_save_close"
+                    or raw_close.get("verified") is not True
+                    or raw_close.get("source_closed") is not True
+                    or raw_close.get("automatic_workspace_open") is not False
+                    or raw_close.get("process_terminated") is not False
+                    or not isinstance(close_binding, dict)
+                    or close_binding.get("pid") != failed_instance["pid"]
+                    or close_binding.get("hwnd") != failed_instance["hwnd"]
+                    or close_binding.get("process_create_time")
+                    != failed_instance["process_create_time"]
+                ):
+                    raise NativeProjectConflict(
+                        "XG-SIM recovery close did not return an exact reviewed target receipt"
+                    )
+                recovery_close_receipt = {
+                    "operation": raw_close["operation"],
+                    "verified": True,
+                    "sourceClosed": True,
+                    "automaticWorkspaceOpen": False,
+                    "processTerminated": False,
+                    "binding": {
+                        "pid": close_binding["pid"],
+                        "hwnd": close_binding["hwnd"],
+                        "processCreateTime": close_binding["process_create_time"],
+                    },
+                }
+                raw_instances = await self._gateway.call_read_tool(
+                    "xg5000.instances", {}
+                )
+                instances = (
+                    raw_instances.get("instances")
+                    if isinstance(raw_instances, dict)
+                    else None
+                )
+                failed_target_absent = bool(
+                    isinstance(instances, list)
+                    and not any(
+                        isinstance(item, dict) and item.get("pid") == failed_pid
+                        for item in instances
+                    )
+                )
+                # Closing the exact XG5000 verification window owns the
+                # simulator lifetime.  Require the local endpoint to disappear
+                # before restoring the protected project copy; otherwise keep
+                # the quarantine intact.
+                endpoint_deadline = time.monotonic() + 10.0
+                while time.monotonic() < endpoint_deadline:
+                    try:
+                        with socket.create_connection(
+                            ("127.0.0.1", 2004), timeout=0.4
+                        ):
+                            pass
+                    except OSError:
+                        simulator_endpoint_absent = True
+                        break
+                    time.sleep(0.2)
+            workspace = (
+                registration.get("workspace")
+                if isinstance(registration, dict)
+                else None
+            )
+            source = workspace.get("source") if isinstance(workspace, dict) else None
+            working = (
+                workspace.get("working_copy")
+                if isinstance(workspace, dict)
+                else None
+            )
+            if (
+                failed_target_absent
+                and simulator_endpoint_absent
+                and isinstance(source, dict)
+                and isinstance(working, dict)
+            ):
+                captured_path = Path(str(source.get("captured_path") or "")).resolve()
+                working_path = Path(str(working.get("path") or "")).resolve()
+                baseline_hash = str(working.get("baseline_sha256") or "").casefold()
+                if (
+                    re.fullmatch(r"[0-9a-f]{64}", baseline_hash) is not None
+                    and captured_path.is_file()
+                    and working_path.is_file()
+                    and captured_path.parent.name.casefold() == "source"
+                    and working_path.parent.name.casefold() == "working"
+                    and captured_path.parent.parent == working_path.parent.parent
+                    and _sha256_file(captured_path) == baseline_hash
+                ):
+                    changed_hash = _sha256_file(working_path)
+                    if changed_hash != baseline_hash:
+                        forensic_path = working_path.with_name(
+                            f"{working_path.stem}.runtime-quarantine-{changed_hash[:12]}"
+                            f"{working_path.suffix}"
+                        )
+                        if not forensic_path.exists():
+                            shutil.copy2(working_path, forensic_path)
+                        shutil.copy2(captured_path, working_path)
+                    if _sha256_file(working_path) == baseline_hash:
+                        working["current_sha256"] = baseline_hash
+                        working["state"] = "clean"
+                        if recovery_close_receipt is not None:
+                            result["simulationRecovery"] = {
+                                "schemaVersion": "controlstudio-native-simulation-recovery/v1",
+                                "state": "fresh_retry_ready",
+                                "priorTrialId": simulation_trial.get("trialId"),
+                                "simulatorEndpointAbsent": True,
+                                "reviewedNoSaveClose": recovery_close_receipt,
+                                "workingCopyRestored": True,
+                                "restoredSha256": baseline_hash,
+                            }
+                        result.pop("simulationVerification", None)
+                        simulation = None
+                        simulation_trial = None
+        if stale_session_pre_dispatch and "XGSIM_START_DISPATCH_UNVERIFIED" in simulation_detail:
+            # An ambiguous native Start dispatch is recoverable only after the
+            # exact failed verification process is gone and the simulator
+            # endpoint is absent.  A user acknowledgement alone is not proof.
+            stored_reopen_session = (
+                reopen.get("session") if isinstance(reopen, dict) else None
+            )
+            failed_pid = (
+                stored_reopen_session.get("pid")
+                if isinstance(stored_reopen_session, dict)
+                else None
+            )
+            raw_instances = await self._gateway.call_read_tool("xg5000.instances", {})
+            instances = (
+                raw_instances.get("instances")
+                if isinstance(raw_instances, dict)
+                else None
+            )
+            failed_target_absent = bool(
+                isinstance(failed_pid, int)
+                and isinstance(instances, list)
+                and not any(
+                    isinstance(item, dict) and item.get("pid") == failed_pid
+                    for item in instances
+                )
+            )
+            simulator_endpoint_absent = False
+            try:
+                with socket.create_connection(("127.0.0.1", 2004), timeout=0.4):
+                    pass
+            except OSError:
+                simulator_endpoint_absent = True
+            stale_session_pre_dispatch = bool(
+                failed_target_absent and simulator_endpoint_absent
+            )
+        if stale_session_pre_dispatch:
+            # Older Hosts mislabeled this pre-dispatch session lookup failure
+            # as an unresolved simulator mutation.  No simulator command,
+            # input write, or CPU RUN was issued, so discard only that exact
+            # false quarantine and establish a fresh signed read session.
+            result.pop("simulationVerification", None)
+            simulation = None
+            simulation_trial = None
+        simulation_not_started = (
+            (
+                simulation is None
+                or isinstance(simulation, dict)
+                and simulation.get("state") == "not_verified"
+                and not isinstance(simulation.get("receipt"), dict)
+                and not isinstance(simulation.get("failure"), dict)
+                and not isinstance(simulation.get("trial"), dict)
+            )
+            and isinstance(reopen, dict)
+            and reopen.get("state") == "verified"
+        )
         if (
-            result.get("engineeredProgramReady") is True
-            or result.get("workspaceBound") is True
+            (
+                result.get("engineeredProgramReady") is True
+                and not (run_simulation and simulation_not_started)
+            )
+            or (
+                result.get("workspaceBound") is True
+                and not (run_simulation and simulation_not_started)
+            )
             or not isinstance(registration, dict)
-            or registration.get("state") != "captured_not_bound"
+            or registration.get("state") not in (
+                {"captured_not_bound", "captured_and_bound"}
+                if run_simulation and simulation_not_started
+                else {"captured_not_bound"}
+            )
             or not isinstance(registration.get("workspace"), dict)
             or not isinstance(reopen, dict)
             or not _stored_creation_receipt_matches_reviewed_build(
@@ -3886,16 +4897,52 @@ class NativeProjectService:
                 "current-state recovery proof is required before another simulation"
             )
         reuse_verified_reopen = reopen.get("state") == "verified"
+        if reuse_verified_reopen and run_simulation:
+            stored_reopen_session = reopen.get("session")
+            raw_instances = await self._gateway.call_read_tool("xg5000.instances", {})
+            instances = (
+                raw_instances.get("instances")
+                if isinstance(raw_instances, dict)
+                else None
+            )
+            stored_target_live = bool(
+                isinstance(stored_reopen_session, dict)
+                and isinstance(instances, list)
+                and any(
+                    isinstance(item, dict)
+                    and item.get("pid") == stored_reopen_session.get("pid")
+                    and item.get("hwnd") == stored_reopen_session.get("hwnd")
+                    and item.get("visible") is True
+                    for item in instances
+                )
+            )
+            if not stored_target_live:
+                # A deliberately discarded, unsaved verification window is not
+                # a reason to strand the durable build.  Fall through to the
+                # existing exact workspace-open path.  Other unrelated XG5000
+                # windows are preserved; the launcher snapshots every existing
+                # PID/create-time and must prove the reopened workspace belongs
+                # to a newly created process.
+                reuse_verified_reopen = False
+                reopen = {
+                    "state": "not_verified",
+                    "detail": (
+                        "The prior independently reopened window was closed without "
+                        "saving; reopen the unchanged protected copy again."
+                    ),
+                    "workspace": registration["workspace"],
+                }
+                result["reopenVerification"] = reopen
         if reuse_verified_reopen:
-            existing_session = reopen.get("session")
+            stored_reopen_session = reopen.get("session")
             working = registration["workspace"].get("working_copy")
             if not isinstance(working, dict) or not self._controlled_reopen_session_matches(
-                existing_session,
-                pid=int(existing_session.get("pid") or 0)
-                if isinstance(existing_session, dict)
+                stored_reopen_session,
+                pid=int(stored_reopen_session.get("pid") or 0)
+                if isinstance(stored_reopen_session, dict)
                 else 0,
-                hwnd=int(existing_session.get("hwnd") or 0)
-                if isinstance(existing_session, dict)
+                hwnd=int(stored_reopen_session.get("hwnd") or 0)
+                if isinstance(stored_reopen_session, dict)
                 else 0,
                 project_path=str(working.get("path") or ""),
                 project_hash=str(working.get("current_sha256") or "").casefold(),
@@ -3904,12 +4951,116 @@ class NativeProjectService:
                     "completed native project lost its verified controlled reopen session"
                 )
             if (
-                (reopened_pid is not None and reopened_pid != existing_session["pid"])
-                or (reopened_hwnd is not None and reopened_hwnd != existing_session["hwnd"])
+                (reopened_pid is not None and reopened_pid != stored_reopen_session["pid"])
+                or (reopened_hwnd is not None and reopened_hwnd != stored_reopen_session["hwnd"])
             ):
                 raise NativeProjectConflict(
                     "reopened PID/HWND differs from the stored verified reopen session"
                 )
+            existing_session: dict[str, Any] | None = None
+            if run_simulation and simulation_not_started:
+                # The verified reopen session already contains the one narrow
+                # native_reopen_binding required by the simulator executor.
+                # Re-running LD copy and Program Check on every click adds no
+                # assurance and is brittle against XG5000's reused owner-drawn
+                # result pane. Reuse it only when the live MCP session reports
+                # the complete immutable binding; after an MCP restart this
+                # read fails and the full rebind/readback path below remains the
+                # fail-closed fallback.
+                live_status: dict[str, Any] | None = None
+                try:
+                    raw_status = await self._gateway.call_read_tool(
+                        "xg5000.session_status",
+                        {"session_id": stored_reopen_session["session_id"]},
+                    )
+                    if isinstance(raw_status, dict):
+                        live_status = raw_status
+                except (MCPToolError, RuntimeError):
+                    live_status = None
+                live_metadata = (
+                    live_status.get("metadata")
+                    if isinstance(live_status, dict)
+                    else None
+                )
+                live_binding = (
+                    live_metadata.get("native_reopen_binding")
+                    if isinstance(live_metadata, dict)
+                    else None
+                )
+                compiled = build_bundle.get("compiledProgram")
+                reviewed = build_bundle.get("reviewedPlan")
+                authorization = (
+                    live_status.get("authorization")
+                    if isinstance(live_status, dict)
+                    else None
+                )
+                if (
+                    isinstance(live_status, dict)
+                    and live_status.get("session_id")
+                    == stored_reopen_session.get("session_id")
+                    and live_status.get("pid") == stored_reopen_session.get("pid")
+                    and live_status.get("hwnd") == stored_reopen_session.get("hwnd")
+                    and live_status.get("stage") == "CHECK_OK"
+                    and _canonical_path(Path(str(live_status.get("project_path") or "")))
+                    == _canonical_path(Path(str(working.get("path") or "")))
+                    and str(live_status.get("project_hash") or "").casefold()
+                    == str(working.get("current_sha256") or "").casefold()
+                    and isinstance(live_metadata, dict)
+                    and live_metadata.get("project_identity_assurance")
+                    == "controlled_launch_read_only"
+                    and isinstance(authorization, dict)
+                    and authorization.get("access_profile") == "analysis"
+                    and isinstance(live_binding, dict)
+                    and isinstance(compiled, dict)
+                    and isinstance(reviewed, dict)
+                    and live_binding.get("source_pid") == pid
+                    and live_binding.get("build_bundle_id")
+                    == build_bundle.get("bundleId")
+                    and live_binding.get("reviewed_plan_digest")
+                    == reviewed.get("planDigest")
+                    and live_binding.get("source_sha256")
+                    == compiled.get("sourceSha256")
+                    and live_binding.get("rung_ids") == compiled.get("rungIds")
+                    and live_binding.get("ladder_ir_sha256")
+                    == compiled.get("ladderIrSha256")
+                    and live_binding.get("program_name")
+                    == compiled.get("programName")
+                    and live_binding.get("project_hash")
+                    == str(working.get("current_sha256") or "").casefold()
+                ):
+                    existing_session = stored_reopen_session
+            if existing_session is None:
+                existing_session = await self._rebind_completed_reopen_target(
+                    operation=operation,
+                    actor_id=actor_id,
+                    source_pid=pid,
+                    reopened_pid=int(stored_reopen_session["pid"]),
+                    reopened_hwnd=int(stored_reopen_session["hwnd"]),
+                    registration=registration,
+                )
+                reopen = {**reopen, "session": existing_session}
+                result["reopenVerification"] = reopen
+            if run_simulation and simulation_not_started and existing_session is not stored_reopen_session:
+                # MCP restart loses the in-memory native_reopen_binding which is
+                # the least-privilege, reviewed-build grant for exactly one
+                # Host-owned XG-SIM workflow.  Re-read the already open protected
+                # copy to recreate that binding; never promote the analysis
+                # session to a caller-selected simulation profile.
+                reopen = await self._verify_fresh_process_reopen(
+                    source_pid=pid,
+                    registration=registration,
+                    build_bundle=build_bundle,
+                    existing_session=existing_session,
+                )
+                if reopen.get("state") != "verified":
+                    reopen_detail = str(reopen.get("detail") or "")
+                    raise NativeProjectConflict(
+                        "completed native project could not restore its reviewed-build "
+                        "reopen binding before XG-SIM: "
+                        f"{reopen_detail or 'unknown readback failure'}"
+                    )
+                existing_session = reopen["session"]
+                result["reopenVerification"] = reopen
         else:
             expected_reopened_process_create_time: float | None = None
             workspace = registration["workspace"]
@@ -3955,6 +5106,23 @@ class NativeProjectService:
                     reopen.get("reopenTarget"),
                     working=working,
                 )
+                if (
+                    failed_target is not None
+                    and isinstance(instances, list)
+                    and not any(
+                        isinstance(item, dict)
+                        and item.get("pid") == failed_target[0]
+                        and item.get("hwnd") == failed_target[1]
+                        and item.get("visible") is True
+                        for item in instances
+                    )
+                ):
+                    # A reviewed no-save close deliberately leaves the failed
+                    # target in the immutable operation receipt.  Absence from
+                    # the current exact instance inventory means it is evidence,
+                    # not a selectable live target; fall through to the guarded
+                    # original-source-alone reopen path.
+                    failed_target = None
                 if no_xg5000_instances:
                     # A failed prior reopen may retain evidence of a child that no
                     # longer exists.  With every XG5000 instance closed, reopen the
@@ -3979,6 +5147,8 @@ class NativeProjectService:
                             created=False,
                             resume=True,
                             registration=registration,
+                            run_simulation=run_simulation,
+                            simulation_plan_revision=simulation_plan_revision,
                             allow_saved_no_source_recovery=True,
                         )
                     )[0]
@@ -3986,18 +5156,19 @@ class NativeProjectService:
                     # An unsuccessful launch may have cleaned up its own child.
                     # An explicit resume can open the saved working copy once;
                     # never strand the user behind a selector with no candidate.
-                    original_source_alone = (
+                    original_source_present = (
                         isinstance(instances, list)
-                        and len(instances) == 1
-                        and isinstance(instances[0], dict)
-                        and instances[0].get("pid") == pid
-                        and instances[0].get("hwnd") == hwnd
-                        and instances[0].get("visible") is True
+                        and any(
+                            isinstance(item, dict)
+                            and item.get("pid") == pid
+                            and item.get("hwnd") == hwnd
+                            and item.get("visible") is True
+                            for item in instances
+                        )
                     )
-                    if not original_source_alone:
+                    if not original_source_present:
                         raise NativeProjectConflict(
-                            "saved-build reopen requires the original source alone; "
-                            "select an existing reopened XG5000 target if another window is present"
+                            "saved-build reopen requires the exact original source window to remain present"
                         )
                     if not self._repository.begin_completed_verification(operation.operation_id):
                         raise NativeProjectConflict(
@@ -4009,6 +5180,7 @@ class NativeProjectService:
                         "noIlInsert": True,
                         "explicitSavedBuildReopen": True,
                         "savedBuildRecoveryWithoutLiveSource": False,
+                        "unrelatedExistingInstancesPreserved": len(instances) > 1,
                     }
                     return (
                         await self._complete_verified_native_tail(
@@ -4018,6 +5190,8 @@ class NativeProjectService:
                             created=False,
                             resume=True,
                             registration=registration,
+                            run_simulation=run_simulation,
+                            simulation_plan_revision=simulation_plan_revision,
                         )
                     )[0]
                 reopened_pid, reopened_hwnd, expected_reopened_process_create_time = failed_target
@@ -4060,6 +5234,8 @@ class NativeProjectService:
                     and simulation.get("state") == "verified"
                     else None
                 ),
+                run_simulation=run_simulation,
+                simulation_plan_revision=simulation_plan_revision,
             )
         )[0]
 
@@ -4533,6 +5709,8 @@ class NativeProjectService:
         expected_request_digest: str,
         reopened_pid: int | None = None,
         reopened_hwnd: int | None = None,
+        run_simulation: bool = False,
+        simulation_plan_revision: dict[str, Any] | None = None,
     ) -> NativeProjectOperation:
         """Resume only post-dialog verification for one quarantined native create."""
 
@@ -4548,6 +5726,8 @@ class NativeProjectService:
                 expected_request_digest=expected_request_digest,
                 reopened_pid=reopened_pid,
                 reopened_hwnd=reopened_hwnd,
+                run_simulation=run_simulation,
+                simulation_plan_revision=simulation_plan_revision,
             )
         if operation.state != "QUARANTINED":
             raise NativeProjectConflict("only a quarantined native project can be resumed")
@@ -4617,7 +5797,7 @@ class NativeProjectService:
                     "description": _native_bundle_description(build_bundle),
                     "build_bundle": build_bundle,
                     "authorization": authorization,
-                    "timeout_seconds": 60.0,
+                    "timeout_seconds": 600.0,
                 },
             )
             result = self._validate_resume_result(
@@ -4669,6 +5849,23 @@ class NativeProjectService:
         if operation.state != "QUARANTINED":
             raise NativeProjectConflict(
                 "only a quarantined native project operation can be reconciled"
+            )
+        if (
+            not operation.result
+            and _native_create_failed_before_confirmation(operation.error_detail or "")
+        ):
+            # Older Hosts quarantined every MCP rejection, including signed
+            # build-bundle validation that runs before the MCP can issue its
+            # first XG5000 command.  Reclassify those durable legacy records
+            # without asking the operator to prove the state of a window that
+            # was never touched.  A non-empty checkpoint still follows the
+            # normal read-only reconciliation path below.
+            return self._repository.resolve_quarantine(
+                operation_id,
+                state="FAILED",
+                result={},
+                error_code="NATIVE_PROJECT_CONFIRMED_NOT_CREATED",
+                error_detail=operation.error_detail,
             )
         request = operation.request
         expected_pid = int(request["xg5000Pid"])
@@ -5617,7 +6814,7 @@ class NativeProjectService:
         build_bundle: dict[str, Any],
         prior_result: dict[str, Any],
     ) -> dict[str, Any]:
-        """Accept only a proof of the already-present reviewed source, never insertion."""
+        """Accept exact source proof, including the bounded first-row recovery."""
 
         if not isinstance(raw, dict) or (
             raw.get("ok") is not True
@@ -5631,11 +6828,28 @@ class NativeProjectService:
         ):
             raise NativeProjectEvidenceError("MCP did not verify the exact native resume")
         provenance = raw.get("resume_provenance")
+        repair = (
+            provenance.get("exact_leading_instruction_repair")
+            if isinstance(provenance, dict)
+            else None
+        )
+        provenance_has_no_edit = (
+            isinstance(provenance, dict)
+            and provenance.get("no_il_insert") is True
+            and repair is None
+        )
+        provenance_has_safe_edit = (
+            isinstance(provenance, dict)
+            and provenance.get("no_il_insert") is False
+            and isinstance(repair, dict)
+            and repair.get("verified") is True
+            and repair.get("mode") == "exact_missing_leading_instruction"
+        )
         if not isinstance(provenance, dict) or (
             provenance.get("mode") != "observed_existing_project"
             or provenance.get("lifecycle_mode") != "resume_existing_verified_source"
             or provenance.get("no_new_dialog") is not True
-            or provenance.get("no_il_insert") is not True
+            or not (provenance_has_no_edit or provenance_has_safe_edit)
             or not isinstance(provenance.get("observed_program_id"), str)
             or not provenance["observed_program_id"]
             or provenance.get("observed_program_name") != spec.program_name
@@ -5674,6 +6888,14 @@ class NativeProjectService:
         expected_lines = compiled.get("source", "").splitlines() if isinstance(compiled, dict) else []
         if not isinstance(compiled, dict) or not isinstance(reviewed, dict) or not isinstance(program_apply, dict):
             raise NativeProjectEvidenceError("native resume has no reviewed build or program proof")
+        if provenance_has_safe_edit and (
+            repair.get("before_row_count") != len(expected_lines) - 1
+            or repair.get("after_row_count") != len(expected_lines)
+            or not expected_lines
+            or repair.get("inserted_instruction_sha256")
+            != hashlib.sha256(expected_lines[0].encode("utf-8")).hexdigest()
+        ):
+            raise NativeProjectEvidenceError("native resume leading-row recovery proof is invalid")
         ld_roundtrip = program_apply.get("ld_roundtrip")
         program_check = program_apply.get("program_check")
         program_check_receipt = raw.get("program_check_receipt")
@@ -5764,7 +6986,8 @@ class NativeProjectService:
                 "mode": "observed_existing_project",
                 "resumeAttempted": True,
                 "noNewDialog": True,
-                "noIlInsert": True,
+                "noIlInsert": provenance.get("no_il_insert") is True,
+                "exactLeadingInstructionRepair": dict(repair) if isinstance(repair, dict) else None,
                 "mcp": provenance,
             },
         }
@@ -5818,8 +7041,15 @@ class NativeProjectService:
         workspace = registration.get("workspace")
         compiled = build_bundle.get("compiledProgram")
         reviewed = build_bundle.get("reviewedPlan")
+        registration_state_ready = bool(
+            registration.get("state") == "captured_not_bound"
+            or (
+                existing_session is not None
+                and registration.get("state") == "captured_and_bound"
+            )
+        )
         if (
-            registration.get("state") != "captured_not_bound"
+            not registration_state_ready
             or not isinstance(workspace, dict)
             or not isinstance(compiled, dict)
             or not isinstance(reviewed, dict)
@@ -6031,7 +7261,8 @@ class NativeProjectService:
                 "state": "verified",
                 "detail": (
                     "Protected working copy reopened in an independent XG5000 process "
-                    "with exact mnemonic, LD, Program Check, and disk-hash readback."
+                    "with creation-receipt/project-hash continuity, stable LD, "
+                    "Program Check, and disk-hash readback."
                 ),
                 "receipt": receipt,
                 "launch": launch,
@@ -6110,12 +7341,279 @@ class NativeProjectService:
             target["launch"] = launch
         return target
 
+    async def _verify_multi_mode_index_receipt(
+        self,
+        *,
+        receipt: dict[str, Any],
+        session: dict[str, Any],
+        workspace: dict[str, Any],
+        build_bundle: dict[str, Any],
+        compiled: dict[str, Any],
+        engineering_plan: dict[str, Any],
+        project_path: str,
+        project_hash: str,
+        bundle_id: str,
+        reviewed_plan_digest: str,
+        trial_id: str,
+    ) -> dict[str, Any]:
+        """Validate the complete two-mode index receipt without singular projections."""
+
+        scenarios = receipt.get("scenarioReceipt")
+        boundary = receipt.get("inputWriteBoundary")
+        simulator = receipt.get("simulator")
+        project_readback = receipt.get("projectReadback")
+        preparation = receipt.get("simulationPreparation")
+        binding = receipt.get("programBinding")
+        design = engineering_plan.get("design")
+        if not all(
+            isinstance(value, dict)
+            for value in (
+                scenarios, boundary, simulator, project_readback,
+                preparation, binding, design,
+            )
+        ):
+            raise NativeProjectEvidenceError("multi-mode XG-SIM receipt is incomplete")
+        assert isinstance(scenarios, dict)
+        assert isinstance(boundary, dict)
+        assert isinstance(simulator, dict)
+        assert isinstance(project_readback, dict)
+        assert isinstance(preparation, dict)
+        assert isinstance(binding, dict)
+        assert isinstance(design, dict)
+        items = scenarios.get("scenarios")
+        coverage = scenarios.get("coverage")
+        io_points = design.get("ioPoints")
+        modes = design.get("operatingModes")
+        networks = design.get("controlNetworks")
+        timers = design.get("timers")
+        sequences = design.get("sequences")
+        alarms = design.get("alarms")
+        recoveries = design.get("recoveryRules")
+        safety_rules = design.get("safetyRules")
+        ladder_rungs = design.get("ladderRungs")
+        if not all(
+            isinstance(value, list)
+            for value in (
+                items, io_points, modes, networks, timers, sequences,
+                alarms, recoveries, safety_rules, ladder_rungs,
+            )
+        ) or not isinstance(coverage, dict):
+            raise NativeProjectEvidenceError("multi-mode reviewed scope is invalid")
+        expected_ids = _index_acceptance_scenario_ids(design)
+        scenario_ids = [
+            str(item.get("scenarioId") or "")
+            for item in items if isinstance(item, dict)
+        ]
+        scenarios_valid = bool(
+            len(scenario_ids) == len(items)
+            and set(scenario_ids) == expected_ids
+            and len(set(scenario_ids)) == len(scenario_ids)
+            and all(
+                isinstance(item, dict)
+                and item.get("status") == "passed"
+                and isinstance(item.get("assertions"), dict)
+                and bool(item["assertions"])
+                and all(value is True for value in item["assertions"].values())
+                and isinstance(item.get("observations"), list)
+                and bool(item["observations"])
+                for item in items
+            )
+        )
+        compiled_scope = compiled.get("collectionScope")
+        expected_scope = {
+            name: str(value.get("status") or "")
+            for name, value in compiled_scope.items()
+            if isinstance(compiled_scope, dict) and isinstance(value, dict)
+        }
+        process_ids = sorted(
+            str(item.get("ruleId") or "")
+            for item in safety_rules
+            if isinstance(item, dict)
+            and item.get("classification") == "process_interlock"
+        )
+        input_ids = _native_simulation_stimulus_ids(io_points, networks, ladder_rungs)
+        expected_coverage = {
+            "collectionScope": expected_scope,
+            "inputSignalIds": sorted(input_ids),
+            "modeIds": sorted(str(item["modeId"]) for item in modes if isinstance(item, dict)),
+            "networkIds": [str(item["networkId"]) for item in networks if isinstance(item, dict)],
+            "outputSignalIds": [
+                str(item["outputSignalId"]) for item in networks if isinstance(item, dict)
+            ],
+            "timerIds": [str(item["timerId"]) for item in timers if isinstance(item, dict)],
+            "sequenceIds": sorted(
+                str(item["sequenceId"]) for item in sequences if isinstance(item, dict)
+            ),
+            "stepIds": sorted(
+                str(step["stepId"])
+                for sequence in sequences if isinstance(sequence, dict)
+                for step in sequence.get("steps", []) if isinstance(step, dict)
+            ),
+            "alarmIds": sorted(str(item["alarmId"]) for item in alarms if isinstance(item, dict)),
+            "recoveryIds": [
+                str(item["recoveryId"]) for item in recoveries if isinstance(item, dict)
+            ],
+            "processInterlockIds": process_ids,
+        }
+        writes = scenarios.get("inputWrites")
+        writes_valid = isinstance(writes, list) and bool(writes)
+        if writes_valid:
+            for event in writes:
+                byte_writes = event.get("bytes") if isinstance(event, dict) else None
+                if not isinstance(byte_writes, list):
+                    writes_valid = False
+                    break
+                for byte_write in byte_writes:
+                    requested = (
+                        byte_write.get("requestedSignals")
+                        if isinstance(byte_write, dict) else None
+                    )
+                    if (
+                        not isinstance(requested, dict)
+                        or not set(requested).issubset(input_ids)
+                        or byte_write.get("outputByteWritten") is not False
+                        or byte_write.get("target") != byte_write.get("readback")
+                        or any(value not in {0, 1} for value in requested.values())
+                    ):
+                        writes_valid = False
+                        break
+                if not writes_valid:
+                    break
+        program_readback = preparation.get("programReadback")
+        expected_readback = {
+            "programName": compiled.get("programName"),
+            "language": "LD",
+            "sourceSha256": compiled.get("sourceSha256"),
+            "rungCount": len(compiled.get("rungIds", [])),
+            "rungIds": compiled.get("rungIds"),
+            "ladderIrSha256": compiled.get("ladderIrSha256"),
+            "exactInstructionReadback": str(compiled.get("source") or "").splitlines(),
+            "finalView": "LD",
+            "programCheckPassed": True,
+            "verificationBoundary": (
+                "independent_pre_write_native_readback_plus_official_xgsim_write"
+            ),
+            "officialWriteVerified": True,
+        }
+        prepared_hash = str(project_readback.get("projectSha256") or "").casefold()
+        hash_after_start = str(preparation.get("hashAfterSimulatorStart") or "").casefold()
+        hash_after_write = str(preparation.get("hashAfterProgramWrite") or "").casefold()
+        common_valid = bool(
+            receipt.get("schemaVersion") == NATIVE_SIMULATION_RECEIPT_SCHEMA
+            and receipt.get("status") == "SIMULATION_VERIFIED"
+            and receipt.get("buildBundleId") == bundle_id
+            and receipt.get("reviewedPlanDigest") == reviewed_plan_digest
+            and project_readback == {
+                "projectPath": project_path,
+                "projectSha256": prepared_hash,
+                "reopenedProjectSha256": project_hash,
+                "projectUnchangedDuringRuntime": True,
+                "identityAssurance": "controlled_launch_read_only",
+            }
+            and all(re.fullmatch(r"[0-9a-f]{64}", value) for value in (
+                project_hash, prepared_hash, hash_after_start, hash_after_write
+            ))
+            and preparation == {
+                "hashBeforeSimulatorStart": project_hash,
+                "hashAfterSimulatorStart": hash_after_start,
+                "hashAfterProgramWrite": hash_after_write,
+                "hashTransitionObserved": len({project_hash, hash_after_start, hash_after_write}) > 1,
+                "programReadback": expected_readback,
+            }
+            and hash_after_write == prepared_hash
+            and program_readback == expected_readback
+            and binding == {
+                "programName": compiled.get("programName"),
+                "sourceSha256": compiled.get("sourceSha256"),
+                "rungCount": len(compiled.get("rungIds", [])),
+                "rungIds": compiled.get("rungIds"),
+                "ladderIrSha256": compiled.get("ladderIrSha256"),
+                "compiledProgramSchema": NATIVE_COMPILED_PROGRAM_SCHEMA,
+            }
+            and simulator.get("product") == "XG-SIM"
+            and simulator.get("bridge")
+            in {"XimUtil.DeviceInterface", "XGT_FENET_SIMULATOR"}
+            and simulator.get("programWritePerformed") is True
+            and simulator.get("cpuRunVerified") is True
+            and simulator.get("cpuStopped") is True
+            and _native_simulator_evidence_verified(simulator)
+            and scenarios.get("schemaVersion") == "controlstudio-native-simulation-scenarios/v4"
+            and scenarios.get("profile") == "multi_mode_index/v1"
+            and scenarios.get("status") == "SCENARIOS_VERIFIED"
+            and scenarios.get("scenarioCount") == len(items)
+            and scenarios.get("outputBytesWritten") is False
+            and scenarios_valid
+            and coverage == expected_coverage
+            and writes_valid
+            and boundary.get("onlyReviewedSimulationStimuli") is True
+            and boundary.get("outputBytesWritten") is False
+            and boundary.get("baselineRestoredAfterCpuStop") is True
+            and isinstance(boundary.get("restore"), dict)
+            and boundary["restore"].get("attempted") is True
+            and boundary["restore"].get("matched") is True
+            and boundary["restore"].get("cpuStoppedBeforeRestore") is True
+            and receipt.get("controllerConnected") is False
+            and receipt.get("plcWritePerformed") is False
+        )
+        if not common_valid:
+            raise NativeProjectEvidenceError(
+                "multi-mode XG-SIM receipt does not cover the exact reviewed build"
+            )
+        workspace_id = str(workspace.get("workspace_id") or "")
+        _canonical_uuid(workspace_id, "workspace_id")
+        refreshed_workspace = await self._gateway.call_workspace_tool(
+            "workspace.status", {"workspace_id": workspace_id}
+        )
+        refreshed = await self._gateway.call_read_tool("xg5000.session_status", {})
+        refreshed_session = (
+            refreshed.get("session")
+            if isinstance(refreshed, dict) and isinstance(refreshed.get("session"), dict)
+            else refreshed
+        )
+        if not isinstance(refreshed_workspace, dict) or not isinstance(refreshed_session, dict):
+            raise NativeProjectEvidenceError("post-simulation workspace/session state is missing")
+        if (
+            refreshed_workspace.get("ok") is not True
+            or refreshed_workspace.get("verified") is not True
+            or refreshed_workspace.get("workspace_id") != workspace_id
+            or refreshed_session.get("session_id") != session.get("session_id")
+            or str(refreshed_session.get("project_hash") or "").casefold() != prepared_hash
+        ):
+            raise NativeProjectEvidenceError("post-simulation identity transition is invalid")
+        self._gateway.bind_agent_session(refreshed_session)
+        workspace.clear()
+        workspace.update(refreshed_workspace)
+        receipt_digest = _json_digest(receipt)
+        return {
+            "state": "verified",
+            "detail": (
+                "The complete reviewed auto/manual index profile passed XG-SIM: six "
+                "automatic completion edges, held-input suppression, manual one-shot, "
+                "stop, timeout, emergency and door recovery. CPU was stopped and input "
+                "bytes were restored; the receipt awaits an explicit decision."
+            ),
+            "receipt": receipt,
+            "session": refreshed_session,
+            "workspace": workspace,
+            "trial": {
+                "schemaVersion": NATIVE_SIMULATION_TRIAL_SCHEMA,
+                "trialId": trial_id,
+                "state": "OBSERVING",
+                "receiptDigest": receipt_digest,
+                "safeRestorationVerified": True,
+                "observedAt": _utc_text(_utc_now()),
+                "decision": None,
+            },
+        }
+
     async def _verify_native_simulation(
         self,
         *,
         reopen_verification: dict[str, Any],
         build_bundle: dict[str, Any],
         trial_id: str,
+        simulation_plan_revision: dict[str, Any] | None = None,
+        base_build_receipt: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Observe the exact reopened build and return a safely restored trial receipt."""
 
@@ -6155,6 +7653,59 @@ class NativeProjectService:
         project_hash = str(session.get("project_hash") or "").casefold()
         bundle_id = str(build_bundle.get("bundleId") or "").casefold()
         reviewed_plan_digest = str(reviewed.get("planDigest") or "").casefold()
+        if simulation_plan_revision is not None:
+            current_reopen_receipt = reopen_verification.get("receipt")
+            authorization = simulation_plan_revision.get("authorization")
+            receipt_digest = simulation_plan_revision.get("receiptDigest")
+            unsigned_revision = {
+                key: value
+                for key, value in simulation_plan_revision.items()
+                if key not in {"authorization", "receiptDigest"}
+            }
+            if (
+                not isinstance(authorization, dict)
+                or not isinstance(receipt_digest, str)
+                or _json_digest(unsigned_revision) != receipt_digest
+                or simulation_plan_revision.get("baseBuildBundleId") != bundle_id
+                or simulation_plan_revision.get("baseReviewedPlanDigest")
+                != reviewed_plan_digest
+                or simulation_plan_revision.get("baseBuildReceiptDigest")
+                != (
+                    _json_digest(base_build_receipt)
+                    if isinstance(base_build_receipt, dict)
+                    else None
+                )
+                or simulation_plan_revision.get("baseReopenReceiptDigest")
+                != _json_digest(simulation_plan_revision.get("baseReopenReceipt"))
+                or not isinstance(current_reopen_receipt, dict)
+                or current_reopen_receipt.get("schemaVersion")
+                != NATIVE_REOPEN_RECEIPT_SCHEMA
+                or current_reopen_receipt.get("status") != "REOPEN_VERIFIED"
+                or current_reopen_receipt.get("buildBundleId") != bundle_id
+                or current_reopen_receipt.get("reviewedPlanDigest")
+                != reviewed_plan_digest
+                or not isinstance(current_reopen_receipt.get("projectReadback"), dict)
+                or current_reopen_receipt["projectReadback"].get("projectSha256")
+                != project_hash
+                or current_reopen_receipt["projectReadback"].get("projectUnchanged")
+                is not True
+                or simulation_plan_revision.get("projectSha256") != project_hash
+                or simulation_plan_revision.get("sourceSha256")
+                != compiled.get("sourceSha256")
+                or simulation_plan_revision.get("ladderIrSha256")
+                != compiled.get("ladderIrSha256")
+                or simulation_plan_revision.get("rungIds") != compiled.get("rungIds")
+                or not isinstance(
+                    simulation_plan_revision.get("indexAcceptanceBindings"), dict
+                )
+            ):
+                raise NativeProjectEvidenceError(
+                    "simulation plan revision no longer matches the immutable native receipts"
+                )
+            engineering_plan = _json_load(_json_dump(engineering_plan))
+            engineering_plan["design"]["indexAcceptanceBindings"] = (
+                simulation_plan_revision["indexAcceptanceBindings"]
+            )
         try:
             raw = await self._gateway.call_workspace_tool(
                 "project.verify_native_simulation",
@@ -6165,6 +7716,11 @@ class NativeProjectService:
                     "project_path": project_path,
                     "project_hash": project_hash,
                     "build_bundle": build_bundle,
+                    **(
+                        {"simulation_plan_revision": simulation_plan_revision}
+                        if simulation_plan_revision is not None
+                        else {}
+                    ),
                 },
             )
             pre_dispatch_failure = _pre_dispatch_native_simulation_failure(
@@ -6212,12 +7768,63 @@ class NativeProjectService:
                 and preflight.get("state") in {"rejected", "not_verified"}
                 and preflight.get("simulatorActionPerformed") is False
             ):
+                design = engineering_plan.get("design")
+                profile = preflight.get("acceptanceProfile")
+                expected_bindings = (
+                    design.get("indexAcceptanceBindings")
+                    if isinstance(design, dict)
+                    else None
+                )
+                expected_profile = {
+                    "schemaVersion": "controlstudio-native-simulation-profile-observation/v1",
+                    "reasonCode": (
+                        "EXPLICIT_INDEX_ACCEPTANCE_BINDINGS_REQUIRED"
+                        if expected_bindings is None
+                        and isinstance(design, dict)
+                        and len(design.get("operatingModes") or []) > 1
+                        else "INDEX_ACCEPTANCE_BINDINGS_REJECTED"
+                    ),
+                    "requiredDesignSection": "index_acceptance_bindings",
+                    "profilePresent": expected_bindings is not None,
+                    "signalIds": [
+                        str(item.get("signalId") or "")
+                        for item in (design.get("ioPoints") or [])
+                        if isinstance(item, dict) and item.get("signalId")
+                    ] if isinstance(design, dict) else [],
+                    "modeIds": [
+                        str(item.get("modeId") or "")
+                        for item in (design.get("operatingModes") or [])
+                        if isinstance(item, dict) and item.get("modeId")
+                    ] if isinstance(design, dict) else [],
+                    "alarmIds": [
+                        str(item.get("alarmId") or "")
+                        for item in (design.get("alarms") or [])
+                        if isinstance(item, dict) and item.get("alarmId")
+                    ] if isinstance(design, dict) else [],
+                    "timerIds": [
+                        str(item.get("timerId") or "")
+                        for item in (design.get("timers") or [])
+                        if isinstance(item, dict) and item.get("timerId")
+                    ] if isinstance(design, dict) else [],
+                    "bindings": expected_bindings if isinstance(expected_bindings, dict) else None,
+                }
+                if (
+                    profile != expected_profile
+                    or preflight.get("buildBundleId") != bundle_id
+                    or preflight.get("reviewedPlanDigest") != reviewed_plan_digest
+                    or preflight.get("sourceSha256") != compiled.get("sourceSha256")
+                    or preflight.get("ladderIrSha256") != compiled.get("ladderIrSha256")
+                    or raw.get("project_unchanged") is not True
+                    or raw.get("controllerConnected") is not False
+                    or raw.get("plcWritePerformed") is not False
+                ):
+                    raise NativeProjectEvidenceError(
+                        "XG-SIM profile preflight provenance is invalid"
+                    )
                 return {
                     "state": "not_verified",
-                    "detail": str(
-                        preflight.get("detail")
-                        or "XG-SIM acceptance profile is unsupported"
-                    ),
+                    "detail": "XG-SIM acceptance requires a reviewed explicit role-binding profile.",
+                    "preflight": _json_load(_json_dump(profile)),
                     "session": session,
                 }
             receipt = (
@@ -6227,6 +7834,25 @@ class NativeProjectService:
             )
             if not isinstance(receipt, dict):
                 raise NativeProjectEvidenceError("MCP did not return a native XG-SIM receipt")
+            scenario_receipt = receipt.get("scenarioReceipt")
+            if (
+                isinstance(scenario_receipt, dict)
+                and scenario_receipt.get("schemaVersion")
+                == "controlstudio-native-simulation-scenarios/v4"
+            ):
+                return await self._verify_multi_mode_index_receipt(
+                    receipt=receipt,
+                    session=session,
+                    workspace=workspace,
+                    build_bundle=build_bundle,
+                    compiled=compiled,
+                    engineering_plan=engineering_plan,
+                    project_path=project_path,
+                    project_hash=project_hash,
+                    bundle_id=bundle_id,
+                    reviewed_plan_digest=reviewed_plan_digest,
+                    trial_id=trial_id,
+                )
             project_readback = receipt.get("projectReadback")
             simulation_preparation = receipt.get("simulationPreparation")
             program_binding = receipt.get("programBinding")
@@ -7710,6 +9336,10 @@ class NativeProjectService:
                 "exactInstructionReadback": expected_instruction_readback,
                 "finalView": "LD",
                 "programCheckPassed": True,
+                "verificationBoundary": (
+                    "independent_pre_write_native_readback_plus_official_xgsim_write"
+                ),
+                "officialWriteVerified": True,
             }
             prepared_hash = str(project_readback.get("projectSha256") or "").casefold()
             hash_after_start = str(
@@ -7825,7 +9455,8 @@ class NativeProjectService:
                     "compiledProgramSchema": NATIVE_COMPILED_PROGRAM_SCHEMA,
                 }
                 or simulator.get("product") != "XG-SIM"
-                or simulator.get("bridge") != "XimUtil.DeviceInterface"
+                or simulator.get("bridge")
+                not in {"XimUtil.DeviceInterface", "XGT_FENET_SIMULATOR"}
                 or simulator.get("programWritePerformed") is not True
                 or simulator.get("cpuRunVerified") is not True
                 or simulator.get("cpuStopped") is not True
@@ -7912,6 +9543,42 @@ class NativeProjectService:
                 },
             }
             return result
+        except MCPToolError as exc:
+            error_text = str(exc)
+            if "session not found" in error_text or (
+                "requires capability 'simulate'" in error_text
+                and "session profile 'analysis'" in error_text
+            ):
+                return {
+                    "state": "not_verified",
+                    "detail": (
+                        "XG-SIM was not dispatched because its exact reviewed-build "
+                        "session binding was unavailable. Rebind and re-read the "
+                        "independently reopened project before retrying."
+                    ),
+                    "session": session,
+                    "preDispatch": {
+                        "simulatorActionPerformed": False,
+                        "inputWritePerformed": False,
+                        "cpuRunPerformed": False,
+                    },
+                }
+            return {
+                "state": "quarantined",
+                "detail": (
+                    "XG-SIM observation did not return a complete safe-restoration receipt; "
+                    f"manual simulator recovery is required before retry: {exc}"
+                ),
+                "session": session,
+                "trial": {
+                    "schemaVersion": NATIVE_SIMULATION_TRIAL_SCHEMA,
+                    "trialId": trial_id,
+                    "state": "QUARANTINED",
+                    "safeRestorationVerified": False,
+                    "quarantinedAt": _utc_text(_utc_now()),
+                    "decision": None,
+                },
+            }
         except (RuntimeError, KeyError, TypeError, ValueError, OSError) as exc:
             return {
                 "state": "quarantined",

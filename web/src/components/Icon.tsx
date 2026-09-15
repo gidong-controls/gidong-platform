@@ -20,6 +20,7 @@ export type IconName =
   | "power"
   | "refresh"
   | "send"
+  | "stop"
   | "settings"
   | "shield"
   | "spark"
@@ -169,6 +170,12 @@ export function Icon({
         <svg {...common}>
           <path d="M20 7v5h-5M4 17v-5h5" />
           <path d="M6.1 8A7 7 0 0 1 18.7 7M17.9 16A7 7 0 0 1 5.3 17" />
+        </svg>
+      );
+    case "stop":
+      return (
+        <svg {...common}>
+          <rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor" />
         </svg>
       );
     case "send":

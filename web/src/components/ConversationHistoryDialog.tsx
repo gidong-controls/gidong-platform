@@ -13,11 +13,11 @@ export interface ConversationHistoryDialogProps {
 }
 
 const MISSION_STATUS_LABEL = {
-  active: "진행 중",
+  active: "미완료",
   waiting_for_user: "사용자 입력 대기",
   waiting_for_approval: "승인 대기",
   completed: "완료",
-  blocked: "차단됨",
+  blocked: "진행 중단",
 } as const;
 
 function updatedLabel(value: string): string {
@@ -52,7 +52,6 @@ export function ConversationHistoryDialog({
       >
         <header>
           <div>
-            <p className="eyebrow">DURABLE ENGINEERING HISTORY</p>
             <h2 id="conversation-history-title">작업 기록</h2>
           </div>
           <button
@@ -67,8 +66,8 @@ export function ConversationHistoryDialog({
 
         <div className="conversation-history-dialog__body">
           <p>
-            저장된 mission, 답변과 승인 기록을 다시 엽니다. 현재 엔지니어링
-            대상과 다른 기록은 읽기 전용으로 표시됩니다.
+            이전 대화와 작업 결과를 다시 볼 수 있습니다. 다른 프로젝트의
+            기록은 읽기 전용으로 열립니다.
           </p>
           {loading ? (
             <div className="conversation-history-empty">작업 기록을 불러오는 중…</div>
@@ -93,7 +92,7 @@ export function ConversationHistoryDialog({
                         {current && <em>현재 열림</em>}
                       </span>
                       <span>
-                        {item.workflow === "engineering" ? "엔지니어링" : "신규 계획"}
+                        {item.workflow === "engineering" ? "프로젝트 작업" : "새 프로젝트"}
                         {missionStatus
                           ? ` · ${MISSION_STATUS_LABEL[missionStatus]}`
                           : ""}

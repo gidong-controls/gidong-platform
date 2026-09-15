@@ -7,6 +7,7 @@ import type {
 export interface EngineeringMissionPanelProps {
   mission: EngineeringMission;
   availableEvidenceIds: readonly string[];
+  evidenceTitles?: Record<string, string>;
   onOpenEvidence: (evidenceId: string, trigger: HTMLButtonElement) => void;
   resumeAvailable: boolean;
   resumeUnavailableMessage?: string;
@@ -39,6 +40,7 @@ const STEP_STATUS_LABEL: Record<EngineeringMissionStepStatus, string> = {
 export function EngineeringMissionPanel({
   mission,
   availableEvidenceIds,
+  evidenceTitles = {},
   onOpenEvidence,
   resumeAvailable,
   resumeUnavailableMessage,
@@ -65,7 +67,7 @@ export function EngineeringMissionPanel({
     <section className="engineering-mission" aria-label="엔지니어링 에이전트 작업 계획">
       <header className="engineering-mission__header">
         <div>
-          <p className="eyebrow">ENGINEERING MISSION</p>
+          <p className="eyebrow">작업 계획</p>
           <h3>{snapshot.objective}</h3>
         </div>
         <div className="engineering-mission__status">
@@ -73,7 +75,7 @@ export function EngineeringMissionPanel({
             {STATUS_LABEL[snapshot.status]}
           </span>
           <small>
-            {completed}/{snapshot.steps.length} 단계 · revision {mission.revision}
+            {completed}/{snapshot.steps.length} 단계 완료
           </small>
         </div>
       </header>
@@ -93,9 +95,9 @@ export function EngineeringMissionPanel({
               {step.outcome && <p>{step.outcome}</p>}
               {step.evidenceRefs.length > 0 && (
                 <details>
-                  <summary>결속된 근거 {step.evidenceRefs.length}건</summary>
+                  <summary>참고한 자료 {step.evidenceRefs.length}건</summary>
                   <ul>
-                    {step.evidenceRefs.map((evidenceRef) => (
+                    {step.evidenceRefs.map((evidenceRef, index) => (
                       <li key={evidenceRef}>
                         <button
                           type="button"
@@ -110,7 +112,7 @@ export function EngineeringMissionPanel({
                             onOpenEvidence(evidenceRef, event.currentTarget)
                           }
                         >
-                          <code>{evidenceRef}</code>
+                          <span>{evidenceTitles[evidenceRef] || `참고 자료 ${index + 1}`}</span>
                           <span>
                             {availableEvidenceIds.includes(evidenceRef)
                               ? "근거 열기"
@@ -154,9 +156,10 @@ export function EngineeringMissionPanel({
               <strong>다음 행동</strong> {snapshot.nextAction}
             </p>
           )}
-          <small title={mission.digest}>
-            mission digest <code>{mission.digest.slice(0, 12)}…</code>
-          </small>
+          <details>
+            <summary>기술 기록</summary>
+            <small>기록 버전 {mission.revision} · <code>{mission.digest}</code></small>
+          </details>
         </div>
         {(snapshot.status === "active" || waitingForChangeOutcome) && (
           <button

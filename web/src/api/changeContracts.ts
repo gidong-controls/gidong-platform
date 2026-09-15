@@ -1084,8 +1084,13 @@ function isMneRungXgSimProfile(value: unknown, targetRungDigest: unknown): boole
     if (!isRecord(scenario) || !hasExactKeys(scenario, ["steps"]) || !Array.isArray(scenario.steps) || scenario.steps.length < 2 || scenario.steps.length > 16) return false;
     const names = new Set<string>();
     let drives: string[] | null = null;
+    let totalHoldMs = 0;
     return scenario.steps.every((step) => {
-      if (!isRecord(step) || !hasExactKeys(step, ["name", "drive", "observe"]) || typeof step.name !== "string" || !step.name.trim() || names.has(step.name) || !isRecord(step.drive) || !isRecord(step.observe)) return false;
+      if (!isRecord(step) || !hasExactKeys(step, ["name", "drive", "observe", ...("hold_ms" in step ? ["hold_ms"] : [])]) || typeof step.name !== "string" || !step.name.trim() || names.has(step.name) || !isRecord(step.drive) || !isRecord(step.observe)) return false;
+      const holdMs = "hold_ms" in step ? step.hold_ms : 0;
+      if (typeof holdMs !== "number" || !Number.isSafeInteger(holdMs) || holdMs < 0 || holdMs > 10_000) return false;
+      totalHoldMs += holdMs;
+      if (totalHoldMs > 30_000) return false;
       names.add(step.name);
       const drive = step.drive as Record<string, unknown>;
       const observe = step.observe as Record<string, unknown>;
