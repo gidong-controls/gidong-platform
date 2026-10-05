@@ -81,8 +81,6 @@ XG5000/XG-SIM/PLC 조합의 실기 acceptance다. 앞 단계 통과를 뒤 단�
 | [pywinauto](https://pywinauto.readthedocs.io/en/latest/getting_started.html) | legacy MFC에는 Win32 backend, modern control에는 UIA backend를 선택 | selector profile에 backend/class/control hierarchy/language/DPI를 포함 | fuzzy title 한 개만으로 instance 선택 |
 | [WinAppDriver](https://github.com/microsoft/WinAppDriver) · [Appium Windows Driver](https://github.com/appium/appium-windows-driver) | WebDriver 형태의 Windows UI test와 element inspection | 일반 앱 회귀 테스트의 비교 대상으로만 유지 | 2020년 이후 release가 없는 WinAppDriver service를 XG5000 mutation 권위 또는 custom MFC 해결책으로 도입 |
 
-XG5000 변경은 update-proof라고 주장하지 않는다. 대신 새 버전에서 조용히 잘못 동작하지 않게 한다. production MNE 실행은 `XG5000.exe` 절대 경로, SHA-256, file/product version, PE machine, Authenticode signer, process lifetime, exact PID/HWND, active-project path/hash, selector profile/language/DPI를 code-owned supported adapter binding으로 묶는다. 하나라도 바뀌면 plan/apply가 닫힌다. disposable scratch project의 A→B→A readback/check/save/reopen은 developer-only probe/certification이며, 일반 사용자 MNE 변경을 여는 bundle 요구사항은 아니다.
-
 [LS ELECTRIC 공식 검색](https://sol.ls-electric.com/ww/en/newSearch?searchInput=xg5000)은 XG-SIM 내부 상태 변경용 interface API는 공개하지만 XG5000 editor/project mutation API는 공개하지 않는다. 그러므로 현재 MFC/UI fallback은 불가피하지만, 절대좌표가 아니라 exact runtime/selector에 묶인 재인증 가능한 fallback이어야 한다. 공식 2026년 문서는 일부 장치 기능에 XG5000 V4.82 이상을 요구하므로, V4.81에서 얻은 evidence를 V4.82 지원 증명으로 승격하지 않는다.
 
 ## 릴리스와 공급망
@@ -106,10 +104,8 @@ XG5000 변경은 update-proof라고 주장하지 않는다. 대신 새 버전에
 | 기준 제품 | 검증된 production 패턴 | ControlStudio 결정 | 가져오지 않는 것 |
 |---|---|---|---|
 | [Beremiz](https://beremiz.readthedocs.io/en/latest/overview.html) | IEC 61131-3 project model, typed compiler pipeline, IDE/runtime 분리 | Agent는 typed candidate를 제안하고 private compiler가 exact vendor target과 digest를 생성 | XGWX를 근거 없이 PLCopen XML로 변환 |
-| [MatIEC via Beremiz](https://github.com/beremiz/beremiz) | textual IEC input을 검증된 중간 표현과 target code로 컴파일 | LD/MNE compiler의 parser·canonicalization·target digest 경계를 유지 | MatIEC semantics를 XGK/XGB vendor semantics로 간주 |
 | [OpenPLC Runtime v4](https://github.com/Autonomy-Logic/openplc-runtime) | editor-side compile, validated package upload, runtime compile/load, 별도 debug channel | Agent/Host/MCP 권위와 설계→compile→deploy→runtime observation receipt를 분리 | OpenPLC runtime/API를 LS PLC 실행 증거나 adapter로 사용 |
 | [Eclipse 4diac](https://eclipse.dev/4diac/doc/) | model validation, Problems/Console/Debug, deployment/monitoring을 분리 | project structure/task/call evidence와 target execution evidence를 구분 | IEC 61499 function-block model을 XG5000 LD 의미로 간주 |
-| [RuSTy](https://plc-lang.github.io/rusty/) | IEC 61131-3 ST를 parser/semantic/LLVM backend로 분리한 compiler architecture | typed parser·semantic validation·target backend 경계를 참고 | ST compiler 결과를 XG5000 LD/MNE vendor semantics로 간주 |
 
 공통 결론은 모델이 vendor 파일 전체를 자유 형식으로 다시 쓰게 하지 않는 것이다. Agent는 좁은 typed change candidate를 만들고, MCP가 private baseline을 다시 읽어 candidate를 deterministic compile한다. 인간은 complete target/digest/영향을 확인하고, Host의 일회성 승인을 거친 뒤에만 적용한다. 적용 후 Program Check, 저장된 파일 hash, 독립 reopen, 필요 시 XG-SIM 결과는 서로 다른 receipt로 남긴다.
 

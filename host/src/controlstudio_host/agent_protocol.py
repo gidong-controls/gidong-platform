@@ -8,6 +8,7 @@ cannot be mistaken for an Agent result.
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 from collections.abc import Mapping
 from typing import Any
@@ -16,6 +17,70 @@ from controlstudio_contracts import AGENT_PROTOCOL_VERSION_V1, AgentManifestV1
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 MAX_PROTOCOL_LINE_BYTES = 2_000_000
+
+
+def validated_transcript_checkpoint(
+    checkpoint: Mapping[str, Any], digest: str | None = None,
+) -> tuple[dict[str, Any], str, list[dict[str, Any]], list[dict[str, Any]]]:
+    """Validate historical, fully settled messages; this grants no authority.
+
+    SDK request envelopes may merge on continuation. Monotonic persistence
+    therefore compares exact tool parts and user prompts, not message counts.
+    """
+    if set(checkpoint) != {"schemaVersion", "messages"} or checkpoint.get("schemaVersion") != "1":
+        raise AgentProtocolError("Agent transcript checkpoint shape is invalid")
+    _assert_finite_protocol_numbers(checkpoint)
+    try:
+        encoded = json.dumps(checkpoint, ensure_ascii=False, sort_keys=True,
+                             separators=(",", ":"), allow_nan=False)
+        canonical = json.loads(encoded)
+    except (TypeError, ValueError) as exc:
+        raise AgentProtocolError("Agent transcript checkpoint is not strict JSON") from exc
+    actual_digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    if digest is not None and digest != actual_digest:
+        raise AgentProtocolError("Agent transcript checkpoint digest mismatched")
+    messages = canonical["messages"]
+    if not isinstance(messages, list) or not messages:
+        raise AgentProtocolError("Agent transcript messages are invalid")
+    pending: dict[str, str] = {}
+    tool_parts: list[dict[str, Any]] = []
+    user_parts: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict) or message.get("kind") not in {"request", "response"}:
+            raise AgentProtocolError("Agent transcript message is invalid")
+        parts = message.get("parts")
+        if not isinstance(parts, list):
+            raise AgentProtocolError("Agent transcript message parts are invalid")
+        if pending and message["kind"] != "request":
+            raise AgentProtocolError("Agent transcript has an unsettled tool exchange")
+        for part in parts:
+            if not isinstance(part, dict) or not isinstance(part.get("part_kind"), str):
+                raise AgentProtocolError("Agent transcript part is invalid")
+            kind = part["part_kind"]
+            if kind == "thinking":
+                raise AgentProtocolError("Agent transcript contains private thinking")
+            if kind == "user-prompt":
+                user_parts.append(part)
+            if kind == "tool-call":
+                call_id, name = part.get("tool_call_id"), part.get("tool_name")
+                if message["kind"] != "response" or not isinstance(call_id, str) or not call_id or not isinstance(name, str) or not name or call_id in pending:
+                    raise AgentProtocolError("Agent transcript tool call is invalid")
+                pending[call_id] = name
+                tool_parts.append(part)
+            elif kind == "tool-return" or (kind == "retry-prompt" and part.get("tool_call_id")):
+                call_id = part.get("tool_call_id")
+                if message["kind"] != "request" or call_id not in pending or (
+                    part.get("tool_name") != pending[call_id]
+                    and not (kind == "retry-prompt" and part.get("tool_name") is None)
+                ):
+                    raise AgentProtocolError("Agent transcript tool result is unpaired")
+                del pending[call_id]
+                tool_parts.append(part)
+            elif kind == "retry-prompt" and part.get("tool_name") is not None:
+                raise AgentProtocolError("Agent transcript retry is unpaired")
+    if pending:
+        raise AgentProtocolError("Agent transcript has unfinished tool calls")
+    return canonical, actual_digest, tool_parts, user_parts
 
 
 class AgentProtocolError(RuntimeError):
@@ -42,7 +107,6 @@ _FORBIDDEN_AGENT_PAYLOAD_FIELDS = frozenset(
         "hwnd",
         "projectpath",
         "projecthash",
-        "projectsha256",
         "engineeringprocessid",
         "engineeringwindowhandle",
         "controllerendpoint",

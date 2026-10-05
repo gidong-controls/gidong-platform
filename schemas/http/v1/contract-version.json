@@ -1,5 +1,5 @@
 {
-  "api_contract": "6.0",
-  "major": 6,
+  "api_contract": "7.0",
+  "major": 7,
   "snapshot": "openapi.json"
 }

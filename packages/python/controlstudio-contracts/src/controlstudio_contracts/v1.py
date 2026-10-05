@@ -30,6 +30,9 @@ class AgentToolDefinitionV1(BaseModel):
     tool_name: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=10_000)
     parameters_json_schema: dict[str, Any] = Field(default_factory=dict)
+    # Host-owned transport patience, never a model argument or permission to
+    # extend the underlying controller/native operation's safety deadlines.
+    result_timeout_seconds: float = Field(default=150.0, strict=True, gt=0, le=3600)
 
 
 class EventEnvelopeV1(BaseModel):

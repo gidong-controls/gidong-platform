@@ -9,6 +9,7 @@
     "protocol_version": {"const": "1.0"},
     "tool_name": {"type": "string", "minLength": 1},
     "description": {"type": ["string", "null"]},
-    "parameters_json_schema": {"type": "object"}
+    "parameters_json_schema": {"type": "object"},
+    "result_timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 3600, "default": 150}
   }
 }

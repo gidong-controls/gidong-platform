@@ -116,46 +116,6 @@ CHAT (기본)
 계획을 만들기 위해 필요한 정보를 수집하는 선택적 보조물이며, CPU·경로·계획 검토
 화면을 채팅보다 먼저 강제하지 않는다.
 
-```text
-1. 요구사항 브리프
-   - 프로젝트 이름
-   - 설비 목적
-   - 안전·인터록·운영 제약
-   - 알려진 공정 순서와 하드웨어·I/O·통신은 `알고 있는 정보 추가`에 접음
-   - 모르는 항목은 미정으로 허용
-
-2. 계획 전용 에이전트
-   - MCP와 vendor project write 도구를 제공하지 않음
-   - 확인된 사실, 가정, 미결 질문을 분리
-   - 중요한 추가 질문만 제한적으로 제시
-
-3. 검토 가능한 Project Plan
-   - 목적·범위
-   - 하드웨어·I/O·network
-   - mode·sequence
-   - safety invariant
-   - alarm·recovery
-   - program/task 구조
-   - 검사·시뮬레이션 계획
-   - 일반 대화 말풍선과 구분되는 계획 검토 artifact로 표시
-
-4. 사람의 계획 검토
-   - 대화로 보완하거나 브리프를 수정
-   - native project 생성으로 진행하려는 경우에만 계획이 검토 준비 상태가 된 뒤
-     기술 설정으로 이동
-
-5. 벤더 기술 설정
-   - vendor·CPU·project path·language 같은 생성 필드 확정
-   - 계획 승인과 native project 생성 승인을 분리
-
-6. 생성과 이후 단계
-   - reviewed typed 설계의 XGK/XGB STEP·TON·alarm·recovery·interlock 생성
-   - exact mnemonic readback·LD 변환·program check·저장
-   - 독립 재열기·재추출
-   - simulator 정상·경계·고장·복구 시나리오
-   - online download/run edit는 각각 별도 capability와 승인
-```
-
 계획 검토 완료는 프로젝트 생성 또는 PLC 작업 승인이 아니다. 이는 신규 native
 project 생성 의도의 gate일 뿐, 일반 대화·읽기·분석을 막지 않는다. 아직 지원되지 않는
 단계는 버튼을 비활성화하고 정확한 이유를 표시하며, 계획이나 기본 조합 프로그램을

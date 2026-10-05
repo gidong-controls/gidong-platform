@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypedDict
 
-from .agent_runtime import MAX_ENGINEERING_AUTONOMOUS_CYCLES
+from .agent_protocol import validated_transcript_checkpoint
 from .api_models import canonical_engineering_mission_snapshot
 from .change_outcome import change_outcome_evidence, change_outcome_projection
 from .models import (
@@ -23,6 +24,7 @@ from .models import (
     Conversation,
     ConversationDetail,
     EngineeringAgentCheckpoint,
+    EngineeringAgentTranscript,
     EngineeringMission,
     Message,
     MessageRole,
@@ -41,6 +43,35 @@ from .project_planning import (
 
 class ChangeStoreConflict(RuntimeError):
     """A durable change contract conflicted with existing server authority."""
+
+
+class ApprovedChangePreflightFailure(TypedDict):
+    status: Literal["failed_before_execution"]
+    current: bool
+    native_execution_started: Literal[False]
+    mutation_attempted: Literal[False]
+    reason_code: str
+    stage: str
+    recorded_at: str
+
+
+_CHANGE_PREFLIGHT_REASON_CODE = re.compile(r"[A-Z][A-Z0-9_]{2,79}\Z")
+_CHANGE_PREFLIGHT_STAGE = re.compile(r"[a-z][a-z0-9_]{0,79}\Z")
+
+
+def _is_current_approved_preflight_failure(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get("status") == "failed_before_execution"
+        and value.get("current") is True
+        and value.get("native_execution_started") is False
+        and value.get("mutation_attempted") is False
+        and isinstance(value.get("reason_code"), str)
+        and _CHANGE_PREFLIGHT_REASON_CODE.fullmatch(value["reason_code"]) is not None
+        and isinstance(value.get("stage"), str)
+        and _CHANGE_PREFLIGHT_STAGE.fullmatch(value["stage"]) is not None
+        and isinstance(value.get("recorded_at"), str)
+    )
 
 
 class ConversationWorkflowConflict(RuntimeError):
@@ -116,28 +147,6 @@ def _native_design_is_reviewable(design: Any) -> bool:
     return all(scope[name].get("status") == "confirmed" for name in ("ioPoints", "controlNetworks"))
 
 
-def _native_ladder_is_executable(artifact: dict[str, Any]) -> bool:
-    technical = artifact.get("technicalConfiguration")
-    if not isinstance(technical, dict):
-        return False
-    program_name = technical.get("programName")
-    plc_series = technical.get("plcSeries")
-    if not isinstance(program_name, str) or not isinstance(plc_series, str):
-        return False
-    from .native_projects import (
-        NativeProjectPreconditionError,
-        _compile_native_program,
-    )
-
-    try:
-        _compile_native_program(
-            artifact,
-            program_name=program_name,
-            plc_series=plc_series,
-        )
-    except (KeyError, TypeError, ValueError, NativeProjectPreconditionError):
-        return False
-    return True
 
 
 class MutationLeaseConflict(ChangeStoreConflict):
@@ -198,8 +207,10 @@ _NATIVE_CHECKPOINT_IMMUTABLE_FIELDS = frozenset(
         "program_name",
         "plan_kind",
         "target_program_digest",
-        "before_mne_sha256",
-        "target_mne_sha256",
+        
+        "before_content_state",
+        "before_empty_program_source",
+        
         "adapter_binding_digest",
         "runtime_identity_digest",
         "baseline_digest",
@@ -816,6 +827,104 @@ MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
             """,
         ),
     ),
+    (
+        23,
+        "persist_provider_model_context_observation",
+        (
+            "ALTER TABLE model_settings ADD COLUMN model_context_json TEXT",
+        ),
+    ),
+    (
+        24,
+        "persist_model_reasoning_effort",
+        (
+            """
+            ALTER TABLE model_settings ADD COLUMN reasoning_effort TEXT CHECK (
+                reasoning_effort IS NULL OR reasoning_effort IN (
+                    'none', 'minimal', 'low', 'medium',
+                    'high', 'xhigh', 'max', 'ultra'
+                )
+            )
+            """,
+        ),
+    ),
+    (
+        25,
+        "separate_approved_artifact_and_execution_session",
+        ("ALTER TABLE change_transactions ADD COLUMN execution_target_json TEXT",),
+    ),
+    (
+        26,
+        "protected_model_credential_migration_quarantine",
+        (
+            """
+            CREATE TABLE model_credential_quarantine (
+                reference TEXT PRIMARY KEY,
+                protected_payload BLOB NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """,
+        ),
+    ),
+    (
+        27,
+        "durable_completed_agent_transcripts",
+        (
+            """CREATE TABLE engineering_agent_transcripts (
+                source_run_id TEXT PRIMARY KEY REFERENCES runs(id),
+                conversation_id TEXT NOT NULL REFERENCES conversations(id),
+                workspace_id TEXT,
+                revision_id TEXT,
+                request_message_id TEXT NOT NULL REFERENCES messages(id),
+                cursor INTEGER NOT NULL,
+                checkpoint_json TEXT NOT NULL,
+                digest TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )""",
+            "CREATE INDEX engineering_agent_transcripts_context ON engineering_agent_transcripts(conversation_id, workspace_id, revision_id, updated_at)",
+        ),
+    ),
+    (
+        28,
+        "remove_engineering_checkpoint_cycle_limit",
+        (
+            "ALTER TABLE engineering_agent_checkpoints RENAME TO engineering_agent_checkpoints_bounded",
+            """
+            CREATE TABLE engineering_agent_checkpoints (
+                conversation_id TEXT PRIMARY KEY
+                    REFERENCES conversations(id) ON DELETE CASCADE,
+                workspace_id TEXT NOT NULL,
+                revision_id TEXT NOT NULL,
+                mission_digest TEXT NOT NULL,
+                cycle INTEGER NOT NULL CHECK (cycle >= 1),
+                checkpoint_json TEXT NOT NULL,
+                digest TEXT NOT NULL,
+                updated_by_run_id TEXT NOT NULL
+                    REFERENCES runs(id) ON DELETE RESTRICT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            """
+            INSERT INTO engineering_agent_checkpoints(
+                conversation_id, workspace_id, revision_id, mission_digest,
+                cycle, checkpoint_json, digest, updated_by_run_id,
+                created_at, updated_at
+            )
+            SELECT
+                conversation_id, workspace_id, revision_id, mission_digest,
+                cycle, checkpoint_json, digest, updated_by_run_id,
+                created_at, updated_at
+            FROM engineering_agent_checkpoints_bounded
+            """,
+            "DROP TABLE engineering_agent_checkpoints_bounded",
+            """
+            CREATE INDEX idx_engineering_agent_checkpoints_target
+            ON engineering_agent_checkpoints(workspace_id, revision_id, updated_at)
+            """,
+        ),
+    ),
 )
 
 _CHANGE_TRANSACTION_OBSERVING_SCHEMA_VERSION = 19
@@ -967,9 +1076,16 @@ class HostStore:
                 for row in connection.execute("SELECT version FROM schema_migrations")
             }
             for version, name, statements in MIGRATIONS:
+                if (
+                    version > _CHANGE_TRANSACTION_OBSERVING_SCHEMA_VERSION
+                    and _CHANGE_TRANSACTION_OBSERVING_SCHEMA_VERSION not in applied
+                ):
+                    _rebuild_change_transactions_for_observing(connection)
+                    applied.add(_CHANGE_TRANSACTION_OBSERVING_SCHEMA_VERSION)
                 if version in applied:
                     continue
                 with connection:
+                    connection.execute("BEGIN IMMEDIATE")
                     for statement in statements:
                         connection.execute(statement)
                     connection.execute(
@@ -979,8 +1095,6 @@ class HostStore:
                         """,
                         (version, name, _utc_now()),
                     )
-            if _CHANGE_TRANSACTION_OBSERVING_SCHEMA_VERSION not in applied:
-                _rebuild_change_transactions_for_observing(connection)
 
     def ping(self) -> bool:
         try:
@@ -1113,7 +1227,7 @@ class HostStore:
         if not all(
             value.strip()
             for value in (
-                native_project_id,
+                None,
                 planning_conversation_id,
                 workspace_id,
                 revision_id,
@@ -1121,7 +1235,7 @@ class HostStore:
             )
         ):
             raise ValueError("engineering handoff identity cannot be blank")
-        if provenance.get("nativeProjectId") != native_project_id or (
+        if provenance.get("nativeProjectId") != None or (
             provenance.get("planningConversationId") != planning_conversation_id
         ):
             raise ValueError("engineering handoff provenance identity is invalid")
@@ -1131,13 +1245,7 @@ class HostStore:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
-                existing = connection.execute(
-                    """
-                    SELECT * FROM conversations
-                    WHERE handoff_native_project_id = ?
-                    """,
-                    (native_project_id,),
-                ).fetchone()
+                existing = None
                 if existing is not None:
                     if (
                         existing["workflow"] != "engineering"
@@ -1170,7 +1278,7 @@ class HostStore:
                                 engineering_session_id,
                                 timestamp,
                                 existing["id"],
-                                native_project_id,
+                                None,
                                 planning_conversation_id,
                                 workspace_id,
                                 revision_id,
@@ -1187,7 +1295,7 @@ class HostStore:
                             conversation_id=str(existing["id"]),
                             event_type="conversation.engineering_session_rebound",
                             payload={
-                                "native_project_id": native_project_id,
+                                "native_project_id": None,
                                 "planning_conversation_id": planning_conversation_id,
                                 "workspace_id": workspace_id,
                                 "revision_id": revision_id,
@@ -1249,7 +1357,7 @@ class HostStore:
                         workspace_id,
                         revision_id,
                         engineering_session_id,
-                        native_project_id,
+                        None,
                         planning_conversation_id,
                         canonical_provenance,
                         timestamp,
@@ -1265,7 +1373,7 @@ class HostStore:
                         "title": title,
                         "workflow": "engineering",
                         "target_bound": True,
-                        "native_project_id": native_project_id,
+                        "native_project_id": None,
                         "planning_conversation_id": planning_conversation_id,
                     },
                 )
@@ -1275,7 +1383,7 @@ class HostStore:
                     event_type="conversation.engineering_handoff_created",
                     payload={
                         "engineering_conversation_id": conversation_id,
-                        "native_project_id": native_project_id,
+                        "native_project_id": None,
                     },
                 )
                 row = connection.execute(
@@ -1439,18 +1547,9 @@ class HostStore:
                     )
                 design = artifact.get("design")
                 completeness = artifact.get("completeness")
-                if (
-                    metadata.get("plan_status") != "ready_for_review"
-                    or artifact.get("status") != "ready_for_review"
-                    or artifact.get("openDecisions") != []
-                    or not isinstance(completeness, dict)
-                    or completeness.get("blocking") != 0
-                    or not _native_design_is_reviewable(design)
-                    or not _native_ladder_is_executable(artifact)
-                ):
-                    raise ProjectPlanReviewConflict(
-                        "project plan still needs clarification"
-                    )
+                raise ProjectPlanReviewConflict(
+                    "project plan still needs clarification"
+                )
                 canonical_artifact = json.dumps(
                     artifact,
                     ensure_ascii=False,
@@ -1675,21 +1774,9 @@ class HostStore:
                     sort_keys=True,
                 ).encode("utf-8")
             ).hexdigest()
-            if (
-                metadata.get("plan_status") != "ready_for_review"
-                or artifact.get("schemaVersion") != "2"
-                or artifact.get("status") != "ready_for_review"
-                or artifact.get("openDecisions") != []
-                or not isinstance(completeness, dict)
-                or completeness.get("blocking") != 0
-                or not _native_design_is_reviewable(design)
-                or not _native_ladder_is_executable(artifact)
-                or metadata.get("plan_digest") != actual_digest
-                or plan_digest != actual_digest
-            ):
-                raise ProjectPlanReviewConflict(
-                    "reviewed project plan digest or readiness no longer matches"
-                )
+            raise ProjectPlanReviewConflict(
+                "reviewed project plan digest or readiness no longer matches"
+            )
             expected_section_ids = self._project_plan_section_ids(artifact)
             supplied_section_ids = self._normalize_reviewed_section_ids(
                 reviewed_section_ids
@@ -1769,14 +1856,7 @@ class HostStore:
         """Return the durable engineering handoff owned by a native operation."""
 
         with self._connection() as connection:
-            row = connection.execute(
-                """
-                SELECT * FROM conversations
-                WHERE handoff_native_project_id = ?
-                LIMIT 1
-                """,
-                (native_project_id,),
-            ).fetchone()
+            row = None
         return self._conversation_from_row(row) if row is not None else None
 
     def get_engineering_mission(
@@ -1800,6 +1880,64 @@ class HostStore:
                 (conversation_id,),
             ).fetchone()
         return self._engineering_agent_checkpoint_from_row(row) if row is not None else None
+
+    def checkpoint_engineering_transcript(
+        self, *, conversation_id: str, run_id: str,
+        workspace_id: str | None, revision_id: str | None,
+        checkpoint: dict[str, Any], digest: str,
+    ) -> EngineeringAgentTranscript:
+        """Keep original completed messages under the Host's run provenance."""
+        canonical, digest, parts, users = validated_transcript_checkpoint(checkpoint, digest)
+        now = _utc_now()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            conversation = connection.execute("SELECT * FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+            if (run is None or run["conversation_id"] != conversation_id
+                    or not run["request_message_id"] or conversation is None
+                    or conversation["workspace_id"] != workspace_id
+                    or conversation["revision_id"] != revision_id):
+                raise EngineeringMissionConflict("Agent transcript run context mismatched")
+            prior = connection.execute("SELECT * FROM engineering_agent_transcripts WHERE source_run_id = ?", (run_id,)).fetchone()
+            if prior is not None:
+                _, _, old_parts, old_users = validated_transcript_checkpoint(
+                    _json_load(prior["checkpoint_json"]), prior["digest"])
+                old_text = [part for message in _json_load(prior["checkpoint_json"])["messages"]
+                            for part in message["parts"] if part["part_kind"] == "text"]
+                text = [part for message in canonical["messages"]
+                        for part in message["parts"] if part["part_kind"] == "text"]
+                if (prior["conversation_id"] != conversation_id
+                        or prior["workspace_id"] != workspace_id or prior["revision_id"] != revision_id
+                        or prior["request_message_id"] != run["request_message_id"]
+                        or parts[:len(old_parts)] != old_parts or users[:len(old_users)] != old_users
+                        or text[:len(old_text)] != old_text):
+                    raise EngineeringMissionConflict("Agent transcript cursor regressed or changed")
+            connection.execute(
+                """INSERT INTO engineering_agent_transcripts
+                (source_run_id, conversation_id, workspace_id, revision_id, request_message_id,
+                 cursor, checkpoint_json, digest, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_run_id) DO UPDATE SET cursor=excluded.cursor,
+                checkpoint_json=excluded.checkpoint_json, digest=excluded.digest,
+                updated_at=excluded.updated_at""",
+                (run_id, conversation_id, workspace_id, revision_id, run["request_message_id"],
+                 len(parts), _json_dump(canonical), digest, prior["created_at"] if prior else now, now),
+            )
+            row = connection.execute("SELECT * FROM engineering_agent_transcripts WHERE source_run_id = ?", (run_id,)).fetchone()
+            connection.commit()
+        return self._engineering_agent_transcript_from_row(row)
+
+    def get_latest_engineering_transcript(
+        self, conversation_id: str, *, workspace_id: str | None, revision_id: str | None,
+    ) -> EngineeringAgentTranscript | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """SELECT * FROM engineering_agent_transcripts
+                WHERE conversation_id = ? AND workspace_id IS ? AND revision_id IS ?
+                ORDER BY updated_at DESC, source_run_id DESC LIMIT 1""",
+                (conversation_id, workspace_id, revision_id),
+            ).fetchone()
+        return self._engineering_agent_transcript_from_row(row) if row else None
 
     def reverify_blocked_engineering_mission_step(
         self,
@@ -2149,8 +2287,7 @@ class HostStore:
             isinstance(cycle, bool)
             or not isinstance(cycle, int)
             or cycle < 1
-            or cycle > MAX_ENGINEERING_AUTONOMOUS_CYCLES
-            or cycle_disposition not in {"continue", "respond"}
+            or cycle_disposition not in {"continue", "respond", "checkpoint"}
         ):
             raise EngineeringMissionConflict("mission checkpoint cycle is invalid")
         has_final_message = (
@@ -2187,8 +2324,6 @@ class HostStore:
             or agent_checkpoint.get("cycle") != cycle
             or agent_checkpoint.get("missionDigest") != digest
             or not isinstance(agent_checkpoint.get("messages"), list)
-            or len(agent_checkpoint["messages"]) > 256
-            or len(checkpoint_json.encode("utf-8")) > 1_500_000
         ):
             raise EngineeringMissionConflict("Agent checkpoint contract is invalid")
 
@@ -2240,7 +2375,11 @@ class HostStore:
                             "mission change transaction does not belong to the conversation"
                         )
                 mission_status = engineering_mission.get("status")
-                if mission_status == "waiting_for_approval":
+                if cycle_disposition == "checkpoint":
+                    # Transcript persistence does not renew an expired or terminal approval.
+                    # The unchanged mission snapshot is checked separately below.
+                    pass
+                elif mission_status == "waiting_for_approval":
                     if (
                         linked_change is None
                         or linked_change["state"]
@@ -2284,7 +2423,6 @@ class HostStore:
                         isinstance(previous_cycle, bool)
                         or not isinstance(previous_cycle, int)
                         or previous_cycle < 1
-                        or previous_cycle > MAX_ENGINEERING_AUTONOMOUS_CYCLES
                         or previous_disposition not in {"continue", "respond"}
                     ):
                         raise EngineeringMissionConflict(
@@ -2304,6 +2442,15 @@ class HostStore:
                     (conversation_id,),
                 ).fetchone()
                 previous_refs: set[str] = set()
+                if cycle_disposition == "checkpoint" and (
+                    existing is None
+                    or _json_load(str(existing["snapshot_json"])) != engineering_mission
+                    or existing["digest"] != digest
+                    or existing["change_transaction_id"] != change_transaction_id
+                ):
+                    raise EngineeringMissionConflict(
+                        "transcript checkpoint cannot change the engineering mission"
+                    )
                 if existing is not None:
                     if (
                         existing["workspace_id"] != workspace_id
@@ -2466,22 +2613,23 @@ class HostStore:
                         timestamp,
                     ),
                 )
-                self._insert_event(
-                    connection,
-                    conversation_id=conversation_id,
-                    run_id=run_id,
-                    event_type="mission.checkpointed",
-                    payload={
-                        "conversationId": conversation_id,
-                        "runId": run_id,
-                        "revision": next_revision,
-                        "digest": digest,
-                        "cycle": cycle,
-                        "cycleDisposition": cycle_disposition,
-                        "status": engineering_mission.get("status"),
-                        "activeStepId": engineering_mission.get("activeStepId"),
-                    },
-                )
+                if cycle_disposition != "checkpoint":
+                    self._insert_event(
+                        connection,
+                        conversation_id=conversation_id,
+                        run_id=run_id,
+                        event_type="mission.checkpointed",
+                        payload={
+                            "conversationId": conversation_id,
+                            "runId": run_id,
+                            "revision": next_revision,
+                            "digest": digest,
+                            "cycle": cycle,
+                            "cycleDisposition": cycle_disposition,
+                            "status": engineering_mission.get("status"),
+                            "activeStepId": engineering_mission.get("activeStepId"),
+                        },
+                    )
                 self._insert_event(
                     connection,
                     conversation_id=conversation_id,
@@ -2612,7 +2760,7 @@ class HostStore:
                     """,
                     (conversation_id,),
                 ).fetchone()
-                if mission is None and reason != "offline_candidate_preparation":
+                if mission is None and reason == "engineering_mission_resume":
                     raise EngineeringMissionConflict(
                         "mission resume requires an existing durable mission"
                     )
@@ -3493,8 +3641,10 @@ class HostStore:
         A Host restart reconciles EXECUTING and VERIFYING rows to QUARANTINED
         before serving requests. Keeping the pre-reconciliation states in this
         selector also makes status fail closed if it is called during an
-        unusual lifecycle boundary. Pending decisions, durable approvals, and
-        terminal receipts remain visible until the user has dealt with them.
+        unusual lifecycle boundary. Pending decisions and durable approvals
+        remain visible, as does the latest terminal receipt until reviewed. Older
+        terminal receipts remain in history, but must not become active again
+        when a newer transaction has already been handled.
         """
 
         with self._connection() as connection:
@@ -3511,6 +3661,11 @@ class HostStore:
                            'REJECTED', 'EXPIRED'
                        )
                        AND receipt_acknowledged_at IS NULL
+                       AND id = (
+                           SELECT id FROM change_transactions
+                           ORDER BY created_at DESC, id DESC
+                           LIMIT 1
+                       )
                    )
                 ORDER BY
                     CASE state
@@ -3745,6 +3900,7 @@ class HostStore:
         *,
         transaction_id: str,
         expected_plan_digest: str,
+        execution_target: ChangeTargetIdentity | None = None,
         started_at: datetime | None = None,
     ) -> ChangeTransaction | None:
         """Acquire the durable target lease and enter EXECUTING atomically."""
@@ -3763,6 +3919,12 @@ class HostStore:
                     return None
                 if str(row["plan_digest"]) != expected_plan_digest:
                     raise ChangeStoreConflict("plan digest does not match the approved contract")
+                approved_target = ChangeTargetIdentity.model_validate(
+                    _json_load(row["target_identity_json"])
+                )
+                bound_target = execution_target or approved_target
+                if not approved_target.same_artifact(bound_target):
+                    raise ChangeStoreConflict("execution target differs from the approved artifact")
                 state = ChangeTransactionState(str(row["state"]))
                 if state is not ChangeTransactionState.APPROVED:
                     raise ChangeStoreConflict(
@@ -3773,6 +3935,13 @@ class HostStore:
                     raise ChangeStoreConflict("transaction has no durable approval")
                 if str(approval["plan_digest"]) != expected_plan_digest:
                     raise ChangeStoreConflict("approval digest no longer matches the plan")
+
+                result = _json_load(str(row["result_json"]))
+                preflight = result.get("preflight") if isinstance(result, dict) else None
+                if _is_current_approved_preflight_failure(preflight):
+                    preflight["current"] = False
+                    preflight["superseded_at"] = timestamp
+
                 expires_at = datetime.fromisoformat(str(row["approval_expires_at"]))
                 if execution_time >= expires_at:
                     connection.execute(
@@ -3849,10 +4018,17 @@ class HostStore:
                 connection.execute(
                     """
                     UPDATE change_transactions
-                    SET state = 'EXECUTING', updated_at = ?, execution_started_at = ?
+                    SET state = 'EXECUTING', updated_at = ?, execution_started_at = ?,
+                        execution_target_json = ?, result_json = ?
                     WHERE id = ?
                     """,
-                    (timestamp, timestamp, transaction_id),
+                    (
+                        timestamp,
+                        timestamp,
+                        _json_dump(bound_target.model_dump(mode="json")),
+                        _json_dump(result),
+                        transaction_id,
+                    ),
                 )
                 self._insert_event(
                     connection,
@@ -3879,6 +4055,110 @@ class HostStore:
                 raise
         assert updated is not None
         return self._change_transaction_from_row(updated, approval)
+
+    def record_approved_change_preflight_failure(
+        self,
+        *,
+        transaction_id: str,
+        expected_plan_digest: str,
+        reason_code: str,
+        stage: str,
+    ) -> tuple[ChangeTransaction | None, bool]:
+        """Persist a bounded preparation failure without consuming approval."""
+
+        if (
+            not isinstance(reason_code, str)
+            or _CHANGE_PREFLIGHT_REASON_CODE.fullmatch(reason_code) is None
+            or not isinstance(stage, str)
+            or _CHANGE_PREFLIGHT_STAGE.fullmatch(stage) is None
+        ):
+            raise ChangeStoreConflict("change preflight diagnostic is invalid")
+
+        timestamp = _utc_now()
+        record: ApprovedChangePreflightFailure = {
+            "status": "failed_before_execution",
+            "current": True,
+            "native_execution_started": False,
+            "mutation_attempted": False,
+            "reason_code": reason_code,
+            "stage": stage,
+            "recorded_at": timestamp,
+        }
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    "SELECT * FROM change_transactions WHERE id = ?",
+                    (transaction_id,),
+                ).fetchone()
+                if row is None:
+                    connection.rollback()
+                    return None, False
+                if str(row["plan_digest"]) != expected_plan_digest:
+                    raise ChangeStoreConflict(
+                        "plan digest does not match the approved contract"
+                    )
+                state = ChangeTransactionState(str(row["state"]))
+                if (
+                    state is not ChangeTransactionState.APPROVED
+                    or row["execution_started_at"] is not None
+                    or row["execution_target_json"] is not None
+                ):
+                    raise ChangeStoreConflict(
+                        "preflight diagnostics require an approved change before execution"
+                    )
+                approval = self._approval_row(connection, transaction_id)
+                if (
+                    approval is None
+                    or str(approval["decision"]) != ApprovalDecision.APPROVE.value
+                    or str(approval["plan_digest"]) != expected_plan_digest
+                ):
+                    raise ChangeStoreConflict(
+                        "transaction has no matching durable approval"
+                    )
+                mutation_lease = connection.execute(
+                    """
+                    SELECT 1 FROM mutation_leases
+                    WHERE transaction_id = ? AND released_at IS NULL
+                    LIMIT 1
+                    """,
+                    (transaction_id,),
+                ).fetchone()
+                if mutation_lease is not None:
+                    raise ChangeStoreConflict(
+                        "cannot record preflight diagnostics during native execution"
+                    )
+
+                result = _json_load(str(row["result_json"]))
+                if not isinstance(result, dict):
+                    raise ChangeStoreConflict("stored change result is invalid")
+                previous = result.get("preflight")
+                if isinstance(previous, dict) and previous.get("current") is True:
+                    if not _is_current_approved_preflight_failure(previous):
+                        raise ChangeStoreConflict(
+                            "stored current preflight diagnostic is invalid"
+                        )
+                    previous["current"] = False
+                    previous["superseded_at"] = timestamp
+                result["preflight"] = record
+                connection.execute(
+                    """
+                    UPDATE change_transactions
+                    SET result_json = ?, updated_at = ?
+                    WHERE id = ? AND state = 'APPROVED'
+                    """,
+                    (_json_dump(result), timestamp, transaction_id),
+                )
+                updated = connection.execute(
+                    "SELECT * FROM change_transactions WHERE id = ?",
+                    (transaction_id,),
+                ).fetchone()
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        assert updated is not None
+        return self._change_transaction_from_row(updated, approval), True
 
     def fail_approved_change_preflight(
         self,
@@ -4272,12 +4552,63 @@ class HostStore:
         assert updated is not None
         return self._change_transaction_from_row(updated, approval)
 
+    def expire_change_approvals(
+        self,
+        *,
+        conversation_id: str,
+        now: datetime | None = None,
+    ) -> int:
+        """Advance elapsed, unexecuted approvals before resuming a conversation."""
+        timestamp = _utc_text(now or datetime.now(timezone.utc))
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                rows = connection.execute(
+                    """
+                    SELECT id, conversation_id, run_id, state FROM change_transactions
+                    WHERE conversation_id = ?
+                      AND state IN ('PENDING_APPROVAL', 'APPROVED')
+                      AND julianday(approval_expires_at) <= julianday(?)
+                      AND execution_started_at IS NULL
+                    """,
+                    (conversation_id, timestamp),
+                ).fetchall()
+                for row in rows:
+                    connection.execute(
+                        """
+                        UPDATE change_transactions
+                        SET state = 'EXPIRED', error_code = 'approval_expired',
+                            error_detail = 'Approval expired before execution.',
+                            updated_at = ?, completed_at = ?
+                        WHERE id = ?
+                        """,
+                        (timestamp, timestamp, row["id"]),
+                    )
+                    self._insert_event(
+                        connection,
+                        conversation_id=row["conversation_id"],
+                        run_id=row["run_id"],
+                        event_type="approval.expired",
+                        payload={
+                            "transaction_id": row["id"],
+                            "previous_state": row["state"],
+                            "state": "EXPIRED",
+                        },
+                    )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return len(rows)
+
     def reconcile_interrupted_change_transactions(
         self,
         *,
         now: datetime | None = None,
     ) -> int:
-        """Expire stale approvals and quarantine mutation stages after restart."""
+        """Retain proven positive decisions; quarantine interrupted mutations."""
+
+        pass
 
         timestamp = _utc_text(now or datetime.now(timezone.utc))
         reconciled = 0
@@ -4288,7 +4619,7 @@ class HostStore:
                     """
                     SELECT * FROM change_transactions
                     WHERE state IN (
-                        'PENDING_APPROVAL', 'EXECUTING', 'VERIFYING', 'OBSERVING'
+                        'PENDING_APPROVAL', 'APPROVED', 'EXECUTING', 'VERIFYING', 'OBSERVING'
                     )
                     """
                 ).fetchall()
@@ -4297,7 +4628,10 @@ class HostStore:
                     next_state: ChangeTransactionState | None = None
                     error_code: str | None = None
                     if (
-                        previous_state is ChangeTransactionState.PENDING_APPROVAL
+                        previous_state in {
+                            ChangeTransactionState.PENDING_APPROVAL,
+                            ChangeTransactionState.APPROVED,
+                        }
                         and str(row["approval_expires_at"]) <= timestamp
                     ):
                         next_state = ChangeTransactionState.EXPIRED
@@ -4359,6 +4693,7 @@ class HostStore:
                 connection.rollback()
                 raise
         return reconciled
+
 
     def finalize_observing_change(
         self,
@@ -4435,6 +4770,7 @@ class HostStore:
         actor_id: str,
         error_code: str | None = None,
         error_detail: str | None = None,
+        held_target_lease_token: str | None = None,
     ) -> ChangeTransaction | None:
         allowed = {
             ChangeTransactionState.COMPLETED,
@@ -4443,6 +4779,8 @@ class HostStore:
         }
         if state not in allowed:
             raise ValueError("quarantine resolution has an unsupported state")
+        if held_target_lease_token is not None and state is not ChangeTransactionState.QUARANTINED:
+            raise ValueError("only an in-progress quarantine record can retain its target lease")
         timestamp = _utc_now()
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -4458,6 +4796,18 @@ class HostStore:
                     raise ChangeStoreConflict(
                         "only a quarantined change can be reconciled"
                     )
+                if held_target_lease_token is not None:
+                    held_lease = connection.execute(
+                        """
+                        SELECT 1 FROM target_operation_leases
+                        WHERE operation_id = ? AND owner_instance_id = ?
+                          AND holder_token = ? AND state = 'ACTIVE'
+                          AND released_at IS NULL
+                        """,
+                        (transaction_id, self.instance_id, held_target_lease_token),
+                    ).fetchone()
+                    if held_lease is None:
+                        raise ChangeStoreConflict("target-operation lease ownership was lost")
                 result = _json_load(str(row["result_json"]))
                 result["reconciliation"] = evidence
                 connection.execute(
@@ -4500,7 +4850,7 @@ class HostStore:
                             transaction_id,
                         ),
                     )
-                else:
+                elif held_target_lease_token is None:
                     connection.execute(
                         """
                         UPDATE target_operation_leases
@@ -4784,83 +5134,6 @@ class HostStore:
             )
             return cursor.rowcount
 
-    def release_terminal_native_target_operation_leases(self) -> int:
-        """Release native leases once their create mutation is terminal.
-
-        Historic XG-SIM records stay durable audit evidence, but optional
-        simulator trials cannot keep a completed offline build serialized.
-        """
-
-        timestamp = _utc_now()
-        with self._connection() as connection, connection:
-            table = connection.execute(
-                """
-                SELECT 1 FROM sqlite_master
-                WHERE type = 'table' AND name = 'native_project_operations'
-                """
-            ).fetchone()
-            if table is None:
-                cursor = connection.execute(
-                    """
-                    UPDATE target_operation_leases
-                    SET state = 'RELEASED', released_at = ?,
-                        release_reason = 'native_project_orphaned_before_allocation_on_startup'
-                    WHERE owner_kind = 'native_project_create'
-                      AND released_at IS NULL
-                      AND state = 'STALE_BLOCKED'
-                      AND owner_instance_id != ?
-                    """,
-                    (timestamp, self.instance_id),
-                )
-                return cursor.rowcount
-            rows = connection.execute(
-                """
-                SELECT leases.id AS lease_id,
-                       operations.state AS operation_state,
-                       operations.result_json AS result_json
-                FROM target_operation_leases AS leases
-                LEFT JOIN native_project_operations AS operations
-                  ON operations.operation_id = leases.operation_id
-                WHERE leases.owner_kind = 'native_project_create'
-                  AND leases.released_at IS NULL
-                  AND leases.state = 'STALE_BLOCKED'
-                  AND leases.owner_instance_id != ?
-                """,
-                (self.instance_id,),
-            ).fetchall()
-            releasable: list[tuple[str, str]] = []
-            for row in rows:
-                if row["operation_state"] is None:
-                    releasable.append(
-                        (
-                            str(row["lease_id"]),
-                            "native_project_orphaned_before_allocation_on_startup",
-                        )
-                    )
-                    continue
-                if str(row["operation_state"]) == "FAILED":
-                    releasable.append(
-                        (str(row["lease_id"]), "native_project_terminal_on_startup")
-                    )
-                    continue
-                if str(row["operation_state"]) != "COMPLETED":
-                    continue
-                releasable.append(
-                    (str(row["lease_id"]), "native_project_terminal_on_startup")
-                )
-            released = 0
-            for lease_id, reason in releasable:
-                cursor = connection.execute(
-                    """
-                    UPDATE target_operation_leases
-                    SET state = 'RELEASED', released_at = ?,
-                        release_reason = ?
-                    WHERE id = ? AND released_at IS NULL
-                    """,
-                    (timestamp, reason, lease_id),
-                )
-                released += cursor.rowcount
-            return released
 
     def supersede_stale_target_lease_for_durable_change_recovery(self) -> int:
         """Let the oldest durable mutation recovery own the global target next.
@@ -4938,81 +5211,9 @@ class HostStore:
                 connection.rollback()
                 raise
 
-    @staticmethod
-    def _native_operation_requires_resolution(
-        state: str,
-        result: dict[str, Any],
-    ) -> bool:
-        # Simulator observation is optional to the offline create/edit
-        # workflow. Only an unfinished or uncertain native mutation can own
-        # recovery authority for the shared engineering target.
-        return state in {"EXECUTING", "QUARANTINED"}
 
-    @classmethod
-    def _selected_pending_native_operation_row(
-        cls,
-        connection: sqlite3.Connection,
-    ) -> dict[str, Any] | None:
-        """Select the one deterministic native recovery authority.
 
-        An unreleased native target lease wins when it points at a still-pending
-        operation.  Otherwise the oldest created pending operation wins.  This
-        lets one historical recovery complete without allowing its siblings or
-        unrelated target operations to bypass the global fail-closed gate.
-        """
 
-        rows = connection.execute(
-            """
-            SELECT operation_id, state, result_json, created_at
-            FROM native_project_operations
-            WHERE state IN ('EXECUTING', 'QUARANTINED', 'COMPLETED')
-            ORDER BY created_at ASC, operation_id ASC
-            """
-        ).fetchall()
-        pending: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            result = _json_load(str(row["result_json"]))
-            state = str(row["state"])
-            if cls._native_operation_requires_resolution(state, result):
-                operation_id = str(row["operation_id"])
-                pending[operation_id] = {
-                    "operation_id": operation_id,
-                    "state": state,
-                    "created_at": str(row["created_at"]),
-                    "lease_state": None,
-                }
-        if not pending:
-            return None
-        lease_rows = connection.execute(
-            """
-            SELECT operation_id, state
-            FROM target_operation_leases
-            WHERE owner_kind = 'native_project_create'
-              AND released_at IS NULL
-            ORDER BY acquired_at ASC, id ASC
-            """
-        ).fetchall()
-        for lease in lease_rows:
-            operation_id = str(lease["operation_id"])
-            selected = pending.get(operation_id)
-            if selected is not None:
-                selected["lease_state"] = str(lease["state"])
-                return selected
-        return next(iter(pending.values()))
-
-    def selected_pending_native_operation(self) -> dict[str, Any] | None:
-        """Expose the exact native recovery selected by the durable lease gate."""
-
-        with self._connection() as connection:
-            table = connection.execute(
-                """
-                SELECT 1 FROM sqlite_master
-                WHERE type = 'table' AND name = 'native_project_operations'
-                """
-            ).fetchone()
-            if table is None:
-                return None
-            return self._selected_pending_native_operation_row(connection)
 
     @classmethod
     def _selected_target_recovery_authority_row(
@@ -5056,12 +5257,6 @@ class HostStore:
                 "source": "mutation_lease",
             }
 
-        native_table = connection.execute(
-            """
-            SELECT 1 FROM sqlite_master
-            WHERE type = 'table' AND name = 'native_project_operations'
-            """
-        ).fetchone()
         target = connection.execute(
             """
             SELECT operation_id, owner_kind, state
@@ -5092,30 +5287,7 @@ class HostStore:
                         "lease_state": str(target["state"]),
                         "source": "target_operation_lease",
                     }
-            elif owner_kind == "native_project_create" and native_table is not None:
-                native = connection.execute(
-                    """
-                    SELECT state, result_json, created_at
-                    FROM native_project_operations
-                    WHERE operation_id = ?
-                    """,
-                    (operation_id,),
-                ).fetchone()
-                if native is not None:
-                    native_result = _json_load(str(native["result_json"]))
-                    native_state = str(native["state"])
-                    if cls._native_operation_requires_resolution(
-                        native_state,
-                        native_result,
-                    ):
-                        return {
-                            "operation_id": operation_id,
-                            "owner_kind": owner_kind,
-                            "state": native_state,
-                            "created_at": str(native["created_at"]),
-                            "lease_state": str(target["state"]),
-                            "source": "target_operation_lease",
-                        }
+            pass
 
         candidates: list[dict[str, Any]] = [
             {
@@ -5133,28 +5305,6 @@ class HostStore:
                 """
             ).fetchall()
         ]
-        if native_table is not None:
-            native_rows = connection.execute(
-                """
-                SELECT operation_id, state, result_json, created_at
-                FROM native_project_operations
-                WHERE state IN ('EXECUTING', 'QUARANTINED', 'COMPLETED')
-                """
-            ).fetchall()
-            for row in native_rows:
-                result = _json_load(str(row["result_json"]))
-                state = str(row["state"])
-                if cls._native_operation_requires_resolution(state, result):
-                    candidates.append(
-                        {
-                            "operation_id": str(row["operation_id"]),
-                            "owner_kind": "native_project_create",
-                            "state": state,
-                            "created_at": str(row["created_at"]),
-                            "lease_state": None,
-                            "source": "durable_operation",
-                        }
-                    )
         if not candidates:
             return None
         return min(
@@ -5196,9 +5346,104 @@ class HostStore:
             "model": row["model"],
             "secret_payload_json": row["secret_payload_json"],
             "timeout_seconds": row["timeout_seconds"],
+            "reasoning_effort": row["reasoning_effort"],
             "capability_verified_at": row["capability_verified_at"],
+            "model_context_json": row["model_context_json"],
             "updated_at": row["updated_at"],
         }
+
+    def quarantine_model_credential(
+        self,
+        *,
+        reference: str,
+        protected_payload: bytes,
+        expected_secret_payload_json: str,
+        quarantine_payload_json: str,
+    ) -> None:
+        """Atomically replace a legacy inline secret with a DPAPI quarantine ref."""
+
+        with self._connection() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT secret_payload_json FROM model_settings WHERE slot = 'default'"
+            ).fetchone()
+            if (
+                row is None
+                or str(row["secret_payload_json"]) != expected_secret_payload_json
+            ):
+                raise sqlite3.IntegrityError(
+                    "model credential changed before protected migration"
+                )
+            connection.execute(
+                """
+                INSERT INTO model_credential_quarantine(
+                    reference, protected_payload, created_at
+                ) VALUES (?, ?, ?)
+                """,
+                (reference, protected_payload, _utc_now()),
+            )
+            updated = connection.execute(
+                """
+                UPDATE model_settings
+                SET secret_payload_json = ?
+                WHERE slot = 'default' AND secret_payload_json = ?
+                """,
+                (quarantine_payload_json, expected_secret_payload_json),
+            )
+            if updated.rowcount != 1:
+                raise sqlite3.IntegrityError(
+                    "model credential changed before protected migration"
+                )
+
+    def get_model_credential_quarantine(self, reference: str) -> bytes | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT protected_payload FROM model_credential_quarantine
+                WHERE reference = ?
+                """,
+                (reference,),
+            ).fetchone()
+        return bytes(row["protected_payload"]) if row is not None else None
+
+    def replace_model_credential_quarantine(
+        self,
+        *,
+        reference: str,
+        expected_quarantine_payload_json: str,
+        replacement_secret_payload_json: str,
+    ) -> None:
+        """Promote a recovered credential and remove its quarantine atomically."""
+
+        with self._connection() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            updated = connection.execute(
+                """
+                UPDATE model_settings
+                SET secret_payload_json = ?
+                WHERE slot = 'default' AND secret_payload_json = ?
+                """,
+                (replacement_secret_payload_json, expected_quarantine_payload_json),
+            )
+            if updated.rowcount != 1:
+                raise sqlite3.IntegrityError(
+                    "model credential quarantine is no longer active"
+                )
+            deleted = connection.execute(
+                "DELETE FROM model_credential_quarantine WHERE reference = ?",
+                (reference,),
+            )
+            if deleted.rowcount != 1:
+                raise sqlite3.IntegrityError(
+                    "model credential quarantine is unavailable"
+                )
+
+    def delete_model_credential_quarantine(self, reference: str) -> None:
+        with self._connection() as connection, connection:
+            connection.execute(
+                "DELETE FROM model_credential_quarantine WHERE reference = ?",
+                (reference,),
+            )
 
     def upsert_model_settings_record(
         self,
@@ -5208,7 +5453,9 @@ class HostStore:
         model: str,
         secret_payload_json: str,
         timeout_seconds: float,
+        reasoning_effort: str | None = None,
         capability_verified_at: datetime | None = None,
+        model_context_json: str | None = None,
     ) -> dict[str, Any]:
         timestamp = _utc_now()
         verified_at = (
@@ -5221,16 +5468,18 @@ class HostStore:
                 """
                 INSERT INTO model_settings(
                     slot, protocol, base_url, model, secret_payload_json, timeout_seconds,
-                    capability_verified_at, updated_at
+                    reasoning_effort, capability_verified_at, model_context_json, updated_at
                 )
-                VALUES ('default', ?, ?, ?, ?, ?, ?, ?)
+                VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(slot) DO UPDATE SET
                     protocol = excluded.protocol,
                     base_url = excluded.base_url,
                     model = excluded.model,
                     secret_payload_json = excluded.secret_payload_json,
                     timeout_seconds = excluded.timeout_seconds,
+                    reasoning_effort = excluded.reasoning_effort,
                     capability_verified_at = excluded.capability_verified_at,
+                    model_context_json = excluded.model_context_json,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -5239,7 +5488,9 @@ class HostStore:
                     model,
                     secret_payload_json,
                     timeout_seconds,
+                    reasoning_effort,
                     verified_at,
+                    model_context_json,
                     timestamp,
                 ),
             )
@@ -5346,6 +5597,16 @@ class HostStore:
             updated_by_run_id=row["updated_by_run_id"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _engineering_agent_transcript_from_row(row: sqlite3.Row) -> EngineeringAgentTranscript:
+        return EngineeringAgentTranscript(
+            source_run_id=row["source_run_id"], conversation_id=row["conversation_id"],
+            workspace_id=row["workspace_id"], revision_id=row["revision_id"],
+            request_message_id=row["request_message_id"], cursor=row["cursor"],
+            checkpoint=_json_load(row["checkpoint_json"]), digest=row["digest"],
+            created_at=row["created_at"], updated_at=row["updated_at"],
         )
 
     @staticmethod
@@ -5524,6 +5785,10 @@ class HostStore:
             state=row["state"],
             target=ChangeTargetIdentity.model_validate(
                 _json_load(row["target_identity_json"])
+            ),
+            execution_target=(
+                ChangeTargetIdentity.model_validate(_json_load(row["execution_target_json"]))
+                if row["execution_target_json"] is not None else None
             ),
             mutation_scope=row["mutation_scope"],
             risk_level=row["risk_level"],

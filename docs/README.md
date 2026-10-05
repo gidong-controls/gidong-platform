@@ -1,7 +1,7 @@
 # 문서
 
-2026-09-08 갱신. 새 채팅은 [HANDOFF의 최신 절](HANDOFF.md)과
-[실제 파일별 구현 계획](AGENT_PRODUCT_PLAN.md)을 먼저 읽는다.
+프로그램 생성·조회·수정은 LD 전용이다. 현재 직접 LD 구조 생성·부분 편집은 미구현이다.
+`project-audit/`, `reviews/`, 이전 날짜의 구현 계획은 과거 기록이며 현재 실행 지침이 아니다.
 현재 제품은 채팅에서 도구를 선택·실행하고 결과로 다음 행동을 결정하는 PLC 개발 Agent다.
 과거 고정 mission/승인/검증/Keep 흐름은 일반 요청의 필수 순서가 아니다.
 
@@ -14,8 +14,6 @@
 5. [배포·버전 정책](refactor/PRODUCT_DISTRIBUTION_AND_VERSIONING.md): artifact 조립과 update 불변조건
 6. [생산급 오픈소스 벤치마크](refactor/PRODUCTION_OPEN_SOURCE_BENCHMARKS.md): 채택한 제품 패턴과 의도적으로 제외한 범위
 7. [코딩 에이전트·PLC 엔지니어링 벤치마크](CODING_AGENT_BENCHMARK.md): 상용 코딩 에이전트, 커뮤니티 실패 사례와 PLC 전용 acceptance suite
-8. [개발 인계](HANDOFF.md): 최신 소스 점검·기존 미확정 작업·다음 구현 순서. 과거 로그는 구분해서 읽음
-9. [구현 계획](AGENT_PRODUCT_PLAN.md): 코드 파일·함수와 P0/P1/P2 완료 조건
 
 ## 제품·구현 문서
 
@@ -26,4 +24,4 @@
 
 문서/코드 존재, 과거 fixture 성공, 현재 웹 실사용 성공을 구분한다. 실제로 수행한
 행동과 결과만 완료로 설명한다. 독립 재열기·XG-SIM·Keep는 모든 요청의 필수 gate가 아니다.
-`history/`와 HANDOFF의 이전 날짜 절은 참고 자료이며 최신 사용자 방향보다 우선하지 않는다.
+`history/`는 참고 자료이며 최신 사용자 방향보다 우선하지 않는다.

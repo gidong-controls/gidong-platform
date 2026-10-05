@@ -18,7 +18,6 @@ export interface NewProjectBrief {
 interface NewProjectBriefPanelProps {
   initialBrief?: NewProjectBrief;
   busy: boolean;
-  nativeProjectAvailable: boolean;
   onCancel: () => void;
   onManageKnowledge: () => void;
   onSubmit: (brief: NewProjectBrief) => void;
@@ -35,26 +34,12 @@ const ATTACHMENT_KIND_LABELS: Record<
 
 export function ProjectFlowStepper({
   activeStep,
-  nativeProjectAvailable = false,
 }: {
-  activeStep: 1 | 2 | 3 | 4;
-  nativeProjectAvailable?: boolean;
+  activeStep: 1 | 2;
 }) {
   const steps = [
-    { number: 1, label: "요구사항", available: true, unavailableLabel: "" },
-    { number: 2, label: "계획 검토", available: true, unavailableLabel: "" },
-    {
-      number: 3,
-      label: "프로젝트 설정",
-      available: nativeProjectAvailable,
-      unavailableLabel: "현재 환경에서 비활성",
-    },
-    {
-      number: 4,
-      label: "프로그램 생성·검사",
-      available: nativeProjectAvailable,
-      unavailableLabel: "현재 환경에서 비활성",
-    },
+    { number: 1, label: "요구사항" },
+    { number: 2, label: "계획 검토" },
   ] as const;
 
   return (
@@ -65,7 +50,6 @@ export function ProjectFlowStepper({
           className={[
             step.number === activeStep ? "project-step-active" : "",
             step.number < activeStep ? "project-step-complete" : "",
-            !step.available ? "project-step-planned" : "",
           ]
             .filter(Boolean)
             .join(" ")}
@@ -73,7 +57,6 @@ export function ProjectFlowStepper({
         >
           <span>{step.number}</span>
           <strong>{step.label}</strong>
-          {!step.available && <small>{step.unavailableLabel}</small>}
         </li>
       ))}
     </ol>
@@ -83,7 +66,6 @@ export function ProjectFlowStepper({
 export function NewProjectBriefPanel({
   initialBrief,
   busy,
-  nativeProjectAvailable,
   onCancel,
   onManageKnowledge,
   onSubmit,
@@ -193,7 +175,6 @@ export function NewProjectBriefPanel({
 
       <ProjectFlowStepper
         activeStep={1}
-        nativeProjectAvailable={nativeProjectAvailable}
       />
 
       <form

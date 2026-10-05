@@ -2,13 +2,32 @@ from __future__ import annotations
 
 import ipaddress
 import json
-from dataclasses import dataclass
+import re
+import sqlite3
+import uuid
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Protocol
 from urllib.parse import urlsplit, urlunsplit
 
+from .api_models import ModelContextV1, ReasoningEffortV1
+from .credential_store import CredentialStoreError, WindowsDpapiCredentialStore
 from .store import HostStore
 
 MODEL_PROTOCOL = "openai_chat_completions"
+_REASONING_EFFORT_UNSET = object()
+_REASONING_EFFORT_VALUES = frozenset(
+    {
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+    }
+)
 _INSECURE_HTTP_ALLOWED_NETWORKS = tuple(
     ipaddress.ip_network(value)
     for value in (
@@ -32,6 +51,15 @@ _BLOCKED_HEADER_NAMES = frozenset(
         "upgrade",
     }
 )
+_CREDENTIAL_OPERATION_ERRORS = (
+    CredentialStoreError,
+    OSError,
+    RuntimeError,
+    ValueError,
+    TypeError,
+    sqlite3.Error,
+)
+_QUARANTINE_REFERENCE_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 
 class ModelSettingsError(ValueError):
@@ -42,10 +70,24 @@ class StoredModelSettingsError(RuntimeError):
     pass
 
 
+class CredentialStore(Protocol):
+    def put(self, value: bytes) -> str: ...
+
+    def get(self, reference: str) -> bytes: ...
+
+    def delete(self, reference: str) -> None: ...
+
+    def protect_for_quarantine(self, value: bytes) -> bytes: ...
+
+    def unprotect_quarantined(self, value: bytes) -> bytes: ...
+
+
 @dataclass(frozen=True)
 class ModelSecrets:
-    api_key: str | None
-    custom_headers: dict[str, str]
+    # A StoredModelConnection can cross diagnostics/capability-cache paths;
+    # accidental repr/logging must not become a plaintext export channel.
+    api_key: str | None = field(repr=False)
+    custom_headers: dict[str, str] = field(repr=False)
 
 
 def redact_known_model_secrets(value: str, secrets: ModelSecrets) -> str:
@@ -74,22 +116,56 @@ class StoredModelConnection:
     updated_at: datetime
     capability_verified_at: datetime | None
     secrets: ModelSecrets
+    model_context: ModelContextV1 | None = None
+    reasoning_effort: ReasoningEffortV1 | None = None
 
 
 class ModelConnectionRepository:
-    def __init__(self, store: HostStore) -> None:
+    def __init__(
+        self,
+        store: HostStore,
+        *,
+        credential_store: CredentialStore | None = None,
+    ) -> None:
         self._store = store
+        self._credential_store = credential_store or WindowsDpapiCredentialStore(
+            store.database_path.parent / "credentials"
+        )
 
     def get(self) -> StoredModelConnection | None:
         record = self._store.get_model_settings_record()
         if record is None:
             return None
-        encoded = record.get("secret_payload_json")
-        if not isinstance(encoded, str):
+        stored_reference = record.get("secret_payload_json")
+        if not isinstance(stored_reference, str):
             raise StoredModelSettingsError(
-                "stored model configuration has no inline credentials"
+                "stored model configuration has no credential reference"
             )
-        secret_payload = self._decode_secret_payload(encoded.encode("utf-8"))
+        quarantine_reference = self._quarantine_reference(stored_reference)
+        if quarantine_reference is not None:
+            secret_payload = self._promote_quarantined_secret(
+                stored_reference,
+                quarantine_reference,
+            )
+        else:
+            reference = self._credential_reference(stored_reference)
+            if reference is None:
+                reference, secret_payload = self._migrate_inline_secret(
+                    record,
+                    stored_reference,
+                )
+            else:
+                secret_payload = None
+            if secret_payload is None:
+                try:
+                    protected_payload = self._credential_store.get(reference)
+                except _CREDENTIAL_OPERATION_ERRORS:
+                    # Backend paths/details must not cross the Host error surface;
+                    # provider failures can accidentally include credential material.
+                    raise StoredModelSettingsError(
+                        "stored model credentials are unavailable"
+                    ) from None
+                secret_payload = self._decode_secret_payload(protected_payload)
         return StoredModelConnection(
             protocol=str(record["protocol"]),
             base_url=str(record["base_url"]),
@@ -102,6 +178,8 @@ class ModelConnectionRepository:
                 else None
             ),
             secrets=secret_payload,
+            model_context=_decode_model_context(record.get("model_context_json")),
+            reasoning_effort=_decode_reasoning_effort(record.get("reasoning_effort")),
         )
 
     def save(
@@ -113,6 +191,8 @@ class ModelConnectionRepository:
         api_key: str | None,
         custom_headers: dict[str, str] | None,
         capability_verified_at: datetime | None = None,
+        model_context: ModelContextV1 | dict[str, object] | None = None,
+        reasoning_effort: ReasoningEffortV1 | None | object = _REASONING_EFFORT_UNSET,
         inherit_missing_secrets: bool = True,
         allow_insecure_http: bool = False,
     ) -> StoredModelConnection:
@@ -122,12 +202,32 @@ class ModelConnectionRepository:
         )
         normalized_model = validate_model_name(model)
         normalized_timeout = validate_timeout(timeout_seconds)
+        normalized_reasoning_effort = (
+            None
+            if reasoning_effort is _REASONING_EFFORT_UNSET
+            else validate_reasoning_effort(reasoning_effort)
+        )
         normalized_headers = (
             validate_custom_headers(custom_headers) if custom_headers is not None else None
         )
 
-        previous = self.get()
-        same_endpoint = previous is not None and previous.base_url == normalized_url
+        previous_record = self._store.get_model_settings_record()
+        same_endpoint = bool(
+            previous_record is not None
+            and previous_record.get("base_url") == normalized_url
+        )
+        if reasoning_effort is _REASONING_EFFORT_UNSET and same_endpoint:
+            normalized_reasoning_effort = _decode_reasoning_effort(
+                previous_record.get("reasoning_effort")
+            )
+        # Explicit replacement is the recovery path for a legacy setting
+        # whose credential backend is unavailable. Only load
+        # the previous protected value when an omitted field needs inheritance.
+        previous: StoredModelConnection | None = None
+        if inherit_missing_secrets and same_endpoint and (
+            api_key is None or normalized_headers is None
+        ):
+            previous = self.get()
         resolved_api_key = (
             previous.secrets.api_key
             if (
@@ -157,17 +257,234 @@ class ModelConnectionRepository:
                 custom_headers=resolved_headers,
             )
         )
-        self._store.upsert_model_settings_record(
-            protocol=MODEL_PROTOCOL,
-            base_url=normalized_url,
-            model=normalized_model,
-            secret_payload_json=encoded.decode("utf-8"),
-            timeout_seconds=normalized_timeout,
-            capability_verified_at=capability_verified_at,
-        )
+        previous_reference: str | None = None
+        previous_quarantine_reference: str | None = None
+        if previous_record is not None:
+            try:
+                previous_reference = self._credential_reference(
+                    previous_record.get("secret_payload_json")
+                )
+                previous_quarantine_reference = self._quarantine_reference(
+                    previous_record.get("secret_payload_json")
+                )
+            except StoredModelSettingsError:
+                # An invalid old reference is not a protected object that
+                # needs deletion. Explicit re-entry below can repair it.
+                previous_reference = None
+                previous_quarantine_reference = None
+        try:
+            reference = self._credential_store.put(encoded)
+            self._store.upsert_model_settings_record(
+                protocol=MODEL_PROTOCOL,
+                base_url=normalized_url,
+                model=normalized_model,
+                secret_payload_json=self._encode_credential_reference(reference),
+                timeout_seconds=normalized_timeout,
+                capability_verified_at=capability_verified_at,
+                model_context_json=_encode_model_context(model_context),
+                reasoning_effort=normalized_reasoning_effort,
+            )
+        except _CREDENTIAL_OPERATION_ERRORS:
+            if "reference" in locals():
+                self._delete_protected_quietly(reference)
+            raise StoredModelSettingsError(
+                "could not store protected model credentials"
+            ) from None
+        if previous_reference is not None and previous_reference != reference:
+            # The database no longer points at this credential. A protected
+            # orphan is safer than rolling the active configuration back to
+            # plaintext.
+            self._delete_protected_quietly(previous_reference)
+        if previous_quarantine_reference is not None:
+            self._delete_quarantine_quietly(previous_quarantine_reference)
         saved = self.get()
         assert saved is not None
         return saved
+
+    @staticmethod
+    def _encode_credential_reference(reference: str) -> str:
+        return json.dumps(
+            {"schema_version": 2, "credential_ref": reference},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    @staticmethod
+    def _credential_reference(value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        try:
+            payload = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict) or payload.get("schema_version") != 2:
+            return None
+        reference = payload.get("credential_ref")
+        if not isinstance(reference, str) or not reference:
+            raise StoredModelSettingsError("stored credential reference is invalid")
+        return reference
+
+    @staticmethod
+    def _quarantine_reference(value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        try:
+            payload = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict) or payload.get("schema_version") != 3:
+            return None
+        reference = payload.get("quarantine_ref")
+        if (
+            set(payload) != {"schema_version", "quarantine_ref"}
+            or not isinstance(reference, str)
+            or _QUARANTINE_REFERENCE_PATTERN.fullmatch(reference) is None
+        ):
+            raise StoredModelSettingsError(
+                "stored protected credential reference is invalid"
+            )
+        return reference
+
+    @staticmethod
+    def _encode_quarantine_reference(reference: str) -> str:
+        return json.dumps(
+            {"quarantine_ref": reference, "schema_version": 3},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    def _delete_protected_quietly(self, reference: str) -> None:
+        try:
+            self._credential_store.delete(reference)
+        except _CREDENTIAL_OPERATION_ERRORS:
+            return
+
+    def _delete_quarantine_quietly(self, reference: str) -> None:
+        try:
+            self._store.delete_model_credential_quarantine(reference)
+        except _CREDENTIAL_OPERATION_ERRORS:
+            return
+
+    def _migrate_inline_secret(
+        self,
+        record: dict[str, object],
+        encoded: str,
+    ) -> tuple[str | None, ModelSecrets | None]:
+        """Replace a legacy inline payload only after secure persistence succeeds."""
+
+        secrets = self._decode_secret_payload(encoded.encode("utf-8"))
+        protected_payload = self._encode_secret_payload(secrets)
+        try:
+            reference = self._credential_store.put(protected_payload)
+        except _CREDENTIAL_OPERATION_ERRORS:
+            protector = getattr(self._credential_store, "protect_for_quarantine", None)
+            if not callable(protector):
+                raise StoredModelSettingsError(
+                    "could not securely protect legacy model credentials for recovery; "
+                    "the original value remains available for retry"
+                ) from None
+            try:
+                quarantined_payload = protector(protected_payload)
+            except _CREDENTIAL_OPERATION_ERRORS:
+                raise StoredModelSettingsError(
+                    "could not securely protect legacy model credentials for recovery; "
+                    "the original value remains available for retry"
+                ) from None
+            if not isinstance(quarantined_payload, bytes) or not quarantined_payload:
+                raise StoredModelSettingsError(
+                    "could not securely protect legacy model credentials for recovery; "
+                    "the original value remains available for retry"
+                ) from None
+            quarantine_reference = uuid.uuid4().hex
+            try:
+                self._store.quarantine_model_credential(
+                    reference=quarantine_reference,
+                    protected_payload=quarantined_payload,
+                    expected_secret_payload_json=encoded,
+                    quarantine_payload_json=self._encode_quarantine_reference(
+                        quarantine_reference
+                    ),
+                )
+            except _CREDENTIAL_OPERATION_ERRORS:
+                raise StoredModelSettingsError(
+                    "could not persist protected model credential recovery data; "
+                    "the original value remains available for retry"
+                ) from None
+            raise StoredModelSettingsError(
+                "stored model credentials are unavailable; retry migration or re-enter credentials"
+            ) from None
+        try:
+            self._store.upsert_model_settings_record(
+                protocol=str(record["protocol"]),
+                base_url=str(record["base_url"]),
+                model=str(record["model"]),
+                secret_payload_json=self._encode_credential_reference(reference),
+                timeout_seconds=float(record["timeout_seconds"]),
+                capability_verified_at=(
+                    datetime.fromisoformat(str(record["capability_verified_at"]))
+                    if record.get("capability_verified_at")
+                    else None
+                ),
+                model_context_json=record.get("model_context_json"),
+                reasoning_effort=record.get("reasoning_effort"),
+            )
+        except _CREDENTIAL_OPERATION_ERRORS:
+            self._delete_protected_quietly(reference)
+            raise StoredModelSettingsError(
+                "stored model credentials are unavailable; retry migration or re-enter credentials"
+            ) from None
+        return reference, None
+
+    def _promote_quarantined_secret(
+        self,
+        quarantine_payload_json: str,
+        quarantine_reference: str,
+    ) -> ModelSecrets:
+        protected_payload = self._store.get_model_credential_quarantine(
+            quarantine_reference
+        )
+        if protected_payload is None:
+            raise StoredModelSettingsError(
+                "stored model credentials are unavailable; retry migration or re-enter credentials"
+            )
+        unprotector = getattr(self._credential_store, "unprotect_quarantined", None)
+        if not callable(unprotector):
+            raise StoredModelSettingsError(
+                "stored model credentials are unavailable; retry secure migration or re-enter credentials"
+            )
+        try:
+            secret_payload = unprotector(protected_payload)
+        except _CREDENTIAL_OPERATION_ERRORS:
+            raise StoredModelSettingsError(
+                "stored model credentials are unavailable; retry secure migration or re-enter credentials"
+            ) from None
+        if not isinstance(secret_payload, bytes):
+            raise StoredModelSettingsError(
+                "stored model credentials are invalid"
+            )
+        secrets = self._decode_secret_payload(secret_payload)
+        try:
+            reference = self._credential_store.put(secret_payload)
+        except _CREDENTIAL_OPERATION_ERRORS:
+            raise StoredModelSettingsError(
+                "stored model credentials are unavailable; retry migration or re-enter credentials"
+            ) from None
+        try:
+            self._store.replace_model_credential_quarantine(
+                reference=quarantine_reference,
+                expected_quarantine_payload_json=quarantine_payload_json,
+                replacement_secret_payload_json=self._encode_credential_reference(
+                    reference
+                ),
+            )
+        except _CREDENTIAL_OPERATION_ERRORS:
+            self._delete_protected_quietly(reference)
+            raise StoredModelSettingsError(
+                "stored model credentials are unavailable; retry migration or re-enter credentials"
+            ) from None
+        return secrets
 
     @staticmethod
     def _encode_secret_payload(value: ModelSecrets) -> bytes:
@@ -203,8 +520,48 @@ class ModelConnectionRepository:
             AttributeError,
             TypeError,
             ValueError,
-        ) as exc:
-            raise StoredModelSettingsError("stored inline model settings are invalid") from exc
+        ):
+            raise StoredModelSettingsError("stored model credentials are invalid") from None
+
+
+def _encode_model_context(
+    value: ModelContextV1 | dict[str, object] | None,
+) -> str | None:
+    if value is None:
+        return None
+    try:
+        contract = value if isinstance(value, ModelContextV1) else ModelContextV1.model_validate(value)
+        return json.dumps(
+            contract.model_dump(mode="json", by_alias=False),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError) as exc:
+        raise StoredModelSettingsError("model context observation is invalid") from exc
+
+
+def _decode_model_context(value: object) -> ModelContextV1 | None:
+    if value is None:
+        return None
+    try:
+        if not isinstance(value, str):
+            raise TypeError("stored model context is not text")
+        payload = json.loads(value)
+        return ModelContextV1.model_validate(payload)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        # A stale observation must never block ordinary model use.  It is
+        # treated as unknown and will be replaced by the next capability test.
+        return None
+
+
+def _decode_reasoning_effort(value: object) -> ReasoningEffortV1 | None:
+    if value is None:
+        return None
+    try:
+        return validate_reasoning_effort(value)
+    except ModelSettingsError as exc:
+        raise StoredModelSettingsError("stored model reasoning effort is invalid") from exc
 
 
 def validate_model_base_url(
@@ -262,6 +619,17 @@ def validate_timeout(value: float) -> float:
     if not 1 <= result <= 3600:
         raise ModelSettingsError("timeout_seconds must be between 1 and 3600")
     return result
+
+
+def validate_reasoning_effort(value: object) -> ReasoningEffortV1 | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in _REASONING_EFFORT_VALUES:
+        raise ModelSettingsError(
+            "reasoning_effort must be one of none, minimal, low, medium, high, "
+            "xhigh, max, or ultra"
+        )
+    return value
 
 
 def validate_secret_text(value: str, field: str) -> str:

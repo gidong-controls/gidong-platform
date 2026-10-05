@@ -1,5 +1,14 @@
 # Coding-agent and PLC engineering benchmark
 
+## 2026-09-19 최신 비교와 설계 적용
+
+[총괄 설계·공식 웹 벤치마킹](reviews/PLC_AGENT_ARCHITECTURE_2026-09-19.md)에서 이번에 실제로
+연 Codex/Claude Code 공식 자료, OpenHands/mini-SWE-agent 공개 구현, CODESYS MCP 도구 명세와
+현재 ControlStudio의 차이를 비교했다. 다음 구현은 그 문서의 D1~D8과 구조 시험을 따른다.
+외부 자료를 읽은 것을 제품 실기 검증으로 취급하지 않는다.
+
+## 아래는 2026-09-08에 정리한 과거 조사 기록
+
 제품 평가 방향 갱신: 2026-09-08. 외부 조사 링크는 2026-08-27 조사 기록으로 보존했으며
 이번 문서 작업에서 웹 자료를 새로 검증하지 않았다. 아래 비교의 과거 채택 의견보다
 [PRD](../PRD.md)와 [구현 계획](AGENT_PRODUCT_PLAN.md)의 채팅 Agent 방향이 우선한다.
@@ -67,7 +76,6 @@ subprocess 분리를 전체 vendor-core/source/release independence 완료로 �
 | [Siemens TIA Portal](https://www.siemens.com/en-gb/products/tia-portal/) | 로컬 엔지니어링 시스템에 연결되는 AI 보조와 simulation 통합을 제시 | AI가 별도 텍스트 생성기로 끝나지 않고 설치된 벤더 IDE와 검증 루프를 가져야 한다는 기준으로 채택 |
 | [CODESYS MCP Server whitepaper](https://api-it.codesys.com/fileadmin/user_upload/CODESYS_Group/Download/Whitepaper/Whitepaper-CODESYS-Development-System-MCP-Server-en.pdf) | 현재 공개 범위는 Structured Text 생성 중심이며 whitepaper는 LD 지원을 후속 계획으로 설명 | MCP 자체보다 vendor IDE의 typed command와 결과 receipt가 중요하다. XG5000 LD가 ControlStudio의 차별화 범위다 |
 | [PLC Toolkit](https://github.com/Adjoint-uk/plc-toolkit) | headless CLI/compiler-loop 방향을 공개하지만 ST 중심이며 agent/MCP 흐름 일부는 계획 상태 | 독립 CLI와 compiler feedback 패턴만 채택하고 XG5000 LD 성공 근거로 사용하지 않음 |
-| [LD 생성 연구](https://arxiv.org/abs/2410.15200) | 그래픽 LD 생성은 단순 문제에서도 별도 난점이 있음을 보고 | 자유 형식 화면 조작 대신 canonical LD/MNE, operand role, vendor readback으로 검증 |
 
 ## 커뮤니티에서 가져온 실패 가설
 
@@ -99,7 +107,6 @@ CA-09~10의 물리 작업과 CA-12/14/15 원격·OT 구성은 해당 환경의 �
 | CA-04 | 변경 후보만 요청 | 변경안과 영향을 보여주고 적용하지 않는다. 불필요한 승인 대기 거래를 만들지 않는다 |
 | CA-05 | 작업 사본의 단일 operand 수정·저장 요청 | 요청 범위의 old/new 변경과 저장을 실행하고 실제 결과를 설명한다. 단계마다 같은 승인을 다시 요구하지 않는다 |
 | CA-06 | contact/rung 구조 수정·저장 요청 | 의도한 LD 차이와 기존 로직 보존을 실제 결과로 확인한다. 전체 검증 workflow를 사용자의 반복 업무로 만들지 않는다 |
-| CA-07 | 저장 결과 확인 또는 독립 재열기 요청 | 기본 저장은 실제 저장 결과를 설명한다. 독립 재열기를 요청/필요로 선택한 사례는 새 세션의 LD/MNE와 파일을 확인한다 |
 | CA-08 | 적용 또는 검증 중 장애 | journal로 결과를 reconcile하고 안전한 rollback 또는 명시적 unknown 상태를 남긴다 |
 | CA-09 | 실제 P 입력/출력 주소 변경 | exact CPU/module/rack/slot/channel/direction binding이 맞을 때만 후보와 실행을 허용한다 |
 | CA-10 | 바인딩 누락·방향 불일치·online force 요청 | mutation 전에 거부하며 XG5000/PLC side effect가 없다 |

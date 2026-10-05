@@ -15,74 +15,947 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
-from controlstudio_contracts import AgentToolDefinitionV1, ExternalToolRequestV1
+from controlstudio_contracts import (
+    ExternalToolRequestV1,
+    ProgramCheckFailureObservationV1,
+)
+from controlstudio_contracts.checkpoint_transfer import CheckpointTransfer, checkpoint_chunks
+from controlstudio_contracts.native_preflight import validate_native_preflight_diagnostic
 from pydantic import ValidationError
+
+from .planning_work_memory import WorkItem
 
 _SAFE_DESIGN_DIAGNOSTIC_CODE = re.compile(r"[a-z][a-z0-9_]{0,79}\Z")
 _SAFE_DESIGN_DIAGNOSTIC_PATH = re.compile(r"(?:|/(?:[A-Za-z0-9_.~-]+/?)+)\Z")
+_SAFE_DESIGN_POINTER_SEGMENT = re.compile(r"(?:[A-Za-z0-9_.-]|~[01])+\Z")
+_DESIGN_POINTER_ROOTS = frozenset(
+    {
+        "changes",
+        "narrative",
+        "technicalConfiguration",
+        "technical_configuration",
+        "indexAcceptanceBindings",
+        "index_acceptance_bindings",
+        "ioPoints",
+        "io_points",
+        "operatingModes",
+        "operating_modes",
+        "controlNetworks",
+        "control_networks",
+        "ladderRungs",
+        "ladder_rungs",
+        "timers",
+        "sequences",
+        "alarms",
+        "recoveryRules",
+        "recovery_rules",
+        "safetyRules",
+        "safety_rules",
+        "native_design",
+        "simulationScenario",
+        "simulation_scenario",
+        "nativeSymbols",
+        "native_symbols",
+    }
+)
+_DESIGN_POINTER_SENSITIVE_SEGMENTS = frozenset(
+    {
+        "access_token",
+        "accesstoken",
+        "api_key",
+        "apikey",
+        "authorization",
+        "credential",
+        "credentials",
+        "password",
+        "passwd",
+        "private_key",
+        "privatekey",
+        "secret",
+        "secret_key",
+        "secretkey",
+        "session_token",
+        "sessiontoken",
+        "token",
+    }
+)
+_MAX_DESIGN_POINTER_LENGTH = 256
+_MAX_DESIGN_POINTER_SEGMENTS = 32
+_WORK_PLAN_ITEM_STATUSES = tuple(
+    status
+    for status in get_args(WorkItem.model_fields["status"].annotation)
+    if isinstance(status, str)
+)
+_DESIGN_POINTER_FIELDS = frozenset(
+    """
+    changes narrative nativeDesign technicalConfiguration indexAcceptanceBindings
+    action activation address affectedOutputSignalIds alarmId alarms allowedTransitions
+    basis classification collectionScope completeAll condition controlNetworks cpuModel
+    description destinationAddress drive durationMs enableAll evidence holdMs instruction
+    ioPoints kind ladderRungs language latchSignalId lhs modeId modes name nativeType networkId
+    normalState observe operatingModes outputSignalId permitAll permitWhen plcSeries
+    presetTicks programName reason recoveryId recoveryRules relation resetAlarmIds resetAll
+    resetSequenceIds restartPolicy rhs ruleId rungId safeState safetyRules schemaVersion
+    sequenceId sequences signalId signals simulationScenario sourceConstant sourceId
+    sourceType startAll state status stepId steps symbol targetId targetType terms
+    timeBaseMs timerId timers title triggerAll value whenAll nativeSymbols dataType comment
+    operation section itemId beforeItemId expectedRevision
+    summary requirements assumptions openQuestions acceptanceCriteria scope
+    requirementSources projectName objective userRequirements designProposals
+    hardwareAndNetwork ioAndDevices sequence safetyInvariants alarmsAndRecovery
+    programStructure validationPlan notApplicable messageId quote field
+    contact allOf anyOf compare dataRegister constant out set rst ton mov incp
+    """.casefold().split()
+)
 _MAX_DESIGN_FAILURE_DIAGNOSTICS = 4
+_MAX_PRIOR_DESIGN_FAILURE_DIAGNOSTICS = 8
+_SAFE_PRIOR_DESIGN_FAILURE_REASON_CODES = frozenset(
+    {
+        "design_revision_conflict",
+        "design_edit_not_applied",
+        "design_edit_unchanged",
+        "design_edit_scope_rejected",
+        "design_edit_schema_invalid",
+    }
+)
+_PRIOR_DESIGN_FAILURE_KEYS = frozenset(
+    {
+        "kind",
+        "runId",
+        "eventSequence",
+        "eventCreatedAt",
+        "reasonCode",
+        "diagnostics",
+    }
+)
+_SAFE_PRIOR_DESIGN_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+_EDIT_ATTEMPT_OPERATIONS = frozenset({
+    "replace_section", "patch_section", "create_item", "patch_item", "upsert_item", "remove_item", "move_item", "invalid",
+})
+_EDIT_ATTEMPT_SECTIONS = frozenset({
+    "narrative", "technical_configuration", "index_acceptance_bindings",
+    "simulation_scenario",
+    "native_symbols",
+    "io_points", "operating_modes", "control_networks", "ladder_rungs", "timers",
+    "sequences", "alarms", "recovery_rules", "safety_rules", "invalid",
+})
+_MAX_EDIT_ATTEMPT_CHANGES = 8
+_EDIT_ATTEMPT_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_EDIT_ATTEMPT_VALUE_KINDS = frozenset({
+    "null",
+    "object",
+    "array",
+    "string",
+    "number",
+    "boolean",
+})
+
+
+def _edit_attempt_value_kind(value: Any) -> str | None:
+    """Classify an explicit replacement value without retaining its contents."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, Mapping):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, str):
+        return "string"
+    return None
+
+
+def _changes_digest(changes: Any) -> str | None:
+    """Return a canonical digest without retaining the proposed values."""
+
+    try:
+        encoded = _canonical_json(changes).encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError):
+        return None
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _safe_design_edit_attempt_summary(value: Any) -> dict[str, Any] | None:
+    """Validate the durable request shape; never accept raw edit values or IDs."""
+    if not isinstance(value, Mapping):
+        return None
+    count, truncated, changes = value.get("requestedCount"), value.get("truncated"), value.get("changes")
+    if (
+        type(count) is not int or count < 0 or type(truncated) is not bool
+        or not isinstance(changes, list) or len(changes) > _MAX_EDIT_ATTEMPT_CHANGES
+        or len(changes) != min(count, _MAX_EDIT_ATTEMPT_CHANGES)
+        or truncated != (count > len(changes))
+    ):
+        return None
+    changes_digest = value.get("changesDigest")
+    if (
+        "changesDigest" in value
+        and (
+            not isinstance(changes_digest, str)
+            or _EDIT_ATTEMPT_DIGEST.fullmatch(changes_digest) is None
+        )
+    ):
+        return None
+    safe_changes = []
+    for change in changes:
+        if not isinstance(change, Mapping):
+            return None
+        operation, section = change.get("operation"), change.get("section")
+        if (
+            not isinstance(operation, str) or operation not in _EDIT_ATTEMPT_OPERATIONS
+            or not isinstance(section, str) or section not in _EDIT_ATTEMPT_SECTIONS
+        ):
+            return None
+        value_kind = change.get("valueKind")
+        if "valueKind" in change and (
+            operation not in {"replace_section", "patch_section"}
+            or not isinstance(value_kind, str)
+            or value_kind not in _EDIT_ATTEMPT_VALUE_KINDS
+        ):
+            return None
+        safe_change = {"operation": operation, "section": section}
+        if "valueKind" in change:
+            safe_change["valueKind"] = value_kind
+        safe_changes.append(safe_change)
+    summary = {"requestedCount": count, "truncated": truncated, "changes": safe_changes}
+    if "changesDigest" in value:
+        summary["changesDigest"] = changes_digest
+    return summary
+
+
+def _bounded_design_edit_attempt(arguments: Mapping[str, Any]) -> dict[str, Any] | None:
+    changes = arguments.get("changes")
+    if not isinstance(changes, list):
+        return None
+    safe_changes = []
+    for change in changes[:_MAX_EDIT_ATTEMPT_CHANGES]:
+        change = change if isinstance(change, Mapping) else {}
+        operation, section = change.get("operation"), change.get("section")
+        safe_change = {
+            "operation": operation if isinstance(operation, str) and operation in _EDIT_ATTEMPT_OPERATIONS else "invalid",
+            "section": section if isinstance(section, str) and section in _EDIT_ATTEMPT_SECTIONS else "invalid",
+        }
+        if safe_change["operation"] in {"replace_section", "patch_section"} and "value" in change:
+            value_kind = _edit_attempt_value_kind(change["value"])
+            if value_kind is not None:
+                safe_change["valueKind"] = value_kind
+        safe_changes.append(safe_change)
+    summary: dict[str, Any] = {
+        "requestedCount": len(changes),
+        "truncated": len(changes) > len(safe_changes),
+        "changes": safe_changes,
+    }
+    changes_digest = _changes_digest(changes)
+    if changes_digest is not None:
+        summary["changesDigest"] = changes_digest
+    return _safe_design_edit_attempt_summary(summary)
+
+
 _DESIGN_DIAGNOSTIC_MESSAGES = {
     "schema_invalid": "The proposed design value does not match the required schema.",
     "edit_rejected": "Host validation rejected the proposed design edit.",
+    "singleton_requires_section_edit": (
+        "Use patch_section with a non-empty partial object for existing narrative or technical_configuration; "
+        "omitted siblings are preserved. Use replace_section for initial/explicit full singleton replacement. "
+        "Item operations edit collection entries or simulation steps."
+    ),
+    "edit_patch_empty": "patch_section requires at least one exact top-level field to change.",
+    "edit_patch_base_missing": "The section has no existing object to patch; use replace_section for its initial complete value.",
+    "collection_requires_item_edit": (
+        "Use create_item, patch_item, upsert_item, remove_item, or move_item with item_id "
+        "for collection entries. replace_section does not replace an executable collection."
+    ),
     "edit_made_no_change": "The proposed edit is identical to the retained design.",
     "ladder_move_repeats_prior_order": "The rung move repeats an order already produced by this run.",
     "repair_section_mismatch": "The proposed edit does not target the diagnosed section.",
     "repair_must_target_diagnosed_item": "The proposed edit does not target the diagnosed item.",
     "repair_must_target_existing_item": "The proposed edit does not target an existing item.",
     "repair_must_patch_not_remove": "The diagnosed item must be repaired rather than removed.",
+    "edit_operation_invalid": "Choose an operation and section from the Host-provided allowed lists.",
+    "edit_missing_field": "The edit is missing a required field listed in requiredFields.",
+    "edit_value_type_invalid": "The edit field has the wrong shape; use expectedType.",
+    "edit_value_fields_invalid": (
+        "The object fields do not match the Host schema; use requiredFields and allowedFields."
+    ),
+    "edit_value_value_invalid": "The value must be one of the Host-provided allowedValues.",
+    "edit_anchor_not_found": (
+        "The move anchor does not identify an existing item; inspect current item IDs."
+    ),
+    "edit_target_not_found": (
+        "The target item does not exist; inspect the current collection before editing it."
+    ),
+    "edit_target_already_exists": (
+        "The create target already exists; inspect it and choose an appropriate item operation."
+    ),
+    "edit_item_identity_mismatch": "The value object's identity field must match item_id.",
 }
+_SAFE_DOMAIN_DIAGNOSTIC_MESSAGES = {
+    "unknown_reference": "Reference is not declared.",
+    "unknown_alarm_latch_reference": "Alarm latch signal is not declared.",
+    "sequence_reset_address_reserved": "The sequence reset address is reserved for generated reset handling.",
+    "sequence_step_group_mismatch": "Sequence steps must use one address group.",
+    "sequence_group_reused": "A sequence address group is already used by another sequence.",
+    "duplicate_sequence_step_id": "Sequence step IDs must be unique.",
+    "duplicate_sequence_step_address": "Sequence step addresses must be unique.",
+    "native_io_address_invalid": (
+        "The I/O address is not valid for the selected CPU series; choose a supported "
+        "non-conflicting address. No address was changed."
+    ),
+    "simulation_input_writer_byte_overlap": (
+        "The simulator stimulus overlaps a program-written input byte; choose "
+        "non-overlapping addresses. No address was changed."
+    ),
+    "physical_io_forbidden_internal_simulation": (
+        "Internal simulation requires supported internal M I/O; no address was changed."
+    ),
+    "missing_section": "A required design section is missing.",
+    "open_decision": "An open design decision remains.",
+    "brief_changed": "The project brief binding changed.",
+}
+_SAFE_REFERENCE_DIAGNOSTIC_CODES = frozenset(
+    {"unknown_reference", "unknown_alarm_latch_reference"}
+)
+_SAFE_ADDRESS_DIAGNOSTIC_CODES = frozenset(
+    {
+        "native_io_address_invalid",
+        "simulation_input_writer_byte_overlap",
+        "physical_io_forbidden_internal_simulation",
+    }
+)
 _SAFE_DESIGN_EXPECTED_TYPES = frozenset(
     {
+        "execution condition",
+        "declared writable alarm latch",
+        "controlstudio-index-acceptance-bindings/v1 object",
+        "acceptance signal role object",
+        "automatic and manual mode roles",
+        "emergency, door, and timeout alarm roles",
+        "distinct signals except a shared automatic/manual start button",
+        "two distinct reviewed mode IDs",
+        "one sequence per selected automatic/manual mode",
+        "all three distinct reviewed alarm IDs",
+        "alarm with an internal_bit latch signal",
+        "three distinct internal alarm latch signals",
+        "a declared timer ID",
+        "TON timer with durationMs 5000",
+        "Dxxxxx data-register address",
+        "Sxx.01 through Sxx.99",
+        "an S group unique to this sequence",
+        "alarm",
         "array",
         "boolean",
         "digital_input",
         "digital_output",
+        "internal M bit address",
+        "M bit outside stimulus input bytes",
         "integer",
         "internal_bit",
+        "mode",
         "mapping",
         "number",
         "object",
+        "enum",
+        "null",
+        "sequence",
+        "signal",
+        "step",
         "string",
+        "non-empty string",
+        "array of strings",
+        "object or null",
+        "supported edit operation and section",
+        "item edit operation",
+        "replace_section operation",
+        "lowercase identifier",
+        "different valid item_id",
+        "identity matching item_id",
+        "existing item_id",
+        "non-empty string values",
         "timer",
     }
 )
+_SAFE_DESIGN_EDIT_OPERATIONS = frozenset(
+    {
+        "replace_section", "patch_section", "create_item", "patch_item", "upsert_item",
+        "remove_item", "move_item",
+    }
+)
+_SAFE_DESIGN_EDIT_SECTIONS = frozenset(
+    {
+        "narrative", "technical_configuration", "index_acceptance_bindings",
+        "simulation_scenario", "native_symbols", "io_points", "operating_modes", "control_networks",
+        "ladder_rungs", "timers", "sequences", "alarms", "recovery_rules",
+        "safety_rules",
+    }
+)
+_SAFE_DESIGN_ERROR_TYPES = frozenset(
+    {
+        "bool_parsing",
+        "bool_type",
+        "dict_type",
+        "enum",
+        "extra_forbidden",
+        "finite_number",
+        "float_parsing",
+        "float_type",
+        "greater_than",
+        "greater_than_equal",
+        "int_parsing",
+        "int_type",
+        "io_safe_state_relation",
+        "less_than",
+        "less_than_equal",
+        "list_type",
+        "literal_error",
+        "missing",
+        "multiple_of",
+        "none_required",
+        "set_type",
+        "scenario_constraint",
+        "string_pattern_mismatch",
+        "string_type",
+        "too_long",
+        "too_short",
+        "tuple_type",
+        "union_tag_invalid",
+        "union_tag_not_found",
+        "value_error",
+    }
+)
+_SAFE_DESIGN_ENUM_VALUE = re.compile(r"[A-Za-z][A-Za-z0-9_.:/-]{0,79}\Z")
+_SAFE_DESIGN_PATTERN_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789^$\\[]{}().?+*|,:_-"
+)
+_SAFE_DESIGN_RELATED_ID = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,79}\Z")
+_SAFE_DESIGN_FIELD_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,79}\Z")
+_SAFE_DESIGN_CONSTRAINT_KINDS = frozenset(
+    {
+        "alias_conflict",
+        "allowed_fields",
+        "consistent_sets",
+        "disjoint_sets",
+        "item_count",
+        "length",
+        "numeric_range",
+        "required_fields",
+        "total_bound",
+        "type",
+        "scenario_assignment",
+        "unique_items",
+    }
+)
+_MAX_DESIGN_CONSTRAINT_BOUND = 1_000_000_000
+_MAX_DESIGN_ENUM_VALUES = 16
+_MAX_DESIGN_FIELDS = 32
 
 
-def _bounded_design_failure_diagnostics(value: Mapping[str, Any]) -> list[dict[str, str]]:
+def _safe_design_constraint_fields(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep only bounded, Host-authored schema facts; never echo submitted input."""
+
+    projected: dict[str, Any] = {}
+    reason_code = raw.get("reasonCode")
+    if raw.get("code") == "requirement_source_invalid" and isinstance(reason_code, str) and reason_code in {
+        "duplicate_field", "message_not_available", "quote_not_exact", "generic_ack", "unresolved_quote",
+    }:
+        projected["reasonCode"] = reason_code
+    error_type = raw.get("errorType")
+    if isinstance(error_type, str) and error_type in _SAFE_DESIGN_ERROR_TYPES:
+        projected["errorType"] = error_type
+    if error_type == "io_safe_state_relation":
+        if (
+            raw.get("constraintKind") == "kind_safe_state_relation"
+            and raw.get("constraintField") == "safe_state"
+            and (raw.get("allowedKinds"), raw.get("allowedStates")) in (
+                (["digital_input"], ["not_applicable"]),
+                (["digital_output", "internal_bit"], ["on", "off"]),
+            )
+        ):
+            projected.update({
+                "constraintKind": "kind_safe_state_relation",
+                "constraintField": "safe_state",
+                "allowedKinds": list(raw["allowedKinds"]),
+                "allowedStates": list(raw["allowedStates"]),
+            })
+        return projected
+    expected_type = raw.get("expectedType")
+    if isinstance(expected_type, str):
+        normalized = " ".join(expected_type.split())
+        if (
+            normalized in _SAFE_DESIGN_EXPECTED_TYPES
+            or re.fullmatch(r"(S(?:\d{2}|1[01]\d|12[0-7]))\.01 through \1\.99", normalized)
+            or (
+                len(normalized) <= 512
+                and re.fullmatch(r"exact role keys: [a-z_]+(?:, [a-z_]+)*", normalized)
+            )
+            or (
+                1 <= len(normalized.split(" or ")) <= 3
+                and set(normalized.split(" or ")).issubset(
+                    {"digital_input", "digital_output", "internal_bit"}
+                )
+            )
+        ):
+            projected["expectedType"] = normalized
+    constraint_kind = raw.get("constraintKind")
+    if (
+        isinstance(constraint_kind, str)
+        and constraint_kind in _SAFE_DESIGN_CONSTRAINT_KINDS
+    ):
+        projected["constraintKind"] = constraint_kind
+    assignment_field = raw.get("assignmentField")
+    if error_type == "scenario_constraint" and assignment_field in ("drive", "observe"):
+        projected["assignmentField"] = assignment_field
+        address_kinds = raw.get("allowedAddressKinds")
+        if address_kinds == ["bit"] or (
+            assignment_field == "observe" and address_kinds == ["bit", "data_word"]
+        ):
+            projected["allowedAddressKinds"] = list(address_kinds)
+        expected_rules = {
+            "bitAddressPattern": r"^[PM]\d{3,4}[0-9A-F]$",
+            "bitMinimum": 0,
+            "bitMaximum": 1,
+        }
+        if assignment_field == "observe":
+            expected_rules.update({
+                "wordAddressPattern": r"^D\d{5}$",
+                "wordEncoding": "signed16",
+                "wordMinimum": -32_768,
+                "wordMaximum": 32_767,
+            })
+        for key, expected in expected_rules.items():
+            actual = raw.get(key)
+            if type(actual) is type(expected) and actual == expected:
+                projected[key] = actual
+    for key in ("requiredFields", "allowedFields"):
+        fields = raw.get(key)
+        if isinstance(fields, list) and 0 < len(fields) <= _MAX_DESIGN_FIELDS:
+            values = []
+            for field in fields:
+                if (
+                    not isinstance(field, str)
+                    or _SAFE_DESIGN_FIELD_NAME.fullmatch(field) is None
+                ):
+                    values = []
+                    break
+                values.append(field)
+            if values:
+                projected[key] = values
+    for key, allowed in (
+        ("allowedOperations", _SAFE_DESIGN_EDIT_OPERATIONS),
+        ("allowedSections", _SAFE_DESIGN_EDIT_SECTIONS),
+    ):
+        values = raw.get(key)
+        if (
+            isinstance(values, list)
+            and 0 < len(values) <= len(allowed)
+            and all(isinstance(value, str) and value in allowed for value in values)
+        ):
+            projected[key] = list(values)
+    allowed_values = raw.get("allowedValues")
+    if isinstance(allowed_values, list) and len(allowed_values) <= _MAX_DESIGN_ENUM_VALUES:
+        values: list[str] = []
+        for value in allowed_values:
+            if (
+                not isinstance(value, str)
+                or _SAFE_DESIGN_ENUM_VALUE.fullmatch(value) is None
+            ):
+                values = []
+                break
+            values.append(value)
+        if values:
+            projected["allowedValues"] = values
+    pattern = raw.get("pattern")
+    if (
+        isinstance(pattern, str)
+        and 0 < len(pattern) <= 160
+        and all(character in _SAFE_DESIGN_PATTERN_CHARS for character in pattern)
+    ):
+        projected["pattern"] = pattern
+    for key in ("minItems", "maxItems", "minLength", "maxLength"):
+        bound = raw.get(key)
+        if (
+            isinstance(bound, int)
+            and not isinstance(bound, bool)
+            and 0 <= bound <= _MAX_DESIGN_CONSTRAINT_BOUND
+        ):
+            projected[key] = bound
+    actual_items = raw.get("actualItems")
+    if (
+        isinstance(actual_items, int)
+        and not isinstance(actual_items, bool)
+        and 0 <= actual_items <= _MAX_DESIGN_CONSTRAINT_BOUND
+    ):
+        projected["actualItems"] = actual_items
+    for key in (
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+    ):
+        bound = raw.get(key)
+        if (
+            isinstance(bound, (int, float))
+            and not isinstance(bound, bool)
+            and math.isfinite(float(bound))
+            and abs(float(bound)) <= _MAX_DESIGN_CONSTRAINT_BOUND
+        ):
+            projected[key] = bound
+    return projected
+
+
+def _safe_design_related_ids(raw: Any) -> list[str] | None:
+    if not isinstance(raw, list) or len(raw) > 30:
+        return None
+    values: list[str] = []
+    for value in raw:
+        if not isinstance(value, str) or _SAFE_DESIGN_RELATED_ID.fullmatch(value) is None:
+            return None
+        values.append(value)
+    return values
+
+
+def _safe_design_diagnostic_item(
+    raw: Any,
+    *,
+    require_path: bool,
+) -> dict[str, Any] | None:
+    if not isinstance(raw, Mapping):
+        return None
+    code = raw.get("code")
+    path = raw.get("path")
+    if (
+        not isinstance(code, str)
+        or _SAFE_DESIGN_DIAGNOSTIC_CODE.fullmatch(code) is None
+        or (
+            require_path
+            and (
+                not isinstance(path, str)
+                or len(path) > 256
+                or _SAFE_DESIGN_DIAGNOSTIC_PATH.fullmatch(path) is None
+            )
+        )
+    ):
+        return None
+    constraint_fields = _safe_design_constraint_fields(raw)
+    expected_type = constraint_fields.get("expectedType")
+    if code in _DESIGN_DIAGNOSTIC_MESSAGES:
+        message = _DESIGN_DIAGNOSTIC_MESSAGES[code]
+    elif code == "unknown_reference" and isinstance(expected_type, str):
+        message = f"Reference is not declared as {expected_type}."
+    else:
+        message = _SAFE_DOMAIN_DIAGNOSTIC_MESSAGES.get(
+            code, "Host validation reported a typed design diagnostic."
+        )
+    item: dict[str, Any] = {
+        "code": code,
+        "message": message,
+    }
+    if isinstance(path, str) and len(path) <= 256 and _SAFE_DESIGN_DIAGNOSTIC_PATH.fullmatch(path):
+        item["path"] = path
+    item.update(constraint_fields)
+    related_ids = _safe_design_related_ids(raw.get("relatedIds"))
+    if related_ids:
+        item["relatedIds"] = related_ids
+    if code in _SAFE_REFERENCE_DIAGNOSTIC_CODES:
+        received_id = raw.get("received")
+        if (
+            isinstance(received_id, str)
+            and _SAFE_DESIGN_RELATED_ID.fullmatch(received_id) is not None
+        ):
+            item["receivedId"] = received_id
+    elif code in _SAFE_ADDRESS_DIAGNOSTIC_CODES:
+        received_address = raw.get("received")
+        if (
+            isinstance(received_address, str)
+            and re.fullmatch(r"[PM]\d{3,4}[0-9A-F]", received_address) is not None
+        ):
+            item["receivedAddress"] = received_address
+    return item
+
+
+def _bounded_design_failure_diagnostics(value: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Project useful design validation facts without retaining submitted values."""
 
     raw_diagnostics = value.get("diagnostics")
     if not isinstance(raw_diagnostics, list):
         return []
-    projected: list[dict[str, str]] = []
+    projected: list[dict[str, Any]] = []
     for raw in raw_diagnostics[:_MAX_DESIGN_FAILURE_DIAGNOSTICS]:
-        if not isinstance(raw, Mapping):
+        item = _safe_design_diagnostic_item(raw, require_path=True)
+        if item is None:
             continue
-        code = raw.get("code")
-        path = raw.get("path")
-        if (
-            not isinstance(code, str)
-            or _SAFE_DESIGN_DIAGNOSTIC_CODE.fullmatch(code) is None
-            or not isinstance(path, str)
-            or len(path) > 256
-            or _SAFE_DESIGN_DIAGNOSTIC_PATH.fullmatch(path) is None
-        ):
-            continue
-        item = {
-            "code": code,
-            "path": path,
-            "message": _DESIGN_DIAGNOSTIC_MESSAGES.get(
-                code, "Host validation rejected this design edit."
-            ),
-        }
-        expected_type = raw.get("expectedType")
-        if isinstance(expected_type, str):
-            normalized = " ".join(expected_type.split())
-            if normalized in _SAFE_DESIGN_EXPECTED_TYPES:
-                item["expectedType"] = normalized
         projected.append(item)
+    return projected
+
+
+def _safe_work_plan_diagnostic_path(value: Any) -> str | None:
+    """Keep only paths into the small, fixed WorkPlan input schema."""
+
+    if value == "/":
+        return "/"
+    if not isinstance(value, str) or len(value) > 128 or not value.startswith("/"):
+        return None
+    segments = value[1:].split("/")
+    if len(segments) == 1 and segments[0] in {
+        "expected_version", "objective", "decisions", "next_action",
+    }:
+        return value
+    if (
+        segments[0] == "items"
+        and len(segments) in {1, 2, 3}
+        and (
+            len(segments) == 1
+            or (
+                segments[1].isdecimal()
+                and int(segments[1]) < 24
+                and str(int(segments[1])) == segments[1]
+            )
+        )
+        and (len(segments) < 3 or segments[2] in {"id", "task", "status"})
+    ):
+        return value
+    return None
+
+
+def _bounded_work_plan_failure_diagnostics(
+    value: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Sanitize WorkPlan errors without treating them as design JSON pointers."""
+
+    raw_diagnostics = value.get("diagnostics")
+    if not isinstance(raw_diagnostics, list):
+        return []
+    projected: list[dict[str, Any]] = []
+    for raw in raw_diagnostics[:_MAX_DESIGN_FAILURE_DIAGNOSTICS]:
+        item = _safe_design_diagnostic_item(raw, require_path=False)
+        if item is None:
+            continue
+        path = _safe_work_plan_diagnostic_path(raw.get("path"))
+        item.pop("path", None)
+        item.pop("diagnosticPointer", None)
+        if item.get("allowedValues") != list(_WORK_PLAN_ITEM_STATUSES):
+            item.pop("allowedValues", None)
+        if path is None:
+            item = {"code": item["code"]}
+        else:
+            item["workPlanPointer"] = path
+        projected.append(item)
+    return projected
+
+
+def _bounded_prior_design_failure_diagnostics(
+    value: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Re-project a stored edit failure with the larger historical bound.
+
+    Durable event diagnostics have already crossed the current-event boundary,
+    but a planning run must not trust those dictionaries merely because they
+    came from the Host database.  Reusing the same static-message and typed
+    constraint projection prevents raw edit values, arguments, or schemas from
+    being reintroduced when an older event is carried into a new run.
+    """
+
+    raw_diagnostics = value.get("diagnostics")
+    if not isinstance(raw_diagnostics, list):
+        return []
+    projected: list[dict[str, Any]] = []
+    for raw in raw_diagnostics[:_MAX_PRIOR_DESIGN_FAILURE_DIAGNOSTICS]:
+        item = _safe_design_diagnostic_item(raw, require_path=True)
+        if item is not None:
+            projected.append(item)
+    return projected
+
+
+def _safe_prior_design_failure_observation(value: Any) -> dict[str, Any]:
+    """Validate the Host-owned historical edit observation at the Agent edge."""
+
+    if not isinstance(value, Mapping) or set(value) != _PRIOR_DESIGN_FAILURE_KEYS:
+        raise AgentProtocolError("historical design edit failure is invalid")
+    if value.get("kind") != "historical_design_edit_failure":
+        raise AgentProtocolError("historical design edit failure is invalid")
+    run_id = value.get("runId")
+    if (
+        not isinstance(run_id, str)
+        or _SAFE_PRIOR_DESIGN_RUN_ID.fullmatch(run_id) is None
+    ):
+        raise AgentProtocolError("historical design edit failure is invalid")
+    event_sequence = value.get("eventSequence")
+    if (
+        isinstance(event_sequence, bool)
+        or not isinstance(event_sequence, int)
+        or not 1 <= event_sequence <= 9_223_372_036_854_775_807
+    ):
+        raise AgentProtocolError("historical design edit failure is invalid")
+    event_created_at = value.get("eventCreatedAt")
+    if not isinstance(event_created_at, str) or len(event_created_at) > 64:
+        raise AgentProtocolError("historical design edit failure is invalid")
+    try:
+        parsed_created_at = datetime.fromisoformat(event_created_at)
+    except ValueError as exc:
+        raise AgentProtocolError("historical design edit failure is invalid") from exc
+    if parsed_created_at.tzinfo is None or parsed_created_at.utcoffset() is None:
+        raise AgentProtocolError("historical design edit failure is invalid")
+    reason_code = value.get("reasonCode")
+    if (
+        not isinstance(reason_code, str)
+        or reason_code not in _SAFE_PRIOR_DESIGN_FAILURE_REASON_CODES
+    ):
+        raise AgentProtocolError("historical design edit failure is invalid")
+    diagnostics = value.get("diagnostics")
+    if not isinstance(diagnostics, list) or len(diagnostics) > _MAX_PRIOR_DESIGN_FAILURE_DIAGNOSTICS:
+        raise AgentProtocolError("historical design edit failure is invalid")
+    projected_diagnostics = _bounded_prior_design_failure_diagnostics(
+        {"diagnostics": diagnostics}
+    )
+    if len(projected_diagnostics) != len(diagnostics):
+        raise AgentProtocolError("historical design edit failure is invalid")
+    # Re-emit only canonical fields.  In particular, current revision/digest,
+    # submitted arguments, and raw validation text can never cross this edge.
+    return {
+        "kind": "historical_design_edit_failure",
+        "runId": run_id,
+        "eventSequence": event_sequence,
+        "eventCreatedAt": parsed_created_at.isoformat(),
+        "reasonCode": reason_code,
+        "diagnostics": projected_diagnostics,
+    }
+
+
+def _safe_design_diagnostic_pointer(value: Any) -> str | None:
+    """Accept only a known design JSON Pointer, never a local/path-like string."""
+
+    if (
+        not isinstance(value, str)
+        or len(value) > _MAX_DESIGN_POINTER_LENGTH
+        or not value.startswith("/")
+    ):
+        return None
+    segments = value[1:].split("/")
+    if (
+        not segments
+        or len(segments) > _MAX_DESIGN_POINTER_SEGMENTS
+        or segments[0] not in _DESIGN_POINTER_ROOTS
+        or any(
+            not segment
+            or _SAFE_DESIGN_POINTER_SEGMENT.fullmatch(segment) is None
+            or segment.casefold() in _DESIGN_POINTER_SENSITIVE_SEGMENTS
+            or (
+                re.fullmatch(r"0|[1-9][0-9]{0,5}", segment) is None
+                and segment.replace("_", "").casefold() not in _DESIGN_POINTER_FIELDS
+            )
+            for segment in segments
+        )
+    ):
+        return None
+    return value
+
+
+def _project_design_diagnostic_pointers(
+    tool_name: str,
+    value: Any,
+) -> Any:
+    """Expose only typed workbench locations before the generic result scrub."""
+
+    if not tool_name.startswith("design.") or not isinstance(value, Mapping):
+        return value
+
+    projected = dict(value)
+
+    def diagnostic_list(raw_value: Any) -> Any:
+        if not isinstance(raw_value, list):
+            return raw_value
+        if tool_name == "design.update_work_plan":
+            return _bounded_work_plan_failure_diagnostics({
+                "diagnostics": raw_value,
+            })
+        projected_items: list[Any] = []
+        for raw_item in raw_value:
+            item = _safe_design_diagnostic_item(raw_item, require_path=False)
+            if item is None:
+                continue
+            pointer = _safe_design_diagnostic_pointer(raw_item.get("path"))
+            item.pop("path", None)
+            item.pop("diagnosticPointer", None)
+            if pointer is not None:
+                item["diagnosticPointer"] = pointer
+            elif raw_item.get("path") == "/":
+                # Model-level validators have no more precise location.  The
+                # path itself is harmless, but keep only the bounded Host
+                # message/constraint projection and never echo raw input.
+                pass
+            else:
+                # Without a valid typed design pointer, retaining a generic
+                # message or constraint could give an arbitrary input a model
+                # facing authority.  The Host can still report the safe code.
+                item = {"code": item["code"]}
+            projected_items.append(item)
+        return projected_items
+
+    for key in ("diagnostics", "diagnosticRepresentatives"):
+        if key in projected:
+            projected[key] = diagnostic_list(projected[key])
+
+    if tool_name == "design.update_work_plan":
+        if "allowedStatuses" in projected and projected["allowedStatuses"] != list(
+            _WORK_PLAN_ITEM_STATUSES
+        ):
+            projected.pop("allowedStatuses")
+        for key in ("currentWorkPlanVersion", "expectedVersion"):
+            version = projected.get(key)
+            if key in projected and (
+                type(version) is not int or version < 0
+            ):
+                projected.pop(key)
+        return projected
+
+    def repair_context(raw_value: Any) -> Any:
+        if not isinstance(raw_value, Mapping):
+            return raw_value
+        context = dict(raw_value)
+        context.pop("repairPointer", None)
+        pointer = _safe_design_diagnostic_pointer(raw_value.get("path"))
+        if pointer is not None:
+            context["repairPointer"] = pointer
+        context.pop("repairItemPointer", None)
+        item_pointer = _safe_design_diagnostic_pointer(raw_value.get("itemPath"))
+        if item_pointer is not None:
+            context["repairItemPointer"] = item_pointer
+        missing = raw_value.get("missingDeclarations")
+        if isinstance(missing, list):
+            projected_missing = []
+            for declaration in missing:
+                if not isinstance(declaration, Mapping):
+                    continue
+                projected_declaration: dict[str, Any] = {}
+                declaration_id = declaration.get("id")
+                if (
+                    isinstance(declaration_id, str)
+                    and _SAFE_DESIGN_RELATED_ID.fullmatch(declaration_id) is not None
+                ):
+                    projected_declaration["id"] = declaration_id
+                expected_type = _safe_design_constraint_fields(declaration).get(
+                    "expectedType"
+                )
+                if expected_type is not None:
+                    projected_declaration["expectedType"] = expected_type
+                usage_pointer = _safe_design_diagnostic_pointer(declaration.get("usePath"))
+                if usage_pointer is not None:
+                    projected_declaration["usagePointer"] = usage_pointer
+                projected_missing.append(projected_declaration)
+            context["missingDeclarations"] = projected_missing
+        return context
+
+    if "repairContext" in projected:
+        projected["repairContext"] = repair_context(projected["repairContext"])
+    if isinstance(projected.get("repairContexts"), list):
+        projected["repairContexts"] = [
+            repair_context(item) for item in projected["repairContexts"]
+        ]
     return projected
 
 
@@ -109,9 +982,9 @@ from .agent_protocol import (
     encode_message,
     parse_manifest,
     scrub_agent_tool_result,
+    validated_transcript_checkpoint,
 )
 from .agent_runtime import (
-    MAX_ENGINEERING_AUTONOMOUS_CYCLES,
     AgentOutputContractDiagnostic,
     AgentOutputContractError,
     AgentOutputValidationIssue,
@@ -124,8 +997,9 @@ from .agent_runtime import (
     ProgressCallback,
     TokenCallback,
     ToolEventCallback,
+    TranscriptCheckpointCallback,
 )
-from .api_models import OfflineOperandMissionV1
+from .api_models import ModelContextV1, OfflineOperandMissionV1
 from .execution_broker import ExecutionBroker
 from .mcp_client import (
     AGENT_TOOL_NAMES,
@@ -135,7 +1009,7 @@ from .mcp_client import (
 )
 from .model_connection import StoredModelConnection
 from .models import Message, MessageRole
-from .native_engineering_status import validate_native_engineering_status
+pass
 from .structural_evidence import (
     STRUCTURAL_ANALYSIS_EVIDENCE_SCHEMA,
     STRUCTURAL_ANALYSIS_TOOL_COVERAGE,
@@ -151,9 +1025,6 @@ from .structural_evidence import (
 
 logger = logging.getLogger(__name__)
 
-_MODEL_CONTEXT_WINDOW_TOKENS = 196_608
-_SIDECAR_HISTORY_BUDGET_TOKENS = _MODEL_CONTEXT_WINDOW_TOKENS - 16_608
-
 _HISTORICAL_EVIDENCE_BUNDLE_KEYS = {
     "schemaVersion",
     "missionDigest",
@@ -163,7 +1034,6 @@ _HISTORICAL_EVIDENCE_BUNDLE_KEYS = {
 _HISTORICAL_EVIDENCE_ITEM_KEYS = {"sourceRunId", "evidence"}
 _MAX_HISTORICAL_EVIDENCE_ITEMS = 2_500
 _MAX_HISTORICAL_EVIDENCE_BUNDLE_BYTES = 1_500_000
-_MAX_AGENT_CHECKPOINT_BYTES = 1_500_000
 _MAX_RETAINED_PLANNING_NARRATIVE_BYTES = 250_000
 _RETAINED_PLANNING_NARRATIVE_STRING_FIELDS = {
     "project_name": 200,
@@ -185,6 +1055,60 @@ _RETAINED_PLANNING_NARRATIVE_LIST_LIMITS = {
     "program_structure": 100,
     "validation_plan": 100,
 }
+_MAX_PLANNING_NATIVE_FAILURE_BYTES = 100_000
+_PLANNING_NATIVE_FAILURE_REQUIRED_KEYS = frozenset(
+    {
+        "schemaVersion",
+        "operationId",
+        "planningConversationId",
+        "planningMessageId",
+        "reviewedPlanDigest",
+        "projectBriefDigest",
+        "briefRelation",
+        "revisionRelation",
+        "operationState",
+        "failureKind",
+        "observationStrength",
+        "errorCode",
+    }
+)
+_PLANNING_NATIVE_FAILURE_OPTIONAL_KEYS = frozenset(
+    {
+        "classification",
+        "phase",
+        "runtimeErrorCode",
+        "projectUnchanged",
+        "safeRestorationVerified",
+        "cpuStopVerified",
+        "scenarioObservation",
+        "acceptanceProfile",
+        "preflightDiagnostic",
+        "nativeDiagnostic",
+    }
+)
+_PLANNING_NATIVE_FAILURE_SCENARIO_KEYS = frozenset(
+    {
+        "observationLabel",
+        "inputAssignment",
+        "inputAssignmentScope",
+        "expected",
+        "observed",
+        "observationKind",
+    }
+)
+_PLANNING_NATIVE_FAILURE_PROFILE_KEYS = frozenset(
+    {
+        "schemaVersion",
+        "reasonCode",
+        "requiredDesignSection",
+        "profilePresent",
+        "signalIds",
+        "modeIds",
+        "alarmIds",
+        "timerIds",
+        "bindings",
+    }
+)
 _DURABLE_RESUME_SYNC_CAPABILITY = "durable-resume-sync-v1"
 _SAFE_ENGINEERING_VALIDATOR_STDERR = re.compile(
     r"^(?:[0-9]{4})-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01]) "
@@ -202,12 +1126,190 @@ _SAFE_RUNTIME_FRAME_STDERR = re.compile(
     r"(?P<kind>AssertionError|AttributeError|IndexError|KeyError|TypeError|ValueError|"
     r"RuntimeError|RecursionError|Exception)\r?\n?$"
 )
+_SAFE_AGENT_RUNTIME_FRAME_STDERR = re.compile(
+    r"^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01]) "
+    r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9],[0-9]{3} "
+    r"WARNING controlstudio_agent\.runtime runtime invariant at agent frame "
+    r"(?P<module>[a-z_][a-z0-9_.]{0,127}) "
+    r"(?P<function>[A-Za-z_][A-Za-z0-9_]*) line "
+    r"(?P<line>[1-9][0-9]{0,6}) kind "
+    r"(?P<kind>AssertionError|AttributeError|IndexError|KeyError|TypeError|ValueError|"
+    r"RuntimeError|RecursionError|Exception)\r?\n?$"
+)
+_SAFE_RUNTIME_EXCEPTION_CLASS_STDERR = re.compile(
+    r"^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01]) "
+    r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9],[0-9]{3} "
+    r"WARNING controlstudio_agent\.runtime runtime invariant exception class "
+    r"(?P<class_name>(?:builtins|controlstudio_agent|openai|pydantic|pydantic_ai)"
+    r"[A-Za-z0-9_.]{0,127})\r?\n?$"
+)
 _SAFE_NATIVE_RESPONSE_STDERR = re.compile(
     r"^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01]) "
     r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9],[0-9]{3} "
     r"WARNING controlstudio_agent\.runtime native response shape "
     r"finish=(?P<finish>stop|length|content_filter|tool_call|error|unknown) "
     r"output_tokens=(?P<tokens>[0-9]{1,9}) text_chars=(?P<chars>[0-9]{1,9})\r?\n?$"
+)
+_SAFE_WORKSPACE_DECISION_STDERR = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} "
+    r"INFO controlstudio_agent\.runtime workspace decision "
+    r"cycle=(?P<cycle>[0-9]{1,4}) "
+    r"action=(?P<action>none|design_(?:inspect|read|search|edit|check|publish_review|update_work_plan|finish|clarify)"
+    r"|native_(?:create|status|test)) "
+    r"outcome=(?P<outcome>selected|schema_rejected|transport_rejected) "
+    r"input_tokens=(?P<input>[0-9]{1,9}) output_tokens=(?P<output>[0-9]{1,9})\r?\n?$"
+)
+# Agent emits this fixed provider-transport summary after reducing the
+# provider response to a closed metadata vocabulary.  Keep the Host parser
+# independently strict: stderr is an untrusted child-process boundary and
+# must never become a reflection channel for provider bodies or arguments.
+_SAFE_PROVIDER_HTTP_STDERR = re.compile(
+    r"^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01]) "
+    r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9],[0-9]{3} "
+    r"WARNING controlstudio_agent\.runtime provider HTTP error "
+    r"status=(?P<status>[0-9]{3}|unknown) "
+    r"type=(?P<type>[a-z0-9_]{1,80}) "
+    r"code=(?P<code>[a-z0-9_]{1,80}) "
+    r"param=(?P<param>[a-z0-9_.\[\]]{1,80})"
+    r"(?: message=(?P<message>[^\r\n]{1,2048}))?\r?\n?$"
+)
+_WORKING_HISTORY_STDERR = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} "
+    r"WARNING controlstudio_agent\.working_history working history rejected "
+    r"reason=(?P<reason>core|latest|notice|window|pair) "
+    r"budget=(?P<budget>[0-9]{1,10}) fixed=(?P<fixed>[0-9]{1,10}) "
+    r"core=(?P<core>[0-9]{1,10}) latest=(?P<latest>[0-9]{1,10})\r?\n?$"
+)
+_WORKING_HISTORY_PROJECTION_FIELDS = (
+    "seq", "budget", "fixed", "schemas", "outputs", "core", "retained", "omitted",
+    "core_msgs", "retained_msgs", "omitted_msgs", "reader", "design_edit",
+    "full_proposal", "retained_calls", "retained_returns", "omitted_calls",
+    "omitted_returns", "reader_calls", "reader_returns", "reader_bytes",
+    "reader_error", "retries", "call_tokens", "return_tokens", "other_tokens",
+)
+_WORKING_HISTORY_PROJECTION_STDERR = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} "
+    r"INFO controlstudio_agent\.working_history working history projected "
+    + " ".join(
+        rf"{key}=(?P<{key}>[01])" if key in {"reader", "design_edit", "full_proposal", "reader_error"}
+        else rf"{key}=(?P<{key}>[0-9]{{1,10}})"
+        for key in _WORKING_HISTORY_PROJECTION_FIELDS
+    )
+    + r"\r?\n?$"
+)
+_MAX_SAFE_PROVIDER_ERROR_MESSAGE_CHARS = 2048
+_PROVIDER_ERROR_SECRET_ASSIGNMENT = re.compile(
+    r'''(?ix)(\b(?:authorization|api[_-]?key|x-api-key|credential(?:s)?|cookie|'''
+    r'''password|secret|token|access[_-]?token|refresh[_-]?token)\b\s*[:=]\s*)'''
+    r'''(?:"[^"]*"|'[^']*'|(?:Bearer\s+)?[^\s,;]+)'''
+)
+_PROVIDER_ERROR_BEARER_SECRET = re.compile(r"(?i)\bBearer\s+[^\s,;\"']+")
+_PROVIDER_ERROR_API_KEY = re.compile(r"\bsk-[A-Za-z0-9_-]+")
+_PROVIDER_ERROR_URL = re.compile(r"(?i)\b(?:https?|wss?)://[^\s,;]+")
+_SAFE_PROVIDER_ERROR_TYPES = frozenset(
+    {
+        "api_error",
+        "authentication_error",
+        "conflict_error",
+        "content_policy_violation",
+        "invalid_request_error",
+        "model_not_found",
+        "not_found_error",
+        "permission_denied",
+        "rate_limit_error",
+        "server_error",
+        "service_unavailable",
+        "unknown",
+        "redacted",
+    }
+)
+_SAFE_PROVIDER_ERROR_CODES = frozenset(
+    {
+        "api_error",
+        "authentication_error",
+        "context_length_exceeded",
+        "content_policy_violation",
+        "insufficient_quota",
+        "invalid_model",
+        "invalid_parameter",
+        "invalid_request_error",
+        "length",
+        "max_tokens",
+        "model_not_found",
+        "permission_denied",
+        "rate_limit_exceeded",
+        "server_error",
+        "service_unavailable",
+        "unsupported_value",
+        "unknown",
+        "redacted",
+    }
+)
+_SAFE_PROVIDER_PARAM_ROOTS = frozenset(
+    {
+        "chat_template_kwargs",
+        "input",
+        "instructions",
+        "max_completion_tokens",
+        "max_tokens",
+        "messages",
+        "model",
+        "parallel_tool_calls",
+        "reasoning_effort",
+        "response_format",
+        "stream",
+        "temperature",
+        "timeout",
+        "tool_choice",
+        "tools",
+        "top_p",
+    }
+)
+_SAFE_PROVIDER_PARAM_SUFFIXES = frozenset(
+    {
+        "arguments",
+        "content",
+        "function",
+        "items",
+        "name",
+        "parameters",
+        "properties",
+        "role",
+        "schema",
+        "strict",
+        "tool_calls",
+        "type",
+        "value",
+    }
+)
+_SAFE_PROVIDER_PARAM_PART = re.compile(
+    r"[a-z][a-z0-9_]*(?:\[(?:0|[1-9][0-9]{0,2})\])?\Z"
+)
+_SAFE_PROVIDER_ERROR_REDACTION_MARKERS = (
+    "api_key",
+    "apikey",
+    "authorization",
+    "bearer",
+    "credential",
+    "password",
+    "secret",
+    "token",
+)
+# The sidecar logs this fixed-shape summary immediately before emitting an
+# output-contract error.  Capture only bounded ASCII fields here; the helper
+# below applies the closed Host allowlists before any value reaches a log,
+# exception, or durable error detail.  In particular, model text, arguments,
+# provider responses, and arbitrary exception strings are never mirrored.
+_SAFE_OUTPUT_CONTRACT_STDERR = re.compile(
+    r"^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01]) "
+    r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9],[0-9]{3} "
+    r"WARNING controlstudio_agent\.sidecar "
+    r"Agent output violated the private structured contract "
+    r"\(run_id=[0-9A-Fa-f-]{1,64}, "
+    r"stage=(?P<stage>[a-z_]{1,64}), "
+    r"exception_kind=(?P<exception_kind>[a-z_]{1,64}), "
+    r"reason_code=(?P<reason_code>[a-z0-9_]{1,64}), "
+    r"validator_code=(?P<validator_code>[a-z0-9_]{1,96})\)\r?\n?$"
 )
 
 # The exact typed operand route is Host-selected from a durable mission rather
@@ -386,53 +1488,54 @@ _STRUCTURAL_ANALYSIS_TOOL_ALIASES = {
     for alias, raw_name in AGENT_TOOL_NAMES.items()
     if raw_name in STRUCTURAL_ANALYSIS_TOOL_COVERAGE
 }
-_MNE_CANDIDATE_TOOL_ALIASES = frozenset(
+pass
+_READ_ONLY_RECOVERY_DESIGN_TOOL_NAMES = frozenset(
+    {"design.inspect", "design.read", "design.search"}
+)
+_RECOVERY_DESIGN_TOOL_NAMES = _READ_ONLY_RECOVERY_DESIGN_TOOL_NAMES | {
+    "design.edit", "design.check", "design.update_work_plan",
+}
+_SAFE_VERIFICATION_SCOPES = frozenset(
     {
-        "compile_instruction_batch_patch_candidate",
-        "compile_instruction_patch_candidate",
-        "compile_rung_patch_candidate",
-        "compile_series_guard_candidate",
+        "offline_native_check_only",
+        "offline_native_reopen",
+        
     }
 )
-_SAFE_MNE_COMPILER_REJECTION_MESSAGE = (
-    "MNE candidate compiler rejected the request; correct candidate "
-    "structure, operands, or simulation scenario."
+_QUARANTINE_DIAGNOSTIC_TOOL_NAMES = frozenset(
+    {
+        "get_xg5000_session_status",
+        "inspect_xg5000_modal",
+        "cancel_xg5000_modal",
+    }
 )
+_SAFE_QUARANTINE_FAILURE_CODE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,79}\Z")
+_SAFE_MCP_ERROR_CODE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,79}\Z")
 
 
-def _safe_mne_candidate_rejection_error(
-    request: ExternalToolRequestV1,
+
+
+def _safe_mcp_rejection_code(
     error: MCPToolRejectedError,
-) -> dict[str, Any] | None:
-    """Return one MCP-validated compiler rejection for the Agent failure frame."""
+) -> str | None:
+    """Project only a validated MCP diagnostic code into ``reason_code``."""
 
-    if request.tool_name not in _MNE_CANDIDATE_TOOL_ALIASES:
-        return None
     payload = error.mcp_error_payload
     if (
-        not isinstance(payload, dict)
+        not isinstance(payload, Mapping)
         or set(payload) != {"schema_version", "status", "error"}
         or payload.get("schema_version") != "1.0"
         or payload.get("status") != "error"
-        or not isinstance(payload.get("error"), dict)
-        or set(payload["error"]) != {"type", "message"}
-        or payload["error"].get("type") != "ValueError"
+        or not isinstance(payload.get("error"), Mapping)
+        or set(payload["error"]) not in ({"type", "message"}, {"type", "message", "code"})
+        or not isinstance(payload["error"].get("type"), str)
         or not isinstance(payload["error"].get("message"), str)
     ):
         return None
-    # MCP ValueError text can contain private baseline instructions, local
-    # paths, or other target material.  The Agent gets only this Host-authored
-    # correction category until MCP exposes a closed diagnostic-code contract.
-    safe_payload = {
-        "schema_version": "1.0",
-        "status": "error",
-        "error": {
-            "type": "ValueError",
-            "message": _SAFE_MNE_COMPILER_REJECTION_MESSAGE,
-        },
-    }
-    assert_agent_safe_payload(safe_payload)
-    return safe_payload
+    code = payload["error"].get("code")
+    if not isinstance(code, str) or _SAFE_MCP_ERROR_CODE.fullmatch(code) is None:
+        return None
+    return code
 
 
 _STRUCTURAL_TOOL_RESULT_PROJECTION_SCHEMA = (
@@ -466,6 +1569,7 @@ _OUTPUT_CONTRACT_EXCEPTION_KINDS = frozenset(
         "model_retry",
         "unexpected_model_behavior",
         "incomplete_tool_call",
+        "workspace_edit_rejected",
     }
 )
 _OUTPUT_CONTRACT_REASON_CODES = frozenset(
@@ -474,6 +1578,63 @@ _OUTPUT_CONTRACT_REASON_CODES = frozenset(
         "schema_validation",
         "incomplete_output",
         "unexpected_model_output",
+        "exact_repeated_noop",
+        "different_semantic_noop",
+        "ineffective_patch_repeat",
+        "metadata_only_with_diagnostics",
+        "repeated_edit_candidate",
+        "create_identity_conflict",
+        "create_identity_evidence_missing",
+        "repeated_create_identity",
+        # Native workspace transport causes are emitted by the provider-neutral
+        # conversation layer.  Keep these as closed tokens: no provider text,
+        # arguments, or exception detail crosses the Host boundary.
+        "invalid_native_tool_call",
+        "assistant_message_not_object",
+        "completion_choice_count",
+        "native_tool_call_truncated",
+        "native_tool_call_incomplete",
+        "assistant_message_missing",
+        "native_tool_call_count",
+        "native_tool_calls_missing",
+        "native_tool_name_unavailable",
+        "native_tool_call_id_missing",
+        "native_tool_arguments_missing",
+        "native_tool_arguments_invalid_json",
+        "native_tool_arguments_not_object",
+        "assistant_tool_message_not_retainable",
+        "native_tool_call_filtered",
+    }
+)
+_NATIVE_TOOL_REASON_CODES = frozenset(
+    {
+        "invalid_native_tool_call",
+        "assistant_message_not_object",
+        "completion_choice_count",
+        "native_tool_call_truncated",
+        "native_tool_call_incomplete",
+        "assistant_message_missing",
+        "native_tool_call_count",
+        "native_tool_calls_missing",
+        "native_tool_name_unavailable",
+        "native_tool_call_id_missing",
+        "native_tool_arguments_missing",
+        "native_tool_arguments_invalid_json",
+        "native_tool_arguments_not_object",
+        "assistant_tool_message_not_retainable",
+        "native_tool_call_filtered",
+    }
+)
+_WORKSPACE_EDIT_REJECTION_REASON_CODES = frozenset(
+    {
+        "exact_repeated_noop",
+        "different_semantic_noop",
+        "ineffective_patch_repeat",
+        "metadata_only_with_diagnostics",
+        "repeated_edit_candidate",
+        "create_identity_conflict",
+        "create_identity_evidence_missing",
+        "repeated_create_identity",
     }
 )
 _RUNTIME_EXCEPTION_KINDS = frozenset(
@@ -641,6 +1802,7 @@ class AgentSupervisor:
         self._manifest_agent_id: str | None = None
         self._manifest_capabilities: frozenset[str] = frozenset()
         self._active_run_id: str | None = None
+        self._stderr_output_contract_diagnostic: AgentOutputContractDiagnostic | None = None
 
     @property
     def manifest_agent_id(self) -> str | None:
@@ -663,6 +1825,7 @@ class AgentSupervisor:
             except OSError as exc:
                 raise AgentSidecarCrashed("Agent sidecar could not be started") from exc
             self._process = process
+            self._stderr_output_contract_diagnostic = None
             messages: asyncio.Queue[AgentProtocolMessage | None] = asyncio.Queue()
             self._messages = messages
             self._stdout_task = asyncio.create_task(
@@ -702,6 +1865,7 @@ class AgentSupervisor:
         on_message: Callable[[AgentProtocolMessage], Awaitable[None]],
         historical_evidence: Mapping[str, Any] | None = None,
         agent_checkpoint: Mapping[str, Any] | None = None,
+        transcript_checkpoint: Mapping[str, Any] | None = None,
     ) -> None:
         """Run one supervised Agent operation until its terminal sidecar frame."""
 
@@ -709,8 +1873,13 @@ class AgentSupervisor:
             run_id = payload.get("run_id")
             if not isinstance(run_id, str) or not run_id:
                 raise AgentProtocolError("Agent run id is invalid")
+            cancelled_terminal_received = False
             try:
                 await self.ensure_started()
+                # A sidecar process is intentionally reusable across runs;
+                # never let a previous run's stderr summary become the
+                # fallback diagnostic for a later stdout EOF.
+                self._stderr_output_contract_diagnostic = None
                 self._active_run_id = run_id
                 if (
                     historical_evidence is not None or agent_checkpoint is not None
@@ -727,14 +1896,60 @@ class AgentSupervisor:
                     )
                 if agent_checkpoint is not None:
                     await self._sync_agent_checkpoint_locked(agent_checkpoint)
+                if transcript_checkpoint is not None:
+                    if "durable-transcript-resume-v1" not in self._manifest_capabilities:
+                        raise AgentProtocolError("Agent sidecar does not support transcript resume sync")
+                    await self._sync_transcript_checkpoint_locked(transcript_checkpoint)
                 await self._send("run.start", payload)
                 while True:
                     message = await self._next_message_with_timeout("run response")
                     if message.type == "run.started":
                         continue
+                    if message.type == "run.cancelled":
+                        cancelled_terminal_received = True
                     await on_message(message)
                     if message.type in {"run.final", "run.error", "run.cancelled"}:
                         return
+            except asyncio.CancelledError:
+                # Normal cancellation first lets the child flush its already
+                # completed public prefix. Never dispatch a new tool while
+                # draining; bounded shutdown and queue isolation stay intact.
+                try:
+                    if self._active_run_id == run_id and not cancelled_terminal_received:
+                        async def drain_cancelled_prefix() -> None:
+                            await self.cancel_run(run_id)
+                            while True:
+                                message = await self._next_message()
+                                if message.type == "tool.request":
+                                    # Cancellation never dispatches queued work.
+                                    continue
+                                if message.payload.get("run_id") != run_id:
+                                    raise AgentProtocolError("Agent cancellation frame belongs to another run")
+                                if message.type in {"run.cancelled", "run.final", "run.error"}:
+                                    return
+                                if message.type in {
+                                    "run.transcript_checkpoint.chunk", "run.transcript_checkpoint",
+                                    "run.mission_checkpoint.chunk", "run.mission_checkpoint",
+                                }:
+                                    await on_message(message)
+                                elif message.type not in {
+                                    "run.cancel.accepted", "run.started", "run.progress", "run.token",
+                                }:
+                                    raise AgentProtocolError("Agent cancellation frame is invalid")
+
+                        await asyncio.wait_for(
+                            drain_cancelled_prefix(),
+                            timeout=self._shutdown_timeout_seconds,
+                        )
+                except (Exception, asyncio.CancelledError) as exc:
+                    logger.warning(
+                        "Agent cancellation checkpoint drain failed (type=%s, checkpoint_flush_completed=false)",
+                        type(exc).__name__,
+                    )
+                finally:
+                    async with self._lifecycle_lock:
+                        await self._terminate_process()
+                raise
             except BaseException:
                 # A callback may have durably rejected a checkpoint or failed
                 # while dispatching a tool. Never let frames from that run
@@ -813,19 +2028,25 @@ class AgentSupervisor:
         self,
         checkpoint: Mapping[str, Any],
     ) -> None:
-        """Sync the bounded checkpoint outside the aggregate run.start frame."""
+        """Stream persisted history without coupling it to one protocol frame."""
 
         canonical_checkpoint = json.loads(_canonical_json(checkpoint))
         assert_agent_safe_payload(canonical_checkpoint)
         encoded = _canonical_json(canonical_checkpoint).encode("utf-8")
-        if len(encoded) > _MAX_AGENT_CHECKPOINT_BYTES:
-            raise AgentProtocolError("Agent checkpoint exceeds its durable bound")
         checkpoint_digest = hashlib.sha256(encoded).hexdigest()
+        for chunk in checkpoint_chunks(canonical_checkpoint):
+            accepted = await self._request(
+                {"type": "engineering_checkpoint.chunk", "payload": chunk},
+                expected="engineering_checkpoint.chunk.accepted",
+            )
+            if accepted.payload != {
+                "checkpointDigest": checkpoint_digest, "index": chunk["index"],
+            }:
+                raise AgentProtocolError("Agent checkpoint chunk acknowledgement differs")
         synced = await self._request(
             {
                 "type": "engineering_checkpoint.sync",
                 "payload": {
-                    "checkpoint": canonical_checkpoint,
                     "checkpointDigest": checkpoint_digest,
                 },
             },
@@ -833,6 +2054,25 @@ class AgentSupervisor:
         )
         if synced.payload != {"checkpointDigest": checkpoint_digest}:
             raise AgentProtocolError("Agent checkpoint sync acknowledgement is invalid")
+
+    async def _sync_transcript_checkpoint_locked(
+        self, checkpoint: Mapping[str, Any],
+    ) -> None:
+        canonical, digest, _, _ = validated_transcript_checkpoint(checkpoint)
+        assert_agent_safe_payload(canonical)
+        for chunk in checkpoint_chunks(canonical):
+            accepted = await self._request(
+                {"type": "transcript_checkpoint.chunk", "payload": chunk},
+                expected="transcript_checkpoint.chunk.accepted",
+            )
+            if accepted.payload != {"checkpointDigest": digest, "index": chunk["index"]}:
+                raise AgentProtocolError("Agent transcript chunk acknowledgement differs")
+        synced = await self._request(
+            {"type": "transcript_checkpoint.sync", "payload": {"checkpointDigest": digest}},
+            expected="transcript_checkpoint.synced",
+        )
+        if synced.payload != {"checkpointDigest": digest}:
+            raise AgentProtocolError("Agent transcript sync acknowledgement differs")
 
     async def send_tool_result(self, payload: Mapping[str, Any]) -> None:
         await self._send("tool.result", payload)
@@ -970,7 +2210,26 @@ class AgentSupervisor:
     async def _next_message(self) -> AgentProtocolMessage:
         message = await self._messages.get()
         if message is None:
+            # stdout can close just before the stderr reader observes the
+            # sidecar's final structured-contract summary. Give that reader a
+            # bounded chance to publish the already allowlisted diagnostic,
+            # then surface it through the same typed exception as a protocol
+            # ``run.error`` frame.
+            stderr_task = self._stderr_task
+            if stderr_task is not None and not stderr_task.done():
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(stderr_task), timeout=0.25
+                    )
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+            diagnostic = self._stderr_output_contract_diagnostic
             await self._terminate_process()
+            if diagnostic is not None:
+                raise AgentOutputContractError(
+                    "Agent output failed its structured contract",
+                    diagnostic=diagnostic,
+                )
             raise AgentSidecarCrashed("Agent sidecar exited unexpectedly")
         if message.type == "protocol.error":
             raise AgentSidecarError("Agent sidecar reported a protocol error")
@@ -1020,11 +2279,29 @@ class AgentSupervisor:
         while line := await process.stderr.readline():
             emitted = True
             try:
-                diagnostic = line.decode("ascii")
+                diagnostic = line.decode("utf-8")
             except UnicodeDecodeError:
                 continue
             match = _SAFE_ENGINEERING_VALIDATOR_STDERR.fullmatch(diagnostic)
             shape_match = _SAFE_NATIVE_RESPONSE_STDERR.fullmatch(diagnostic)
+            workspace_match = _SAFE_WORKSPACE_DECISION_STDERR.fullmatch(diagnostic)
+            if workspace_match is not None:
+                logger.warning(
+                    "Agent workspace decision: cycle=%s action=%s outcome=%s input_tokens=%s output_tokens=%s",
+                    workspace_match["cycle"], workspace_match["action"],
+                    workspace_match["outcome"], workspace_match["input"], workspace_match["output"],
+                )
+            output_contract = _output_contract_diagnostic_from_stderr(diagnostic)
+            if output_contract is not None:
+                self._stderr_output_contract_diagnostic = output_contract
+                logger.warning(
+                    "Agent sidecar: structured output contract stage=%s "
+                    "exception_kind=%s reason_code=%s validator_code=%s",
+                    output_contract.stage,
+                    output_contract.exception_kind,
+                    output_contract.reason_code,
+                    output_contract.validator_code,
+                )
             if shape_match is not None:
                 logger.warning(
                     "Agent native response: finish=%s output_tokens=%d text_chars=%d",
@@ -1042,6 +2319,58 @@ class AgentSupervisor:
                 logger.warning(
                     "Agent sidecar: runtime invariant at runtime frame %s line %s kind %s",
                     runtime_match["function"], runtime_match["line"], runtime_match["kind"],
+                )
+            working_history = _working_history_diagnostic_from_stderr(diagnostic)
+            if working_history is not None:
+                logger.warning(
+                    "Agent working history rejected: reason=%s budget=%d fixed=%d core=%d latest=%d",
+                    working_history["reason"], working_history["budget"],
+                    working_history["fixed"], working_history["core"], working_history["latest"],
+                )
+            projection = _WORKING_HISTORY_PROJECTION_STDERR.fullmatch(diagnostic)
+            if projection is not None:
+                logger.warning(
+                    "Agent working history projected: %s",
+                    " ".join(
+                        f"{key}={int(projection[key])}"
+                        for key in _WORKING_HISTORY_PROJECTION_FIELDS
+                    ),
+                )
+            provider_http = _provider_http_diagnostic_from_stderr(diagnostic)
+            if provider_http is not None:
+                provider_message = provider_http.get("message")
+                if provider_message is None:
+                    logger.warning(
+                        "Agent sidecar: provider HTTP error status=%s type=%s code=%s param=%s",
+                        provider_http["status"],
+                        provider_http["type"],
+                        provider_http["code"],
+                        provider_http["param"],
+                    )
+                else:
+                    logger.warning(
+                        "Agent sidecar: provider HTTP error status=%s type=%s code=%s "
+                        "param=%s message=%s",
+                        provider_http["status"],
+                        provider_http["type"],
+                        provider_http["code"],
+                        provider_http["param"],
+                        provider_message,
+                    )
+            agent_runtime_match = _SAFE_AGENT_RUNTIME_FRAME_STDERR.fullmatch(diagnostic)
+            if agent_runtime_match is not None:
+                logger.warning(
+                    "Agent sidecar: runtime invariant at agent frame %s.%s line %s kind %s",
+                    agent_runtime_match["module"],
+                    agent_runtime_match["function"],
+                    agent_runtime_match["line"],
+                    agent_runtime_match["kind"],
+                )
+            exception_class_match = _SAFE_RUNTIME_EXCEPTION_CLASS_STDERR.fullmatch(diagnostic)
+            if exception_class_match is not None:
+                logger.warning(
+                    "Agent sidecar: runtime invariant exception class %s",
+                    exception_class_match["class_name"],
                 )
         if emitted:
             logger.warning("Agent sidecar emitted diagnostics on stderr")
@@ -1089,6 +2418,7 @@ class AgentSupervisor:
                 for task in tasks:
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
+        self._stderr_output_contract_diagnostic = None
 
 
 class SubprocessAgentClient:
@@ -1105,12 +2435,6 @@ class SubprocessAgentClient:
         self._supervisor = supervisor
         self._change_plan_callback: ChangePlanCallback | None = None
         self._knowledge_snapshot_callback: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None
-        self._design_tool_catalog_callback: Callable[
-            [], list[AgentToolDefinitionV1]
-        ] | None = None
-        self._design_tool_callback: Callable[
-            [str, Mapping[str, Any]], Awaitable[dict[str, Any]]
-        ] | None = None
 
     def bind_change_planner(self, callback: ChangePlanCallback) -> None:
         self._change_plan_callback = callback
@@ -1120,16 +2444,6 @@ class SubprocessAgentClient:
     ) -> None:
         self._knowledge_snapshot_callback = callback
 
-    def bind_design_tools(
-        self,
-        *,
-        catalog: Callable[[], list[AgentToolDefinitionV1]],
-        execute: Callable[[str, Mapping[str, Any]], Awaitable[dict[str, Any]]],
-    ) -> None:
-        """Bind Host-local draft tools without granting direct DB authority."""
-
-        self._design_tool_catalog_callback = catalog
-        self._design_tool_callback = execute
 
     async def run(
         self,
@@ -1140,17 +2454,27 @@ class SubprocessAgentClient:
         run_id: str,
         trusted_context: dict[str, Any] | None = None,
         agent_checkpoint: dict[str, Any] | None = None,
+        transcript_checkpoint: dict[str, Any] | None = None,
+        model_context: ModelContextV1 | Mapping[str, Any] | None = None,
         on_token: TokenCallback | None = None,
         on_tool_event: ToolEventCallback | None = None,
         on_progress: ProgressCallback | None = None,
         on_mission_checkpoint: MissionCheckpointCallback | None = None,
+        on_transcript_checkpoint: TranscriptCheckpointCallback | None = None,
     ) -> AgentRunOutput:
+        quarantine_diagnostic_only = _quarantine_diagnostic_only_context(
+            trusted_context
+        )
         targetless_analysis = bool(
             isinstance(trusted_context, dict)
             and trusted_context.get("targetless_analysis") is True
             and trusted_context.get("change_request_scope") == "analysis_only"
         )
-        if self._knowledge_snapshot_callback is not None:
+        if quarantine_diagnostic_only and targetless_analysis:
+            raise AgentProtocolError(
+                "quarantine diagnostics cannot use the targetless analysis route"
+            )
+        if self._knowledge_snapshot_callback is not None and not quarantine_diagnostic_only:
             # Sync before every run: deletion/update and a restarted sidecar
             # cannot retain stale Agent-derived index entries.
             documents = await self._knowledge_snapshot_callback()
@@ -1167,33 +2491,27 @@ class SubprocessAgentClient:
                 run_id=run_id,
             )
         )
-        design_tools = (
-            self._design_tool_catalog_callback()
-            if planning_workflow and self._design_tool_catalog_callback is not None
-            else []
-        )
-        tools = [*broker_tools, *design_tools]
-        mne_change_planner_available = (
-            not targetless_analysis
-            and self._change_plan_callback is not None
-            and isinstance(trusted_context, dict)
-            and trusted_context.get("mne_change_planner_available") is True
-        )
-        if not mne_change_planner_available:
-            tools = [
+        if quarantine_diagnostic_only:
+            broker_tools = [
                 tool
-                for tool in tools
-                if tool.tool_name not in _MNE_CANDIDATE_TOOL_ALIASES
+                for tool in broker_tools
+                if tool.tool_name in _QUARANTINE_DIAGNOSTIC_TOOL_NAMES
             ]
+        tools = list(broker_tools)
         catalog = {tool.tool_name for tool in broker_tools}
-        design_catalog = {tool.tool_name for tool in design_tools}
+        design_catalog: set[str] = set()
         safe_trusted_context = _safe_trusted_context(
             trusted_context,
-            knowledge_search_available=self._knowledge_snapshot_callback is not None,
-            change_planner_available=(
-                self._change_plan_callback is not None and not targetless_analysis
+            knowledge_search_available=(
+                self._knowledge_snapshot_callback is not None
+                and not quarantine_diagnostic_only
             ),
-            mne_change_planner_available=mne_change_planner_available,
+            change_planner_available=(
+                self._change_plan_callback is not None
+                and not targetless_analysis
+                and not quarantine_diagnostic_only
+            ),
+            
         ) or {}
         historical_evidence = safe_trusted_context.pop(
             "historical_evidence",
@@ -1206,33 +2524,49 @@ class SubprocessAgentClient:
                 "bundleDigest": historical_evidence["bundleDigest"],
                 "itemCount": len(historical_evidence["items"]),
             }
+        checkpoint_to_send = None if quarantine_diagnostic_only else agent_checkpoint
+        transcript_to_send = (
+            transcript_checkpoint if not quarantine_diagnostic_only else None
+        )
+        transcript_digest: str | None = None
+        if transcript_to_send is not None:
+            transcript_to_send, transcript_digest, _, _ = validated_transcript_checkpoint(transcript_to_send)
         checkpoint_digest: str | None = None
-        if agent_checkpoint is not None:
+        if checkpoint_to_send is not None:
             if "engineering_mission" not in safe_trusted_context:
                 raise AgentProtocolError(
                     "Agent checkpoint requires a durable engineering mission"
                 )
-            encoded_checkpoint = _canonical_json(agent_checkpoint).encode("utf-8")
-            if len(encoded_checkpoint) > _MAX_AGENT_CHECKPOINT_BYTES:
-                raise AgentProtocolError("Agent checkpoint exceeds its durable bound")
+            encoded_checkpoint = _canonical_json(checkpoint_to_send).encode("utf-8")
             checkpoint_digest = hashlib.sha256(encoded_checkpoint).hexdigest()
         sidecar_prompt = (
             _exact_offline_operand_continuation_prompt(safe_trusted_context)
             or prompt
         )
+        context_payload = _model_context_payload(
+            model_context
+            if model_context is not None
+            else getattr(self._settings, "model_context", None)
+        )
         payload = {
             "conversation_id": conversation_id,
             "run_id": run_id,
             "prompt": sidecar_prompt,
-            "history": [] if agent_checkpoint is not None else _safe_history(history),
+            "history": [] if checkpoint_to_send is not None or transcript_to_send is not None else _safe_history(history),
             "trusted_context": safe_trusted_context,
             "model": _model_payload(self._settings),
             "tools": [tool.model_dump(mode="json") for tool in tools],
         }
+        if context_payload is not None:
+            payload["model_context"] = context_payload
         if checkpoint_digest is not None:
             payload["agent_checkpoint_ref"] = {
                 "schemaVersion": "1",
                 "checkpointDigest": checkpoint_digest,
+            }
+        if transcript_digest is not None:
+            payload["transcript_checkpoint_ref"] = {
+                "schemaVersion": "1", "checkpointDigest": transcript_digest,
             }
         assert_agent_safe_payload(payload)
         result: AgentRunOutput | None = None
@@ -1240,10 +2574,42 @@ class SubprocessAgentClient:
         last_mission_cycle = 0
         last_mission_disposition: str | None = None
         handled_tool_identities: set[str] = set()
+        checkpoint_transfer = CheckpointTransfer()
+        transcript_transfer = CheckpointTransfer()
 
         async def handle(message: AgentProtocolMessage) -> None:
             nonlocal last_mission_cycle, last_mission_disposition
             nonlocal last_progress, result
+            if message.type == "run.transcript_checkpoint.chunk":
+                if message.payload.get("run_id") != run_id:
+                    raise AgentProtocolError("Agent transcript chunk belongs to another run")
+                try:
+                    transcript_transfer.append({key: value for key, value in message.payload.items() if key != "run_id"})
+                except ValueError as exc:
+                    raise AgentProtocolError("Agent transcript chunk is invalid") from exc
+                return
+            if message.type == "run.transcript_checkpoint":
+                if set(message.payload) != {"run_id", "checkpoint_digest"} or message.payload.get("run_id") != run_id:
+                    raise AgentProtocolError("Agent transcript completion is invalid")
+                try:
+                    body = transcript_transfer.finish(message.payload["checkpoint_digest"])
+                    body, digest, _, _ = validated_transcript_checkpoint(body, message.payload["checkpoint_digest"])
+                except (TypeError, ValueError) as exc:
+                    raise AgentProtocolError("Agent transcript completion is invalid") from exc
+                if on_transcript_checkpoint is None:
+                    raise AgentProtocolError("Host transcript persistence callback is unavailable")
+                await on_transcript_checkpoint(body, digest)
+                return
+            if message.type == "run.mission_checkpoint.chunk":
+                if message.payload.get("run_id") != run_id:
+                    raise AgentProtocolError("Agent checkpoint chunk belongs to another run")
+                try:
+                    checkpoint_transfer.append({
+                        key: value for key, value in message.payload.items() if key != "run_id"
+                    })
+                except ValueError as exc:
+                    raise AgentProtocolError(str(exc)) from exc
+                return
             if message.type == "run.progress":
                 if message.payload.get("run_id") != run_id:
                     raise AgentProtocolError("Agent progress belongs to another run")
@@ -1295,34 +2661,44 @@ class SubprocessAgentClient:
                 mission_digest = message.payload.get("mission_digest")
                 agent_checkpoint_value = message.payload.get("agent_checkpoint")
                 agent_checkpoint_digest = message.payload.get("agent_checkpoint_digest")
+                if agent_checkpoint_value is None:
+                    try:
+                        agent_checkpoint_value = checkpoint_transfer.finish(agent_checkpoint_digest)
+                    except ValueError as exc:
+                        raise AgentProtocolError(str(exc)) from exc
                 if (
                     isinstance(cycle, bool)
                     or not isinstance(cycle, int)
                     or cycle < 1
-                    or cycle > MAX_ENGINEERING_AUTONOMOUS_CYCLES
                     or cycle != last_mission_cycle + 1
                     or last_mission_disposition == "respond"
-                    or cycle_disposition not in {"continue", "respond"}
+                    or cycle_disposition not in {"continue", "respond", "checkpoint"}
                     or not isinstance(mission, dict)
                     or not isinstance(mission_digest, str)
                     or re.fullmatch(r"[0-9a-f]{64}", mission_digest) is None
                     or not isinstance(agent_checkpoint_value, dict)
                     or not isinstance(agent_checkpoint_digest, str)
                     or re.fullmatch(r"[0-9a-f]{64}", agent_checkpoint_digest) is None
-                    or on_mission_checkpoint is None
+                    or (
+                        on_mission_checkpoint is None
+                        and not quarantine_diagnostic_only
+                    )
                 ):
                     raise AgentProtocolError("Agent mission checkpoint is invalid")
                 assert_agent_safe_payload(mission)
-                await on_mission_checkpoint(
-                    mission,
-                    mission_digest,
-                    cycle,
-                    cycle_disposition,
-                    agent_checkpoint_value,
-                    agent_checkpoint_digest,
-                )
-                last_mission_cycle = cycle
-                last_mission_disposition = cycle_disposition
+                if not quarantine_diagnostic_only:
+                    assert on_mission_checkpoint is not None
+                    await on_mission_checkpoint(
+                        mission,
+                        mission_digest,
+                        cycle,
+                        cycle_disposition,
+                        agent_checkpoint_value,
+                        agent_checkpoint_digest,
+                    )
+                if cycle_disposition != "checkpoint":
+                    last_mission_cycle = cycle
+                    last_mission_disposition = cycle_disposition
                 return
             if message.type == "tool.request":
                 request = _tool_request_from_message(message, conversation_id, run_id)
@@ -1339,6 +2715,7 @@ class SubprocessAgentClient:
                     catalog=catalog,
                     design_catalog=design_catalog,
                     on_tool_event=on_tool_event,
+                    quarantine_diagnostic_only=quarantine_diagnostic_only,
                 )
                 return
             if message.type == "run.final":
@@ -1373,7 +2750,8 @@ class SubprocessAgentClient:
                 payload,
                 on_message=handle,
                 historical_evidence=historical_evidence,
-                agent_checkpoint=agent_checkpoint,
+                agent_checkpoint=checkpoint_to_send,
+                transcript_checkpoint=transcript_to_send,
             )
         except asyncio.CancelledError:
             await asyncio.shield(self._supervisor.cancel_run(run_id))
@@ -1389,6 +2767,7 @@ class SubprocessAgentClient:
         catalog: set[str],
         design_catalog: set[str],
         on_tool_event: ToolEventCallback | None,
+        quarantine_diagnostic_only: bool = False,
     ) -> None:
         completed_tool_result: dict[str, Any] | None = None
 
@@ -1406,6 +2785,10 @@ class SubprocessAgentClient:
         }
         if request.tool_call_id is not None:
             event_payload["tool_call_id"] = request.tool_call_id
+        if request.tool_name == "design.edit":
+            attempt = _bounded_design_edit_attempt(request.arguments)
+            if attempt is not None:
+                event_payload["edit_attempt"] = attempt
         broker_owns_terminal_event = request.tool_name in catalog
         callback_terminal_event_recorded = False
 
@@ -1484,6 +2867,19 @@ class SubprocessAgentClient:
             # This is the first Host-owned observation of the model's choice.
             # Execution starts later, after the broker/callback preconditions.
             await capture_event("tool.selected", event_payload)
+            if (
+                quarantine_diagnostic_only
+                and request.tool_name not in _QUARANTINE_DIAGNOSTIC_TOOL_NAMES
+            ):
+                await send_failure(
+                    "host_policy",
+                    failure_reason=(
+                        "This diagnostic run permits only current-session status "
+                        "and owned-modal tools."
+                    ),
+                    reason_code="diagnostic_tool_not_allowed",
+                )
+                return
             if request.tool_name in catalog:
                 sink = capture_event
                 value = await self._broker.execute_external_tool_request(
@@ -1491,139 +2887,6 @@ class SubprocessAgentClient:
                     sink=sink,
                     completion_gate=validate_tool_completion,
                 )
-            elif (
-                request.tool_name in design_catalog
-                and self._design_tool_callback is not None
-            ):
-                await capture_event("tool.started", event_payload)
-                value = await self._design_tool_callback(
-                    request.tool_name,
-                    request.arguments,
-                )
-                completed_tool_result = _completed_tool_result_payload(
-                    request_id=request.request_id,
-                    raw_result=value,
-                    evidence_ref=None,
-                )
-                design_status = (
-                    value.get("status") if isinstance(value, Mapping) else None
-                )
-                design_failure_code = (
-                    "design_revision_conflict"
-                    if design_status == "revision_conflict"
-                    else (
-                        "design_edit_not_applied"
-                        if (
-                            request.tool_name.startswith("design.edit")
-                            or request.tool_name
-                            in {
-                                "design.patch_ladder_rung",
-                                "design.set_ladder_increment_action",
-                                "design.move_ladder_rung",
-                                "design.repair_index_mode_latches",
-                                "design.repair_automatic_start_rearm",
-                                "design.repair_stale_step_references",
-                                "design.repair_control_network_contracts",
-                                "design.repair_sequence_start_release_contracts",
-                            }
-                        )
-                        and design_status != "applied"
-                        else (
-                            "design_publish_blocked"
-                            if request.tool_name == "design.publish_review"
-                            and design_status != "published"
-                            else None
-                        )
-                    )
-                )
-                if design_failure_code == "design_edit_not_applied" and isinstance(value, Mapping):
-                    design_failure_code = _design_edit_failure_code(value)
-                if design_failure_code is None:
-                    await capture_event("tool.completed", event_payload)
-                else:
-                    failure_payload = {
-                        **event_payload,
-                        "failure_kind": "tool_error",
-                        "reason_code": design_failure_code,
-                    }
-                    bounded_diagnostics = _bounded_design_failure_diagnostics(value)
-                    if bounded_diagnostics:
-                        failure_payload["diagnostics"] = bounded_diagnostics
-                    await capture_event(
-                        "tool.failed",
-                        failure_payload,
-                    )
-                    callback_terminal_event_recorded = True
-            elif (
-                request.tool_name == "change.propose_offline"
-                and self._change_plan_callback is not None
-            ):
-                await capture_event("tool.started", event_payload)
-                value = await self._change_plan_callback(**request.arguments)
-                outcome_state = (
-                    str(value.get("state") or "")
-                    if isinstance(value, Mapping)
-                    else ""
-                )
-                if outcome_state in {"FAILED", "ROLLED_BACK"}:
-                    outcome = (
-                        value.get("change_outcome")
-                        if isinstance(value, Mapping)
-                        and isinstance(value.get("change_outcome"), Mapping)
-                        else {}
-                    )
-                    preflight_failed = (
-                        outcome_state == "FAILED"
-                        and outcome.get("errorCode")
-                        == "change_preflight_failed_before_mutation"
-                    )
-                    failure_reason = (
-                        "변경 검증에 실패했으며 작업 사본을 원복했습니다."
-                        if outcome_state == "ROLLED_BACK"
-                        else (
-                            "실행 사전조건을 충족하지 못해 작업 사본을 변경하지 않았습니다."
-                            if preflight_failed
-                            else "직접 변경 transaction이 실패 상태로 종료되었습니다."
-                        )
-                    )
-                    reason_code = (
-                        "change_verification_rolled_back"
-                        if outcome_state == "ROLLED_BACK"
-                        else (
-                            "change_preflight_failed_before_mutation"
-                            if preflight_failed
-                            else "change_execution_failed"
-                        )
-                    )
-                    # The activity failed at the engineering layer, but the
-                    # canonical terminal transaction is still a successful
-                    # protocol return that the Agent must use for its next
-                    # decision. Sending a failed frame here would discard that
-                    # Host-owned outcome and invite an uninformed retry.
-                    await capture_event(
-                        "tool.failed",
-                        {
-                            **event_payload,
-                            "failure_kind": "tool_error",
-                            "failure_reason": failure_reason,
-                            "reason_code": reason_code,
-                            "stage": (
-                                "verification"
-                                if outcome_state == "ROLLED_BACK"
-                                else "preflight" if preflight_failed else "execution"
-                            ),
-                        },
-                    )
-                    callback_terminal_event_recorded = True
-                completed_tool_result = _completed_tool_result_payload(
-                    request_id=request.request_id,
-                    raw_result=value,
-                    evidence_ref=None,
-                )
-                if outcome_state not in {"FAILED", "ROLLED_BACK"}:
-                    await capture_event("tool.completed", event_payload)
-            else:
-                raise AgentSidecarError("Agent requested a disallowed Host callback")
         except asyncio.CancelledError:
             await send_failure(
                 "cancelled",
@@ -1631,24 +2894,12 @@ class SubprocessAgentClient:
             )
             raise
         except MCPToolRejectedError as exc:
-            compiler_error = _safe_mne_candidate_rejection_error(request, exc)
-            if compiler_error is not None:
-                # The broker already recorded a failed tool event.  This is not
-                # evidence or success.  Preserve the normal failed frame, with
-                # the safe compiler detail needed for model-side correction.
-                compiler_result = {
-                    "request_id": request.request_id,
-                    "status": "failed",
-                    "failure_kind": "tool_error",
-                    "error": compiler_error,
-                }
-                assert_agent_safe_payload(compiler_result)
-                encode_message("tool.result", compiler_result)
-                await self._supervisor.send_tool_result(compiler_result)
-                return
+            pass
+            pass
             await send_failure(
                 "tool_error",
                 failure_reason="Host가 선택한 도구 요청을 거부했습니다.",
+                reason_code=_safe_mcp_rejection_code(exc),
             )
             return
         except MCPTransportError:
@@ -1663,10 +2914,15 @@ class SubprocessAgentClient:
                 failure_reason="Host 안전 정책이 선택한 도구 실행을 허용하지 않았습니다.",
             )
             return
-        except Exception:  # noqa: BLE001 - never expose Host callback diagnostics to Agent
+        except Exception as exc:  # noqa: BLE001 - keep callback failures distinct from authority rejection
+            logger.error(
+                "Host tool callback failed: tool=%s request_id=%s exception_type=%s",
+                request.tool_name, request.request_id, type(exc).__name__,
+            )
             await send_failure(
-                "host_policy",
-                failure_reason="Host가 선택한 도구를 실행하지 못했습니다.",
+                "tool_error",
+                reason_code="tool_failed",
+                failure_reason="Host 도구 처리 중 내부 오류가 발생했습니다.",
             )
             return
         if completed_tool_result is None:
@@ -1712,9 +2968,24 @@ class SubprocessAgentClient:
                 tool_result_continuation=bool(result["tool_result_continuation"]),
                 structured_output=bool(result["structured_output"]),
                 message=str(result["message"]),
+                model_context=_decode_capability_model_context(result.get("model_context")),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise AgentProtocolError("Agent capability result is invalid") from exc
+
+
+def _decode_capability_model_context(value: object) -> ModelContextV1 | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise AgentProtocolError("Agent capability model context is invalid")
+    payload = dict(value)
+    if payload.get("source") is None:
+        payload["source"] = "unknown"
+    try:
+        return ModelContextV1.model_validate(payload)
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise AgentProtocolError("Agent capability model context is invalid") from exc
 
 
 def _model_payload(settings: StoredModelConnection) -> dict[str, Any]:
@@ -1723,11 +2994,45 @@ def _model_payload(settings: StoredModelConnection) -> dict[str, Any]:
         "base_url": settings.base_url,
         "model": settings.model,
         "timeout_seconds": settings.timeout_seconds,
+        "reasoning_effort": settings.reasoning_effort,
         # Model credentials are needed by the process that calls the model, but
         # are never persisted, logged, passed in argv, or sent to MCP.
         "api_key": settings.secrets.api_key,
         "custom_headers": settings.secrets.custom_headers,
     }
+
+
+def _model_context_payload(
+    value: ModelContextV1 | Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Validate an explicit provider observation before crossing the sidecar boundary.
+
+    The Host deliberately does not probe ``/props`` or infer capacity from a
+    model name.  A missing observation remains absent/unknown.  When a caller
+    supplies one, the full contract (including an insufficient 196608 window)
+    is forwarded without truncating history or claiming support.
+    """
+
+    if value is None:
+        return None
+    try:
+        contract = (
+            value
+            if isinstance(value, ModelContextV1)
+            else ModelContextV1.model_validate(value)
+        )
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise AgentProtocolError("model context observation is invalid") from exc
+    # ``status`` is a read-only API projection computed from the capacity
+    # fields.  It is intentionally not part of the sidecar input contract;
+    # forwarding it would make an otherwise valid observation fail protocol
+    # validation before the model is called.
+    payload = contract.model_dump(mode="json", by_alias=False, exclude={"status"})
+    if contract.history_budget_status == "unknown":
+        payload.pop("history_budget_status", None)
+        payload.pop("history_budget_tokens", None)
+        payload.pop("history_budget_source", None)
+    return payload
 
 
 def _configured_agent_command() -> tuple[str, ...] | None:
@@ -1780,24 +3085,19 @@ def _sidecar_environment() -> dict[str, str]:
 
 
 def _safe_history(history: Sequence[Message]) -> list[dict[str, Any]]:
-    bounded_history: list[Message] = []
-    estimated_tokens = 0
-    for item in reversed(history):
+    """Project retained history without silently dropping older messages.
+
+    Context admission belongs to the Agent's explicit ``model_context``
+    contract.  The previous fixed 180k tail budget could discard user history
+    before the sidecar observed it, and therefore could turn a 200k support
+    failure into an unreported partial request.
+    """
+
+    retained_history: list[Message] = []
+    for item in history:
         if item.role not in {MessageRole.USER, MessageRole.ASSISTANT}:
             continue
-        ascii_characters = sum(character.isascii() for character in item.content)
-        non_ascii_characters = len(item.content) - ascii_characters
-        item_tokens = max(1, (ascii_characters + 3) // 4 + non_ascii_characters)
-        if (
-            bounded_history
-            and estimated_tokens + item_tokens > _SIDECAR_HISTORY_BUDGET_TOKENS
-        ):
-            break
-        if item_tokens > _SIDECAR_HISTORY_BUDGET_TOKENS:
-            continue
-        bounded_history.append(item)
-        estimated_tokens += item_tokens
-    bounded_history.reverse()
+        retained_history.append(item)
     return [
         {
             "role": item.role.value,
@@ -1807,7 +3107,7 @@ def _safe_history(history: Sequence[Message]) -> list[dict[str, Any]]:
                 item.metadata.get("structured_project_brief")
             ),
         }
-        for item in bounded_history
+        for item in retained_history
     ]
 
 
@@ -1883,15 +3183,48 @@ def _safe_retained_planning_narrative(value: Any) -> dict[str, Any]:
     return projected
 
 
+
+
+def _safe_quarantine_failure(value: Any) -> dict[str, str]:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"state", "code"}
+        or value.get("state") != "QUARANTINED"
+        or not isinstance(value.get("code"), str)
+        or _SAFE_QUARANTINE_FAILURE_CODE.fullmatch(value["code"]) is None
+    ):
+        raise AgentProtocolError("quarantine diagnostic failure context is invalid")
+    return {"state": "QUARANTINED", "code": value["code"]}
+
+
+def _quarantine_diagnostic_only_context(
+    value: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(value, dict) or value.get("quarantine_diagnostic_only") is not True:
+        return False
+    if (
+        value.get("workflow") != "engineering"
+        or value.get("change_request_scope") != "analysis_only"
+        or value.get("targetless_analysis") is True
+    ):
+        raise AgentProtocolError("quarantine diagnostic context is invalid")
+    _safe_quarantine_failure(value.get("quarantine_failure"))
+    return True
+
+
 def _safe_trusted_context(
     value: dict[str, Any] | None,
     *,
     knowledge_search_available: bool,
     change_planner_available: bool,
-    mne_change_planner_available: bool,
 ) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
+    if (
+        value.get("quarantine_diagnostic_only") is True
+        and value.get("workflow") != "engineering"
+    ):
+        raise AgentProtocolError("quarantine diagnostic context is invalid")
     if value.get("workflow") == "new_project_planning":
         brief = value.get("project_brief")
         safe_brief = {
@@ -1952,12 +3285,35 @@ def _safe_trusted_context(
             context["retained_design_narrative"] = (
                 _safe_retained_planning_narrative(retained_narrative)
             )
+        prior_design_failure = value.get("prior_design_failure_observation")
+        if prior_design_failure is not None:
+            context["prior_design_failure_observation"] = (
+                _safe_prior_design_failure_observation(prior_design_failure)
+            )
         return context
+    if value.get("quarantine_diagnostic_only") is True:
+        if (
+            value.get("workflow") != "engineering"
+            or value.get("change_request_scope") != "analysis_only"
+            or value.get("targetless_analysis") is True
+        ):
+            raise AgentProtocolError("quarantine diagnostic context is invalid")
+        return {
+            "workflow": "engineering",
+            "knowledge_search_available": False,
+            "change_planner_available": False,
+            
+            "change_request_scope": "analysis_only",
+            "quarantine_diagnostic_only": True,
+            "quarantine_failure": _safe_quarantine_failure(
+                value.get("quarantine_failure")
+            ),
+        }
     context: dict[str, Any] = {
         "workflow": "engineering",
         "knowledge_search_available": knowledge_search_available,
         "change_planner_available": change_planner_available,
-        "mne_change_planner_available": mne_change_planner_available,
+        
     }
     if (
         value.get("targetless_analysis") is True
@@ -1966,8 +3322,6 @@ def _safe_trusted_context(
         # This flag grants no tool authority.  It tells the Agent that the Host
         # deliberately supplied an empty external catalog for a general chat.
         context["targetless_analysis"] = True
-    if value.get("internal_mne_rung_reproposal_permitted") is True:
-        context["internal_mne_rung_reproposal_permitted"] = True
     if value.get("change_request_scope") in {
         "analysis_only",
         "offline_candidate_revision",
@@ -1977,9 +3331,28 @@ def _safe_trusted_context(
     if value.get("verification_scope") in {
         "offline_native_check_only",
         "offline_native_reopen",
-        "offline_native_reopen_xgsim",
+        
     }:
         context["verification_scope"] = value["verification_scope"]
+    allowed_verification_scopes = value.get("allowed_verification_scopes")
+    if allowed_verification_scopes is not None:
+        if (
+            not isinstance(allowed_verification_scopes, list)
+            or not allowed_verification_scopes
+            or len(allowed_verification_scopes) > len(_SAFE_VERIFICATION_SCOPES)
+            or any(
+                not isinstance(scope, str)
+                or scope not in _SAFE_VERIFICATION_SCOPES
+                for scope in allowed_verification_scopes
+            )
+            or len(set(allowed_verification_scopes)) != len(allowed_verification_scopes)
+            or (
+                "verification_scope" in context
+                and context["verification_scope"] not in allowed_verification_scopes
+            )
+        ):
+            raise AgentProtocolError("allowed verification scopes are invalid")
+        context["allowed_verification_scopes"] = list(allowed_verification_scopes)
     if "offline_operand_mission" in value:
         try:
             mission = OfflineOperandMissionV1.model_validate(
@@ -2019,10 +3392,6 @@ def _safe_trusted_context(
             mission_digest=mission_digest,
             expected_evidence_ids=expected_evidence_ids,
         )
-    if "native_engineering_status" in value:
-        context["native_engineering_status"] = validate_native_engineering_status(
-            value["native_engineering_status"]
-        )
     pending_change = value.get("pending_change")
     if isinstance(pending_change, dict) and set(pending_change) == {
         "transactionId",
@@ -2032,7 +3401,10 @@ def _safe_trusted_context(
     }:
         context["pending_change"] = dict(pending_change)
     change_outcome = value.get("change_outcome")
-    if isinstance(change_outcome, dict) and set(change_outcome) == _CHANGE_OUTCOME_KEYS:
+    if isinstance(change_outcome, dict) and set(change_outcome) in (
+        _CHANGE_OUTCOME_KEYS,
+        _CHANGE_OUTCOME_KEYS | {"programCheckFailure"},
+    ):
         transaction_id = change_outcome.get("transactionId")
         evidence_id = change_outcome.get("evidenceId")
         state = change_outcome.get("state")
@@ -2052,9 +3424,38 @@ def _safe_trusted_context(
             )
         except ValueError:
             canonical_ids = False
+        failure_fields = {
+            key for key in ("programCheckFailure",)
+            if key in change_outcome
+        }
+        unsigned = {
+            key: item for key, item in change_outcome.items()
+            if key not in {"evidenceId", "outcomeDigest"}
+        }
+        outcome_digest_valid = (
+            hashlib.sha256(_canonical_json(unsigned).encode("utf-8")).hexdigest()
+            == change_outcome.get("outcomeDigest")
+        )
+        failure_valid = not failure_fields
+        if failure_fields == {"programCheckFailure"}:
+            try:
+                compiler_failure = ProgramCheckFailureObservationV1.model_validate(
+                    change_outcome["programCheckFailure"],
+                )
+                failure_valid = bool(
+                    state == "ROLLED_BACK"
+                    and compiler_failure.model_dump(mode="json", by_alias=True)
+                    == change_outcome["programCheckFailure"]
+                )
+            except (ValidationError, TypeError, ValueError):
+                failure_valid = False
+        elif failure_fields:
+            failure_valid = False
+        failure_valid = failure_valid and outcome_digest_valid
         if (
             change_outcome.get("schemaVersion") == "1"
             and canonical_ids
+            and failure_valid
             and isinstance(state, str)
             and _CHANGE_OUTCOME_DISPOSITIONS.get(state) == disposition
             and all(
@@ -2072,7 +3473,18 @@ def _safe_trusted_context(
             )
             and (error_code is None or isinstance(error_code, str))
         ):
-            context["change_outcome"] = dict(change_outcome)
+            context["change_outcome"] = json.loads(_canonical_json(change_outcome))
+            native_failure_present = any(
+                isinstance(change_outcome.get(key), dict)
+                for key in ("programCheckFailure",)
+            )
+    if (
+        value.get("fresh_user_proposal_requested") is True
+        and change_planner_available
+        and context.get("change_request_scope") == "offline_candidate_revision"
+        and "pending_change" not in context
+    ):
+        context["fresh_user_proposal_requested"] = True
     return context
 
 
@@ -2236,16 +3648,17 @@ def _nonstructural_evidence_projection(
         raise AgentProtocolError("Evidence is not Agent-safe")
     raw_receipt = evidence_ref.get("receipt")
     safe_receipt = safe_evidence_ref.get("receipt")
-    if isinstance(raw_receipt, Mapping) and isinstance(safe_receipt, dict):
-        if dict(raw_receipt) != safe_receipt:
-            projected_receipt = {
-                **safe_receipt,
-                "targetIdentityOmitted": True,
-            }
-            projected_receipt["projectionDigest"] = canonical_digest(
-                projected_receipt
-            )
-            safe_evidence_ref["receipt"] = projected_receipt
+    if (
+        isinstance(raw_receipt, Mapping)
+        and isinstance(safe_receipt, dict)
+        and dict(raw_receipt) != safe_receipt
+    ):
+        projected_receipt = {
+            **safe_receipt,
+            "targetIdentityOmitted": True,
+        }
+        projected_receipt["projectionDigest"] = canonical_digest(projected_receipt)
+        safe_evidence_ref["receipt"] = projected_receipt
     assert_agent_safe_payload(safe_evidence_ref)
     return safe_evidence_ref
 
@@ -2332,10 +3745,16 @@ def _completed_tool_result_payload(
     request_id: str,
     raw_result: Any,
     evidence_ref: Mapping[str, Any] | None,
+    tool_name: str | None = None,
 ) -> dict[str, Any]:
     """Build and wire-validate an Agent-safe result before durable completion."""
 
-    safe_result = scrub_agent_tool_result(raw_result)
+    projected_result = (
+        _project_design_diagnostic_pointers(tool_name, raw_result)
+        if tool_name is not None
+        else raw_result
+    )
+    safe_result = scrub_agent_tool_result(projected_result)
     if evidence_ref is not None:
         safe_evidence_ref = _nonstructural_evidence_projection(evidence_ref)
         if isinstance(safe_result, dict):
@@ -2424,6 +3843,12 @@ def _output_contract_diagnostic_from_payload(
         or len(raw_errors) > 8
     ):
         return None
+    # The workspace guard and native transport each have narrower reason
+    # contracts than the generic structured-output path.  Enforce the pairing
+    # at the Host boundary so a provider/model-controlled string cannot
+    # masquerade as a typed outcome.
+    if not _valid_output_contract_reason_pair(exception_kind, reason_code):
+        return None
 
     validation_errors: list[AgentOutputValidationIssue] = []
     for raw_error in raw_errors:
@@ -2479,6 +3904,145 @@ def _output_contract_diagnostic_from_payload(
     )
 
 
+def _output_contract_diagnostic_from_stderr(
+    value: str,
+) -> AgentOutputContractDiagnostic | None:
+    """Parse only the sidecar's fixed output-contract stderr summary.
+
+    This is a recovery path for a child that closes stdout before its
+    ``run.error`` frame reaches the Host.  The regex deliberately captures
+    bounded ASCII tokens only; the closed allowlists below decide whether any
+    token is typed and exposed.  No captured run id, model text, arguments, or
+    provider detail is retained.
+    """
+
+    match = _SAFE_OUTPUT_CONTRACT_STDERR.fullmatch(value)
+    if match is None:
+        return None
+    fields = match.groupdict()
+    stage = fields["stage"]
+    exception_kind = fields["exception_kind"]
+    reason_code = fields["reason_code"]
+    validator_code = fields["validator_code"]
+    if (
+        stage not in _OUTPUT_CONTRACT_STAGES
+        or exception_kind not in _OUTPUT_CONTRACT_EXCEPTION_KINDS
+        or reason_code not in _OUTPUT_CONTRACT_REASON_CODES
+        or validator_code not in _OUTPUT_CONTRACT_VALIDATOR_CODES
+    ):
+        return None
+    if not _valid_output_contract_reason_pair(exception_kind, reason_code):
+        return None
+    return AgentOutputContractDiagnostic(
+        stage=stage,
+        exception_kind=exception_kind,
+        reason_code=reason_code,
+        validator_code=validator_code,
+        validation_errors=(),
+    )
+
+
+def _working_history_diagnostic_from_stderr(value: str) -> dict[str, str | int] | None:
+    match = _WORKING_HISTORY_STDERR.fullmatch(value)
+    if match is None:
+        return None
+    return {"reason": match["reason"], **{
+        key: int(match[key]) for key in ("budget", "fixed", "core", "latest")
+    }}
+
+
+def _provider_http_diagnostic_from_stderr(value: str) -> dict[str, str] | None:
+    """Project the Agent's fixed provider HTTP stderr summary safely.
+
+    The Agent has already reduced provider responses to the same vocabulary,
+    but the Host still treats stderr as untrusted child input.  Unknown
+    metadata becomes ``unknown`` and malformed lines are ignored. The optional
+    provider explanation is independently bounded and redacted before logging.
+    """
+
+    match = _SAFE_PROVIDER_HTTP_STDERR.fullmatch(value)
+    if match is None:
+        return None
+    fields = match.groupdict()
+    raw_status = fields["status"]
+    if raw_status == "unknown":
+        status = "unknown"
+    elif raw_status.isdecimal() and 400 <= int(raw_status) <= 599:
+        status = raw_status
+    else:
+        status = "unknown"
+
+    def safe_error_field(raw: str, allowed: frozenset[str]) -> str:
+        if any(marker in raw for marker in _SAFE_PROVIDER_ERROR_REDACTION_MARKERS):
+            return "unknown"
+        return raw if raw in allowed else "unknown"
+
+    raw_param = fields["param"]
+    if raw_param in {"unknown", "redacted"}:
+        param = raw_param
+    else:
+        parts = raw_param.split(".")
+        if (
+            not 1 <= len(parts) <= 5
+            or any(_SAFE_PROVIDER_PARAM_PART.fullmatch(part) is None for part in parts)
+            or parts[0].split("[")[0] not in _SAFE_PROVIDER_PARAM_ROOTS
+            or any(part.split("[")[0] not in _SAFE_PROVIDER_PARAM_SUFFIXES for part in parts[1:])
+        ):
+            param = "unknown"
+        else:
+            param = raw_param
+    result = {
+        "status": status,
+        "type": safe_error_field(fields["type"], _SAFE_PROVIDER_ERROR_TYPES),
+        "code": safe_error_field(fields["code"], _SAFE_PROVIDER_ERROR_CODES),
+        "param": param,
+    }
+    message = fields.get("message")
+    if message is not None:
+        safe_message = _safe_provider_http_message(message)
+        if safe_message is not None:
+            result["message"] = safe_message
+    return result
+
+
+def _safe_provider_http_message(value: str) -> str | None:
+    """Bound and redact the producer-capped provider explanation independently."""
+
+    if (
+        len(value) > _MAX_SAFE_PROVIDER_ERROR_MESSAGE_CHARS
+        or any(not character.isprintable() for character in value)
+    ):
+        return None
+    message = _PROVIDER_ERROR_SECRET_ASSIGNMENT.sub("[redacted credential]", value)
+    message = _PROVIDER_ERROR_BEARER_SECRET.sub("Bearer [redacted]", message)
+    message = _PROVIDER_ERROR_API_KEY.sub("[redacted]", message)
+    message = _PROVIDER_ERROR_URL.sub("[redacted_url]", message)
+    message = " ".join(message.split())
+    if not message:
+        return None
+    if len(message) > _MAX_SAFE_PROVIDER_ERROR_MESSAGE_CHARS:
+        message = message[: _MAX_SAFE_PROVIDER_ERROR_MESSAGE_CHARS - 3] + "..."
+    return message
+
+
+def _valid_output_contract_reason_pair(
+    exception_kind: str,
+    reason_code: str,
+) -> bool:
+    """Keep typed output reasons bound to their Host-owned exception class."""
+
+    if exception_kind == "workspace_edit_rejected":
+        return reason_code in _WORKSPACE_EDIT_REJECTION_REASON_CODES
+    if reason_code in _WORKSPACE_EDIT_REJECTION_REASON_CODES:
+        return False
+    if reason_code in _NATIVE_TOOL_REASON_CODES:
+        return exception_kind == "unexpected_model_behavior" or (
+            exception_kind == "incomplete_tool_call"
+            and reason_code == "native_tool_call_truncated"
+        )
+    return True
+
+
 def _runtime_diagnostic_from_payload(value: Any) -> AgentRuntimeDiagnostic | None:
     """Accept only the sidecar's fixed non-sensitive runtime diagnostic codes."""
 
@@ -2508,6 +4072,20 @@ def _runtime_diagnostic_from_payload(value: Any) -> AgentRuntimeDiagnostic | Non
         exception_kind=exception_kind,
         reason_code=reason_code,
     )
+
+
+def _validated_approval_handoff(value: Any) -> dict[str, str]:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"schemaVersion", "transactionId", "planDigest"}
+        or value.get("schemaVersion") != "1"
+        or not isinstance(value.get("transactionId"), str)
+        or str(uuid.UUID(value["transactionId"])) != value["transactionId"]
+        or not isinstance(value.get("planDigest"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", value["planDigest"]) is None
+    ):
+        raise ValueError("approval handoff output")
+    return dict(value)
 
 
 def _output_from_payload(value: Any) -> AgentRunOutput:
@@ -2541,6 +4119,15 @@ def _output_from_payload(value: Any) -> AgentRunOutput:
             or cycle_disposition not in {"continue", "respond"}
         ):
             raise ValueError("engineering mission output")
+        approval_handoff = value.get("approval_handoff")
+        if approval_handoff is not None:
+            approval_handoff = _validated_approval_handoff(approval_handoff)
+            if workflow != "engineering" or any(value.get(field) is not None for field in (
+                "engineering_mission", "digest", "cycle_disposition",
+                "engineering_analysis", "engineering_analysis_digest",
+                "plan_status", "plan_artifact", "plan_digest", "project_name",
+            )):
+                raise ValueError("approval handoff cannot carry model completion artifacts")
         return AgentRunOutput(
             content=content,
             model=model,
@@ -2564,6 +4151,7 @@ def _output_from_payload(value: Any) -> AgentRunOutput:
             engineering_mission=engineering_mission,
             digest=engineering_mission_digest,
             cycle_disposition=cycle_disposition,
+            approval_handoff=approval_handoff,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise AgentProtocolError("Agent final output is invalid") from exc

@@ -9,7 +9,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
 from .constants import CANONICAL_PORT
 from .errors import ElevationError
@@ -35,6 +35,29 @@ _ELEVATION_CONTEXT_ENVIRONMENT = (
     "CONTROLSTUDIO_XG5000_CLI_COMMAND",
 )
 _MAX_ELEVATION_CONTEXT_BYTES = 32 * 1024
+_ERROR_CANCELLED = 1223
+_SHELL_EXECUTE_FAILURE_LABELS = {
+    0: "system out of memory or unspecified failure",
+    2: "file not found",
+    3: "path not found",
+    5: "access denied",
+    8: "out of memory",
+    11: "invalid executable format",
+    26: "sharing violation",
+    27: "incomplete file association",
+    28: "DDE timeout",
+    29: "DDE failure",
+    30: "DDE busy",
+    31: "no file association",
+    32: "DLL not found",
+}
+
+
+class _ShellExecuteResult(NamedTuple):
+    """The bounded result data exposed by one ``ShellExecuteW`` call."""
+
+    result: int
+    win32_error: int | None
 
 
 class ElevationBroker(Protocol):
@@ -289,11 +312,13 @@ def _current_token_elevation_type() -> int:
 def _relaunch_current_launcher_elevated(arguments: Sequence[str]) -> None:
     target, target_arguments = _current_launcher_command(arguments)
     parameters = subprocess.list2cmdline(list(target_arguments))
-    result_value = _shell_execute_runas(target, parameters)
-    if result_value <= 32:
+    shell_result = _shell_execute_runas(target, parameters)
+    if shell_result.result <= 32:
         raise ElevationError(
-            "XG5000 automation requires ControlStudio to use the vendor integrity "
-            "level; elevation was not approved."
+            _elevation_launch_failure_message(
+                shell_result.result,
+                shell_result.win32_error,
+            )
         )
 
 
@@ -312,7 +337,48 @@ def _arguments_with_elevation_context(arguments: Sequence[str]) -> tuple[str, ..
     return (*filtered, _ELEVATION_CONTEXT_ARGUMENT, context)
 
 
-def _shell_execute_runas(target: str, parameters: str) -> int:
+def _elevation_launch_failure_message(
+    result: int,
+    win32_error: int | None,
+) -> str:
+    """Describe a failed elevation handoff without echoing launch inputs."""
+
+    # A failed ShellExecuteW result is documented in the small 0..32 range.
+    # Keep formatting bounded even if a test double or a future ABI wrapper
+    # supplies an out-of-range value.
+    result_code = result if isinstance(result, int) and -32 <= result <= 32 else None
+    error_code = _valid_win32_error(win32_error)
+    label = _SHELL_EXECUTE_FAILURE_LABELS.get(result_code)
+    if error_code == _ERROR_CANCELLED:
+        category = "elevation request was cancelled by Windows"
+    elif label is None:
+        category = "elevation launch failed"
+    else:
+        category = f"elevation launch failed ({label})"
+
+    result_display = result_code if result_code is not None else "out of range"
+    details = f"ShellExecuteW result={result_display}"
+    if error_code is not None:
+        details += f", Win32 error={error_code}"
+    return (
+        "XG5000 automation requires ControlStudio to use the vendor integrity level; "
+        f"{category} ({details})."
+    )
+
+
+def _valid_win32_error(value: object) -> int | None:
+    """Return a printable DWORD error code, omitting an unavailable value."""
+
+    try:
+        error = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if error <= 0 or error > 0xFFFFFFFF:
+        return None
+    return error
+
+
+def _shell_execute_runas(target: str, parameters: str) -> _ShellExecuteResult:
     shell32 = ctypes.WinDLL("shell32", use_last_error=True)
     shell_execute = shell32.ShellExecuteW
     shell_execute.argtypes = (
@@ -324,8 +390,16 @@ def _shell_execute_runas(target: str, parameters: str) -> int:
         ctypes.c_int,
     )
     shell_execute.restype = ctypes.c_void_p
+    # ShellExecuteW documents GetLastError as extended failure information.
+    # Clear ctypes' per-thread copy first so a previous Win32 call cannot be
+    # mistaken for the error from this handoff.
+    ctypes.set_last_error(0)
     result = shell_execute(None, "runas", target, parameters, None, 1)
-    return int(result or 0)
+    win32_error = ctypes.get_last_error()
+    return _ShellExecuteResult(
+        result=int(result or 0),
+        win32_error=_valid_win32_error(win32_error),
+    )
 
 
 def _current_launcher_command(arguments: Sequence[str]) -> tuple[str, tuple[str, ...]]:

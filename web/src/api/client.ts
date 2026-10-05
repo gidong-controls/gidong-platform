@@ -24,11 +24,11 @@ import type {
   ControllerRestoreHandoff,
   ControllerRestorePreflight,
   ControllerRestorePreflightRequest,
-  CreateNativeProjectRequest,
+  
   CreateChangeTransactionRequest,
   DecideChangeTransactionRequest,
   ExecuteChangeTransactionRequest,
-  FinalizeSimulationChangeRequest,
+  
   CreateKnowledgeMemoryRequest,
   HostBootstrapResponse,
   HostShutdownResponse,
@@ -46,22 +46,22 @@ import type {
   LocalWorkspaceCompare,
   ModelCapabilityResult,
   ModelSettings,
-  NativeProjectCreatedResponse,
-  NativeProjectOperation,
-  NativeProjectReconciliationResponse,
-  NativeProjectResumedResponse,
-  NativeSimulationTrialDecisionRequest,
-  NativeSimulationTrialDecisionResponse,
+  
+  
+  
+  
+  
+  
   OpenLocalWorkspaceRequest,
   OpenLocalWorkspaceResponse,
   ProblemDetails,
-  ProjectPlanReviewRequest,
-  ProjectPlanReviewResponse,
+  
+  
   ReadLSControllerRequest,
   TraceLSControllerRequest,
   ReconcileChangeTransactionRequest,
-  ReconcileNativeProjectRequest,
-  ResumeNativeProjectRequest,
+  
+  
   ResumeLocalWorkspaceRequest,
   ResumeEngineeringMissionRequest,
   ReverifyBlockedEngineeringMissionStepRequest,
@@ -69,8 +69,11 @@ import type {
   SaveModelSettingsRequest,
   SendMessageRequest,
   SendMessageResponse,
+  
   XG5000ProjectFileSelection,
   XG5000InstancesResponse,
+  LaunchIdleXG5000Response,
+  LaunchIdleXG5000LaunchMode,
 } from "./types";
 import {
   isRecord,
@@ -96,6 +99,47 @@ export class HostResponseContractError extends Error {
     super("Host returned an unsupported response contract.");
     this.name = "HostResponseContractError";
   }
+}
+
+function idleLaunchResponse(value: unknown, launchMode: LaunchIdleXG5000LaunchMode): LaunchIdleXG5000Response {
+  return parseHostResponseContract(value, (response) => {
+    const receiptMode = isRecord(response) && response.launchMode === undefined ? "when_none"
+      : isRecord(response) ? response.launchMode : null;
+    if (
+      !isRecord(response) || response.operation !== "xg5000.launch_idle" ||
+      response.verified !== true || response.status !== "launched" ||
+      response.launchAction !== "process_start" || receiptMode !== launchMode ||
+      typeof response.noExistingInstances !== "boolean" ||
+      (launchMode === "when_none" && response.noExistingInstances !== true) ||
+      response.blankWindow !== true || response.modalObserved !== false ||
+      response.attentionReason !== null || response.processExited !== false ||
+      response.processTerminated !== false || typeof response.receiptDigest !== "string" ||
+      !/^[0-9a-f]{64}$/.test(response.receiptDigest) ||
+      !isRecord(response.launchedIdentity) || !isRecord(response.idleBinding)
+    ) {
+      throw new Error("Invalid idle launch receipt.");
+    }
+    const launched = response.launchedIdentity;
+    const binding = response.idleBinding;
+    for (const identity of [launched, binding]) {
+      if (
+        typeof identity.pid !== "number" || !Number.isSafeInteger(identity.pid) || identity.pid <= 0 ||
+        typeof identity.process_create_time !== "number" ||
+        !Number.isFinite(identity.process_create_time) || identity.process_create_time <= 0 ||
+        typeof identity.executable !== "string" || !identity.executable.trim()
+      ) {
+        throw new Error("Invalid idle launch identity.");
+      }
+    }
+    if (
+      typeof binding.hwnd !== "number" || !Number.isSafeInteger(binding.hwnd) || binding.hwnd <= 0 ||
+      binding.pid !== launched.pid || binding.process_create_time !== launched.process_create_time ||
+      binding.executable !== launched.executable
+    ) {
+      throw new Error("Idle launch identity mismatch.");
+    }
+    return { ...response, launchMode: receiptMode } as unknown as LaunchIdleXG5000Response;
+  });
 }
 
 type RequestOptions = Omit<RequestInit, "body"> & {
@@ -353,18 +397,7 @@ export class HostApiClient {
     ).then((value) => runStartResponse(value, request.operationId));
   }
 
-  reviewProjectPlan(
-    conversationId: string,
-    request: ProjectPlanReviewRequest,
-  ): Promise<ProjectPlanReviewResponse> {
-    return this.request<ProjectPlanReviewResponse>(
-      `/api/v1/conversations/${encodeURIComponent(conversationId)}/project-plan/review`,
-      {
-        method: "POST",
-        body: request,
-      },
-    );
-  }
+  
 
   getModelSettings(signal?: AbortSignal): Promise<ModelSettings> {
     return this.request<ModelSettings>("/api/v1/settings/model", { signal });
@@ -490,45 +523,21 @@ export class HostApiClient {
     });
   }
 
-  createNativeProject(
-    request: CreateNativeProjectRequest,
-  ): Promise<NativeProjectOperation> {
-    return this.request<NativeProjectCreatedResponse>(
-      "/api/v1/native-projects",
-      {
-        method: "POST",
-        body: request,
-        operationId: request.operationId,
-      },
-    ).then((response) => response.operation);
+  
+
+  
+
+  launchIdleXG5000(launchMode: LaunchIdleXG5000LaunchMode = "when_none"): Promise<LaunchIdleXG5000Response> {
+    if (launchMode !== "when_none" && launchMode !== "new_instance") {
+      return Promise.reject(new HostResponseContractError());
+    }
+    return this.request<unknown>("/api/v1/xg5000/launch-idle", {
+      method: "POST",
+      body: { confirmIdleLaunch: true, timeoutSeconds: 20, launchMode },
+    }).then((value) => idleLaunchResponse(value, launchMode));
   }
 
-  getNativeProject(
-    nativeProjectId: string,
-    signal?: AbortSignal,
-  ): Promise<NativeProjectOperation> {
-    return this.request<NativeProjectOperation>(
-      `/api/v1/native-projects/${encodeURIComponent(nativeProjectId)}`,
-      { signal },
-    );
-  }
-
-  getCompletedUnboundNativeProject(
-    conversationId: string,
-    messageId: string,
-    planDigest: string,
-    signal?: AbortSignal,
-  ): Promise<NativeProjectOperation> {
-    const search = new URLSearchParams({
-      conversationId,
-      messageId,
-      planDigest,
-    });
-    return this.request<NativeProjectOperation>(
-      `/api/v1/native-projects/recovery?${search.toString()}`,
-      { signal },
-    );
-  }
+  
 
   preflightControllerProjectRestore(
     request: ControllerRestorePreflightRequest,
@@ -585,44 +594,11 @@ export class HostApiClient {
     );
   }
 
-  decideNativeSimulationTrial(
-    nativeProjectId: string,
-    request: NativeSimulationTrialDecisionRequest,
-  ): Promise<NativeProjectOperation> {
-    return this.request<NativeSimulationTrialDecisionResponse>(
-      `/api/v1/native-projects/${encodeURIComponent(nativeProjectId)}/simulation-trial/decision`,
-      {
-        method: "POST",
-        body: request,
-      },
-    ).then((response) => response.operation);
-  }
+  
 
-  reconcileNativeProject(
-    nativeProjectId: string,
-    request: ReconcileNativeProjectRequest,
-  ): Promise<NativeProjectOperation> {
-    return this.request<NativeProjectReconciliationResponse>(
-      `/api/v1/native-projects/${encodeURIComponent(nativeProjectId)}/reconcile`,
-      {
-        method: "POST",
-        body: request,
-      },
-    ).then((response) => response.operation);
-  }
+  
 
-  resumeNativeProject(
-    nativeProjectId: string,
-    request: ResumeNativeProjectRequest,
-  ): Promise<NativeProjectOperation> {
-    return this.request<NativeProjectResumedResponse>(
-      `/api/v1/native-projects/${encodeURIComponent(nativeProjectId)}/resume`,
-      {
-        method: "POST",
-        body: request,
-      },
-    ).then((response) => response.operation);
-  }
+  
 
   openLocalWorkspace(
     request: OpenLocalWorkspaceRequest,
@@ -648,6 +624,8 @@ export class HostApiClient {
       },
     );
   }
+
+  
 
   compareLocalWorkspace(workspaceId: string): Promise<LocalWorkspaceCompare> {
     return this.request<LocalWorkspaceCompare>(
@@ -675,10 +653,11 @@ export class HostApiClient {
 
   focusEngineeringProgram(
     programId: string,
+    request?: { displayIntent: "LD" },
   ): Promise<EngineeringProgramFocusResponse> {
     return this.request<EngineeringProgramFocusResponse>(
       `/api/v1/engineering/programs/${encodeURIComponent(programId)}/focus`,
-      { method: "POST" },
+      { method: "POST", ...(request === undefined ? {} : { body: request }) },
     );
   }
 
@@ -880,15 +859,7 @@ export class HostApiClient {
     ).then(transactionFromEnvelope);
   }
 
-  finalizeSimulationChange(
-    transactionId: string,
-    request: FinalizeSimulationChangeRequest,
-  ): Promise<ChangeTransaction> {
-    return this.request<unknown>(
-      `/api/v1/change-transactions/${encodeURIComponent(transactionId)}/simulation-decision`,
-      { method: "POST", body: request },
-    ).then(transactionFromEnvelope);
-  }
+  
 
   reconcileChangeTransaction(
     transactionId: string,

@@ -16,6 +16,7 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from .api_models import EmptyNativeProgramSourceV1
 from .mcp_client import MCPToolError
 
 STRUCTURAL_ANALYSIS_EVIDENCE_SCHEMA = "controlstudio-structural-analysis-evidence/v1"
@@ -1007,6 +1008,29 @@ def _validate_structural_result_binding(
         raise MCPToolError("project.behavior_report result has an invalid request scope")
 
 
+def program_source_identity(binding: Mapping[str, Any]) -> dict[str, Any]:
+    """Canonical source identity, independent of capture/cache metadata."""
+    if binding.get("contentState") == "empty":
+        identity = {
+            key: binding[key]
+            for key in ("programId", "program", "contentState", "emptyProgramSource")
+        }
+        if "readSource" in binding:
+            identity["readSource"] = binding["readSource"]
+        return identity
+    return {
+        key: binding[key]
+        for key in ("programId", "program", "payloadSha256")
+    }
+
+
+def _empty_source_binding(source: Any, program_id: str, program_name: str) -> dict[str, Any]:
+    parsed = EmptyNativeProgramSourceV1.model_validate(source)
+    if parsed.program_id != program_id or parsed.program_name != program_name:
+        raise ValueError("empty source differs from its program identity")
+    return parsed.model_dump(mode="json")
+
+
 def _payload_scope(
     envelope: Mapping[str, Any],
     raw_name: str,
@@ -1018,19 +1042,80 @@ def _payload_scope(
     payload_values = envelope.get("payloads")
     if payload_values is None:
         program = _mapping(envelope.get("program"), f"{raw_name} program binding")
-        payload_values = [
-            {
-                "program_id": program.get("program_id"),
-                "name": program.get("name"),
-                "payload_sha256": envelope.get("payload_sha256"),
-                "stable_repeat": envelope.get("stable_repeat"),
-                "cache_hit": envelope.get("cache_hit"),
-            }
-        ]
+        payload = {
+            "program_id": program.get("program_id"),
+            "name": program.get("name"),
+            "cache_hit": envelope.get("cache_hit"),
+        }
+        for key in (
+            "read_source", "readSource", "stable_repeat", "stableRepeat",
+            "visual_row_count", "visualRowCount", "payload_sha256", "payloadSha256",
+            "payload_size", "payloadSize", "live_editor_readback", "liveEditorReadback",
+        ):
+            if key in envelope:
+                payload[key] = envelope[key]
+        if envelope.get("content_state") == "empty":
+            payload.update(
+                {
+                    "content_state": "empty",
+                    "empty_program_source": envelope.get("empty_program_source"),
+                }
+            )
+        else:
+            payload.update(
+                {
+                    "payload_sha256": envelope.get("payload_sha256"),
+                    "stable_repeat": envelope.get("stable_repeat"),
+                }
+            )
+        payload_values = [payload]
     payloads = _items(payload_values, f"{raw_name} payload bindings")
     bindings: list[dict[str, Any]] = []
     for value in payloads:
         payload = _mapping(value, f"{raw_name} payload binding")
+        if payload.get("content_state") == "empty":
+            program_id = _text(payload.get("program_id"), "empty program id")
+            program_name = _text(payload.get("name"), "empty program name")
+            source = _empty_source_binding(payload.get("empty_program_source"), program_id, program_name)
+            if source["project_sha256"] != envelope.get("project_hash_before"):
+                raise MCPToolError("empty analysis source differs from the project")
+            source_keys = [key for key in ("read_source", "readSource") if key in payload]
+            if len(source_keys) == 2 and payload.get("read_source") != payload.get("readSource"):
+                raise MCPToolError("empty payload read-source aliases disagree")
+            if source_keys:
+                read_source = payload[source_keys[0]]
+                if read_source != "saved_native_project":
+                    raise MCPToolError("empty payload has an unsupported read source")
+                if any(
+                    key in payload
+                    for key in (
+                        "stable_repeat", "stableRepeat", "visual_row_count", "visualRowCount",
+                        "payload_sha256", "payloadSha256", "payload_size", "payloadSize",
+                        "live_editor_readback", "liveEditorReadback",
+                    )
+                ):
+                    raise MCPToolError("saved empty payload contains live-read metadata")
+                binding = {
+                    "programId": program_id,
+                    "program": program_name,
+                    "contentState": "empty",
+                    "emptyProgramSource": source,
+                    "readSource": "saved_native_project",
+                    "cacheHit": _boolean(payload.get("cache_hit"), "empty cache flag"),
+                }
+            else:
+                binding = {
+                    "programId": program_id,
+                    "program": program_name,
+                    "contentState": "empty",
+                    "emptyProgramSource": source,
+                    "stableRepeat": _boolean(payload.get("stable_repeat"), "empty stable read"),
+                    "cacheHit": _boolean(payload.get("cache_hit"), "empty cache flag"),
+                }
+            bindings.append(binding)
+            continue
+        if "read_source" in payload or "readSource" in payload:
+            raise MCPToolError("read source is only valid for an empty payload")
         digest = _text(
             payload.get("payload_sha256"),
             f"{raw_name} payload digest",
@@ -1066,7 +1151,7 @@ def _payload_scope(
         key=lambda item: (
             str(item["programId"]),
             str(item["program"]),
-            str(item["payloadSha256"]),
+            str(item.get("payloadSha256", "")),
         )
     )
     if len({str(item["programId"]) for item in bindings}) != len(bindings):
@@ -1076,11 +1161,7 @@ def _payload_scope(
     payload_bindings_truncated = len(bindings) > _PAYLOAD_BINDING_LIMIT
     payload_set_digest = canonical_digest(
         [
-            {
-                "programId": item["programId"],
-                "program": item["program"],
-                "payloadSha256": item["payloadSha256"],
-            }
+            program_source_identity(item)
             for item in bindings
         ]
     )
@@ -2281,6 +2362,28 @@ def _validate_source_path(value: Any, label: str) -> str:
     return path
 
 
+def _resolved_m_symbol_address_matches(query: str, item: Any) -> bool:
+    if not isinstance(item, Mapping):
+        return False
+    device = item.get("device")
+    match = re.fullmatch(r"m([0-9]{3,4})([0-9a-f])", query.casefold())
+    if not isinstance(device, Mapping) or match is None:
+        return False
+    index = device.get("encoded_index")
+    if (
+        device.get("prefix") != "M" or item.get("data_type") != "BOOL"
+        or device.get("address_status") not in {
+            "decoded_sv5_record", "corroborated_by_program_token",
+        }
+        or type(index) is not int or not 0 <= index <= 159_999
+    ):
+        return False
+    return (
+        device.get("address") == f"M{index // 16:04d}{index % 16:X}"
+        and int(match[1]) * 16 + int(match[2], 16) == index
+    )
+
+
 def _validate_structure_item(
     section: str,
     value: Any,
@@ -2549,8 +2652,20 @@ def _validate_structure_item(
         if device["address_status"] not in {
             "corroborated_by_program_token",
             "decoded_sv5_record",
+            "unresolved_sv5_record",
         }:
             raise MCPToolError("symbol device address status is invalid")
+        if device["address_status"] == "unresolved_sv5_record":
+            if device["address"] is not None:
+                raise MCPToolError("unresolved symbol device must not claim an address")
+            device_address = None
+        else:
+            device_address = _raw_text(
+                device["address"], "symbol device address", maximum=200, allow_empty=False,
+            )
+        encoded_index = _raw_integer(
+            device["encoded_index"], "symbol encoded device index", minimum=0, maximum=2**32 - 1,
+        )
         return _structure_fact(
             kind="symbol",
             entity_id=item["symbol_id"],
@@ -2560,8 +2675,10 @@ def _validate_structure_item(
             attributes={
                 "recordVersion": _raw_text(item["record_version"], "symbol record version", maximum=128, allow_empty=False),
                 "devicePrefix": _raw_text(device["prefix"], "symbol device prefix", maximum=16, allow_empty=False),
-                "deviceEncodedIndex": _raw_integer(device["encoded_index"], "symbol encoded device index", minimum=0),
-                "deviceAddress": _raw_text(device["address"], "symbol device address", maximum=200, allow_empty=False),
+                # Preserve uint32 records without widening the public scalar
+                # integer bound used by existing Host/Agent fact consumers.
+                "deviceEncodedIndex": encoded_index if encoded_index <= 100_000_000 else str(encoded_index),
+                "deviceAddress": device_address,
                 "addressStatus": _raw_text(device["address_status"], "symbol address status", maximum=100, allow_empty=False),
                 "dataType": _raw_text(item["data_type"], "symbol data type", maximum=128),
                 "arrayDescriptor": _raw_text(item["array_descriptor"], "symbol array descriptor", maximum=128),
@@ -3575,7 +3692,12 @@ def _project_search_contract(
             maximum=4_096,
             allow_empty=False,
         )
-        if query.casefold() not in matched_text.casefold():
+        if query.casefold() not in matched_text.casefold() and not (
+            match.get("kind") == "structure_item"
+            and match.get("section") == "symbols"
+            and match.get("matched_field") == "device.address"
+            and _resolved_m_symbol_address_matches(query, match.get("item"))
+        ):
             raise MCPToolError("project search match does not contain its literal query")
         if kind == "program_name":
             if set(match) != {
@@ -5046,6 +5168,53 @@ def validate_structural_evidence_contract(
     canonical_bindings: list[dict[str, Any]] = []
     for binding_value in payload_bindings:
         binding = _mapping(binding_value, "structural receipt payload binding")
+        if binding.get("contentState") == "empty":
+            saved_source = binding.get("readSource") == "saved_native_project"
+            expected_fields = (
+                {
+                    "programId", "program", "contentState", "emptyProgramSource",
+                    "readSource", "cacheHit",
+                }
+                if saved_source
+                else {
+                    "programId", "program", "contentState", "emptyProgramSource",
+                    "stableRepeat", "cacheHit",
+                }
+            )
+            if set(binding) != expected_fields:
+                raise ValueError(
+                    "saved empty structural source fields are invalid"
+                    if saved_source
+                    else "empty structural source fields are invalid"
+                )
+            program_id = _text(binding["programId"], "empty program id")
+            program_name = _text(binding["program"], "empty program name")
+            source = _empty_source_binding(
+                binding["emptyProgramSource"], program_id, program_name
+            )
+            if saved_source:
+                canonical_bindings.append(
+                    {
+                        "programId": program_id,
+                        "program": program_name,
+                        "contentState": "empty",
+                        "emptyProgramSource": source,
+                        "readSource": "saved_native_project",
+                        "cacheHit": _boolean(binding["cacheHit"], "empty cache flag"),
+                    }
+                )
+            else:
+                canonical_bindings.append(
+                    {
+                        "programId": program_id,
+                        "program": program_name,
+                        "contentState": "empty",
+                        "emptyProgramSource": source,
+                        "stableRepeat": _boolean(binding["stableRepeat"], "empty stable read"),
+                        "cacheHit": _boolean(binding["cacheHit"], "empty cache flag"),
+                    }
+                )
+            continue
         if set(binding) != {
             "programId",
             "program",
@@ -5078,14 +5247,18 @@ def validate_structural_evidence_contract(
         key=lambda item: (
             str(item["programId"]),
             str(item["program"]),
-            str(item["payloadSha256"]),
+            str(item.get("payloadSha256", "")),
         ),
     )
     if canonical_bindings != sorted_bindings or len(
         {str(item["programId"]) for item in canonical_bindings}
     ) != len(canonical_bindings):
         raise ValueError("structural receipt payload bindings are not canonical")
-    if any(binding["stableRepeat"] is not True for binding in canonical_bindings):
+    if any(
+        binding.get("readSource") != "saved_native_project"
+        and binding.get("stableRepeat") is not True
+        for binding in canonical_bindings
+    ):
         raise ValueError("structural receipt contains an unstable payload binding")
     payload_count = _integer(scope_value["payloadCount"], "scope payload count")
     payload_bindings_truncated = _boolean(
@@ -5098,11 +5271,7 @@ def validate_structural_evidence_contract(
     ):
         raise ValueError("structural receipt payload binding counts are inconsistent")
     identity_bindings = [
-        {
-            "programId": item["programId"],
-            "program": item["program"],
-            "payloadSha256": item["payloadSha256"],
-        }
+        program_source_identity(item)
         for item in canonical_bindings
     ]
     if not payload_bindings_truncated and payload_set_digest != canonical_digest(

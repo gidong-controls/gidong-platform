@@ -167,11 +167,13 @@ _COLLECTION_ID_FIELDS = {
 _TECHNICAL_SECTION_ID = "native-technical-configuration"
 _SIMULATION_PROFILE_SECTION_ID = "native-simulation-profile"
 _LADDER_SECTION_ID = "native-ladder-rungs"
+_NATIVE_SYMBOL_SECTION_ID = "native-symbol-metadata"
 _SEMANTIC_SECTION_ORDER = (
     "user-requirements",
     _TECHNICAL_SECTION_ID,
     _SIMULATION_PROFILE_SECTION_ID,
     "native-io-map",
+    _NATIVE_SYMBOL_SECTION_ID,
     "native-mode-model",
     "native-control-networks",
     _LADDER_SECTION_ID,
@@ -238,6 +240,27 @@ _REQUIREMENT_UNRESOLVED = re.compile(
 )
 
 
+class _RequirementSourceValidationError(ValueError):
+    """Closed citation failure metadata; never retain a submitted value."""
+
+    def __init__(self, source_index: int, source_field: str, reason_code: str) -> None:
+        reason_fields = {
+            "duplicate_field": "field", "message_not_available": "message_id",
+            "quote_not_exact": "quote", "generic_ack": "quote", "unresolved_quote": "quote",
+        }
+        if (
+            type(source_index) is not int or source_index < 0
+            or not isinstance(reason_code, str)
+            or source_field != reason_fields.get(reason_code)
+            or reason_code not in reason_fields
+        ):
+            raise ValueError("requirement citation failure metadata is invalid")
+        super().__init__("requirementSources must cite unique fields and exact resolved user quotes")
+        self.source_index = source_index
+        self.source_field = source_field
+        self.reason_code = reason_code
+
+
 def validate_requirement_sources(
     brief: ProjectBriefV1, sources: Sequence[ProjectRequirementSourceV1],
     *, require_complete: bool, requirement_messages: dict[str, str] | None = None,
@@ -248,21 +271,27 @@ def validate_requirement_sources(
         getattr(brief, field) for field in (*fields, "machine_purpose", "supplemental_requirements")
     ]))
     mapped: dict[str, str] = {}
-    for source in sources:
+    for index, source in enumerate(sources):
         source_corpus = corpus
+        message_available = True
         if source.message_id is not None:
             message = (requirement_messages or {}).get(source.message_id)
+            message_available = isinstance(message, str)
             source_corpus = (
                 set(_collection_evidence_clauses([message]))
                 if isinstance(message, str)
                 else set()
             )
-        if (
-            source.field in mapped or source.quote not in source_corpus
-            or source.quote.casefold() in {"ok", "okay", "yes", "네", "예", "확인", "동의"}
-            or _REQUIREMENT_UNRESOLVED.search(source.quote)
-        ):
-            raise ValueError("requirementSources must cite unique fields and exact resolved user quotes")
+        if source.field in mapped:
+            raise _RequirementSourceValidationError(index, "field", "duplicate_field")
+        if source.quote not in source_corpus:
+            if not message_available:
+                raise _RequirementSourceValidationError(index, "message_id", "message_not_available")
+            raise _RequirementSourceValidationError(index, "quote", "quote_not_exact")
+        if source.quote.casefold() in {"ok", "okay", "yes", "네", "예", "확인", "동의"}:
+            raise _RequirementSourceValidationError(index, "quote", "generic_ack")
+        if _REQUIREMENT_UNRESOLVED.search(source.quote):
+            raise _RequirementSourceValidationError(index, "quote", "unresolved_quote")
         mapped[source.field] = source.quote
     if require_complete and any(
         not getattr(brief, field).strip() or _REQUIREMENT_UNRESOLVED.search(getattr(brief, field))
@@ -389,6 +418,15 @@ def expected_project_plan_semantic_items(
         ):
             add(_TECHNICAL_SECTION_ID, f"technical/{field_name}", value)
 
+    scenario = design.get("simulationScenario")
+    if isinstance(scenario, dict):
+        for index, step in enumerate(scenario["steps"]):
+            add(
+                _SIMULATION_PROFILE_SECTION_ID,
+                f"design/simulationScenario/steps/{index}",
+                step,
+            )
+
     profile = design.get("indexAcceptanceBindings")
     if isinstance(profile, dict):
         io_by_id = {item["signalId"]: item for item in design["ioPoints"]}
@@ -463,6 +501,13 @@ def expected_project_plan_semantic_items(
         )
         add("native-io-map", f"{base}/normalState", point["normalState"])
         add("native-io-map", f"{base}/safeState", point["safeState"])
+
+    for position, metadata in enumerate(design.get("nativeSymbols") or []):
+        add(
+            _NATIVE_SYMBOL_SECTION_ID,
+            f"design/nativeSymbols/{position:04d}",
+            metadata,
+        )
 
     for mode in design["operatingModes"]:
         base = f"design/operatingModes/{_pointer_segment(mode['modeId'])}"
@@ -638,23 +683,6 @@ def project_plan_review_item_ids(artifact: dict[str, Any]) -> list[str]:
     sections = artifact.get("sections")
     if not isinstance(sections, list) or not sections:
         raise ValueError("project plan must contain reviewable sections")
-    section_ids = [
-        section.get("sectionId") if isinstance(section, dict) else None
-        for section in sections
-    ]
-    control_network_index = (
-        section_ids.index("native-control-networks")
-        if "native-control-networks" in section_ids
-        else -1
-    )
-    if (
-        control_network_index < 0
-        or control_network_index + 1 >= len(section_ids)
-        or section_ids[control_network_index + 1] != _LADDER_SECTION_ID
-    ):
-        raise ValueError(
-            "native-ladder-rungs section must immediately follow native-control-networks"
-        )
     actual_by_id: dict[str, tuple[str, dict[str, Any]]] = {}
     item_ids: list[str] = []
     for section in sections:
@@ -664,7 +692,6 @@ def project_plan_review_item_ids(artifact: dict[str, Any]) -> list[str]:
         items = section.get("items")
         if not isinstance(items, list):
             raise ValueError("project plan section items are invalid")
-        semantic_ids: list[str] = []
         for item in items:
             item_id = item.get("itemId") if isinstance(item, dict) else None
             if not isinstance(item_id, str) or not item_id:
@@ -673,10 +700,6 @@ def project_plan_review_item_ids(artifact: dict[str, Any]) -> list[str]:
                 raise ValueError("project plan contains duplicate or colliding item identities")
             actual_by_id[item_id] = (section_id, item)
             item_ids.append(item_id)
-            if item_id.startswith(("requirement/", "technical/", "scope/", "design/")):
-                semantic_ids.append(item_id)
-        if semantic_ids != sorted(semantic_ids):
-            raise ValueError("native semantic review rows must use canonical itemId order")
     for item_id, expected in expected_by_id.items():
         actual = actual_by_id.get(item_id)
         if actual is None:

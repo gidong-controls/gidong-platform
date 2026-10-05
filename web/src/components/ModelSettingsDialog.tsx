@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { hostApi, HostApiError } from "../api/client";
 import type {
   ModelCapabilityResult,
+  ModelReasoningEffort,
   SaveModelSettingsRequest,
 } from "../api/types";
 import { Icon } from "./Icon";
@@ -18,6 +19,7 @@ interface ModelSettingsForm {
   model: string;
   apiKey: string;
   timeoutSeconds: number;
+  reasoningEffort: ModelReasoningEffort | "";
   externalModelConsent: boolean;
   insecureHttpConsent: boolean;
   newHeaderName: string;
@@ -29,6 +31,7 @@ const DEFAULT_FORM: ModelSettingsForm = {
   model: "",
   apiKey: "",
   timeoutSeconds: 60,
+  reasoningEffort: "",
   externalModelConsent: false,
   insecureHttpConsent: false,
   newHeaderName: "",
@@ -132,6 +135,7 @@ export function ModelSettingsDialog({
             model: settings.model,
             apiKey: "",
             timeoutSeconds: settings.timeoutSeconds,
+            reasoningEffort: settings.reasoningEffort ?? "",
             externalModelConsent: false,
             insecureHttpConsent: false,
             newHeaderName: "",
@@ -193,6 +197,7 @@ export function ModelSettingsDialog({
         ? { [headerName]: form.newHeaderValue }
         : undefined,
       timeoutSeconds: form.timeoutSeconds,
+      reasoningEffort: form.reasoningEffort || null,
       externalModelConsent: form.externalModelConsent,
       insecureHttpConsent: form.insecureHttpConsent,
     };
@@ -348,6 +353,27 @@ export function ModelSettingsDialog({
               {hasSavedApiKey
                 ? "Development 모델 프로필에 키가 저장되어 있습니다. 값은 표시하지 않습니다."
                 : "저장된 API 키가 없습니다."}
+            </span>
+          </label>
+
+          <label className="field">
+            <span className="field-label">Reasoning effort</span>
+            <select
+              value={form.reasoningEffort}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  reasoningEffort: event.target.value as ModelSettingsForm["reasoningEffort"],
+                }))
+              }
+            >
+              <option value="">서버 기본값</option>
+              {["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].map((effort) => (
+                <option key={effort} value={effort}>{effort}</option>
+              ))}
+            </select>
+            <span className="field-hint">
+              모델과 서버가 지원하는 값을 선택하세요. 선택한 값으로 연결을 검증하며 자동으로 낮추지 않습니다.
             </span>
           </label>
 

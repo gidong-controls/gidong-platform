@@ -58,7 +58,7 @@ class HostConfig:
     product_release: str = "source"
     development_model_base_url: str | None = None
     development_model_name: str | None = None
-    development_model_timeout_seconds: float = 300.0
+    development_model_timeout_seconds: float = 3600.0
     development_model_api_key: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -152,9 +152,9 @@ class HostConfig:
                 else None
             ),
             development_model_timeout_seconds=float(
-                os.environ.get("CONTROLSTUDIO_DEVELOPMENT_MODEL_TIMEOUT_SECONDS", "300")
+                os.environ.get("CONTROLSTUDIO_DEVELOPMENT_MODEL_TIMEOUT_SECONDS", "3600")
                 if release_channel == "development"
-                else "300"
+                else "3600"
             ),
             development_model_api_key=(
                 development_model_api_key if release_channel == "development" else None

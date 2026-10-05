@@ -35,6 +35,49 @@ NOT_EXECUTED_VALIDATION_TIERS = (
 NativeCheckpointCallback = Callable[[str, dict[str, Any]], None]
 
 
+def _same_path(left: Any, right: Any) -> bool:
+    if not isinstance(left, str) or not isinstance(right, str) or not left or not right:
+        return False
+    try:
+        return os.path.normcase(str(Path(left).resolve())) == os.path.normcase(str(Path(right).resolve()))
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _transaction_lookup_checkpoint(
+    result: Any, *, host_transaction_id: str,
+) -> tuple[dict[str, Any] | None, None, None]:
+    """Validate the retained LD journal lookup before recovery navigation."""
+    if (
+        not isinstance(result, dict)
+        or result.get("ok") is not True
+        or result.get("verified") is not True
+        or result.get("operation") != "change.transaction_lookup"
+        or result.get("host_transaction_id") != host_transaction_id
+    ):
+        raise ChangeExecutionPreconditionError("change journal lookup is invalid")
+    if result.get("found") is False:
+        return None, None, None
+    checkpoint = result.get("transaction_checkpoint")
+    if (
+        result.get("found") is not True
+        or not isinstance(checkpoint, dict)
+        or checkpoint.get("schema") != "controlstudio-change-transaction-checkpoint/v1"
+        or checkpoint.get("host_transaction_id") != host_transaction_id
+        or checkpoint.get("plan_kind") not in {None, "ld_operand_patch"}
+    ):
+        raise ChangeExecutionPreconditionError("LD journal checkpoint is invalid")
+    return checkpoint, None, None
+
+
 def calculate_plan_digest(
     *,
     target: ChangeTargetIdentity,
@@ -119,6 +162,15 @@ class ChangeExecutionService(Protocol):
         recovery_target: ChangeRecoveryTarget,
     ) -> ChangeVerificationResult: ...
 
+    async def finalize_observing(
+        self,
+        transaction: ChangeTransaction,
+        *,
+        decision: str,
+        expected_plan_digest: str,
+        expected_simulation_receipt_digest: str,
+    ) -> ChangeVerificationResult: ...
+
 
 class ChangeExecutionPreconditionError(RuntimeError):
     """The immutable plan cannot be mapped to a supported native mutation."""
@@ -163,7 +215,7 @@ class MCPChangeExecutionService:
         self._checkpoint_callback = checkpoint_callback
 
     async def preflight(self, transaction: ChangeTransaction) -> None:
-        target = transaction.target
+        target = transaction.runtime_target
         if (
             not target.engineering_session_id
             or target.engineering_process_id is None
@@ -188,7 +240,7 @@ class MCPChangeExecutionService:
 
     async def apply(self, transaction: ChangeTransaction) -> ChangeApplyResult:
         await self.preflight(transaction)
-        target = transaction.target
+        target = transaction.runtime_target
         session_scope = self._session_scope(transaction)
         mcp_transaction_id: str | None = None
         try:
@@ -600,7 +652,7 @@ class MCPChangeExecutionService:
                             "access_profile": "analysis",
                             "project_path": fresh_scope["project_path"],
                             "project_hash": fresh_scope["project_hash"],
-                            "workspace_id": transaction.target.workspace_id,
+                            "workspace_id": transaction.runtime_target.workspace_id,
                             "reopen_from_session_id": session_scope["session_id"],
                         },
                     ),
@@ -744,7 +796,7 @@ class MCPChangeExecutionService:
     ) -> ChangeVerificationResult:
         self._native_plan_arguments(transaction)
         self._validate_verification_contract(transaction)
-        target = transaction.target
+        target = transaction.runtime_target
         try:
             lookup = self._require_object(
                 await self._gateway.call_recovery_tool(
@@ -1187,7 +1239,7 @@ class MCPChangeExecutionService:
                         "access_profile": "analysis",
                         "project_path": fresh_scope["project_path"],
                         "project_hash": fresh_scope["project_hash"],
-                        "workspace_id": transaction.target.workspace_id,
+                        "workspace_id": transaction.runtime_target.workspace_id,
                         "reopen_from_session_id": saved_scope["session_id"],
                     },
                 ),
@@ -1367,20 +1419,20 @@ class MCPChangeExecutionService:
             or result.get("transaction_id") != mcp_transaction_id
             or result.get("project_unchanged") is not True
             or not isinstance(fresh, dict)
-            or fresh.get("source_pid") != transaction.target.engineering_process_id
-            or fresh.get("source_hwnd") != transaction.target.engineering_window_handle
+            or fresh.get("source_pid") != transaction.runtime_target.engineering_process_id
+            or fresh.get("source_hwnd") != transaction.runtime_target.engineering_window_handle
             or fresh.get("source_closed") is not True
             or not isinstance(fresh.get("pid"), int)
             or not isinstance(fresh.get("hwnd"), int)
             or fresh["pid"] <= 0
             or fresh["hwnd"] <= 0
-            or fresh["pid"] == transaction.target.engineering_process_id
-            or fresh["hwnd"] == transaction.target.engineering_window_handle
+            or fresh["pid"] == transaction.runtime_target.engineering_process_id
+            or fresh["hwnd"] == transaction.runtime_target.engineering_window_handle
             or not isinstance(fresh.get("process_create_time"), (int, float))
             or isinstance(fresh.get("process_create_time"), bool)
             or float(fresh["process_create_time"]) <= 0
-            or fresh.get("workspace_id") != transaction.target.workspace_id
-            or fresh.get("project_path") != transaction.target.project_path
+            or fresh.get("workspace_id") != transaction.runtime_target.workspace_id
+            or fresh.get("project_path") != transaction.runtime_target.project_path
             or fresh.get("project_sha256") != saved_project_hash
             or not isinstance(readback, dict)
             or readback.get("program_id") != program_id
@@ -1462,7 +1514,7 @@ class MCPChangeExecutionService:
             raise ChangeExecutionPreconditionError(
                 "a durable one-time approval is required"
             )
-        target = transaction.target
+        target = transaction.runtime_target
         target_identity_digest = self._mcp_target_identity_digest(
             session_id=target.engineering_session_id,
             pid=target.engineering_process_id,
@@ -1487,8 +1539,8 @@ class MCPChangeExecutionService:
                 "authorization_id": str(uuid.uuid4()),
                 "actor_id": approval.actor_id,
                 "transaction_id": mcp_transaction_id,
-                "session_id": transaction.target.engineering_session_id,
-                "workspace_id": transaction.target.workspace_id,
+                "session_id": transaction.runtime_target.engineering_session_id,
+                "workspace_id": transaction.runtime_target.workspace_id,
                 "project_identity_digest": project_identity_digest,
                 "target_identity_digest": target_identity_digest,
                 "plan_id": mcp_plan_id,
@@ -1684,7 +1736,7 @@ class MCPChangeExecutionService:
         plan_arguments: dict[str, Any],
         snapshot: dict[str, Any],
     ) -> None:
-        target = transaction.target
+        target = transaction.runtime_target
         expected_project_identity_digest = cls._project_identity_digest(target)
         expected_fields = {
             "session_id": target.engineering_session_id,
@@ -2023,7 +2075,7 @@ class MCPChangeExecutionService:
 
     @staticmethod
     def _session_scope(transaction: ChangeTransaction) -> dict[str, Any]:
-        target = transaction.target
+        target = transaction.runtime_target
         return {
             "session_id": target.engineering_session_id,
             "pid": target.engineering_process_id,
@@ -2159,8 +2211,8 @@ class MCPChangeExecutionService:
                 "project_identity_digest"
             ),
             "active_session_id": checkpoint.get("session_id"),
-            "pid": transaction.target.engineering_process_id,
-            "hwnd": transaction.target.engineering_window_handle,
+            "pid": transaction.runtime_target.engineering_process_id,
+            "hwnd": transaction.runtime_target.engineering_window_handle,
             "project_path": checkpoint.get("project_path"),
             "current_project_hash": checkpoint.get("project_hash"),
             "program_id": checkpoint.get("program_id"),
@@ -2202,7 +2254,7 @@ class MCPChangeExecutionService:
         expected_hwnd: int | None = None,
         expected_project_hash: str | None = None,
     ) -> None:
-        target = transaction.target
+        target = transaction.runtime_target
         exact = {
             "host_transaction_id": transaction.id,
             "workspace_id": target.workspace_id,
@@ -2284,7 +2336,7 @@ class MCPChangeExecutionService:
             not isinstance(attached_path, str)
             or os.path.normcase(str(Path(attached_path).resolve()))
             != os.path.normcase(
-                str(Path(transaction.target.project_path).resolve())
+                str(Path(transaction.runtime_target.project_path).resolve())
             )
         ):
             raise ValueError("recovery attach mismatched project_path")
@@ -2442,7 +2494,7 @@ class MCPChangeExecutionService:
             await self._gateway.call_change_tool(
                 "change.transaction_status",
                 {
-                    "session_id": transaction.target.engineering_session_id,
+                    "session_id": transaction.runtime_target.engineering_session_id,
                     "transaction_id": mcp_transaction_id,
                 },
             ),
@@ -2459,9 +2511,9 @@ class MCPChangeExecutionService:
             raise TypeError("change.transaction_status returned no transaction")
         expected_identity = {
             "transaction_id": mcp_transaction_id,
-            "active_session_id": transaction.target.engineering_session_id,
-            "active_pid": transaction.target.engineering_process_id,
-            "active_hwnd": transaction.target.engineering_window_handle,
+            "active_session_id": transaction.runtime_target.engineering_session_id,
+            "active_pid": transaction.runtime_target.engineering_process_id,
+            "active_hwnd": transaction.runtime_target.engineering_window_handle,
         }
         for field_name, expected in expected_identity.items():
             if native.get(field_name) != expected:
@@ -2472,7 +2524,7 @@ class MCPChangeExecutionService:
         if (
             not isinstance(native_path, str)
             or os.path.normcase(str(Path(native_path).resolve()))
-            != os.path.normcase(str(Path(transaction.target.project_path).resolve()))
+            != os.path.normcase(str(Path(transaction.runtime_target.project_path).resolve()))
         ):
             raise ValueError("change.transaction_status mismatched project_path")
         project_hash = self._normalize_sha256(
@@ -2488,9 +2540,9 @@ class MCPChangeExecutionService:
             transaction=transaction,
             checkpoint=checkpoint,
             expected_transaction_id=mcp_transaction_id,
-            expected_session_id=transaction.target.engineering_session_id,
-            expected_pid=transaction.target.engineering_process_id,
-            expected_hwnd=transaction.target.engineering_window_handle,
+            expected_session_id=transaction.runtime_target.engineering_session_id,
+            expected_pid=transaction.runtime_target.engineering_process_id,
+            expected_hwnd=transaction.runtime_target.engineering_window_handle,
             expected_project_hash=project_hash,
         )
         if (
@@ -2588,13 +2640,13 @@ class MCPChangeExecutionService:
             checkpoint=checkpoint,
             expected_transaction_id=mcp_transaction_id,
             expected_session_id=(
-                expected_session_id or transaction.target.engineering_session_id
+                expected_session_id or transaction.runtime_target.engineering_session_id
             ),
             expected_pid=(
-                expected_pid if expected_pid is not None else transaction.target.engineering_process_id
+                expected_pid if expected_pid is not None else transaction.runtime_target.engineering_process_id
             ),
             expected_hwnd=(
-                expected_hwnd if expected_hwnd is not None else transaction.target.engineering_window_handle
+                expected_hwnd if expected_hwnd is not None else transaction.runtime_target.engineering_window_handle
             ),
             expected_project_hash=expected_project_hash,
         )
@@ -2619,7 +2671,7 @@ class MCPChangeExecutionService:
             transaction=transaction,
             mcp_transaction_id=mcp_transaction_id,
             expected_state="DIFF_VERIFIED",
-            expected_project_hash=transaction.target.artifact_hash,
+            expected_project_hash=transaction.runtime_target.artifact_hash,
             expected_session_id=session_scope.get("session_id"),
             expected_pid=session_scope.get("pid"),
             expected_hwnd=session_scope.get("hwnd"),
@@ -2650,7 +2702,7 @@ class MCPChangeExecutionService:
             transaction=transaction,
             mcp_transaction_id=mcp_transaction_id,
             expected_state="CHECKED",
-            expected_project_hash=transaction.target.artifact_hash,
+            expected_project_hash=transaction.runtime_target.artifact_hash,
             expected_session_id=session_scope.get("session_id"),
             expected_pid=session_scope.get("pid"),
             expected_hwnd=session_scope.get("hwnd"),
@@ -2696,7 +2748,7 @@ class MCPChangeExecutionService:
         if (
             not isinstance(project_path, str)
             or os.path.normcase(str(Path(project_path).resolve()))
-            != os.path.normcase(str(Path(transaction.target.project_path).resolve()))
+            != os.path.normcase(str(Path(transaction.runtime_target.project_path).resolve()))
             or checkpoint.get("current_project_hash") != project_hash
         ):
             raise ValueError("project.commit_save did not prove the exact saved project")
@@ -2728,9 +2780,9 @@ class MCPChangeExecutionService:
         expected = {
             "transaction_id": mcp_transaction_id,
             "state": "SAVED",
-            "active_session_id": transaction.target.engineering_session_id,
-            "active_pid": transaction.target.engineering_process_id,
-            "active_hwnd": transaction.target.engineering_window_handle,
+            "active_session_id": transaction.runtime_target.engineering_session_id,
+            "active_pid": transaction.runtime_target.engineering_process_id,
+            "active_hwnd": transaction.runtime_target.engineering_window_handle,
             "current_project_hash": expected_project_hash,
         }
         for field_name, value in expected.items():
@@ -2742,7 +2794,7 @@ class MCPChangeExecutionService:
         if (
             not isinstance(native_path, str)
             or os.path.normcase(str(Path(native_path).resolve()))
-            != os.path.normcase(str(Path(transaction.target.project_path).resolve()))
+            != os.path.normcase(str(Path(transaction.runtime_target.project_path).resolve()))
         ):
             raise ValueError("change.transaction_status mismatched project_path")
         checkpoint = cls._recovery_checkpoint(
@@ -2754,9 +2806,9 @@ class MCPChangeExecutionService:
             transaction=transaction,
             checkpoint=checkpoint,
             expected_transaction_id=mcp_transaction_id,
-            expected_session_id=transaction.target.engineering_session_id,
-            expected_pid=transaction.target.engineering_process_id,
-            expected_hwnd=transaction.target.engineering_window_handle,
+            expected_session_id=transaction.runtime_target.engineering_session_id,
+            expected_pid=transaction.runtime_target.engineering_process_id,
+            expected_hwnd=transaction.runtime_target.engineering_window_handle,
             expected_project_hash=expected_project_hash,
         )
         if checkpoint.get("state") != "SAVED":
@@ -2856,7 +2908,7 @@ def validated_terminal_ld_reopen(transaction: ChangeTransaction) -> dict[str, An
     readback = receipt.get("program_readback")
     if not isinstance(fresh, dict) or not isinstance(approval, dict) or not isinstance(readback, dict):
         raise ChangeExecutionPreconditionError("terminal LD reopen evidence is incomplete")
-    target = transaction.target
+    target = transaction.runtime_target
     expected_program_id = transaction.plan.get("target", {}).get(
         "program_id", transaction.plan.get("target", {}).get("programId")
     )
@@ -3032,7 +3084,7 @@ def _validate_terminal_apply_envelope(
 ) -> dict[str, Any]:
     envelope = _nonempty_receipt(value, "apply")
     service = MCPChangeExecutionService
-    target = transaction.target
+    target = transaction.runtime_target
     project_identity_digest = service._project_identity_digest(target)
     mcp_transaction_id = service._required_text(
         envelope, "mcp_transaction_id", "apply evidence"
@@ -3321,11 +3373,11 @@ def _validate_terminal_lookup_binding(
         "mcp_plan": None,
         "project_identity_digest": project_identity_digest,
         "source_scope": {
-            "session_id": transaction.target.engineering_session_id,
-            "pid": transaction.target.engineering_process_id,
-            "hwnd": transaction.target.engineering_window_handle,
-            "project_path": transaction.target.project_path,
-            "project_hash": transaction.target.artifact_hash,
+            "session_id": transaction.runtime_target.engineering_session_id,
+            "pid": transaction.runtime_target.engineering_process_id,
+            "hwnd": transaction.runtime_target.engineering_window_handle,
+            "project_path": transaction.runtime_target.project_path,
+            "project_hash": transaction.runtime_target.artifact_hash,
         },
         "apply_receipt": None,
         "program_name": program_name,
@@ -3378,7 +3430,7 @@ def _validate_status_receipt(
         or native.get("transaction_id") != mcp_transaction_id
         or native.get("state") not in allowed_states
         or checkpoint.get("state") != native.get("state")
-        or not _same_project_path(native.get("project_path"), transaction.target.project_path)
+        or not _same_project_path(native.get("project_path"), transaction.runtime_target.project_path)
     ):
         raise ChangeExecutionPreconditionError(f"{label} target identity is invalid")
     MCPChangeExecutionService._validate_recovery_checkpoint(
@@ -3400,7 +3452,7 @@ def _validate_status_receipt(
         "session_id": session_id,
         "pid": pid,
         "hwnd": hwnd,
-        "project_path": transaction.target.project_path,
+        "project_path": transaction.runtime_target.project_path,
         "project_hash": project_hash,
         "state": native["state"],
         "checkpoint": checkpoint,
@@ -3460,7 +3512,7 @@ def _validate_save_receipt(
         expected_project_hash=project_hash,
     )
     if (
-        not _same_project_path(receipt.get("project_path"), transaction.target.project_path)
+        not _same_project_path(receipt.get("project_path"), transaction.runtime_target.project_path)
         or checkpoint.get("current_project_hash") != project_hash
     ):
         raise ChangeExecutionPreconditionError(
@@ -3909,7 +3961,7 @@ def _validate_rolled_back_ld_receipt(
             or attached_session.get("hwnd") != recovery_scope["hwnd"]
             or attached_session.get("project_hash") != recovery_scope["project_hash"]
             or not _same_project_path(
-                attached_session.get("project_path"), transaction.target.project_path
+                attached_session.get("project_path"), transaction.runtime_target.project_path
             )
         ):
             raise ChangeExecutionPreconditionError(

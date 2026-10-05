@@ -6,9 +6,11 @@ import {
 import {
   canOfferRecoveryRelaunch,
   journaledRecoveryRelaunchTarget,
+  executionTargetIdentity,
 } from "../api/changeRecovery";
 import type {
   ChangeTransaction,
+  ReviewedNoSaveCloseRequest,
   XG5000Instance,
 } from "../api/types";
 import { Icon } from "./Icon";
@@ -23,7 +25,7 @@ interface ChangeRecoveryPanelProps {
     hwnd: number,
     options?: RecoveryReconcileOptions,
   ) => Promise<void>;
-  onReviewClose: (target: { pid: number; hwnd: number; processCreateTime: number }, title?: string) => void;
+  onReviewClose: (target: Omit<ReviewedNoSaveCloseRequest, "confirmNoSave">, title?: string) => void;
 }
 
 interface RecoveryReconcileOptions {
@@ -69,17 +71,14 @@ function hasSupportedRecoveryContract(transaction: ChangeTransaction): boolean {
 
 function recoveryOutcome(transaction: ChangeTransaction): string {
   if (
-    transaction.errorCode === "explicit_recovery_aborted_before_mutation" ||
-    transaction.errorCode === "mne_recovery_aborted_before_mutation"
+    transaction.errorCode === "explicit_recovery_aborted_before_mutation"
   ) {
     return "변경 전에 중단된 사실을 확인하고 작업 잠금을 해제했습니다.";
   }
   if (
-    transaction.errorCode === "explicit_recovery_rolled_back" ||
-    transaction.errorCode === "explicit_mne_recovery_rolled_back" ||
-    transaction.errorCode === "mne_verification_failed_rolled_back"
+    transaction.errorCode === "explicit_recovery_rolled_back"
   ) {
-    return "원래 상태로 원복하고 저장한 사실을 확인했습니다.";
+    return "원래 프로젝트를 복원했습니다.";
   }
   if (transaction.state === "completed") {
     return "이미 커밋된 네이티브 상태임을 확인했습니다.";
@@ -87,7 +86,7 @@ function recoveryOutcome(transaction: ChangeTransaction): string {
   if (transaction.state === "rolled_back") {
     return "네이티브 트랜잭션이 원복 또는 무변경 종료 상태임을 확인했습니다.";
   }
-  return "복구 증거가 충분하지 않아 격리를 유지합니다.";
+  return "복구가 완료되지 않았습니다.";
 }
 
 function instanceLabel(instance: XG5000Instance): string {
@@ -97,6 +96,30 @@ function instanceLabel(instance: XG5000Instance): string {
 
 function shortHash(value: string): string {
   return `${value.slice(0, 16)}…`;
+}
+
+export function recoveryReviewedCloseTarget(
+  transaction: ChangeTransaction,
+  instance: XG5000Instance | null,
+  currentWorkspaceHash?: string,
+): Omit<ReviewedNoSaveCloseRequest, "confirmNoSave"> | null {
+  if (!instance || !Number.isSafeInteger(instance.pid) || instance.pid <= 0 ||
+      !Number.isSafeInteger(instance.hwnd) || instance.hwnd <= 0 ||
+      typeof instance.process_create_time !== "number" ||
+      !Number.isFinite(instance.process_create_time) || instance.process_create_time <= 0) {
+    return null;
+  }
+  const projectPath = executionTargetIdentity(transaction).projectPath;
+  // Workspace metadata is the reviewed expected file, not live evidence that
+  // this selected window owns it. The Host must authenticate its native receipt.
+  const hasFileContext = typeof projectPath === "string" && projectPath.trim() !== "" &&
+    typeof currentWorkspaceHash === "string" && /^[0-9a-f]{64}$/i.test(currentWorkspaceHash);
+  return {
+    pid: instance.pid,
+    hwnd: instance.hwnd,
+    processCreateTime: instance.process_create_time,
+    ...(hasFileContext ? { projectPath, projectHash: currentWorkspaceHash.toLowerCase() } : {}),
+  };
 }
 
 export function ChangeRecoveryPanel({
@@ -113,7 +136,7 @@ export function ChangeRecoveryPanel({
   const [instancesLoading, setInstancesLoading] = useState(
     transaction.state === "quarantined" && recoverySupported,
   );
-  const [inventoryConfirmedEmpty, setInventoryConfirmedEmpty] = useState(false);
+  const [inventoryConfirmed, setInventoryConfirmed] = useState(false);
   const [instanceNotice, setInstanceNotice] = useState("");
 
   const selectedInstance = useMemo(
@@ -125,15 +148,13 @@ export function ChangeRecoveryPanel({
 
   const loadInstances = async () => {
     setInstancesLoading(true);
-    setInventoryConfirmedEmpty(false);
+    setInventoryConfirmed(false);
     setInstanceNotice("");
     setSelectedHwnd("");
     try {
       const response = await hostApi.getXG5000Instances();
       setInstances(response.instances);
-      setInventoryConfirmedEmpty(
-        response.status === "ready" && response.instances.length === 0,
-      );
+      setInventoryConfirmed(response.status === "ready");
       if (response.status !== "ready" || response.instances.length === 0) {
         setInstanceNotice(
           "복구 대상을 확인할 수 없습니다. 해당 작업 복사본을 연 XG5000 창을 준비한 뒤 다시 확인해 주세요.",
@@ -141,7 +162,7 @@ export function ChangeRecoveryPanel({
       }
     } catch (error) {
       setInstances([]);
-      setInventoryConfirmedEmpty(false);
+      setInventoryConfirmed(false);
       setInstanceNotice(
         error instanceof HostApiError
           ? error.message
@@ -183,15 +204,15 @@ export function ChangeRecoveryPanel({
       ? projectHash.toLowerCase()
       : undefined;
   const relaunchTarget = journaledRecoveryRelaunchTarget(
-    transaction.targetIdentity,
+    executionTargetIdentity(transaction),
   );
-  const selectedCreated = selectedInstance?.process_create_time;
-  const closeAvailable = typeof selectedCreated === "number" && Number.isFinite(selectedCreated) && selectedCreated > 0;
+  const closeTarget = recoveryReviewedCloseTarget(transaction, selectedInstance, currentWorkspaceHash);
   const relaunchAvailable = canOfferRecoveryRelaunch({
     transactionState: transaction.state,
     recoverySupported,
-    inventoryConfirmedEmpty,
-    targetIdentity: transaction.targetIdentity,
+    inventoryConfirmed,
+    instances,
+    targetIdentity: executionTargetIdentity(transaction),
   });
   const hasCurrentHashMismatch =
     transaction.state === "quarantined" &&
@@ -245,9 +266,7 @@ export function ChangeRecoveryPanel({
             {recovered ? "격리 복구 증거" : "격리된 변경 상태 확인"}
           </h3>
           <p>
-            제안한 변경을 다시 적용하지 않습니다. MCP 체크포인트를 검사해
-            변경 전 중단이 증명되면 종료하고, 변경 가능성이 증명된 경우에만
-            원래 상태로 원복합니다.
+            중단된 작업을 정리하고 변경 전 상태로 복구합니다.
           </p>
         </div>
       </header>
@@ -295,14 +314,10 @@ export function ChangeRecoveryPanel({
           <button
             className="button secondary-button"
             type="button"
-            disabled={busy || instancesLoading || !selectedInstance || !closeAvailable}
+            disabled={busy || instancesLoading || !closeTarget}
             onClick={() => {
-              if (selectedInstance && closeAvailable) {
-                onReviewClose({
-                  pid: selectedInstance.pid,
-                  hwnd: selectedInstance.hwnd,
-                  processCreateTime: selectedCreated,
-                }, selectedInstance.title);
+              if (closeTarget && selectedInstance) {
+                onReviewClose(closeTarget, selectedInstance.title);
               }
             }}
           >
@@ -327,9 +342,7 @@ export function ChangeRecoveryPanel({
           {hasCurrentHashMismatch && relaunchAvailable && relaunchTarget && (
             <div className="change-recovery-restore" role="alert">
               <p>
-                현재 작업 복사본은 최초 거래 백업과 다릅니다. 기록된 최신 저장본을
-                다시 여는 복구는 Host가 MCP journal과 현재 파일 해시를 대조한 뒤에만
-                진행합니다.
+                현재 파일이 백업과 다릅니다. 현재 파일을 보관하고 백업을 복원할 수 있습니다.
               </p>
               <dl className="change-recovery-evidence">
                 <div>
@@ -353,8 +366,7 @@ export function ChangeRecoveryPanel({
                   }
                 />
                 <span>
-                  현재 파일이 있으면 MCP 보존 증거로 먼저 저장한 뒤, 검증된 거래
-                  백업으로만 복원하고 실제 XG5000 재열기 검증을 요청합니다.
+                  현재 파일을 보관한 뒤 백업을 복원합니다.
                 </span>
               </label>
               <button
@@ -371,10 +383,6 @@ export function ChangeRecoveryPanel({
               >
                 검토한 백업 복원 후 XG5000 복구 검증
               </button>
-              <p className="change-recovery-hold">
-                이 요청은 PLC 다운로드·온라인 쓰기·제안 변경 재적용을 포함하지
-                않습니다. 보존 증거 식별자는 성공 영수증이 기록된 뒤에만 표시됩니다.
-              </p>
             </div>
           )}
         </form>
@@ -447,13 +455,6 @@ export function ChangeRecoveryPanel({
         </dl>
       )}
 
-      {transaction.state === "quarantined" && reconciliation && (
-        <p className="change-recovery-hold" role="alert">
-          격리가 해제되지 않았습니다. 자동 재시도하거나 변경을 다시 적용하지
-          마세요. 위 오류와 XG5000 대상을 확인한 뒤에만 복구 검사를 다시
-          요청할 수 있습니다.
-        </p>
-      )}
     </section>
   );
 }

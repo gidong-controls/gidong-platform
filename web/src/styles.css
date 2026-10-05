@@ -2034,6 +2034,42 @@ select {
   line-height: 1.55;
 }
 
+.goal-completion-notice {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: baseline;
+  gap: 8px;
+  padding: 9px 11px;
+  color: var(--muted);
+  background: #f5f7f1;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.goal-completion-notice strong {
+  color: var(--ink-strong);
+  white-space: nowrap;
+}
+
+.goal-completion-notice--phase_complete {
+  color: #72521f;
+  background: var(--amber-soft);
+  border-color: #ead19f;
+}
+
+.goal-completion-notice--goal_complete {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.goal-completion-notice--blocked {
+  color: #7a4444;
+  background: #f8eded;
+  border-color: #e4bcbc;
+}
+
 .project-flow-overview > summary {
   cursor: pointer;
   color: var(--ink-strong);
@@ -5269,24 +5305,6 @@ select {
   margin: 0;
   overflow-wrap: anywhere;
   font-weight: 750;
-}
-
-.change-receipt-acknowledgement {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  margin-top: 11px;
-  padding: 10px;
-  border: 1px solid #e0b486;
-  border-radius: 5px;
-  background: #fffaf2;
-  color: #513d29;
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.change-receipt-acknowledgement input {
-  margin-top: 2px;
 }
 
 .change-contract-detail {

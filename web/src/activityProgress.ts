@@ -57,3 +57,25 @@ export function prependCoalescedActivity<T extends CoalescibleActivity>(
     ),
   ];
 }
+
+interface ToolActivity {
+  runId?: string;
+  sequence: number;
+  toolState?: string;
+  resultSummary?: string;
+}
+
+export function latestCompletedToolResult(
+  activities: readonly ToolActivity[],
+  runId: string | null,
+): string | undefined {
+  if (!runId) return undefined;
+  const completed = activities.filter(
+    (activity) => activity.runId === runId && activity.toolState === "completed" && activity.resultSummary,
+  );
+  const latest = completed.reduce<ToolActivity | undefined>(
+    (result, activity) => !result || activity.sequence > result.sequence ? activity : result,
+    undefined,
+  );
+  return latest?.resultSummary;
+}

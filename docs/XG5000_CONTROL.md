@@ -16,12 +16,6 @@ XG-SIM 또는 controller readback처럼 adapter가 반환한 독립 증거를 �
 XG5000은 공개된 범용 자동화 API만으로 모든 편집 기능을 제공하지 않는다.
 현재 adapter 제어는 다음 세 계층을 조합한다.
 
-1. Win32 창·메뉴·툴바·대화상자 제어
-2. XG5000 전용 클립보드 형식
-   - IL: `XG5000MNE`
-   - LD: `XG5000LADDER`
-3. XG-SIM 런타임 메모리: x86 `XimUtil.DeviceInterface`
-
 절대 화면좌표는 최후 수단으로만 사용한다. 기본 식별자는 PID/HWND, 창 클래스,
 컨트롤 ID, MDI 부모 관계이며 좌표를 사용할 때도 확인된 자식 컨트롤 내부의
 상대 위치만 사용한다.
@@ -82,63 +76,6 @@ XG5000 실행 파일이 없는 planning/controller-observe 전용 환경만 기�
 application instruction이 있으면 network/rung을 `partial`로 표시하며 모든 런을
 완전한 불리언 식으로 변환했다고 주장하지 않는다.
 
-## 3. XG5000MNE
-
-`XG5000MNE`는 제한된 빈 프로그램 작성과 지원되는 기존 프로그램 전체 교체 경로에
-사용한다. CPU나 프로젝트 언어 설정에 따라 IL/MNE를 사용할 수 없으므로
-일반 프로젝트 분석의 기본 경로로 사용하지 않는다. 일반 분석의 기준은 LD다.
-
-안전 규칙:
-
-- 빈 프로그램 삽입, 기존 프로그램 전체 교체, 한 action 기준 단일 명령 패치를
-  서로 다른 승인 계약으로 분리
-- 단일 명령 패치는 검토 evidence의 유일한 `OUT`/`SET`/`RST`/`TON` action만
-  anchor로 허용하고 private baseline에서 한 행 insert/replace/delete를 컴파일
-- 전체 교체는 typed 13-command IR, 최대 4,096개 instruction과 마지막 단일 `END` 검사
-- 모델·공개 API에 raw MNE/LD 또는 private artifact 경로를 노출하지 않음
-- exact PID/HWND·active program/editor/view·project path/hash·DPI·runtime identity 결속
-- code-owned 지원 adapter 전략과 plan 시점의 live runtime identity를 exact project
-  path/hash에 결속하고, 사람의 일회성 plan 승인을 요구
-- 적용 전 raw MNE/LD baseline과 project backup을 MCP journal-private artifact로 보존
-- 적용 후 MNE/LD exact readback, Program Check, 저장 hash, 별도 PID 재열기 검증
-- 실패 시 durable baseline 또는 승인 target checkpoint일 때만 exact rollback하고,
-  나머지는 `QUARANTINED`로 보존
-
-전체 프로그램 교체와 일반 구조 패치는 오프라인 working copy만 수정한다. PLC write,
-online edit 및 controller 검증은 포함하지 않으며 실제 XG5000 production acceptance는
-아직 별도로 필요하다. 예외적으로 `mne_rung_patch` V6는 사용자가 요청 전에
-`offline_native_reopen_xgsim`을 선택하고 compiler가 단일-program·단일-writer P/M
-출력 profile을 만들 수 있을 때만 아래 XG-SIM 수명주기로 이어진다. 이 경로도 PLC에는
-연결하거나 쓰지 않는다.
-
-일반 사용자 MNE 편집은 developer scratch capability bundle을 만들거나
-`CONTROLSTUDIO_MNE_CAPABILITY_BUNDLE`을 설정할 것을 요구하지 않는다. MCP가
-read-only CLI를 통해 현재 PID/HWND·프로그램·project path/hash의 supported adapter
-binding을 만들고, private transaction journal에는 전체 binding을, Host 승인과 공개
-receipt에는 `adapter_binding_digest`와 `runtime_identity_digest`만 보관한다. apply와
-rollback은 같은 binding과 exact readback을 다시 확인한다. 이 production 전환은 MCP
-`6b98523`, `c0c1247`, `50a1520`, CLI `4b20a4e`, Host `e155437`, `2a83a07`,
-`7bb3336`에 기록되어 있다. 실제 구조 변경의 apply·Program Check·save·독립 reopen·XG-SIM
-수명주기 acceptance는 아직 이 working copy에서 확인되지 않았다.
-
-개발자 전용 capability probe/certification의 재시작 harness는 Host의 process-parent 관계를
-XG5000 소유권 증거로 사용하지 않는다. Launcher/MCP가 별도 process로 연 visible
-working copy는 인증 spec의 PID/HWND, native executable path, disposable marker,
-backup hash와 project path/hash로 묶는다. preflight는 전체 XG5000 PID baseline을
-기록하고 그 중 인증 spec의 정확한 PID만 no-save close한 뒤 Host listener tree만
-종료한다. 기존 사용자 XG5000 PID는 attach·close·mutation 대상이 아니다. 열린
-프로젝트 파일은 XG5000이 잠글 수 있으므로, full SHA-256 disposable-proof 검사는
-그 정확한 target을 닫은 뒤 새 인증 process를 시작하기 전에 수행한다. 새 인증
-process는 raw `/Automation` 실행이 아니라 동일 workspace/hash를 independent CLI가
-검증해 반환한 새 PID/HWND여야 한다. 시작 중 headless process가 남으면 recovery는
-PID·start time·native executable·HWND=0·해당 working-copy file-use를 다시 확인하고
-그 PID만 종료한 뒤 hash를 확인한다. Host 재기동에 필요한 서명 secret이 없으면
-recovery는 Host를 임의로 시작하지 않고 복구 receipt만 반환한다.
-Elevated launch가 visible main-window timeout으로 끝난 경우에는 별도 resume
-authorization이 prior receipt/log와 모든 입력 digest, Host 부재, retired owned PID의
-부재를 결속한다. 이 resume은 이전 Host/XG close를 반복하지 않고 independent CLI로
-동일 workspace/hash의 새 visible PID/HWND를 검증한 경우에만 인증을 계속한다.
-
 ## 4. 프로그램 검사와 저장
 
 - XG5000의 공식 `프로그램 검사` 명령 사용
@@ -189,21 +126,6 @@ XimUtil 정보:
 
 ### 6.1 네이티브 신규 프로젝트
 
-`project.create_native`는 Host가 선택한 exact XG5000 PID/HWND와 기존의 빈
-workspace directory를 대상으로 네이티브 `프로젝트 > 새 프로젝트` dialog를
-연다. 절대 화면 좌표가 아니라 dialog label, control identity와 결과
-project title/path/hash를 검증한다. project name, PLC series, CPU model,
-첫 program name/language와 description, typed I/O·mode·STEP sequence·TON timer·
-latched alarm·recovery·control network·process interlock은 검토 완료된 Engineering
-Plan 전체를 담은 `engineered_control_program` build bundle에 고정된다. 검토 전
-native design은 `agent/proposed`일 뿐이다. Host가 collection의 전체 개수·ID와
-I/O mapping/state, mode·network 관계, timer 시간, sequence 재기동·STEP, alarm,
-recovery, safety의 모든 실행 값을 semantic item으로 재계산하고, 사용자가 각
-항목을 확인한 v2 review만 build 권한이 된다. 이 review는 plan, 최신 project
-brief와 첨부 source revision digest에 함께 결속된다. Host와 MCP가 item universe와
-같은 XG5000 mnemonic을 각각 독립 재계산하며 Host authorization은 exact bundle ID,
-reviewed plan authority, PID/HWND와 모든 dialog 값에 일회성으로 묶인다.
-
 새 프로젝트의 timer area parameter는 변경하지 않는다. 따라서
 [LS XGK/XGB Instructions Manual V2.2](https://www.ls-electric.com/upload/customer/download/f46ceeb8-094e-4a41-b623-7c9a60c7880b/XGK_XGB_Instructions_Manual_Eng_V2.2.pdf)의 기본
 영역인 XGK `T0000-T0999=100ms`, `T1000-T1499=10ms`,
@@ -217,34 +139,6 @@ recovery 조건에 `startAll` 중 적어도 한 조건의 반대 상태를 명�
 따라서 TON 완료나 alarm reset 뒤 START가 계속 ON이라는 이유로 자동 재기동하지
 않는다. `continuous`는 사용자가 연속 반복 운전을 명시적으로 검토한 경우에만
 허용한다. 이 정책과 모든 STEP 완료 조건은 계획 검토 화면에 그대로 표시된다.
-
-이 경로는 visible modal, elevation 불일치, ambiguous control과 결과 identity
-불일치를 첫 UI mutation 전후의 해당 단계에서 거부한다. 생성 성공은 exact native
-project path/title/hash와 dialog field readback, exact named blank program, exact mnemonic
-readback, LD 왕복, XG5000 Program Check와 저장 hash가 모두 일치하고
-`APPLIED_VERIFIED` build receipt가 반환될 때만 확정한다. 현재 적용 범위는
-XGK/XGB의 `LOAD`, `LOAD NOT`, `AND`, `AND NOT`, `OUT`, `SET`, `RST`, `TON`과
-signed 16-bit 상수를 `Dxxxxx`에 쓰는 typed `MOV`로 구성한 순차 제어, timeout
-alarm, operator recovery와 출력 interlock이다. 이
-작업은 PLC에 연결하거나 쓰지 않는다. Host는 생성 파일을 불변 source와 별도
-working copy로 캡처한 뒤 생성 PID와 다른 새 XG5000 프로세스에서 working copy를
-연다. `project.verify_native_reopen`은 exact named program을 Project Tree Search로
-열고 mnemonic 완전 일치, LD 왕복, Program Check 0 error와 검증 전후 disk hash
-불변을 확인해 `REOPEN_VERIFIED` receipt를 반환한다. 이 전체 경로는 실제
-XG5000 V4.81/XGK-CPUE에서 확인됐다. 또한 XG5000 V4.82.1과 XGB
-`XBC-DN/DP64H`의 단일 control network build에서 실제 XG-SIM 5개 시나리오,
-공식 program write, vendor STOP 상태 3회 연속 관측, CPU STOP 뒤 입력 baseline
-원복을 v3 `SIMULATION_VERIFIED` receipt로 확인하고 digest-bound trial을
-`ACCEPTED`로 결속했다. 현재 v4 simulation 계약은 reviewed ladder IR의 모든
-control network/output과 ordered `networkRungs`를 Host와 MCP가 독립 재계산하고,
-각 network의 정상·deny·restore 및 적용 가능한 mode·sequence·alarm·recovery·
-process interlock 시나리오를 하나의 RUN/STOP·baseline 복원 수명주기에서 모두
-확인한다. 전체 network profile과 보호 출력 byte를 simulator 동작 전에 검증하며
-부분 network receipt는 승인하지 않는다. 기존-project V6 rung patch는 승인된 target,
-독립 재열기, compiler-derived 정상/deny/restore P/M profile과 STOP·입력 원복을 같은
-MNE journal에 결속하고 `SIM_STOPPED`에서 사람의 Keep 또는 exact Revert 결정을 기다린다.
-다만 대표 복수 control network build와 이 제한된 기존-project 경로의 실제 XG-SIM
-수락, 실제 PLC 연결·쓰기는 아직 이 증거 범위에 포함되지 않는다.
 
 ### 6.2 오프라인 한 operand transaction
 
@@ -290,25 +184,6 @@ state는 여전히 미관측이며 runtime 사용 전 별도 검증이 필요하
 및 PLC 운전 권한은 이 기능으로 생기지 않으며 계속 unsupported다. 내부 device는 CPU,
 timer instruction은 CPU와 실제 timer area처럼 해당 분석의
 `required_context`만 모두 `observed`일 때 후보가 될 수 있다.
-
-동일한 경계는 structural MNE compiler(`instruction`, `batch`, `rung`, `series guard`)
-에도 적용된다. compiler는 private target 전체의 `P` operand를 `LOAD/AND/OR` 계열의
-input 또는 `OUT/SET/RST`의 output으로 분류하고, 제공된 현재
-`hardware_context_digest`의 exact terminal binding과 모두 대조한 뒤에만 candidate를
-발행한다. `M` 같은 internal device만 쓰는 target은 hardware binding 없이도 기존
-offline compiler scope에서 허용된다. P address가 있으면 digest 누락, 범위 밖, module
-중복, channel 미결정, 또는 direction 불일치 중 하나라도 candidate 발행 전에 거부한다.
-
-P가 있는 structural candidate에는 `hardware_context_digest`와 ordered
-`field_io_bindings`가 **한 쌍으로** 포함되고 candidate digest에 들어간다. Host는 이
-typed receipt가 compiler evidence와 정확히 같은지 확인한 뒤 승인 plan에 보존한다.
-`program.plan_mne_*`는 fresh private baseline으로 candidate를 다시 컴파일하고 같은
-cached hardware context에서 terminal binding을 다시 계산한다. context digest가 없어졌거나
-달라졌거나 한 terminal digest라도 달라지면 plan을 만들지 않는다. 이 binding은 durable
-MCP transaction과 `program.apply_mne_replacement` request/application receipt까지 보존되며,
-apply 시에도 동일 context가 session cache에 있어야 한다. 이는 offline project mutation의
-identity guard일 뿐 controller/field/runtime proof가 아니므로 online force, memory write,
-download는 계속 unsupported다.
 
 변경 제안 전 `program.change_target_analysis`는 cache를 사용하지 않고 현재
 프로젝트의 모든 LD 프로그램을 안정적으로 두 번씩 읽는다. 선택한 exact
@@ -395,14 +270,6 @@ happened to match.
 process creation time, native Open, exact title과 working-copy path/hash를 같은 MCP
 수명 안에서 묶은 `controlled_launch_read_only`이다. 이 보증은 Read·Analyze에만
 유효하며 mutation, save, simulation과 online capability를 열지 않는다.
-
-추가된 x86 STA identity helper는 임의 COM 명령을 받지 않는다. 하나의 ROT COM
-객체에서 `GetProjectTreeWnd`와 `GetProjectFileName`을 안정적으로 두 번 읽고,
-project-tree HWND의 owner PID와 main HWND 계층, process creation time, exact
-working-copy path/hash와 title을 MCP가 대조한다. 이 직접 증거가 모두 일치할 때만
-`project_identity_verified_against_selected_pid=true`와 `strong_readback`을 만든다.
-XG5000 인스턴스가 하나라는 사실이나 사용자가 준 path/hash만으로 strong identity를
-추론하지 않는다. 일반 mutation과 MNE 실행 직전에도 같은 증거를 다시 읽는다.
 
 Bound offline save는 toolbar 좌표 클릭을 사용하지 않는다. 설치된 32-bit
 `IApplication.SaveProject`를 exact PID/HWND와 active absolute project path가 일치한

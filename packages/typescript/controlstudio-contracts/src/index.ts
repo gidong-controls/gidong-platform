@@ -232,10 +232,8 @@ export type ProductFeatureId =
   | "new_project_planning"
   | "local_project_analysis"
   | "program_focus"
-  | "native_project_create"
   | "online_observe"
   | "offline_mutate"
-  | "full_program_replacement"
   | "controller_project_restore"
   | "online_modify"
   | "multi_vendor";
@@ -271,14 +269,12 @@ export interface HostStatusResponse {
   capabilities: string[];
   featureReadiness?: ProductFeatureStatus[];
   activeOperation?: {
-    kind?: "change" | "native_project_create";
+    kind?: "change";
     runId?: string;
     transactionId?: string;
-    nativeProjectId?: string;
     operationId?: string;
     conversationId?: string;
-    state?: RunState | NativeProjectState | ChangeTransactionState;
-    simulationTrialState?: NativeSimulationTrialState;
+    state?: RunState | ChangeTransactionState;
     label?: string;
   };
 }
@@ -513,6 +509,7 @@ export interface EngineeringMissionStep {
 export interface EngineeringMissionSnapshot {
   schemaVersion: "1";
   objective: string;
+  completionKind?: "analysis" | "native_change";
   status: EngineeringMissionStatus;
   completionCriteria: string[];
   steps: EngineeringMissionStep[];
@@ -568,16 +565,50 @@ export interface ConversationMessage {
   engineeringAnalysisDigest?: string;
 }
 
+/**
+ * User-visible completion is separate from an individual Agent turn and from
+ * a published planning artifact.  The Host returns this object as
+ * `goalCompletion` on ConversationV1.
+ */
+export interface ConversationCompletionV1 {
+  schemaVersion: "1";
+  status: "not_claimed" | "phase_complete" | "goal_complete" | "blocked";
+  phase: "planning" | "engineering";
+  basis:
+    | "no_completion_evidence"
+    | "planning_needs_clarification"
+    | "planning_ready_for_review"
+    | "planning_reviewed"
+    | "engineering_in_progress"
+    | "engineering_waiting_for_user"
+    | "engineering_waiting_for_approval"
+    | "engineering_cycle_budget_exhausted"
+    | "engineering_objective_achieved"
+    | "engineering_blocked"
+    | "invalid_engineering_mission";
+  sourceMessageId?: string | null;
+  sourceDigest?: string | null;
+}
+
+/** Convenience name used by the web client for the versioned DTO. */
+export type ConversationCompletion = ConversationCompletionV1;
+
 export interface Conversation {
   conversationId: string;
   title: string;
   messages: ConversationMessage[];
   updatedAt: string;
   workflow: "engineering" | "new_project_planning";
+  goalCompletion: ConversationCompletion;
   projectBrief?: ProjectBrief;
   engineeringTarget?: EngineeringTargetBinding | null;
   engineeringHandoff?: EngineeringConversationHandoff | null;
   engineeringMission?: EngineeringMission | null;
+  latestNativeProject?: {
+    nativeProjectId: string;
+    state: "allocated" | "executing" | "completed" | "failed" | "quarantined";
+    updatedAt: string;
+  } | null;
 }
 
 export interface EngineeringTargetBinding {
@@ -636,6 +667,7 @@ export interface ConversationCreate {
   workflow?: "engineering" | "new_project_planning";
   projectBrief?: ProjectBrief;
   nativeProjectId?: string;
+  nativeRecoveryProjectId?: string;
   targetScope?: "current" | "none";
 }
 
@@ -665,7 +697,7 @@ export type SendMessageRequest = SendMessageRequestBase &
         changeRequestScope: "offline_candidate_revision";
         verificationScope?:
           | "offline_native_reopen"
-          | "offline_native_reopen_xgsim";
+          | "offline_native_reopen";
       }
     | {
         changeRequestScope: "permanent_offline_revision";
@@ -824,12 +856,16 @@ export interface CreateKnowledgeMemoryRequest {
   language: string;
 }
 
+export type ModelReasoningEffort =
+  | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+
 export interface ModelSettings {
   protocol: "openai_chat_completions";
   baseUrl: string;
   model: string;
   customHeaderNames: string[];
   timeoutSeconds: number;
+  reasoningEffort?: ModelReasoningEffort | null;
   hasApiKey: boolean;
   externalEndpoint: boolean;
   updatedAt?: string;
@@ -842,6 +878,7 @@ export interface SaveModelSettingsRequest {
   apiKey?: string;
   customHeaders?: Record<string, string>;
   timeoutSeconds: number;
+  reasoningEffort?: ModelReasoningEffort | null;
   externalModelConsent: boolean;
   insecureHttpConsent: boolean;
 }
@@ -900,16 +937,6 @@ export interface EngineeringLocationFocusResponse {
   payloadSha256: string;
 }
 
-export interface MneAnchorFocus {
-  instructionIndex: number;
-  command: MneProgramReplacementCommand;
-  operand: string | null;
-  instructionDigest: string;
-  baselineMneSha256: string;
-  baselineLdSha256: string;
-  baselineLdCanonicalSha256?: string;
-  baselineInstructionCount: number;
-}
 
 export interface ChangeTargetFocusResponse {
   status: "focused";
@@ -918,16 +945,34 @@ export interface ChangeTargetFocusResponse {
   projectUnchanged: true;
   transactionId: string;
   planDigest: string;
-  focusKind: "native_location" | "mne_anchor" | "program";
+  focusKind: "native_location" | "program";
   program: EngineeringProgram;
   location?: EngineeringLocation | null;
   payloadSha256?: string | null;
-  mneAnchor?: MneAnchorFocus | null;
 }
 
 export interface XG5000InstancesResponse {
   status: "ready" | "unavailable";
   instances: XG5000Instance[];
+}
+
+export type LaunchIdleXG5000LaunchMode = "when_none" | "new_instance";
+
+export interface LaunchIdleXG5000Response {
+  operation: "xg5000.launch_idle";
+  verified: true;
+  status: "launched";
+  launchAction: "process_start";
+  launchMode: LaunchIdleXG5000LaunchMode;
+  launchedIdentity: { pid: number; process_create_time: number; executable: string };
+  idleBinding: { pid: number; hwnd: number; process_create_time: number; executable: string };
+  noExistingInstances: boolean;
+  blankWindow: true;
+  modalObserved: false;
+  attentionReason: null;
+  processExited: false;
+  processTerminated: false;
+  receiptDigest: string;
 }
 
 export interface ControllerRestorePreflightRequest {
@@ -1002,546 +1047,6 @@ export interface ControllerRestoreHandoff {
   invoked: true;
   confirmed: false;
   receiptDigest: string;
-}
-
-export type NativeProjectState =
-  | "allocated"
-  | "executing"
-  | "completed"
-  | "failed"
-  | "quarantined";
-
-export interface CreateNativeProjectRequest {
-  operationId: string;
-  projectName: string;
-  workspaceParent: string;
-  plcSeries: "XGK" | "XGB";
-  cpuModel: string;
-  programName: string;
-  language: "LD";
-  description: string;
-  xg5000Pid: number;
-  xg5000Hwnd: number;
-  reviewedPlan: ReviewedProjectPlanBinding;
-}
-
-export interface NativeBuildBundle {
-  schemaVersion: "controlstudio-native-build-bundle/v2";
-  bundleId: string;
-  phase: "engineered_control_program";
-  reviewedPlan: ReviewedProjectPlanBinding;
-  engineeringPlan: NewProjectEngineeringPlan;
-  technicalConfiguration: {
-    projectName: string;
-    plcSeries: "XGK" | "XGB";
-    cpuModel: string;
-    programName: string;
-    language: "LD";
-    description: string;
-  };
-  compiledProgram: {
-    schemaVersion: "controlstudio-xg5000-mnemonic-program/v4";
-    sourceLanguage: "XG5000_MNEMONIC";
-    targetLanguage: "LD";
-    programName: string;
-    source: string;
-    sourceSha256: string;
-    rungIds: string[];
-    ladderIr: {
-      schemaVersion: "controlstudio-ld-rung-ir/v1";
-      rungs: EngineeringPlanLadderRung[];
-    };
-    ladderIrSha256: string;
-    networkIds: string[];
-    outputSignalIds: string[];
-    timerIds: string[];
-    sequenceIds: string[];
-    sequenceRestartPolicies: Record<
-      string,
-      "require_start_release" | "continuous"
-    >;
-    stepIds: string[];
-    alarmIds: string[];
-    recoveryIds: string[];
-    collectionScope: CompiledEngineeringPlanNativeCollectionScope;
-  };
-}
-
-export interface NativeBuildBundleReceipt {
-  schemaVersion: "controlstudio-native-build-receipt/v3";
-  bundleId: string;
-  phase: "engineered_control_program";
-  status: "APPLIED_VERIFIED";
-  reviewedPlanDigest: string;
-  nativeReadback: {
-    projectName: string;
-    projectPath: string;
-    projectSha256: string;
-    projectSize: number;
-    destinationDirectory: string;
-    plcSeries: "XGK" | "XGB";
-    cpuModel: string;
-    programName: string;
-    language: "LD";
-    description: string;
-    identityVerified: true;
-  };
-  programReadback: {
-    rungCount: number;
-    rungIds: string[];
-    ladderIrSha256: string;
-    sourceSha256: string;
-    exactInstructionReadback: string[];
-    finalView: "LD";
-    programCheckPassed: true;
-    savedProjectSha256: string;
-  };
-}
-
-export interface NativeReopenReceipt {
-  schemaVersion: "controlstudio-native-reopen-receipt/v2";
-  status: "REOPEN_VERIFIED";
-  buildBundleId: string;
-  reviewedPlanDigest: string;
-  sourceProcess: {
-    pid: number;
-  };
-  reopenedProcess: {
-    pid: number;
-    hwnd: number;
-    independent: true;
-  };
-  projectReadback: {
-    projectPath: string;
-    projectSha256: string;
-    projectUnchanged: true;
-    identityAssurance: "controlled_launch_read_only";
-  };
-  programReadback: {
-    programName: string;
-    language: "LD";
-    sourceSha256: string;
-    rungCount: number;
-    rungIds: string[];
-    ladderIrSha256: string;
-    exactInstructionReadback: string[];
-    finalView: "LD";
-    programCheckPassed: true;
-  };
-  controllerConnected: false;
-  plcWritePerformed: false;
-}
-
-export interface NativeSimulationScenario {
-  scenarioId: string;
-  status: "passed";
-  assertions: Record<string, boolean>;
-  [key: string]: unknown;
-}
-
-export interface NativeSimulationMoveObservation {
-  address: string;
-  byteOffset: number;
-  encoding: "little_endian_signed16";
-  beforeValue: number;
-  expectedValue: number;
-  observedValue: number;
-  matched: true;
-}
-
-export interface NativeSimulationMoveScenario extends NativeSimulationScenario {
-  scenarioId: `move_ladder:${string}`;
-  action: EngineeringPlanLadderMoveAction;
-  inputAssignment: Record<string, 0 | 1>;
-  observation: NativeSimulationMoveObservation;
-}
-
-export interface NativeSimulationNetworkRungCoverage {
-  networkId: string;
-  outputSignalId: string;
-  rungId: string;
-  conditionKind: "contact" | "all_of" | "any_of";
-  status: "verified";
-}
-
-export interface NativeSimulationMoveRungCoverage {
-  rungId: string;
-  conditionKind: "contact" | "all_of" | "any_of";
-  action: EngineeringPlanLadderMoveAction;
-  inputAssignment: Record<string, 0 | 1>;
-  status: "verified";
-}
-
-export interface NativeSimulationScenarioCoverageBase {
-  collectionScope: Record<
-    keyof EngineeringPlanNativeCollectionScope,
-    "confirmed" | "not_applicable"
-  >;
-  inputSignalIds: string[];
-  modeIds: string[];
-  networkIds: string[];
-  outputSignalIds: string[];
-  timerIds: string[];
-  sequenceIds: string[];
-  sequenceRestartPolicies: Record<string, "require_start_release" | "continuous">;
-  stepIds: string[];
-  alarmIds: string[];
-  recoveryIds: string[];
-  processInterlockIds: string[];
-  documentedExternalSafetyBoundaryIds: string[];
-}
-
-export interface NativeSimulationScenarioReceiptBase {
-  status: "SCENARIOS_VERIFIED";
-  verifiedAt: string;
-  scenarioCount: number;
-  scenarios: Array<NativeSimulationScenario | NativeSimulationMoveScenario>;
-  addressMap: Record<string, unknown>;
-  inputWrites: Array<Record<string, unknown>>;
-  outputBytesWritten: false;
-}
-
-export interface NativeSimulationScenarioReceiptV1
-  extends NativeSimulationScenarioReceiptBase {
-  schemaVersion: "controlstudio-native-simulation-scenarios/v1";
-  coverage: NativeSimulationScenarioCoverageBase & {
-    selectedNetworkRung: {
-      rungId: string;
-      conditionKind: "contact" | "all_of" | "any_of";
-      status: "verified";
-    };
-  };
-}
-
-export interface NativeSimulationScenarioReceiptV2
-  extends NativeSimulationScenarioReceiptBase {
-  schemaVersion: "controlstudio-native-simulation-scenarios/v2";
-  coverage: NativeSimulationScenarioCoverageBase & {
-    networkRungs: NativeSimulationNetworkRungCoverage[];
-  };
-}
-
-export interface NativeSimulationScenarioReceiptV3
-  extends NativeSimulationScenarioReceiptBase {
-  schemaVersion: "controlstudio-native-simulation-scenarios/v3";
-  coverage: NativeSimulationScenarioCoverageBase & {
-    networkRungs: NativeSimulationNetworkRungCoverage[];
-    moveRungs: NativeSimulationMoveRungCoverage[];
-  };
-}
-
-export interface NativeSimulationScenarioReceiptV4
-  extends NativeSimulationScenarioReceiptBase {
-  schemaVersion: "controlstudio-native-simulation-scenarios/v4";
-  profile: "multi_mode_index/v1";
-  coverage: {
-    collectionScope: Record<string, string>;
-    inputSignalIds: string[];
-    modeIds: string[];
-    networkIds: string[];
-    outputSignalIds: string[];
-    timerIds: string[];
-    sequenceIds: string[];
-    stepIds: string[];
-    alarmIds: string[];
-    recoveryIds: string[];
-    processInterlockIds: string[];
-  };
-}
-
-export interface NativeSimulationReceiptBase {
-  status: "SIMULATION_VERIFIED";
-  buildBundleId: string;
-  reviewedPlanDigest: string;
-  projectReadback: {
-    projectPath: string;
-    projectSha256: string;
-    reopenedProjectSha256: string;
-    projectUnchangedDuringRuntime: true;
-    identityAssurance: "controlled_launch_read_only";
-  };
-  simulationPreparation: {
-    hashBeforeSimulatorStart: string;
-    hashAfterSimulatorStart: string;
-    hashAfterProgramWrite: string;
-    hashTransitionObserved: boolean;
-    programReadback: {
-      programName: string;
-      language: "LD";
-      sourceSha256: string;
-      rungCount: number;
-      rungIds: string[];
-      ladderIrSha256: string;
-      exactInstructionReadback: string[];
-      finalView: "LD";
-      programCheckPassed: true;
-    };
-  };
-  programBinding: {
-    programName: string;
-    sourceSha256: string;
-    rungCount: number;
-    rungIds: string[];
-    ladderIrSha256: string;
-    compiledProgramSchema: "controlstudio-xg5000-mnemonic-program/v4";
-  };
-  simulator: {
-    product: "XG-SIM";
-    bridge: "XimUtil.DeviceInterface" | "XGT_FENET_SIMULATOR";
-    programWritePerformed: true;
-    cpuRunVerified: true;
-    cpuStopped: true;
-    start: Record<string, unknown>;
-    write: Record<string, unknown>;
-    run: Record<string, unknown>;
-    stop: {
-      ok: true;
-      verified: true;
-      confirmation: {
-        closed: true;
-        [key: string]: unknown;
-      };
-      postcondition: {
-        main_enabled: true;
-        ui_state: {
-          verified: true;
-          method: "xg5000-simulator-status-pane/v1";
-          classification: "STOP";
-          pid: number;
-          hwnd: number;
-          foreground_pid: number;
-          foreground_hwnd: number;
-          dpi: number;
-          main_rect: [number, number, number, number];
-          status_candidate_count: 1;
-          status_text: "L, SIMULATOR, 정상" | "L, SIMULATOR, NORMAL" | null;
-          status_rect: [number, number, number, number];
-          status_relative_rect: [number, number, number, number];
-          status_bottom_gap: number;
-          geometry_verified: true;
-          capture_method: "PIL.ImageGrab/foreground-status-pane";
-          consecutive_count: 3;
-          selected_run: {
-            text: string;
-            visible: true;
-            enabled: true;
-            rect: [number, number, number, number];
-          } | null;
-          selected_stop: {
-            text: string;
-            visible: true;
-            enabled: true;
-            rect: [number, number, number, number];
-          } | null;
-          owner_drawn_status_root?: true;
-          sample_box?: [number, number, number, number];
-          sample_size?: [number, number];
-          samples: Array<{
-            index: number;
-            classification: "STOP";
-            pixel_count: number;
-            dominant_rgb: [number, number, number];
-            dominant_share: number;
-            stop_share: number;
-            run_share: number;
-            offline_share: number;
-            stop_prototype_distance: number;
-          }>;
-          [key: string]: unknown;
-        };
-      };
-      [key: string]: unknown;
-    };
-  };
-  baseline: Record<string, unknown>;
-  inputWriteBoundary: {
-    onlyReviewedSimulationStimuli: true;
-    outputBytesWritten: false;
-    baselineRestoredAfterCpuStop: true;
-    restore: {
-      attempted: true;
-      cpuStoppedBeforeRestore: true;
-      matched: true;
-      [key: string]: unknown;
-    };
-  };
-  controllerConnected: false;
-  plcWritePerformed: false;
-}
-
-export interface NativeSimulationReceiptV3 extends NativeSimulationReceiptBase {
-  schemaVersion: "controlstudio-native-simulation-receipt/v3";
-  scenarioReceipt: NativeSimulationScenarioReceiptV1;
-}
-
-export interface NativeSimulationReceiptV4 extends NativeSimulationReceiptBase {
-  schemaVersion: "controlstudio-native-simulation-receipt/v4";
-  scenarioReceipt: NativeSimulationScenarioReceiptV2;
-}
-
-export interface NativeSimulationReceiptV5 extends NativeSimulationReceiptBase {
-  schemaVersion: "controlstudio-native-simulation-receipt/v5";
-  scenarioReceipt:
-    | NativeSimulationScenarioReceiptV3
-    | NativeSimulationScenarioReceiptV4;
-}
-
-export type NativeSimulationReceipt =
-  | NativeSimulationReceiptV3
-  | NativeSimulationReceiptV4
-  | NativeSimulationReceiptV5;
-
-export type NativeSimulationTrialState =
-  | "OBSERVING"
-  | "ACCEPTED"
-  | "REVERTED"
-  | "QUARANTINED"
-  | "QUARANTINE_ACKNOWLEDGED";
-
-export interface NativeSimulationTrial {
-  schemaVersion: "controlstudio-native-simulation-trial/v1";
-  trialId: string;
-  state: NativeSimulationTrialState;
-  receiptDigest?: string;
-  observedAt?: string;
-  quarantinedAt?: string;
-  safeRestorationVerified: boolean;
-  decision?: {
-    outcome: "ACCEPTED" | "REVERTED" | "QUARANTINE_ACKNOWLEDGED";
-    actorId: string;
-    decidedAt: string;
-    receiptDigest?: string;
-    safeRestorationVerified?: boolean;
-    migratedFrom?: "pre-trial-lifecycle";
-  } | null;
-}
-
-export interface NativeProjectResult {
-  operation?: "project.create_native";
-  projectPath?: string;
-  projectSha256?: string;
-  projectSize?: number;
-  destinationDirectory?: string;
-  planDigest?: string;
-  buildBundleId?: string;
-  reviewedPlanDigest?: string;
-  buildBundleReceipt?: NativeBuildBundleReceipt;
-  xg5000Pid?: number;
-  xg5000Hwnd?: number;
-  identityVerified?: boolean;
-  identityEvidence?: Record<string, unknown>;
-  controllerConnected?: boolean;
-  plcWritePerformed?: boolean;
-  workspaceBound?: boolean;
-  engineeredProgramReady?: boolean;
-  workspaceBindingReason?: string;
-  workspaceRegistration?: {
-    state: "captured_and_bound" | "captured_not_bound" | "capture_failed";
-    detail: string;
-    workspace?: LocalWorkspace;
-  };
-  reopenVerification?: {
-    state: "verified" | "not_verified";
-    detail: string;
-    receipt?: NativeReopenReceipt;
-    launch?: Record<string, unknown>;
-    workspace?: LocalWorkspace;
-    session?: Record<string, unknown>;
-  };
-  simulationVerification?: {
-    state: "verified" | "not_verified" | "quarantined";
-    detail: string;
-    preflight?: {
-      schemaVersion: "controlstudio-native-simulation-profile-observation/v1";
-      reasonCode:
-        | "EXPLICIT_INDEX_ACCEPTANCE_BINDINGS_REQUIRED"
-        | "INDEX_ACCEPTANCE_BINDINGS_REJECTED";
-      requiredDesignSection: "index_acceptance_bindings";
-      profilePresent: boolean;
-      signalIds: string[];
-      modeIds: string[];
-      alarmIds: string[];
-      timerIds: string[];
-      bindings?: Record<string, unknown> | null;
-    };
-    receipt?: NativeSimulationReceipt;
-    session?: Record<string, unknown>;
-    trial?: NativeSimulationTrial;
-  };
-  simulationPlanRevision?: {
-    schemaVersion: "controlstudio-native-simulation-plan-revision/v1";
-    nativeProjectId: string;
-    baseBuildBundleId: string;
-    baseReviewedPlanDigest: string;
-    simulationReviewedPlan: ReviewedProjectPlanBinding;
-    candidateBundleId: string;
-    receiptDigest: string;
-  } & Record<string, unknown>;
-  recovery?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
-export interface NativeProjectOperation {
-  nativeProjectId: string;
-  operationId: string;
-  state: NativeProjectState;
-  requestDigest: string;
-  actorId: string;
-  request: CreateNativeProjectRequest & {
-    destinationDirectory: string;
-    buildBundle: NativeBuildBundle;
-  };
-  planDigest?: string;
-  destinationDirectory: string;
-  result?: NativeProjectResult;
-  errorCode?: string;
-  errorDetail?: string;
-  createdAt: string;
-  updatedAt: string;
-  completedAt?: string;
-}
-
-export interface NativeProjectCreatedResponse {
-  operation: NativeProjectOperation;
-  created: boolean;
-}
-
-export interface NativeSimulationTrialDecisionRequest {
-  decision: "accept" | "revert" | "acknowledge_quarantine";
-  expectedReceiptDigest?: string;
-}
-
-export interface NativeSimulationTrialDecisionResponse {
-  operation: NativeProjectOperation;
-  decisionRecorded: boolean;
-}
-
-export interface ReconcileNativeProjectRequest {
-  pid: number;
-  hwnd: number;
-  expectedProjectPath: string;
-  observedProjectPath?: string;
-  expectedProjectSha256?: string;
-}
-
-export interface NativeProjectReconciliationResponse {
-  operation: NativeProjectOperation;
-  reconciled: boolean;
-}
-
-export interface ResumeNativeProjectRequest {
-  pid: number;
-  hwnd: number;
-  expectedRequestDigest: string;
-  reopenedPid?: number;
-  reopenedHwnd?: number;
-  runSimulation?: boolean;
-  simulationReviewedPlan?: ReviewedProjectPlanBinding;
-}
-
-export interface NativeProjectResumedResponse {
-  operation: NativeProjectOperation;
-  resumed: boolean;
 }
 
 export interface OpenLocalWorkspaceRequest {
@@ -1751,17 +1256,12 @@ export type ChangeRiskLevel = "low" | "medium" | "high" | "critical";
 export type ChangeVerificationScope =
   | "offline_native_check_only"
   | "offline_native_reopen"
-  | "offline_native_reopen_xgsim";
+  | "offline_native_reopen";
 export type ChangeMode = "offline_working_copy_revision";
 export type ChangeRequestScope =
   | "offline_candidate_revision"
   | "permanent_offline_revision";
 export type OfflineNativeValidationStep =
-  | "structural_diff"
-  | "xg5000_program_check"
-  | "project_save"
-  | "project_reopen";
-export type MneFullProgramValidationStep =
   | "structural_diff"
   | "xg5000_program_check"
   | "project_save"
@@ -1828,375 +1328,8 @@ export interface ChangePlanV1 {
   [key: string]: unknown;
 }
 
-export type MneProgramReplacementCommand =
-  | "LOAD"
-  | "LOAD NOT"
-  | "AND"
-  | "AND NOT"
-  | "OR"
-  | "OR NOT"
-  | "AND LOAD"
-  | "OR LOAD"
-  | "OUT"
-  | "SET"
-  | "RST"
-  | "TON"
-  | "END";
-
-export interface MneProgramReplacementInstruction {
-  command: MneProgramReplacementCommand;
-  operand: string | null;
-}
-
-export interface MneFullProgramTarget {
-  schema: "controlstudio-mne-target-program/v1";
-  programId: string;
-  programName: string;
-  designDigest: string;
-  instructionCount: number;
-  instructions: MneProgramReplacementInstruction[];
-  targetProgramDigest: string;
-}
-
-export interface MneFullProgramApprovedBaseline {
-  schema: "controlstudio-mne-approved-baseline/v1";
-  projectSha256: string;
-  programId: string;
-  programName: string;
-  ldPayloadSha256: string;
-  ldCanonicalSha256?: string;
-}
-
-export interface MneFullProgramReplacementChangePlanV2 {
-  planKind: "mne_full_program_replacement";
-  changeMode: "offline_working_copy_revision";
-  requestScope: ChangeRequestScope;
-  targetProgram: MneFullProgramTarget;
-  baselineBinding: MneFullProgramApprovedBaseline;
-  impact: string[];
-  risks: string[];
-  assumptions: string[];
-  blockingUnknowns: string[];
-  alternatives: string[];
-  acceptanceCriteria: string[];
-  observationSignals: string[];
-  stopConditions: string[];
-  coverage: ChangeCoverageItem[];
-  verificationScope: "offline_native_check_only" | "offline_native_reopen";
-  validation: MneFullProgramValidationStep[];
-  manualFollowUp: string[];
-  rollback: string[];
-}
-
-/**
- * Host-authored receipt for the one supported structural edit.  This is a
- * digest-only summary: the MCP keeps the baseline and compiled MNE private.
- */
-export interface MneFieldIoModule {
-  // These nested values are copied from the native MCP receipt and therefore
-  // intentionally retain their snake_case wire spelling.
-  rack_base: number;
-  slot: number;
-  module_id: number;
-  model: string | null;
-  module_type: string | null;
-  status: "observed";
-}
-
-export interface MneFieldIoChannel {
-  index: number;
-  status: "derived_from_verified_terminal_range";
-  derivation: "address offset within the exact configured module range";
-}
-
-export interface MneFieldIoTerminalRange {
-  address_start: string;
-  address_end: string;
-  binding_kind: "built_in_terminal_range" | "slot_reservation";
-  status: "observed" | "documented";
-}
-
-export interface MneFieldIoBinding {
-  device: string;
-  direction: "input" | "output";
-  pointKind: "digital_input" | "digital_output";
-  module: MneFieldIoModule;
-  channel: MneFieldIoChannel;
-  terminalRange: MneFieldIoTerminalRange;
-  bindingDigest: string;
-}
-
-export interface MneSeriesGuardCandidateReceipt {
-  schema: "xg5000.mne-series-guard-candidate/1.0";
-  projectSha256: string;
-  programId: string;
-  programName: string;
-  baselineMneSha256: string;
-  baselineLdSha256: string;
-  baselineLdCanonicalSha256?: string;
-  baselineInstructionCount: number;
-  patch: {
-    schema: "controlstudio-mne-series-guard-patch/v1";
-    guardCommand: "AND" | "AND NOT";
-    guardOperand: string;
-    outputOperand: string;
-    outputInstructionIndex: number;
-  };
-  targetInstructionCount: number;
-  targetMneSha256: string;
-  designDigest: string;
-  targetProgramDigest: string;
-  hardwareContextDigest?: string | null;
-  fieldIoBindings?: MneFieldIoBinding[];
-  candidateDigest: string;
-}
-
-interface MneCandidateChangePlan {
-  changeMode: "offline_working_copy_revision";
-  requestScope: ChangeRequestScope;
-  candidateEvidenceId: string;
-  baselineBinding: MneFullProgramApprovedBaseline;
-  impact: string[];
-  risks: string[];
-  assumptions: string[];
-  blockingUnknowns: string[];
-  alternatives: string[];
-  acceptanceCriteria: string[];
-  observationSignals: string[];
-  stopConditions: string[];
-  coverage: ChangeCoverageItem[];
-  validation: MneFullProgramValidationStep[];
-  manualFollowUp: string[];
-  rollback: string[];
-}
-
-export interface MneSeriesGuardPatchChangePlanV3 extends MneCandidateChangePlan {
-  planKind: "mne_series_guard_patch";
-  verificationScope: Exclude<
-    ChangeVerificationScope,
-    "offline_native_reopen_xgsim"
-  >;
-  candidate: MneSeriesGuardCandidateReceipt;
-}
-
-export interface MneInstructionPatchRow {
-  index: number;
-  command: MneProgramReplacementCommand;
-  operand: string | null;
-  instructionDigest: string;
-}
-
-export interface MneInstructionPatchCandidateReceipt {
-  schema: "xg5000.mne-instruction-patch-candidate/1.0";
-  projectSha256: string;
-  programId: string;
-  programName: string;
-  baselineMneSha256: string;
-  baselineLdSha256: string;
-  baselineLdCanonicalSha256?: string;
-  baselineInstructionCount: number;
-  patch: {
-    schema: "controlstudio-mne-instruction-patch/v1";
-    operation: "insert_before" | "insert_after" | "replace" | "delete";
-    anchorInstructionIndex: number;
-    anchor: MneInstructionPatchRow;
-    instruction: MneProgramReplacementInstruction | null;
-    contextBefore: MneInstructionPatchRow | null;
-    contextAfter: MneInstructionPatchRow | null;
-  };
-  targetInstructionCount: number;
-  targetMneSha256: string;
-  designDigest: string;
-  targetProgramDigest: string;
-  hardwareContextDigest?: string | null;
-  fieldIoBindings?: MneFieldIoBinding[];
-  candidateDigest: string;
-}
-
-export interface MneInstructionPatchChangePlanV4 extends MneCandidateChangePlan {
-  planKind: "mne_instruction_patch";
-  verificationScope: Exclude<
-    ChangeVerificationScope,
-    "offline_native_reopen_xgsim"
-  >;
-  candidate: MneInstructionPatchCandidateReceipt;
-}
-
-export interface MneInstructionBatchPatchCandidateReceipt {
-  schema: "xg5000.mne-instruction-batch-patch-candidate/1.0";
-  projectSha256: string;
-  programId: string;
-  programName: string;
-  baselineMneSha256: string;
-  baselineLdSha256: string;
-  baselineLdCanonicalSha256?: string;
-  baselineInstructionCount: number;
-  patches: MneInstructionPatchCandidateReceipt["patch"][];
-  targetInstructionCount: number;
-  targetMneSha256: string;
-  designDigest: string;
-  targetProgramDigest: string;
-  hardwareContextDigest?: string | null;
-  fieldIoBindings?: MneFieldIoBinding[];
-  candidateDigest: string;
-}
-
-export interface MneInstructionBatchPatchChangePlanV5
-  extends MneCandidateChangePlan {
-  planKind: "mne_instruction_batch_patch";
-  verificationScope: Exclude<
-    ChangeVerificationScope,
-    "offline_native_reopen_xgsim"
-  >;
-  candidate: MneInstructionBatchPatchCandidateReceipt;
-}
-
-export interface MneRungContactCondition {
-  kind: "contact";
-  operand: string;
-  state: "on" | "off";
-}
-
-export interface MneRungCompositeCondition {
-  kind: "all_of" | "any_of";
-  terms: MneRungCondition[];
-}
-
-export type MneRungCondition =
-  | MneRungContactCondition
-  | MneRungCompositeCondition;
-
-export interface MneRungBaselineReceipt {
-  startInstructionIndex: number;
-  conditionInstructionCount: number;
-  actionInstructionCount: number;
-  condition: MneRungCondition;
-  actions: MneInstructionPatchRow[];
-  rungDigest: string;
-}
-
-export interface MneRungTargetReceipt {
-  condition: MneRungCondition;
-  actions: MneProgramReplacementInstruction[];
-  rungDigest: string;
-}
-
-export interface MneRungXgSimSimpleProfile {
-  schema: "controlstudio-mne-rung-xgsim-profile/v1";
-  // This is a digest-bound native adapter payload nested in the otherwise
-  // camelCase public candidate receipt. Preserve its native wire spelling.
-  normal_assignments: Record<string, 0 | 1>;
-  deny_assignments: Record<string, 0 | 1>;
-  restore_assignments: Record<string, 0 | 1>;
-  output_addresses: string[];
-  target_rung_digest: string;
-  program_count: 1;
-  catalog_digest: string;
-  profile_digest: string;
-}
-
-export interface MneRungXgSimScenarioStep {
-  name: string;
-  drive: Record<string, 0 | 1>;
-  observe: Record<string, 0 | 1>;
-  hold_ms?: number;
-}
-
-export interface MneRungXgSimScenarioProfile {
-  schema: "controlstudio-mne-rung-xgsim-profile/v1";
-  scenario: { steps: MneRungXgSimScenarioStep[] };
-  output_addresses: string[];
-  target_rung_digest: string;
-  program_count: 1;
-  catalog_digest: string;
-  profile_digest: string;
-}
-
-export type MneRungXgSimProfile =
-  | MneRungXgSimSimpleProfile
-  | MneRungXgSimScenarioProfile;
-
-export interface MneRungPatchCandidateReceipt {
-  schema: "xg5000.mne-rung-patch-candidate/1.0";
-  projectSha256: string;
-  programId: string;
-  programName: string;
-  baselineMneSha256: string;
-  baselineLdSha256: string;
-  baselineLdCanonicalSha256?: string;
-  baselineInstructionCount: number;
-  patch: {
-    schema: "controlstudio-mne-rung-patch/v1";
-    operation:
-      | "replace_condition"
-      | "replace_rung"
-      | "insert_before"
-      | "delete";
-    anchor: MneInstructionPatchRow;
-    anchorRung: MneRungBaselineReceipt | null;
-    targetRung: MneRungTargetReceipt | null;
-  };
-  targetInstructionCount: number;
-  targetMneSha256: string;
-  designDigest: string;
-  targetProgramDigest: string;
-  simulationProfile: MneRungXgSimProfile | null;
-  hardwareContextDigest?: string | null;
-  fieldIoBindings?: MneFieldIoBinding[];
-  candidateDigest: string;
-}
-
-export interface MneRungPatchChangePlanV6
-  extends MneCandidateChangePlan {
-  planKind: "mne_rung_patch";
-  verificationScope: ChangeVerificationScope;
-  candidate: MneRungPatchCandidateReceipt;
-}
-
-export type ChangePlan =
-  | ChangePlanV1
-  | MneFullProgramReplacementChangePlanV2
-  | MneSeriesGuardPatchChangePlanV3
-  | MneInstructionPatchChangePlanV4
-  | MneInstructionBatchPatchChangePlanV5
-  | MneRungPatchChangePlanV6;
-export type MneFullProgramReplacementChangePlanInputV2 = Omit<
-  MneFullProgramReplacementChangePlanV2,
-  "baselineBinding"
-> & {
-  baselineBinding?: MneFullProgramApprovedBaseline;
-};
-export type MneSeriesGuardPatchChangePlanInputV3 = Omit<
-  MneSeriesGuardPatchChangePlanV3,
-  "baselineBinding"
-> & {
-  baselineBinding?: MneFullProgramApprovedBaseline;
-};
-export type MneInstructionPatchChangePlanInputV4 = Omit<
-  MneInstructionPatchChangePlanV4,
-  "baselineBinding"
-> & {
-  baselineBinding?: MneFullProgramApprovedBaseline;
-};
-export type MneInstructionBatchPatchChangePlanInputV5 = Omit<
-  MneInstructionBatchPatchChangePlanV5,
-  "baselineBinding"
-> & {
-  baselineBinding?: MneFullProgramApprovedBaseline;
-};
-export type MneRungPatchChangePlanInputV6 = Omit<
-  MneRungPatchChangePlanV6,
-  "baselineBinding"
-> & {
-  baselineBinding?: MneFullProgramApprovedBaseline;
-};
-export type ChangePlanInput =
-  | ChangePlanV1
-  | MneFullProgramReplacementChangePlanInputV2
-  | MneSeriesGuardPatchChangePlanInputV3
-  | MneInstructionPatchChangePlanInputV4
-  | MneInstructionBatchPatchChangePlanInputV5
-  | MneRungPatchChangePlanInputV6;
+export type ChangePlan = ChangePlanV1;
+export type ChangePlanInput = ChangePlanV1;
 
 export interface ChangeTargetIdentity {
   workspaceId: string;
@@ -2225,6 +1358,7 @@ export interface ChangeTransaction {
   runId?: string | null;
   state: ChangeTransactionState;
   targetIdentity: ChangeTargetIdentity;
+  executionTargetIdentity?: ChangeTargetIdentity | null;
   mutationScope: string;
   riskLevel: ChangeRiskLevel;
   intent: string;
@@ -2262,12 +1396,6 @@ export interface DecideChangeTransactionRequest {
 
 export interface ExecuteChangeTransactionRequest {
   expectedPlanDigest: string;
-}
-
-export interface FinalizeSimulationChangeRequest {
-  decision: "accept" | "revert";
-  expectedPlanDigest: string;
-  expectedSimulationReceiptDigest: string;
 }
 
 export interface ReconcileChangeTransactionRequest {
@@ -2470,217 +1598,6 @@ export interface EngineeringPlanRevision {
   removedItems: EngineeringPlanRevisionItem[];
 }
 
-export interface EngineeringPlanSignalCondition {
-  signalId: string;
-  state: "on" | "off";
-}
-
-export interface EngineeringPlanIoPoint {
-  signalId: string;
-  symbol: string;
-  address: string;
-  kind: "digital_input" | "digital_output" | "internal_bit";
-  description: string;
-  normalState: "on" | "off" | "unknown";
-  safeState: "on" | "off" | "not_applicable";
-}
-
-export interface EngineeringPlanOperatingMode {
-  modeId: string;
-  name: string;
-  description: string;
-  activation: EngineeringPlanSignalCondition;
-  allowedTransitions: string[];
-}
-
-export interface EngineeringPlanControlNetwork {
-  networkId: string;
-  title: string;
-  modeId?: string | null;
-  stepId?: string | null;
-  permitAll: EngineeringPlanSignalCondition[];
-  outputSignalId: string;
-}
-
-export interface EngineeringPlanLadderContactCondition {
-  kind: "contact";
-  sourceType: "signal" | "timer" | "step" | "sequence_reset";
-  sourceId: string;
-  state: "on" | "off";
-}
-
-export interface EngineeringPlanLadderCompositeCondition {
-  kind: "all_of" | "any_of";
-  terms: EngineeringPlanLadderCondition[];
-}
-
-export type EngineeringPlanLadderCondition =
-  | EngineeringPlanLadderContactCondition
-  | EngineeringPlanLadderCompositeCondition;
-
-export interface EngineeringPlanLadderTargetAction {
-  instruction: "OUT" | "SET" | "RST" | "TON";
-  targetType: "signal" | "timer" | "step" | "sequence_reset";
-  targetId: string;
-}
-
-export interface EngineeringPlanLadderMoveAction {
-  instruction: "MOV";
-  sourceConstant: number;
-  destinationAddress: string;
-}
-
-export interface EngineeringPlanLadderIncrementAction {
-  instruction: "INCP";
-  destinationAddress: string;
-}
-
-export type EngineeringPlanLadderAction =
-  | EngineeringPlanLadderTargetAction
-  | EngineeringPlanLadderMoveAction
-  | EngineeringPlanLadderIncrementAction;
-
-export interface EngineeringPlanLadderRung {
-  rungId: string;
-  description: string;
-  condition: EngineeringPlanLadderCondition;
-  action: EngineeringPlanLadderAction;
-}
-
-export interface EngineeringPlanTimer {
-  timerId: string;
-  name: string;
-  address: string;
-  instruction: "TON";
-  timeBaseMs: 1 | 10 | 100;
-  presetTicks: number;
-  durationMs: number;
-  modeId?: string | null;
-  stepId?: string | null;
-  enableAll: EngineeringPlanSignalCondition[];
-  description: string;
-}
-
-export interface EngineeringPlanSequenceStep {
-  stepId: string;
-  name: string;
-  address: string;
-  completeAll: EngineeringPlanSignalCondition[];
-  description: string;
-}
-
-export interface EngineeringPlanSequence {
-  sequenceId: string;
-  name: string;
-  modeId?: string | null;
-  restartPolicy: "require_start_release" | "continuous";
-  startAll: EngineeringPlanSignalCondition[];
-  resetAll: EngineeringPlanSignalCondition[];
-  steps: EngineeringPlanSequenceStep[];
-}
-
-export interface EngineeringPlanAlarm {
-  alarmId: string;
-  name: string;
-  latchSignalId: string;
-  modeId?: string | null;
-  stepId?: string | null;
-  triggerAll: EngineeringPlanSignalCondition[];
-  affectedOutputSignalIds: string[];
-  description: string;
-}
-
-export interface EngineeringPlanRecoveryRule {
-  recoveryId: string;
-  name: string;
-  whenAll: EngineeringPlanSignalCondition[];
-  resetAlarmIds: string[];
-  resetSequenceIds: string[];
-  description: string;
-}
-
-export interface EngineeringPlanSafetyRule {
-  ruleId: string;
-  name: string;
-  classification: "process_interlock" | "external_safety_boundary";
-  permitWhen?: EngineeringPlanSignalCondition | null;
-  affectedOutputSignalIds: string[];
-  action: "deenergize" | "external_hardware";
-}
-
-export type EngineeringPlanCollectionNotApplicableBasis =
-  | "single_mode_operation"
-  | "no_timing_behavior"
-  | "no_sequence_behavior"
-  | "no_alarm_behavior"
-  | "no_recovery_behavior"
-  | "no_physical_or_hazard_outputs";
-
-export interface EngineeringPlanCollectionScopeDecision {
-  status: "confirmed" | "not_applicable";
-  reason: string;
-  evidence: string[];
-  basis: EngineeringPlanCollectionNotApplicableBasis | null;
-}
-
-export interface EngineeringPlanNativeCollectionScope {
-  ioPoints: EngineeringPlanCollectionScopeDecision;
-  operatingModes: EngineeringPlanCollectionScopeDecision;
-  controlNetworks: EngineeringPlanCollectionScopeDecision;
-  timers: EngineeringPlanCollectionScopeDecision;
-  sequences: EngineeringPlanCollectionScopeDecision;
-  alarms: EngineeringPlanCollectionScopeDecision;
-  recoveryRules: EngineeringPlanCollectionScopeDecision;
-  safetyRules: EngineeringPlanCollectionScopeDecision;
-}
-
-export interface CompiledEngineeringPlanCollectionScopeDecision
-  extends EngineeringPlanCollectionScopeDecision {
-  source: "explicit";
-}
-
-export interface CompiledEngineeringPlanNativeCollectionScope {
-  ioPoints: CompiledEngineeringPlanCollectionScopeDecision;
-  operatingModes: CompiledEngineeringPlanCollectionScopeDecision;
-  controlNetworks: CompiledEngineeringPlanCollectionScopeDecision;
-  timers: CompiledEngineeringPlanCollectionScopeDecision;
-  sequences: CompiledEngineeringPlanCollectionScopeDecision;
-  alarms: CompiledEngineeringPlanCollectionScopeDecision;
-  recoveryRules: CompiledEngineeringPlanCollectionScopeDecision;
-  safetyRules: CompiledEngineeringPlanCollectionScopeDecision;
-}
-
-export interface EngineeringPlanIndexAcceptanceBindings {
-  schemaVersion: "controlstudio-index-acceptance-bindings/v1";
-  signals: Record<string, string>;
-  modes: Record<string, string>;
-  alarms: Record<string, string>;
-  timerId: string;
-}
-
-export interface EngineeringPlanNativeDesign {
-  schemaVersion: "2";
-  collectionScope?: EngineeringPlanNativeCollectionScope;
-  indexAcceptanceBindings?: EngineeringPlanIndexAcceptanceBindings;
-  ioPoints: EngineeringPlanIoPoint[];
-  operatingModes: EngineeringPlanOperatingMode[];
-  controlNetworks: EngineeringPlanControlNetwork[];
-  ladderRungs?: EngineeringPlanLadderRung[];
-  timers: EngineeringPlanTimer[];
-  sequences: EngineeringPlanSequence[];
-  alarms: EngineeringPlanAlarm[];
-  recoveryRules: EngineeringPlanRecoveryRule[];
-  safetyRules: EngineeringPlanSafetyRule[];
-}
-
-export interface EngineeringPlanTechnicalConfiguration {
-  plcSeries: "XGK" | "XGB";
-  cpuModel: string;
-  programName: string;
-  language: "LD";
-  description: string;
-}
-
 export interface EngineeringPlanAttachment {
   sourceId: string;
   title: string;
@@ -2713,8 +1630,6 @@ export interface NewProjectEngineeringPlan {
   summary: string;
   objective: string;
   attachments: EngineeringPlanAttachment[];
-  technicalConfiguration?: EngineeringPlanTechnicalConfiguration | null;
-  design: EngineeringPlanNativeDesign;
   sections: EngineeringPlanSection[];
   openDecisions: EngineeringPlanOpenDecision[];
   completeness: EngineeringPlanCompleteness;

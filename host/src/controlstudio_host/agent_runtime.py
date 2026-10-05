@@ -12,8 +12,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from .api_models import ModelContextV1
+
 TokenCallback = Callable[[str], Awaitable[None]]
 ProgressCallback = Callable[[str, int], Awaitable[None]]
+TranscriptCheckpointCallback = Callable[[dict[str, Any], str], Awaitable[None]]
 MissionCheckpointCallback = Callable[
     [
         dict[str, Any],
@@ -30,9 +33,6 @@ ToolEventCallback = Callable[
     Awaitable[dict[str, Any] | None],
 ]
 ChangePlanCallback = Callable[..., Awaitable[dict[str, Any]]]
-
-MAX_ENGINEERING_AUTONOMOUS_CYCLES = 8
-
 
 @dataclass(frozen=True)
 class AgentOutputValidationIssue:
@@ -104,6 +104,7 @@ class AgentRunOutput:
     engineering_mission: dict[str, Any] | None = None
     digest: str | None = None
     cycle_disposition: Literal["continue", "respond"] | None = None
+    approval_handoff: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,7 @@ class ModelCapabilityResult:
     tool_result_continuation: bool
     structured_output: bool
     message: str
+    model_context: ModelContextV1 | None = None
 
     @classmethod
     def failed(cls, message: str) -> ModelCapabilityResult:
@@ -128,4 +130,5 @@ class ModelCapabilityResult:
             tool_result_continuation=False,
             structured_output=False,
             message=message,
+            model_context=None,
         )

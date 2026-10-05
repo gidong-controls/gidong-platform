@@ -4,6 +4,8 @@ This package contains no private Agent implementation, PLC adapter code,
 approval secret, or raw engineering target identity.
 """
 
+from .native_preflight import validate_native_preflight_diagnostic
+from .program_check_failure import ProgramCheckFailureObservationV1
 from .v1 import (
     AGENT_PROTOCOL_VERSION_V1,
     CONTRACT_VERSION_V1,
@@ -30,6 +32,8 @@ __all__ = [
     "ExternalToolResultV1",
     "MCPProductManifestV1",
     "MCPProductToolContractV1",
+    "ProgramCheckFailureObservationV1",
+    "validate_native_preflight_diagnostic",
     "WorkspaceSourceV1",
     "WorkspaceWorkingCopyV1",
 ]

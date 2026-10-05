@@ -1,12 +1,4 @@
-import { useState } from "react";
-import {
-  getStructuralMnePlan,
-  hasValidChangeExecutionReceipt,
-  hasValidMneNoMutationAbortReceipt,
-  isLegacyChangePlanV1,
-  isMneRungPatchPlan,
-  type StructuralMnePlan,
-} from "../api/changeContracts";
+import { isLegacyChangePlanV1 } from "../api/changeContracts";
 import type {
   ChangeCoverageArea,
   ChangeCoverageItem,
@@ -14,25 +6,11 @@ import type {
   ChangePlanV1,
   ChangeRiskLevel,
   ChangeTransaction,
-  MneFullProgramReplacementChangePlanV2,
-  MneFullProgramValidationStep,
-  MneInstructionBatchPatchCandidateReceipt,
-  MneInstructionBatchPatchChangePlanV5,
-  MneInstructionPatchCandidateReceipt,
-  MneInstructionPatchChangePlanV4,
-  MneProgramReplacementInstruction,
-  MneRungCondition,
-  MneRungPatchCandidateReceipt,
-  MneRungPatchChangePlanV6,
-  MneSeriesGuardCandidateReceipt,
-  MneSeriesGuardPatchChangePlanV3,
   OfflineNativeValidationStep,
 } from "../api/types";
 import { Icon } from "./Icon";
 
-type ChangeValidationStep =
-  | OfflineNativeValidationStep
-  | MneFullProgramValidationStep;
+type ChangeValidationStep = OfflineNativeValidationStep;
 
 const RISK_LABELS: Record<ChangeRiskLevel, string> = {
   low: "낮음",
@@ -89,11 +67,8 @@ interface ChangeApprovalPanelProps {
   transaction: ChangeTransaction;
   busy: boolean;
   notice?: string;
-  mneExecutionReady?: boolean;
-  mneExecutionDetail?: string;
   onApprove: () => void;
   onExecuteApproved: () => void;
-  onFinalizeSimulation?: (decision: "accept" | "revert") => void;
   onReject: () => void;
   onRequestRevision?: () => void;
   onOpenTarget?: () => void;
@@ -161,32 +136,20 @@ function PlanList({
   items: string[];
   warning?: boolean;
 }) {
+  if (items.length === 0) return null;
   return (
     <section className={`change-plan-list ${warning ? "change-warning" : ""}`}>
       <h4>{title}</h4>
-      {items.length > 0 ? (
-        <ul>
-          {items.map((item, index) => (
-            <li key={`${index}:${item}`}>{item}</li>
-          ))}
-        </ul>
-      ) : (
-        <p>없음</p>
-      )}
+      <ul>
+        {items.map((item, index) => (
+          <li key={`${index}:${item}`}>{item}</li>
+        ))}
+      </ul>
     </section>
   );
 }
 
-function targetLabel(
-  structuralMnePlan: StructuralMnePlan | null,
-  legacyPlan: ChangePlanV1 | undefined,
-): string {
-  if (structuralMnePlan) {
-    if (structuralMnePlan.kind === "full_program_replacement") {
-      return `${structuralMnePlan.plan.targetProgram.programName} · ${structuralMnePlan.plan.targetProgram.programId}`;
-    }
-    return `${structuralMnePlan.plan.candidate.programName} / ${structuralMnePlan.plan.candidate.programId}`;
-  }
+function targetLabel(legacyPlan: ChangePlanV1 | undefined): string {
   if (!legacyPlan) {
     return "";
   }
@@ -202,464 +165,10 @@ function targetLabel(
     .join(" · ");
 }
 
-function SeriesGuardPatchReview({
-  plan,
-}: {
-  plan: MneSeriesGuardPatchChangePlanV3;
-}) {
-  const { candidate: receipt } = plan;
-  const { patch } = receipt;
-  return (
-    <section
-      className="change-target-evidence change-series-guard-target"
-      aria-labelledby="change-series-guard-target-title"
-    >
-      <div className="change-verification-heading">
-        <Icon name="evidence" size={18} />
-        <div>
-          <p className="panel-kicker">COMPILED SERIES-GUARD PATCH</p>
-          <h3 id="change-series-guard-target-title">Series guard insertion</h3>
-        </div>
-      </div>
-      <p className="change-series-guard-diff" aria-label="Exact structural diff">
-        <code>+ {patch.guardCommand} {patch.guardOperand}</code>
-        <span>
-          immediately before instruction {patch.outputInstructionIndex + 1}:{" "}
-          <code>OUT {patch.outputOperand}</code>
-        </span>
-      </p>
-      <CandidateDigestDetails
-        receipt={receipt}
-        evidenceId={plan.candidateEvidenceId}
-      />
-      <p>
-        The MCP compiled and the Host bound this candidate. Raw MNE, LD,
-        clipboard data, and private payloads are intentionally not displayed.
-      </p>
-    </section>
-  );
-}
-
-function InstructionPatchReview({
-  plan,
-}: {
-  plan: MneInstructionPatchChangePlanV4;
-}) {
-  const { candidate: receipt } = plan;
-  const { patch } = receipt;
-  const operation = {
-    insert_before: "기준 명령 앞에 1행 삽입",
-    insert_after: "기준 명령 뒤에 1행 삽입",
-    replace: "기준 명령 1행 교체",
-    delete: "기준 명령 1행 삭제",
-  }[patch.operation];
-  const anchorText = instructionText(patch.anchor);
-  const newInstructionText = patch.instruction
-    ? instructionText(patch.instruction)
-    : "";
-  const changedInstruction =
-    patch.operation === "delete"
-      ? "− " + anchorText
-      : patch.operation === "replace"
-        ? "− " + anchorText + " → + " + newInstructionText
-        : "+ " + newInstructionText;
-  return (
-    <section
-      className="change-target-evidence change-series-guard-target"
-      aria-labelledby="change-instruction-patch-title"
-    >
-      <div className="change-verification-heading">
-        <Icon name="evidence" size={18} />
-        <div>
-          <p className="panel-kicker">COMPILED SINGLE-INSTRUCTION PATCH</p>
-          <h3 id="change-instruction-patch-title">{operation}</h3>
-        </div>
-      </div>
-      <p className="change-series-guard-diff" aria-label="Exact structural diff">
-        <span>
-          기준 행 {patch.anchorInstructionIndex + 1}:{" "}
-          <code>{anchorText}</code>
-        </span>
-        <code>{changedInstruction}</code>
-        <span>
-          인접 문맥:{" "}
-          {patch.contextBefore ? instructionText(patch.contextBefore) : "START"}
-          {" → [anchor] → "}
-          {patch.contextAfter ? instructionText(patch.contextAfter) : "END"}
-        </span>
-      </p>
-      <CandidateDigestDetails
-        receipt={receipt}
-        evidenceId={plan.candidateEvidenceId}
-      />
-      <p>
-        The MCP compiled this one-instruction change from the private baseline.
-        Raw MNE, LD, clipboard data, and private payloads are not displayed.
-      </p>
-    </section>
-  );
-}
-
-function InstructionBatchPatchReview({
-  plan,
-}: {
-  plan: MneInstructionBatchPatchChangePlanV5;
-}) {
-  const { candidate: receipt } = plan;
-  return (
-    <section
-      className="change-target-evidence change-series-guard-target"
-      aria-labelledby="change-instruction-batch-patch-title"
-    >
-      <div className="change-verification-heading">
-        <Icon name="evidence" size={18} />
-        <div>
-          <p className="panel-kicker">COMPILED INSTRUCTION BATCH</p>
-          <h3 id="change-instruction-batch-patch-title">
-            관련 명령 {receipt.patches.length}개 변경
-          </h3>
-        </div>
-      </div>
-      <ol className="change-full-program-instructions">
-        {receipt.patches.map((patch) => {
-          const changedInstruction =
-            patch.operation === "delete"
-              ? `- ${instructionText(patch.anchor)}`
-              : patch.operation === "replace"
-                ? `- ${instructionText(patch.anchor)} / + ${instructionText(patch.instruction!)}`
-                : `+ ${instructionText(patch.instruction!)}`;
-          return (
-            <li key={`${patch.anchorInstructionIndex}:${patch.operation}`}>
-              <code>#{patch.anchorInstructionIndex + 1}</code>
-              <strong>{patch.operation}</strong>
-              <code>{changedInstruction}</code>
-              <span>
-                {patch.contextBefore
-                  ? instructionText(patch.contextBefore)
-                  : "START"}
-                {" → [anchor] → "}
-                {patch.contextAfter
-                  ? instructionText(patch.contextAfter)
-                  : "END"}
-              </span>
-            </li>
-          );
-        })}
-      </ol>
-      <CandidateDigestDetails
-        receipt={receipt}
-        evidenceId={plan.candidateEvidenceId}
-      />
-      <p>
-        모든 행은 같은 비공개 기준본에서 컴파일되며 하나의 승인·검증·롤백
-        경계로 처리됩니다. Raw MNE와 LD는 표시하지 않습니다.
-      </p>
-    </section>
-  );
-}
-
-function RungConditionTree({ condition }: { condition: MneRungCondition }) {
-  if (condition.kind === "contact") {
-    return (
-      <code>
-        {condition.state === "off" ? "NOT " : ""}
-        {condition.operand}
-      </code>
-    );
-  }
-  return (
-    <div>
-      <strong>{condition.kind === "all_of" ? "ALL" : "ANY"}</strong>
-      <ul>
-        {condition.terms.map((term, index) => (
-          <li key={`${condition.kind}:${index}`}>
-            <RungConditionTree condition={term} />
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function RungPatchReview({
-  plan,
-}: {
-  plan: MneRungPatchChangePlanV6;
-}) {
-  const { candidate: receipt } = plan;
-  const { patch: rawPatch } = receipt;
-  const operationTitle = {
-    insert_before: `${instructionText(rawPatch.anchor)} 앞 완전 rung 삽입`,
-    replace_condition: `${instructionText(rawPatch.anchor)} 공유 rung 조건 교체`,
-    replace_rung: `${instructionText(rawPatch.anchor)} 완전 rung 교체`,
-    delete: `${instructionText(rawPatch.anchor)} 포함 완전 rung 삭제`,
-  }[rawPatch.operation];
-  const operationDetail =
-    rawPatch.operation === "insert_before"
-      ? `삽입 위치 #${rawPatch.anchor.index + 1} 앞 · ${receipt.targetInstructionCount - receipt.baselineInstructionCount}행 추가`
-      : rawPatch.operation === "delete"
-        ? `삭제 범위 #${rawPatch.anchorRung!.startInstructionIndex + 1}–#${rawPatch.anchorRung!.startInstructionIndex + rawPatch.anchorRung!.conditionInstructionCount + rawPatch.anchorRung!.actionInstructionCount} · rung 전체`
-        : rawPatch.operation === "replace_rung"
-          ? `교체 범위 #${rawPatch.anchorRung!.startInstructionIndex + 1}–#${rawPatch.anchorRung!.startInstructionIndex + rawPatch.anchorRung!.conditionInstructionCount + rawPatch.anchorRung!.actionInstructionCount} · 조건과 공유 action 전체`
-          : `기존 조건 #${rawPatch.anchorRung!.startInstructionIndex + 1}–#${rawPatch.anchorRung!.startInstructionIndex + rawPatch.anchorRung!.conditionInstructionCount} · 공유 action ${rawPatch.anchorRung!.actionInstructionCount}개 유지`;
-  return (
-    <section
-      className="change-target-evidence change-series-guard-target"
-      aria-labelledby="change-rung-patch-title"
-    >
-      <div className="change-verification-heading">
-        <Icon name="evidence" size={18} />
-        <div>
-          <p className="panel-kicker">COMPILED COMPLETE RUNG PATCH</p>
-          <h3 id="change-rung-patch-title">{operationTitle}</h3>
-        </div>
-      </div>
-      <p>{operationDetail}</p>
-      <div className="change-values">
-        <section className="change-plan-list">
-          <h4>{rawPatch.operation === "delete" ? "삭제할 rung" : "현재 위치"}</h4>
-          {rawPatch.anchorRung ? (
-            <>
-              <RungConditionTree condition={rawPatch.anchorRung.condition} />
-              <ol>
-                {rawPatch.anchorRung.actions.map((action) => (
-                  <li key={action.instructionDigest}>
-                    <code>{instructionText(action)}</code>
-                  </li>
-                ))}
-              </ol>
-            </>
-          ) : (
-            <p>없음 — 최종 END 앞에 삽입</p>
-          )}
-        </section>
-        <span className="change-arrow" aria-hidden="true">
-          <Icon name="arrow" size={20} />
-        </span>
-        <section className="change-plan-list">
-          <h4>
-            {rawPatch.operation === "insert_before"
-              ? "삽입할 rung"
-              : rawPatch.operation === "delete"
-                ? "삭제 후"
-                : "교체 후 rung"}
-          </h4>
-          {rawPatch.targetRung ? (
-            <>
-              <RungConditionTree condition={rawPatch.targetRung.condition} />
-              <ol>
-                {rawPatch.targetRung.actions.map((action, index) => (
-                  <li key={`${action.command}:${action.operand ?? ""}:${index}`}>
-                    <code>{instructionText(action)}</code>
-                  </li>
-                ))}
-              </ol>
-            </>
-          ) : (
-            <p>없음 — rung 전체 삭제</p>
-          )}
-        </section>
-      </div>
-      <p>
-        Baseline rung digest: <code>{rawPatch.anchorRung?.rungDigest ?? "none"}</code>
-      </p>
-      <CandidateDigestDetails
-        receipt={receipt}
-        evidenceId={plan.candidateEvidenceId}
-      />
-      {plan.verificationScope === "offline_native_reopen_xgsim" && receipt.simulationProfile && (
-        <section className="change-verification-boundary">
-          <h4>저장 후 XG-SIM 검증 프로필</h4>
-          <p>아래 입력과 예상 관찰값을 XG-SIM에서 순서대로 확인합니다. 물리 PLC에는 연결하거나 쓰지 않습니다.</p>
-          {"scenario" in receipt.simulationProfile ? (
-            <ol className="change-plan-list">
-              {receipt.simulationProfile.scenario.steps.map((step, index) => (
-                <li key={`${index}:${step.name}`}>
-                  <strong>{step.name}</strong>
-                  {!!step.hold_ms && <p>입력을 그대로 유지하며 {step.hold_ms / 1000}초 동안 예상 상태를 반복 확인합니다.</p>}
-                  <dl>
-                    <div><dt>입력</dt><dd><code>{Object.entries(step.drive).map(([key, value]) => `${key}=${value}`).join(", ")}</code></dd></div>
-                    <div><dt>예상 관찰값</dt><dd><code>{Object.entries(step.observe).map(([key, value]) => `${key}=${value}`).join(", ")}</code></dd></div>
-                  </dl>
-                </li>
-              ))}
-            </ol>
-          ) : (
-            <dl>
-              <div><dt>정상 입력</dt><dd><code>{Object.entries(receipt.simulationProfile.normal_assignments).map(([key, value]) => `${key}=${value}`).join(", ")}</code></dd></div>
-              <div><dt>차단 입력</dt><dd><code>{Object.entries(receipt.simulationProfile.deny_assignments).map(([key, value]) => `${key}=${value}`).join(", ")}</code></dd></div>
-            </dl>
-          )}
-          <dl>
-            <div><dt>관찰 OUT</dt><dd><code>{receipt.simulationProfile.output_addresses.join(", ")}</code></dd></div>
-            <div><dt>프로필 digest</dt><dd><code>{receipt.simulationProfile.profile_digest}</code></dd></div>
-          </dl>
-        </section>
-      )}
-      <p>
-        조건 AST 전체와 action, baseline slice가 후보 digest에 묶입니다. Raw MNE와
-        LD는 MCP 내부 기준본에만 남습니다.
-      </p>
-    </section>
-  );
-}
-
-function FullProgramTargetReview({
-  plan,
-}: {
-  plan: MneFullProgramReplacementChangePlanV2;
-}) {
-  return (
-    <section
-      className="change-target-evidence change-full-program-target"
-      aria-labelledby="change-full-program-target-title"
-    >
-      <div className="change-verification-heading">
-        <Icon name="evidence" size={18} />
-        <div>
-          <p className="panel-kicker">TYPED FULL-PROGRAM TARGET</p>
-          <h3 id="change-full-program-target-title">전체 프로그램 교체 설계</h3>
-        </div>
-      </div>
-      <dl>
-        <div>
-          <dt>프로그램 이름</dt>
-          <dd>{plan.targetProgram.programName}</dd>
-        </div>
-        <div>
-          <dt>프로그램 ID</dt>
-          <dd>
-            <code>{plan.targetProgram.programId}</code>
-          </dd>
-        </div>
-        <div>
-          <dt>명령 수</dt>
-          <dd>{plan.targetProgram.instructionCount.toLocaleString("ko-KR")}</dd>
-        </div>
-        <div>
-          <dt>설계 digest</dt>
-          <dd>
-            <code>{plan.targetProgram.designDigest}</code>
-          </dd>
-        </div>
-        <div>
-          <dt>대상 프로그램 digest</dt>
-          <dd>
-            <code>{plan.targetProgram.targetProgramDigest}</code>
-          </dd>
-        </div>
-        <div>
-          <dt>승인된 프로젝트 기준</dt>
-          <dd>
-            <code>{plan.baselineBinding.projectSha256.slice(0, 12)}…</code>
-          </dd>
-        </div>
-        <div>
-          <dt>승인된 LD 원본 기준</dt>
-          <dd>
-            <code>{plan.baselineBinding.ldPayloadSha256.slice(0, 12)}…</code>
-          </dd>
-        </div>
-        {plan.baselineBinding.ldCanonicalSha256 && (
-          <div>
-            <dt>승인된 LD 의미 기준</dt>
-            <dd><code>{plan.baselineBinding.ldCanonicalSha256.slice(0, 12)}…</code></dd>
-          </div>
-        )}
-      </dl>
-      <details className="change-full-program-instructions" open>
-        <summary>
-          순서가 고정된 전체 typed instruction ·{" "}
-          {plan.targetProgram.instructionCount.toLocaleString("ko-KR")}개
-        </summary>
-        <ol>
-          {plan.targetProgram.instructions.map((instruction, index) => (
-            <li key={index} value={index + 1}>
-              <code>{instruction.command}</code>
-              {instruction.operand !== null && <span>{instruction.operand}</span>}
-            </li>
-          ))}
-        </ol>
-      </details>
-      <p>
-        화면에는 Host가 검증한 typed 명령과 digest만 표시합니다. 원본 MNE/LD,
-        클립보드 자료와 로컬 경로는 표시하지 않습니다.
-      </p>
-    </section>
-  );
-}
-
 function objectValue(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
-}
-
-function hasProvenNoMutationAbortRecovery(transaction: ChangeTransaction): boolean {
-  return hasValidMneNoMutationAbortReceipt(transaction);
-}
-
-type MneSimulationExpectedPhase = {
-  name: string;
-  expected: number | Record<string, 0 | 1>;
-};
-
-function expectedMneSimulationPhases(
-  profile: MneRungPatchCandidateReceipt["simulationProfile"] | null | undefined,
-): MneSimulationExpectedPhase[] {
-  if (profile && "scenario" in profile) {
-    return profile.scenario.steps.map((step) => ({
-      name: step.name,
-      expected: step.observe,
-    }));
-  }
-  return [
-    { name: "normal", expected: 1 },
-    { name: "deny", expected: 0 },
-    { name: "restore", expected: 1 },
-  ];
-}
-
-function matchesMneSimulationExpectation(
-  actual: unknown,
-  expected: number | Record<string, 0 | 1>,
-): boolean {
-  if (typeof expected === "number") return actual === expected;
-  const actualValues = objectValue(actual);
-  const expectedEntries = Object.entries(expected);
-  return Boolean(
-    actualValues &&
-      Object.keys(actualValues).length === expectedEntries.length &&
-      expectedEntries.every(([address, bit]) => actualValues[address] === bit),
-  );
-}
-
-function isObservingMneSimulationReceipt(
-  receipt: Record<string, unknown> | undefined,
-  profile: MneRungPatchCandidateReceipt["simulationProfile"] | null | undefined,
-): boolean {
-  const stop = objectValue(receipt?.stop);
-  const restore = receipt?.restore;
-  const observation = objectValue(receipt?.observation);
-  const phases = observation?.observations;
-  const expectedPhases = expectedMneSimulationPhases(profile);
-  return Boolean(
-    receipt?.schema === "controlstudio-mne-rung-xgsim-receipt/v1" &&
-      receipt.controller_connected === false &&
-      receipt.plc_write_performed === false &&
-      stop?.ok === true &&
-      stop.verified === true &&
-      Array.isArray(restore) && restore.length > 0 &&
-      restore.every((item) => objectValue(item)?.matched === true) &&
-      Array.isArray(phases) && phases.length === expectedPhases.length &&
-      phases.every((item, index) => {
-        const phase = objectValue(item);
-        const expected = expectedPhases[index];
-        return phase?.phase === expected.name &&
-          matchesMneSimulationExpectation(phase.expected, expected.expected) &&
-          phase.matched === true;
-      }),
-  );
 }
 
 function stringList(value: unknown): string[] {
@@ -697,43 +206,6 @@ function semanticsLabel(value: unknown): string {
   return [semantics.kind, semantics.device, semantics.action, semantics.contact]
     .filter((item): item is string => typeof item === "string")
     .join(" · ");
-}
-
-function instructionText(
-  instruction: Pick<MneProgramReplacementInstruction, "command" | "operand">,
-): string {
-  return instruction.operand
-    ? instruction.command + " " + instruction.operand
-    : instruction.command;
-}
-
-function CandidateDigestDetails({
-  receipt,
-  evidenceId,
-}: {
-  receipt:
-    | MneSeriesGuardCandidateReceipt
-    | MneInstructionPatchCandidateReceipt
-    | MneInstructionBatchPatchCandidateReceipt
-    | MneRungPatchCandidateReceipt;
-  evidenceId: string;
-}) {
-  return (
-    <dl>
-      <div><dt>Program</dt><dd>{receipt.programName}</dd></div>
-      <div><dt>Program ID</dt><dd><code>{receipt.programId}</code></dd></div>
-      <div><dt>Project digest</dt><dd><code>{receipt.projectSha256}</code></dd></div>
-      <div><dt>Instruction count</dt><dd>{receipt.baselineInstructionCount} → {receipt.targetInstructionCount}</dd></div>
-      <div><dt>Baseline MNE digest</dt><dd><code>{receipt.baselineMneSha256}</code></dd></div>
-      <div><dt>Baseline LD digest</dt><dd><code>{receipt.baselineLdSha256}</code></dd></div>
-      {receipt.baselineLdCanonicalSha256 && <div><dt>Baseline LD canonical digest</dt><dd><code>{receipt.baselineLdCanonicalSha256}</code></dd></div>}
-      <div><dt>Target MNE digest</dt><dd><code>{receipt.targetMneSha256}</code></dd></div>
-      <div><dt>Target program digest</dt><dd><code>{receipt.targetProgramDigest}</code></dd></div>
-      <div><dt>Design digest</dt><dd><code>{receipt.designDigest}</code></dd></div>
-      <div><dt>Candidate digest</dt><dd><code>{receipt.candidateDigest}</code></dd></div>
-      <div><dt>Candidate evidence ID</dt><dd><code>{evidenceId}</code></dd></div>
-    </dl>
-  );
 }
 
 function observedItems(value: unknown): Record<string, unknown>[] {
@@ -949,79 +421,7 @@ function TargetEvidenceReview({ plan }: { plan: ChangePlanV1 }) {
   );
 }
 
-const MNE_MUST_BE_CONFIRMED = new Set<ChangeCoverageArea>([
-  "target_identity",
-  "value_semantics",
-  "direct_impact",
-  "indirect_impact",
-  "safety",
-  "validation",
-  "rollback",
-]);
-
-function hasExecutableMneContract(
-  plan:
-    | MneFullProgramReplacementChangePlanV2
-    | MneSeriesGuardPatchChangePlanV3
-    | MneInstructionPatchChangePlanV4
-    | MneInstructionBatchPatchChangePlanV5
-    | MneRungPatchChangePlanV6,
-): boolean {
-  const compilerCandidate = plan.planKind !== "mne_full_program_replacement";
-  const coverageByArea = new Map(
-    plan.coverage.map((item) => [item.area, item]),
-  );
-  // Stored plans predate the chat request boundary and may legitimately use
-  // either request scope with check-only or reopen verification. Keep those
-  // approval/recovery paths executable; only a new XG-SIM plan is
-  // candidate-scoped. SendMessage enforces the narrower new-chat matrix.
-  const supportedCheckOnly =
-    plan.verificationScope === "offline_native_check_only" &&
-    plan.validation.join("\u0000") ===
-      ["structural_diff", "xg5000_program_check", "project_save"].join(
-        "\u0000",
-      );
-  const supportedReopen =
-    (plan.verificationScope === "offline_native_reopen" ||
-      (plan.requestScope === "offline_candidate_revision" &&
-        isMneRungPatchPlan(plan) &&
-        plan.verificationScope === "offline_native_reopen_xgsim" &&
-        plan.candidate.simulationProfile !== null)) &&
-    plan.validation.join("\u0000") ===
-      [
-        "structural_diff",
-        "xg5000_program_check",
-        "project_save",
-        "project_reopen",
-      ].join("\u0000");
-  return (
-    (supportedCheckOnly || supportedReopen) &&
-    plan.blockingUnknowns.length === 0 &&
-    // `getStructuralMnePlan` already applies the shared candidate receipt
-    // validator: its compiler-backed variants require the exact two
-    // evidence-bound coverage rows. Full replacement remains the only path
-    // that requires all ten investigation areas here.
-    (compilerCandidate ||
-      (coverageByArea.size === REQUIRED_COVERAGE_AREAS.length &&
-        REQUIRED_COVERAGE_AREAS.every((area) => {
-          const item = coverageByArea.get(area);
-          return Boolean(
-            item &&
-              item.status !== "unknown_blocking" &&
-              (!MNE_MUST_BE_CONFIRMED.has(area) || item.status === "confirmed") &&
-              (item.status !== "confirmed" || item.evidenceRefs.length > 0),
-          );
-        })))
-  );
-}
-
-function hasExecutableChangeContract(
-  structuralMnePlan: StructuralMnePlan | null,
-  legacyPlan: ChangePlanV1 | undefined,
-): boolean {
-  if (structuralMnePlan) {
-    return hasExecutableMneContract(structuralMnePlan.plan);
-  }
+function hasExecutableChangeContract(legacyPlan: ChangePlanV1 | undefined): boolean {
   if (!legacyPlan) {
     return false;
   }
@@ -1184,11 +584,9 @@ function hasExecutableChangeContract(
 
 function CoverageReview({
   items,
-  compilerCandidate = false,
   onOpenEvidence,
 }: {
   items: ChangeCoverageItem[];
-  compilerCandidate?: boolean;
   onOpenEvidence?: () => void;
 }) {
   if (items.length === 0) {
@@ -1213,9 +611,7 @@ function CoverageReview({
           <h3 id="change-coverage-title">영향 조사 완전성</h3>
         </div>
         <strong>
-          {compilerCandidate
-            ? `필수 2개 · 기록 ${items.length}개`
-            : `${items.length}/10 영역`}
+          {`검토한 영역 ${items.length}개`}
         </strong>
       </div>
       <ul>
@@ -1246,314 +642,12 @@ function CoverageReview({
   );
 }
 
-function hasObjectField(value: unknown, field: string): boolean {
-  return Boolean(
-    value &&
-      typeof value === "object" &&
-      !Array.isArray(value) &&
-      field in value,
-  );
-}
-
-interface MneReceiptBundle {
-  application?: Record<string, unknown>;
-  verification?: Record<string, unknown>;
-  rollback?: Record<string, unknown>;
-  reopen?: Record<string, unknown>;
-}
-
-function mneReceiptBundle(transaction: ChangeTransaction): MneReceiptBundle {
-  const applyEvidence = objectValue(transaction.result.apply);
-  const verificationEvidence = objectValue(transaction.result.verification);
-  const reconciliation = objectValue(transaction.result.reconciliation);
-  const simulationFinalization = objectValue(
-    transaction.result.simulation_finalization,
-  );
-  const verification =
-    objectValue(verificationEvidence?.verification) ??
-    objectValue(reconciliation?.verification);
-  const rollback =
-    objectValue(simulationFinalization?.rollback) ??
-    objectValue(verificationEvidence?.rollback) ??
-    objectValue(reconciliation?.rollback);
-  return {
-    application: objectValue(applyEvidence?.application),
-    verification,
-    rollback,
-    reopen: objectValue((rollback ?? verification)?.reopen),
-  };
-}
-
-function safeDigest(value: unknown): string | undefined {
-  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value)
-    ? value
-    : undefined;
-}
-
-function ReceiptBoolean({
-  label,
-  value,
-}: {
-  label: string;
-  value: unknown;
-}) {
-  if (typeof value !== "boolean") {
-    return null;
-  }
-  return (
-    <div>
-      <dt>{label}</dt>
-      <dd>{value ? "검증됨" : "검증되지 않음"}</dd>
-    </div>
-  );
-}
-
-function ReceiptDigest({
-  label,
-  value,
-}: {
-  label: string;
-  value: unknown;
-}) {
-  const digest = safeDigest(value);
-  if (!digest) {
-    return null;
-  }
-  return (
-    <div>
-      <dt>{label}</dt>
-      <dd>
-        <code>{digest}</code>
-      </dd>
-    </div>
-  );
-}
-
-function MneReceiptReview({ transaction }: { transaction: ChangeTransaction }) {
-  const { application, verification, rollback, reopen } =
-    mneReceiptBundle(transaction);
-  if (!application && !verification && !rollback) {
-    return null;
-  }
-  const programId = [rollback, verification, reopen, application]
-    .map((receipt) => receipt?.program_id)
-    .find((value): value is string => typeof value === "string");
-  const programName = [rollback, verification, reopen, application]
-    .map((receipt) => receipt?.program_name)
-    .find((value): value is string => typeof value === "string");
-  return (
-    <section
-      className="change-mne-receipts"
-      aria-labelledby="change-mne-receipts-title"
-    >
-      <h4 id="change-mne-receipts-title">전체 프로그램 검증 receipt</h4>
-      {(programId || programName) && (
-        <p>
-          {programName ?? "이름 미확인"} · <code>{programId ?? "ID 미확인"}</code>
-        </p>
-      )}
-      <dl>
-        {application && (
-          <>
-            <ReceiptBoolean
-              label="편집기 exact readback"
-              value={application.verified_in_editor}
-            />
-            <ReceiptDigest
-              label="Application receipt digest"
-              value={application.application_digest}
-            />
-          </>
-        )}
-        {verification && (
-          <>
-            <ReceiptBoolean label="최종 검증" value={verification.verified} />
-            <ReceiptBoolean
-              label="XG5000 Program Check"
-              value={verification.program_check_verified}
-            />
-            <ReceiptBoolean
-              label="프로젝트 저장"
-              value={verification.save_verified}
-            />
-            <ReceiptDigest
-              label="Verification receipt digest"
-              value={verification.verification_digest}
-            />
-          </>
-        )}
-        {rollback && (
-          <>
-            <ReceiptBoolean label="Rollback 검증" value={rollback.verified} />
-            <ReceiptBoolean
-              label="Raw LD exact equality"
-              value={rollback.ld_raw_equal}
-            />
-            <ReceiptBoolean
-              label="Canonical LD equality"
-              value={rollback.ld_canonical_equal}
-            />
-            <ReceiptBoolean
-              label="Rollback Program Check"
-              value={rollback.program_check_verified}
-            />
-            <ReceiptBoolean
-              label="Rollback 저장"
-              value={rollback.save_verified}
-            />
-            <ReceiptDigest
-              label="Rollback receipt digest"
-              value={rollback.rollback_digest}
-            />
-          </>
-        )}
-        {reopen && (
-          <>
-            <ReceiptBoolean label="독립 재열기" value={reopen.verified} />
-            <ReceiptBoolean
-              label="별도 XG5000 프로세스"
-              value={reopen.process_is_independent}
-            />
-            <ReceiptBoolean
-              label="Stable readback"
-              value={reopen.stable_readback}
-            />
-            <ReceiptBoolean
-              label="재열기 LD raw equality"
-              value={reopen.ld_raw_equal}
-            />
-            <ReceiptDigest
-              label="재열기 프로젝트 digest"
-              value={reopen.project_sha256}
-            />
-          </>
-        )}
-      </dl>
-      <p>
-        이 화면은 검증 상태와 digest만 표시하며 receipt의 경로, raw MNE/LD 및
-        비공개 payload는 표시하지 않습니다.
-      </p>
-    </section>
-  );
-}
-
-function executionReceiptChecks(
-  transaction: ChangeTransaction,
-  structuralMnePlan: StructuralMnePlan | null,
-) {
-  if (structuralMnePlan) {
-    const { application, verification, rollback, reopen } =
-      mneReceiptBundle(transaction);
-    const finalReceipt = rollback ?? verification;
-    const checkOnlyCompletion =
-      transaction.state === "completed" &&
-      transaction.plan.verificationScope === "offline_native_check_only";
-    return [
-      {
-        label:
-          structuralMnePlan.kind === "series_guard_patch"
-            ? "Series-guard structural readback"
-            : structuralMnePlan.kind === "rung_patch"
-              ? "Complete-rung structural readback"
-              : structuralMnePlan.kind === "instruction_batch_patch"
-                ? "Instruction-batch structural readback"
-                : structuralMnePlan.kind === "instruction_patch"
-                  ? "Single-instruction structural readback"
-                  : "Typed full-program structural readback",
-        passed:
-          finalReceipt?.verified === true &&
-          (rollback
-            ? rollback.ld_canonical_equal === true
-            : application?.verified_in_editor === true),
-      },
-      {
-        label: "XG5000 Program Check",
-        passed: finalReceipt?.program_check_verified === true,
-      },
-      {
-        label: "오프라인 작업 복사본 저장",
-        passed: finalReceipt?.save_verified === true,
-      },
-      ...(checkOnlyCompletion
-        ? [
-            {
-              label: "Check-only 범위 · 독립 재열기 미실행",
-              passed: verification?.reopen === null,
-            },
-          ]
-        : [
-            {
-              label: "독립 프로세스 재열기와 stable readback",
-              passed:
-                reopen?.verified === true &&
-                reopen.process_is_independent === true &&
-                reopen.stable_readback === true &&
-                safeDigest(reopen.ld_canonical_sha256) !== undefined,
-            },
-          ]),
-    ];
-  }
-  const result = transaction.result;
-  const verification = objectValue(result.verification) ?? {};
-  const checkOnlyCompletion =
-    transaction.state === "completed" &&
-    transaction.plan.verificationScope === "offline_native_check_only";
-  return [
-    {
-      label: "승인된 피연산자 적용 증거",
-      passed:
-        hasObjectField(result, "apply") ||
-        result.structuralDiffVerified === true,
-    },
-    {
-      label: "네이티브 구조 diff",
-      passed:
-        hasObjectField(verification, "diff") ||
-        result.structuralDiffVerified === true,
-    },
-    {
-      label: "XG5000 프로그램 검사",
-      passed:
-        hasObjectField(verification, "validation") ||
-        result.programCheckPassed === true,
-    },
-    {
-      label: "오프라인 작업 복사본 저장",
-      passed:
-        hasObjectField(verification, "save") ||
-        result.projectSaved === true,
-    },
-    ...(checkOnlyCompletion
-      ? [
-          {
-            label: "Check-only 범위 · 독립 재열기 미실행",
-            passed:
-              !hasObjectField(verification, "fresh_reopen") &&
-              !hasObjectField(verification, "fresh_reopen_attach") &&
-              Array.isArray(verification.not_executed) &&
-              verification.not_executed.includes("project_reopen"),
-          },
-        ]
-      : [
-          {
-            label: "새 XG5000 프로세스 재열기와 LD P0021 readback",
-            passed:
-              hasObjectField(verification, "fresh_reopen") &&
-              hasObjectField(verification, "fresh_reopen_attach"),
-          },
-        ]),
-  ];
-}
-
 export function ChangeApprovalPanel({
   transaction,
   busy,
   notice,
-  mneExecutionReady = true,
-  mneExecutionDetail,
   onApprove,
   onExecuteApproved,
-  onFinalizeSimulation,
   onReject,
   onRequestRevision,
   onOpenTarget,
@@ -1561,29 +655,8 @@ export function ChangeApprovalPanel({
   onRefresh,
   onDismiss,
 }: ChangeApprovalPanelProps) {
-  const [receiptBoundaryAcknowledged, setReceiptBoundaryAcknowledged] =
-    useState(false);
-  const structuralMnePlan = getStructuralMnePlan(transaction.plan);
-  const mnePlan = structuralMnePlan?.kind === "full_program_replacement"
-    ? structuralMnePlan.plan
-    : undefined;
-  const seriesGuardPlan = structuralMnePlan?.kind === "series_guard_patch"
-    ? structuralMnePlan.plan
-    : undefined;
-  const instructionPatchPlan = structuralMnePlan?.kind === "instruction_patch"
-    ? structuralMnePlan.plan
-    : undefined;
-  const instructionBatchPatchPlan =
-    structuralMnePlan?.kind === "instruction_batch_patch"
-      ? structuralMnePlan.plan
-    : undefined;
-  const rungPatchPlan = structuralMnePlan?.kind === "rung_patch"
-    ? structuralMnePlan.plan
-    : undefined;
-  const legacyPlan = !structuralMnePlan && isLegacyChangePlanV1(transaction.plan)
-    ? transaction.plan
-    : undefined;
-  if (!structuralMnePlan && !legacyPlan) {
+  const legacyPlan = isLegacyChangePlanV1(transaction.plan) ? transaction.plan : undefined;
+  if (!legacyPlan) {
     return (
       <section
         className="change-approval"
@@ -1635,46 +708,10 @@ export function ChangeApprovalPanel({
     /^[a-z0-9_.-]{1,120}$/i.test(transaction.errorCode)
       ? transaction.errorCode
       : "unknown";
-  const compilerCandidate = Boolean(
-    structuralMnePlan && structuralMnePlan.kind !== "full_program_replacement",
-  );
-  const xgSimScenarioStepCount =
-    rungPatchPlan?.candidate.simulationProfile &&
-    "scenario" in rungPatchPlan.candidate.simulationProfile
-      ? rungPatchPlan.candidate.simulationProfile.scenario.steps.length
-      : null;
-  const contractReady = hasExecutableChangeContract(
-    structuralMnePlan,
-    legacyPlan,
-  );
+  const contractReady = hasExecutableChangeContract(legacyPlan);
   const canExecuteApproved = transaction.state === "approved";
-  const simulationReceipt = objectValue(
-    objectValue(transaction.result.verification)?.simulation_receipt,
-  );
-  const simulationReceiptDigest =
-    typeof simulationReceipt?.receipt_digest === "string" &&
-    /^[0-9a-f]{64}$/.test(simulationReceipt.receipt_digest)
-      ? simulationReceipt.receipt_digest
-      : null;
-  const observingSimulation =
-    transaction.state === "observing" &&
-    simulationReceiptDigest !== null &&
-    isObservingMneSimulationReceipt(
-      simulationReceipt,
-      rungPatchPlan?.candidate.simulationProfile,
-  );
   const terminal = TERMINAL_CHANGE_STATES.has(transaction.state);
-  const provenNoMutationAbortRecovery =
-    hasProvenNoMutationAbortRecovery(transaction);
-  const successfulOfflineReceipt =
-    !provenNoMutationAbortRecovery &&
-    hasValidChangeExecutionReceipt(transaction);
-  const invalidSuccessfulTerminalReceipt =
-    (transaction.state === "completed" || transaction.state === "rolled_back") &&
-    !provenNoMutationAbortRecovery &&
-    !successfulOfflineReceipt;
-  const receiptChecks = executionReceiptChecks(transaction, structuralMnePlan);
-  const target = targetLabel(structuralMnePlan, legacyPlan);
+  const target = targetLabel(legacyPlan);
   const expiresAt = new Date(transaction.approvalExpiresAt);
   const expiryText = Number.isNaN(expiresAt.getTime())
     ? transaction.approvalExpiresAt
@@ -1719,88 +756,14 @@ export function ChangeApprovalPanel({
               ? "사용자가 명시한 작업 사본 수정 요청 · 1회 권한으로 구조 diff·Program Check·저장 실행 · 별도 승인 대기 없음"
               : "이전 계약 형식 · 실행 전 재검증 필요"}
         </span>
-        {rungPatchPlan ? (
-          <span>
-            {rungPatchPlan.candidate.patch.operation === "insert_before"
-              ? "선택한 rung 앞에 승인된 완전 rung을 삽입합니다."
-              : rungPatchPlan.candidate.patch.operation === "replace_rung"
-                ? "조건과 공유 action 그룹 전체를 같은 위치에서 교체합니다."
-                : rungPatchPlan.candidate.patch.operation === "delete"
-                ? "선택한 공유 action 그룹을 포함한 완전 rung을 삭제합니다."
-                : "선택한 공유 action 그룹은 보존하고 Boolean 조건 전체를 교체합니다."} 동일
-            baseline 재컴파일·구조 readback·Program Check·저장
-            {checkOnlyPlan ? "으로 검증합니다." : "·독립 재열기로 검증합니다."}
-          </span>
-        ) : instructionBatchPatchPlan ? (
-          <span>
-            같은 비공개 기준본에서 컴파일된 관련 명령 2–16개를 한 번의
-            {directCheckOnlyPlan ? "구조" : "승인·구조"} readback·Program
-            Check·저장
-            {checkOnlyPlan ? "으로 검증합니다." : "·독립 재열기로 검증합니다."}
-          </span>
-        ) : instructionPatchPlan ? (
-          <span>
-            비공개 기준본에서 유일하게 찾은 명령을 기준으로 한 행만 삽입·교체·삭제하고
-            구조 readback·Program Check·저장
-            {checkOnlyPlan ? "까지 확인합니다." : "·독립 프로세스 재열기까지 확인합니다."}
-          </span>
-        ) : seriesGuardPlan ? (
-          <span>
-            승인된 단일 OUT 바로 앞에 컴파일된 접점 1행만 삽입하고 구조
-            readback·Program Check·저장
-            {checkOnlyPlan ? "까지 확인합니다." : "·독립 프로세스 재열기까지 확인합니다."}
-          </span>
-        ) : mnePlan ? (
-          <span>
-            지정된 프로그램 전체를 typed instruction 설계로 교체하고 구조
-            readback·Program Check·저장
-            {checkOnlyPlan ? "까지 확인합니다." : "·독립 프로세스 재열기까지 확인합니다."}
-          </span>
-        ) : (
-          <span>
-            XG5000 오프라인 작업 복사본의 정확한 피연산자 1개를 변경하고
-            구조 diff·프로그램 검사·저장까지 확인합니다.
-          </span>
-        )}
-        <span>
-          {rungPatchPlan?.verificationScope === "offline_native_reopen_xgsim"
-            ? xgSimScenarioStepCount !== null
-              ? `컴파일된 XG-SIM ${xgSimScenarioStepCount}단계 관찰 뒤 CPU 정지·입력 원복을 확인하고, 사용자가 Keep/Revert를 선택합니다. PLC 연결·쓰기는 포함되지 않습니다.`
-              : "컴파일된 XG-SIM normal→deny→restore 관찰 뒤 CPU 정지·입력 원복을 확인하고, 사용자가 Keep/Revert를 선택합니다. PLC 연결·쓰기는 포함되지 않습니다."
-            : "XG-SIM 시험, 실제 PLC readback, 런중 수정과 설비 동작 검증은 이 실행에 포함되지 않습니다."}
-        </span>
+        <span>XG5000 오프라인 작업 복사본의 정확한 피연산자 1개를 변경하고 구조 diff·프로그램 검사·저장으로 확인합니다.</span>
       </div>
-
-      {mnePlan ? (
-        <FullProgramTargetReview plan={mnePlan} />
-      ) : rungPatchPlan ? (
-        <RungPatchReview plan={rungPatchPlan} />
-      ) : seriesGuardPlan ? (
-        <SeriesGuardPatchReview plan={seriesGuardPlan} />
-      ) : instructionBatchPatchPlan ? (
-        <InstructionBatchPatchReview plan={instructionBatchPatchPlan} />
-      ) : instructionPatchPlan ? (
-        <InstructionPatchReview plan={instructionPatchPlan} />
-      ) : legacyPlan ? (
-        <>
-          <TargetEvidenceReview plan={legacyPlan} />
-          <div className="change-values">
-            <ValueTable
-              title="현재"
-              values={legacyPlan.current}
-              tone="current"
-            />
-            <span className="change-arrow" aria-hidden="true">
-              <Icon name="arrow" size={20} />
-            </span>
-            <ValueTable
-              title="제안"
-              values={legacyPlan.proposed}
-              tone="proposed"
-            />
-          </div>
-        </>
-      ) : null}
+      <TargetEvidenceReview plan={legacyPlan} />
+      <div className="change-values">
+        <ValueTable title="현재" values={legacyPlan.current} tone="current" />
+        <span className="change-arrow" aria-hidden="true"><Icon name="arrow" size={20} /></span>
+        <ValueTable title="제안" values={legacyPlan.proposed} tone="proposed" />
+      </div>
 
       <div className="change-plan-grid">
         <PlanList title="예상 영향" items={transaction.plan.impact} />
@@ -1822,7 +785,6 @@ export function ChangeApprovalPanel({
 
       <CoverageReview
         items={transaction.plan.coverage ?? []}
-        compilerCandidate={compilerCandidate}
         onOpenEvidence={onOpenEvidence}
       />
 
@@ -1849,8 +811,8 @@ export function ChangeApprovalPanel({
         <div className="change-verification-heading">
           <Icon name="shield" size={18} />
           <div>
-            <p className="panel-kicker">VERIFICATION RESPONSIBILITY</p>
-            <h3 id="change-verification-boundary-title">검증 책임 범위</h3>
+            <p className="panel-kicker">VERIFICATION</p>
+            <h3 id="change-verification-boundary-title">확인 항목</h3>
           </div>
         </div>
         <div className="change-verification-columns">
@@ -1859,17 +821,7 @@ export function ChangeApprovalPanel({
             <p>
               {checkOnlyPlan
                 ? "범위: 구조 readback, XG5000 검사와 저장. 정상 성공 경로에서는 독립 재열기를 하지 않으며, 검증 실패 복구에서는 원복 확인을 위해 독립 재열기가 수행될 수 있습니다."
-                : instructionBatchPatchPlan
-                ? "범위: 승인된 명령 묶음 readback, XG5000 검사, 저장과 독립 재열기"
-                : rungPatchPlan
-                  ? "범위: 승인된 완전 rung patch readback, XG5000 검사, 저장과 독립 재열기"
-                : instructionPatchPlan
-                  ? "범위: 승인된 단일 명령 readback, XG5000 검사, 저장과 독립 재열기"
-                  : seriesGuardPlan
-                    ? "범위: 승인된 guard 1행 삽입 readback, XG5000 검사, 저장과 독립 재열기"
-                    : mnePlan
-                      ? "범위: typed 전체 프로그램 readback, XG5000 검사, 저장과 독립 재열기"
-                      : "범위: 승인된 피연산자 변경, XG5000 검사, 저장, 새 프로세스 재열기와 LD readback"}
+                : "범위: 승인된 피연산자 변경, XG5000 검사, 저장, 새 프로세스 재열기와 LD readback"}
             </p>
             <ul>
               {transaction.plan.validation.map((step) => (
@@ -1877,25 +829,16 @@ export function ChangeApprovalPanel({
               ))}
             </ul>
           </section>
-          <section className="change-manual-verification">
-            <h4>사람이 직접 확인할 현장·후속 작업</h4>
-            <p>
-              아래 항목은 자동 검증 결과에 포함되지 않으며, 완료 전 별도로
-              수행하고 기록해야 합니다.
-            </p>
-            {transaction.plan.manualFollowUp.length > 0 ? (
+          {transaction.plan.manualFollowUp.length > 0 && (
+            <section className="change-manual-verification">
+              <h4>수동 후속 작업</h4>
               <ul>
                 {transaction.plan.manualFollowUp.map((item, index) => (
                   <li key={`${index}:${item}`}>{item}</li>
                 ))}
               </ul>
-            ) : (
-              <p className="change-manual-empty">
-                등록된 수동 후속 항목이 없습니다. 실기 PLC·설비 동작 검증이
-                자동으로 완료됐다는 뜻이 아닙니다.
-              </p>
-            )}
-          </section>
+            </section>
+          )}
         </div>
       </section>
 
@@ -1911,43 +854,7 @@ export function ChangeApprovalPanel({
               <h3 id="change-execution-receipt-title">실제 실행 결과</h3>
             </div>
           </div>
-          <ul>
-            {receiptChecks.map((check) => (
-              <li key={check.label} data-passed={check.passed}>
-                <Icon name={check.passed ? "check" : "warning"} size={16} />
-                <span>{check.label}</span>
-                <strong>{check.passed ? "증거 있음" : "확인되지 않음"}</strong>
-              </li>
-            ))}
-          </ul>
-          {structuralMnePlan && <MneReceiptReview transaction={transaction} />}
-          <p>
-            {provenNoMutationAbortRecovery
-              ? "준비 단계에서 변경을 적용하지 않았고, 종료된 no-mutation journal checkpoint만 확인했습니다. 구조 diff·Program Check·저장·재열기는 실행되지 않았습니다."
-              : "이 receipt는 오프라인 작업 복사본과 XG5000 프로그램 검사 결과만 말합니다. XG-SIM·실제 PLC·설비 동작의 합격 판정은 아닙니다."}
-          </p>
-          {invalidSuccessfulTerminalReceipt && (
-            <p className="change-notice change-error" role="alert">
-              Host가 종료 상태를 기록했지만 현재 Web이 검증할 수 있는 실행
-              receipt가 완전하지 않습니다. 결과 확인을 기록하지 말고 저장된
-              거래를 다시 불러오거나 복구 상태를 확인하세요.
-            </p>
-          )}
-          {successfulOfflineReceipt && (
-            <label className="change-receipt-acknowledgement">
-              <input
-                type="checkbox"
-                checked={receiptBoundaryAcknowledged}
-                onChange={(event) =>
-                  setReceiptBoundaryAcknowledged(event.target.checked)
-                }
-              />
-              <span>
-                자동 검증 범위를 확인했습니다. 위 수동 후속 검증은 별도로
-                완료·기록해야 함을 이해합니다.
-              </span>
-            </label>
-          )}
+          <p>Host에 기록된 상태: {STATE_LABELS[transaction.state]}</p>
         </section>
       )}
 
@@ -2012,16 +919,12 @@ export function ChangeApprovalPanel({
       )}
       {notice && (
         <p className="change-notice" role="status">
-          {mnePlan
-            ? "전체 프로그램 변경 상태가 갱신되었습니다. 알려진 receipt 항목을 확인하세요."
-            : notice}
+          {notice}
         </p>
       )}
       {canDecide && !contractReady && (
         <p className="change-notice change-error" role="alert">
-          {compilerCandidate
-            ? "영향·위험·성공 기준 또는 compiler receipt에 결속된 대상 식별·직접 영향 2개 조사 영역이 현재 Host 안전 계약을 충족하지 않습니다."
-            : "영향·위험·성공 기준과 10개 필수 조사 영역이 현재 Host 안전 계약을 충족하지 않습니다."} 이 계약은 승인할 수 없으며 수정 요청으로 다시 작성해야 합니다.
+          "현재 프로그램의 대상 근거 또는 변경안의 필수 정보가 부족합니다." 수정 요청으로 부족한 내용을 보완할 수 있습니다.
         </p>
       )}
       {canExecuteApproved && (
@@ -2031,31 +934,10 @@ export function ChangeApprovalPanel({
           검증합니다.
         </p>
       )}
-      {observingSimulation && (
-        <section className="change-verification-boundary" aria-label="XG-SIM observing receipt">
-          <h3>XG-SIM 검증 완료 · Keep 또는 Revert 선택 필요</h3>
-          <p>
-            {xgSimScenarioStepCount !== null
-              ? `컴파일된 ${xgSimScenarioStepCount}단계 시나리오의 예상 관찰값, CPU 정지와 입력 바이트 원복이 receipt에 기록됐습니다.`
-              : "정상→차단→복원 OUT 관찰, CPU 정지와 입력 바이트 원복이 receipt에 기록됐습니다."} PLC 연결·쓰기 없음.
-          </p>
-          <dl>
-            <div><dt>Receipt digest</dt><dd><code>{simulationReceiptDigest}</code></dd></div>
-            <div><dt>STOP</dt><dd>{objectValue(simulationReceipt?.stop)?.verified === true ? "verified" : "unverified"}</dd></div>
-            <div><dt>입력 원복</dt><dd>{Array.isArray(simulationReceipt?.restore) && simulationReceipt.restore.every((item) => objectValue(item)?.matched === true) ? "verified" : "unverified"}</dd></div>
-          </dl>
-        </section>
-      )}
       {canExecuteApproved && !contractReady && (
         <p className="change-notice change-error" role="alert">
           승인 기록은 존재하지만 현재 Web이 검증한 계약과 일치하지 않아 실행을
           차단했습니다. Host에서 계약을 다시 검증하세요.
-        </p>
-      )}
-      {canExecuteApproved && structuralMnePlan && !mneExecutionReady && (
-        <p className="change-notice change-error" role="alert">
-          {mneExecutionDetail ??
-            "이 환경에는 승인된 MNE 실행 capability가 준비되지 않았습니다."}
         </p>
       )}
 
@@ -2079,11 +961,7 @@ export function ChangeApprovalPanel({
             <button
               type="button"
               className="button primary-button"
-              disabled={
-                busy ||
-                invalidSuccessfulTerminalReceipt ||
-                (successfulOfflineReceipt && !receiptBoundaryAcknowledged)
-              }
+              disabled={busy}
               onClick={onDismiss}
             >
               확인하고 대화로 돌아가기
@@ -2118,8 +996,7 @@ export function ChangeApprovalPanel({
                 className="button primary-button change-approve-button"
                 disabled={
                   busy ||
-                  !contractReady ||
-                  (Boolean(structuralMnePlan) && !mneExecutionReady)
+                  !contractReady
                 }
                 onClick={onExecuteApproved}
               >
@@ -2127,12 +1004,6 @@ export function ChangeApprovalPanel({
                   ? "대상 재검증 중…"
                   : "승인된 작업 복사본 변경 실행"}
               </button>
-            </>
-          )}
-          {observingSimulation && onFinalizeSimulation && (
-            <>
-              <button type="button" className="button secondary-button" disabled={busy} onClick={() => onFinalizeSimulation("revert")}>원래 rung으로 Revert</button>
-              <button type="button" className="button primary-button change-approve-button" disabled={busy} onClick={() => onFinalizeSimulation("accept")}>검증된 변경 Keep</button>
             </>
           )}
           {canDecide && (

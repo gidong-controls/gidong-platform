@@ -79,6 +79,12 @@ class ChangeTargetIdentity(BaseModel):
     engineering_process_id: int | None = None
     engineering_window_handle: int | None = None
 
+    def same_artifact(self, other: ChangeTargetIdentity) -> bool:
+        session_fields = {
+            "engineering_session_id", "engineering_process_id", "engineering_window_handle",
+        }
+        return self.model_dump(exclude=session_fields) == other.model_dump(exclude=session_fields)
+
 
 class ChangeApproval(BaseModel):
     transaction_id: str
@@ -95,6 +101,7 @@ class ChangeTransaction(BaseModel):
     run_id: str | None = None
     state: ChangeTransactionState
     target: ChangeTargetIdentity
+    execution_target: ChangeTargetIdentity | None = None
     mutation_scope: str
     risk_level: ChangeRiskLevel
     intent: str
@@ -113,6 +120,10 @@ class ChangeTransaction(BaseModel):
     completed_at: datetime | None = None
     receipt_acknowledged_at: datetime | None = None
     receipt_acknowledged_by: str | None = None
+
+    @property
+    def runtime_target(self) -> ChangeTargetIdentity:
+        return self.execution_target if self.execution_target is not None else self.target
 
 
 class Conversation(BaseModel):
@@ -152,10 +163,23 @@ class EngineeringAgentCheckpoint(BaseModel):
     workspace_id: str = Field(min_length=1)
     revision_id: str = Field(min_length=1)
     mission_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    cycle: int = Field(ge=1, le=8)
+    cycle: int = Field(ge=1)
     checkpoint: dict[str, Any]
     digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     updated_by_run_id: str = Field(min_length=1)
+    created_at: datetime
+    updated_at: datetime
+
+
+class EngineeringAgentTranscript(BaseModel):
+    source_run_id: str
+    conversation_id: str
+    workspace_id: str | None
+    revision_id: str | None
+    request_message_id: str
+    cursor: int = Field(ge=0)
+    checkpoint: dict[str, Any]
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     created_at: datetime
     updated_at: datetime
 

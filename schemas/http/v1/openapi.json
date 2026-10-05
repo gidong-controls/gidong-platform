@@ -1102,10 +1102,11 @@
         }
       }
     },
-    "/api/v1/change-transactions/{transaction_id}/simulation-decision": {
+    "/api/v1/change-transactions/{transaction_id}/close-idle-instance": {
       "post": {
-        "summary": "Finalize Simulation Change V1",
-        "operationId": "finalize_simulation_change_v1_api_v1_change_transactions__transaction_id__simulation_decision_post",
+        "summary": "Close Idle Xg5000 Instance V1",
+        "description": "Close one exact blank XG5000 instance without changing the recovery target.",
+        "operationId": "close_idle_xg5000_instance_v1_api_v1_change_transactions__transaction_id__close_idle_instance_post",
         "parameters": [
           {
             "name": "transaction_id",
@@ -1122,7 +1123,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/FinalizeSimulationChangeRequestV1"
+                "$ref": "#/components/schemas/CloseIdleXG5000InstanceRequestV1"
               }
             }
           }
@@ -1133,7 +1134,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ChangeExecutionResponseV1"
+                  "$ref": "#/components/schemas/CloseIdleXG5000InstanceResponseV1"
                 }
               }
             }
@@ -1772,6 +1773,26 @@
         }
       }
     },
+    "/api/v1/engineering/symbols/export": {
+      "post": {
+        "summary": "Export Engineering Symbols V1",
+        "operationId": "export_engineering_symbols_v1_api_v1_engineering_symbols_export_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Export Engineering Symbols V1 Api V1 Engineering Symbols Export Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/engineering/programs/{program_id}/focus": {
       "post": {
         "summary": "Focus Engineering Program V1",
@@ -1787,6 +1808,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/EngineeringProgramFocusRequestV1"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -2184,164 +2222,28 @@
         }
       }
     },
-    "/api/v1/native-projects": {
+    "/api/v1/xg5000/launch-idle": {
       "post": {
-        "summary": "Create Native Project V1",
-        "operationId": "create_native_project_v1_api_v1_native_projects_post",
+        "summary": "Launch Idle Xg5000 V1",
+        "description": "Launch exactly one blank XG5000 instance without binding a workspace.",
+        "operationId": "launch_idle_xg5000_v1_api_v1_xg5000_launch_idle_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CreateNativeProjectRequestV1"
+                "$ref": "#/components/schemas/LaunchIdleXG5000RequestV1"
               }
             }
           },
           "required": true
         },
         "responses": {
-          "201": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NativeProjectCreatedV1"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/native-projects/{native_project_id}": {
-      "get": {
-        "summary": "Native Project Status V1",
-        "operationId": "native_project_status_v1_api_v1_native_projects__native_project_id__get",
-        "parameters": [
-          {
-            "name": "native_project_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Native Project Id"
-            }
-          }
-        ],
-        "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NativeProjectOperationV1"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/native-projects/{native_project_id}/simulation-trial/decision": {
-      "post": {
-        "summary": "Decide Native Simulation Trial V1",
-        "operationId": "decide_native_simulation_trial_v1_api_v1_native_projects__native_project_id__simulation_trial_decision_post",
-        "parameters": [
-          {
-            "name": "native_project_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Native Project Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NativeSimulationTrialDecisionRequestV1"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NativeSimulationTrialDecisionV1"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/native-projects/{native_project_id}/reconcile": {
-      "post": {
-        "summary": "Reconcile Native Project V1",
-        "operationId": "reconcile_native_project_v1_api_v1_native_projects__native_project_id__reconcile_post",
-        "parameters": [
-          {
-            "name": "native_project_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Native Project Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ReconcileNativeProjectRequestV1"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NativeProjectReconciliationV1"
+                  "$ref": "#/components/schemas/LaunchIdleXG5000ResponseV1"
                 }
               }
             }
@@ -2935,1826 +2837,6 @@
         ],
         "title": "ChangePlanV1"
       },
-      "ChangePlanV2-Input": {
-        "properties": {
-          "planKind": {
-            "type": "string",
-            "const": "mne_full_program_replacement",
-            "title": "Plankind"
-          },
-          "changeMode": {
-            "type": "string",
-            "const": "offline_working_copy_revision",
-            "title": "Changemode"
-          },
-          "requestScope": {
-            "type": "string",
-            "enum": [
-              "offline_candidate_revision",
-              "permanent_offline_revision"
-            ],
-            "title": "Requestscope"
-          },
-          "targetProgram": {
-            "$ref": "#/components/schemas/MneFullProgramTargetV2-Input"
-          },
-          "baselineBinding": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MneFullProgramBaselineBindingV2-Input"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "impact": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Impact"
-          },
-          "risks": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Risks"
-          },
-          "assumptions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "title": "Assumptions"
-          },
-          "blockingUnknowns": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 0,
-            "title": "Blockingunknowns"
-          },
-          "alternatives": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Alternatives"
-          },
-          "acceptanceCriteria": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Acceptancecriteria"
-          },
-          "observationSignals": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Observationsignals"
-          },
-          "stopConditions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Stopconditions"
-          },
-          "coverage": {
-            "items": {
-              "$ref": "#/components/schemas/ChangeCoverageItemV1"
-            },
-            "type": "array",
-            "maxItems": 10,
-            "minItems": 10,
-            "title": "Coverage"
-          },
-          "verificationScope": {
-            "type": "string",
-            "const": "offline_native_reopen",
-            "title": "Verificationscope"
-          },
-          "validation": {
-            "items": {
-              "type": "string",
-              "enum": [
-                "structural_diff",
-                "xg5000_program_check",
-                "project_save",
-                "project_reopen"
-              ]
-            },
-            "type": "array",
-            "maxItems": 4,
-            "minItems": 4,
-            "title": "Validation"
-          },
-          "manualFollowUp": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Manualfollowup"
-          },
-          "rollback": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Rollback"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "planKind",
-          "changeMode",
-          "requestScope",
-          "targetProgram",
-          "impact",
-          "risks",
-          "blockingUnknowns",
-          "alternatives",
-          "acceptanceCriteria",
-          "observationSignals",
-          "stopConditions",
-          "coverage",
-          "verificationScope",
-          "validation",
-          "manualFollowUp",
-          "rollback"
-        ],
-        "title": "ChangePlanV2",
-        "description": "Approval contract for one typed full-program MNE replacement proposal."
-      },
-      "ChangePlanV2-Output": {
-        "properties": {
-          "planKind": {
-            "type": "string",
-            "const": "mne_full_program_replacement",
-            "title": "Plankind"
-          },
-          "changeMode": {
-            "type": "string",
-            "const": "offline_working_copy_revision",
-            "title": "Changemode"
-          },
-          "requestScope": {
-            "type": "string",
-            "enum": [
-              "offline_candidate_revision",
-              "permanent_offline_revision"
-            ],
-            "title": "Requestscope"
-          },
-          "targetProgram": {
-            "$ref": "#/components/schemas/MneFullProgramTargetV2-Output"
-          },
-          "baselineBinding": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MneFullProgramBaselineBindingV2-Output"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "impact": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Impact"
-          },
-          "risks": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Risks"
-          },
-          "assumptions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "title": "Assumptions"
-          },
-          "blockingUnknowns": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 0,
-            "title": "Blockingunknowns"
-          },
-          "alternatives": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Alternatives"
-          },
-          "acceptanceCriteria": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Acceptancecriteria"
-          },
-          "observationSignals": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Observationsignals"
-          },
-          "stopConditions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Stopconditions"
-          },
-          "coverage": {
-            "items": {
-              "$ref": "#/components/schemas/ChangeCoverageItemV1"
-            },
-            "type": "array",
-            "maxItems": 10,
-            "minItems": 10,
-            "title": "Coverage"
-          },
-          "verificationScope": {
-            "type": "string",
-            "const": "offline_native_reopen",
-            "title": "Verificationscope"
-          },
-          "validation": {
-            "items": {
-              "type": "string",
-              "enum": [
-                "structural_diff",
-                "xg5000_program_check",
-                "project_save",
-                "project_reopen"
-              ]
-            },
-            "type": "array",
-            "maxItems": 4,
-            "minItems": 4,
-            "title": "Validation"
-          },
-          "manualFollowUp": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Manualfollowup"
-          },
-          "rollback": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Rollback"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "planKind",
-          "changeMode",
-          "requestScope",
-          "targetProgram",
-          "impact",
-          "risks",
-          "blockingUnknowns",
-          "alternatives",
-          "acceptanceCriteria",
-          "observationSignals",
-          "stopConditions",
-          "coverage",
-          "verificationScope",
-          "validation",
-          "manualFollowUp",
-          "rollback"
-        ],
-        "title": "ChangePlanV2",
-        "description": "Approval contract for one typed full-program MNE replacement proposal."
-      },
-      "ChangePlanV3-Input": {
-        "properties": {
-          "changeMode": {
-            "type": "string",
-            "const": "offline_working_copy_revision",
-            "title": "Changemode"
-          },
-          "requestScope": {
-            "type": "string",
-            "enum": [
-              "offline_candidate_revision",
-              "permanent_offline_revision"
-            ],
-            "title": "Requestscope"
-          },
-          "candidateEvidenceId": {
-            "type": "string",
-            "maxLength": 36,
-            "minLength": 36,
-            "title": "Candidateevidenceid"
-          },
-          "baselineBinding": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MneFullProgramBaselineBindingV2-Input"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "impact": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Impact"
-          },
-          "risks": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Risks"
-          },
-          "assumptions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "title": "Assumptions"
-          },
-          "blockingUnknowns": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 0,
-            "title": "Blockingunknowns"
-          },
-          "alternatives": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Alternatives"
-          },
-          "acceptanceCriteria": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Acceptancecriteria"
-          },
-          "observationSignals": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Observationsignals"
-          },
-          "stopConditions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Stopconditions"
-          },
-          "coverage": {
-            "items": {
-              "$ref": "#/components/schemas/ChangeCoverageItemV1"
-            },
-            "type": "array",
-            "maxItems": 10,
-            "minItems": 10,
-            "title": "Coverage"
-          },
-          "verificationScope": {
-            "type": "string",
-            "enum": [
-              "offline_native_reopen",
-              "offline_native_reopen_xgsim"
-            ],
-            "title": "Verificationscope"
-          },
-          "validation": {
-            "items": {
-              "type": "string",
-              "enum": [
-                "structural_diff",
-                "xg5000_program_check",
-                "project_save",
-                "project_reopen"
-              ]
-            },
-            "type": "array",
-            "maxItems": 4,
-            "minItems": 4,
-            "title": "Validation"
-          },
-          "manualFollowUp": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Manualfollowup"
-          },
-          "rollback": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Rollback"
-          },
-          "planKind": {
-            "type": "string",
-            "const": "mne_series_guard_patch",
-            "title": "Plankind"
-          },
-          "candidate": {
-            "$ref": "#/components/schemas/MneSeriesGuardCandidateV3-Input"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "changeMode",
-          "requestScope",
-          "candidateEvidenceId",
-          "impact",
-          "risks",
-          "blockingUnknowns",
-          "alternatives",
-          "acceptanceCriteria",
-          "observationSignals",
-          "stopConditions",
-          "coverage",
-          "verificationScope",
-          "validation",
-          "manualFollowUp",
-          "rollback",
-          "planKind",
-          "candidate"
-        ],
-        "title": "ChangePlanV3",
-        "description": "Approval contract for one compiler-certified series guard insertion."
-      },
-      "ChangePlanV3-Output": {
-        "properties": {
-          "changeMode": {
-            "type": "string",
-            "const": "offline_working_copy_revision",
-            "title": "Changemode"
-          },
-          "requestScope": {
-            "type": "string",
-            "enum": [
-              "offline_candidate_revision",
-              "permanent_offline_revision"
-            ],
-            "title": "Requestscope"
-          },
-          "candidateEvidenceId": {
-            "type": "string",
-            "maxLength": 36,
-            "minLength": 36,
-            "title": "Candidateevidenceid"
-          },
-          "baselineBinding": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MneFullProgramBaselineBindingV2-Output"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "impact": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Impact"
-          },
-          "risks": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Risks"
-          },
-          "assumptions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "title": "Assumptions"
-          },
-          "blockingUnknowns": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 0,
-            "title": "Blockingunknowns"
-          },
-          "alternatives": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Alternatives"
-          },
-          "acceptanceCriteria": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Acceptancecriteria"
-          },
-          "observationSignals": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Observationsignals"
-          },
-          "stopConditions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Stopconditions"
-          },
-          "coverage": {
-            "items": {
-              "$ref": "#/components/schemas/ChangeCoverageItemV1"
-            },
-            "type": "array",
-            "maxItems": 10,
-            "minItems": 10,
-            "title": "Coverage"
-          },
-          "verificationScope": {
-            "type": "string",
-            "enum": [
-              "offline_native_reopen",
-              "offline_native_reopen_xgsim"
-            ],
-            "title": "Verificationscope"
-          },
-          "validation": {
-            "items": {
-              "type": "string",
-              "enum": [
-                "structural_diff",
-                "xg5000_program_check",
-                "project_save",
-                "project_reopen"
-              ]
-            },
-            "type": "array",
-            "maxItems": 4,
-            "minItems": 4,
-            "title": "Validation"
-          },
-          "manualFollowUp": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Manualfollowup"
-          },
-          "rollback": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Rollback"
-          },
-          "planKind": {
-            "type": "string",
-            "const": "mne_series_guard_patch",
-            "title": "Plankind"
-          },
-          "candidate": {
-            "$ref": "#/components/schemas/MneSeriesGuardCandidateV3-Output"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "changeMode",
-          "requestScope",
-          "candidateEvidenceId",
-          "impact",
-          "risks",
-          "blockingUnknowns",
-          "alternatives",
-          "acceptanceCriteria",
-          "observationSignals",
-          "stopConditions",
-          "coverage",
-          "verificationScope",
-          "validation",
-          "manualFollowUp",
-          "rollback",
-          "planKind",
-          "candidate"
-        ],
-        "title": "ChangePlanV3",
-        "description": "Approval contract for one compiler-certified series guard insertion."
-      },
-      "ChangePlanV4-Input": {
-        "properties": {
-          "changeMode": {
-            "type": "string",
-            "const": "offline_working_copy_revision",
-            "title": "Changemode"
-          },
-          "requestScope": {
-            "type": "string",
-            "enum": [
-              "offline_candidate_revision",
-              "permanent_offline_revision"
-            ],
-            "title": "Requestscope"
-          },
-          "candidateEvidenceId": {
-            "type": "string",
-            "maxLength": 36,
-            "minLength": 36,
-            "title": "Candidateevidenceid"
-          },
-          "baselineBinding": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MneFullProgramBaselineBindingV2-Input"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "impact": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Impact"
-          },
-          "risks": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Risks"
-          },
-          "assumptions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "title": "Assumptions"
-          },
-          "blockingUnknowns": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 0,
-            "title": "Blockingunknowns"
-          },
-          "alternatives": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Alternatives"
-          },
-          "acceptanceCriteria": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Acceptancecriteria"
-          },
-          "observationSignals": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Observationsignals"
-          },
-          "stopConditions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Stopconditions"
-          },
-          "coverage": {
-            "items": {
-              "$ref": "#/components/schemas/ChangeCoverageItemV1"
-            },
-            "type": "array",
-            "maxItems": 10,
-            "minItems": 10,
-            "title": "Coverage"
-          },
-          "verificationScope": {
-            "type": "string",
-            "enum": [
-              "offline_native_reopen",
-              "offline_native_reopen_xgsim"
-            ],
-            "title": "Verificationscope"
-          },
-          "validation": {
-            "items": {
-              "type": "string",
-              "enum": [
-                "structural_diff",
-                "xg5000_program_check",
-                "project_save",
-                "project_reopen"
-              ]
-            },
-            "type": "array",
-            "maxItems": 4,
-            "minItems": 4,
-            "title": "Validation"
-          },
-          "manualFollowUp": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Manualfollowup"
-          },
-          "rollback": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Rollback"
-          },
-          "planKind": {
-            "type": "string",
-            "const": "mne_instruction_patch",
-            "title": "Plankind"
-          },
-          "candidate": {
-            "$ref": "#/components/schemas/MneInstructionPatchCandidateV4-Input"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "changeMode",
-          "requestScope",
-          "candidateEvidenceId",
-          "impact",
-          "risks",
-          "blockingUnknowns",
-          "alternatives",
-          "acceptanceCriteria",
-          "observationSignals",
-          "stopConditions",
-          "coverage",
-          "verificationScope",
-          "validation",
-          "manualFollowUp",
-          "rollback",
-          "planKind",
-          "candidate"
-        ],
-        "title": "ChangePlanV4",
-        "description": "Approval contract for one compiler-resolved existing instruction edit."
-      },
-      "ChangePlanV4-Output": {
-        "properties": {
-          "changeMode": {
-            "type": "string",
-            "const": "offline_working_copy_revision",
-            "title": "Changemode"
-          },
-          "requestScope": {
-            "type": "string",
-            "enum": [
-              "offline_candidate_revision",
-              "permanent_offline_revision"
-            ],
-            "title": "Requestscope"
-          },
-          "candidateEvidenceId": {
-            "type": "string",
-            "maxLength": 36,
-            "minLength": 36,
-            "title": "Candidateevidenceid"
-          },
-          "baselineBinding": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MneFullProgramBaselineBindingV2-Output"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "impact": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Impact"
-          },
-          "risks": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Risks"
-          },
-          "assumptions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "title": "Assumptions"
-          },
-          "blockingUnknowns": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 0,
-            "title": "Blockingunknowns"
-          },
-          "alternatives": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Alternatives"
-          },
-          "acceptanceCriteria": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Acceptancecriteria"
-          },
-          "observationSignals": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Observationsignals"
-          },
-          "stopConditions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Stopconditions"
-          },
-          "coverage": {
-            "items": {
-              "$ref": "#/components/schemas/ChangeCoverageItemV1"
-            },
-            "type": "array",
-            "maxItems": 10,
-            "minItems": 10,
-            "title": "Coverage"
-          },
-          "verificationScope": {
-            "type": "string",
-            "enum": [
-              "offline_native_reopen",
-              "offline_native_reopen_xgsim"
-            ],
-            "title": "Verificationscope"
-          },
-          "validation": {
-            "items": {
-              "type": "string",
-              "enum": [
-                "structural_diff",
-                "xg5000_program_check",
-                "project_save",
-                "project_reopen"
-              ]
-            },
-            "type": "array",
-            "maxItems": 4,
-            "minItems": 4,
-            "title": "Validation"
-          },
-          "manualFollowUp": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Manualfollowup"
-          },
-          "rollback": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Rollback"
-          },
-          "planKind": {
-            "type": "string",
-            "const": "mne_instruction_patch",
-            "title": "Plankind"
-          },
-          "candidate": {
-            "$ref": "#/components/schemas/MneInstructionPatchCandidateV4-Output"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "changeMode",
-          "requestScope",
-          "candidateEvidenceId",
-          "impact",
-          "risks",
-          "blockingUnknowns",
-          "alternatives",
-          "acceptanceCriteria",
-          "observationSignals",
-          "stopConditions",
-          "coverage",
-          "verificationScope",
-          "validation",
-          "manualFollowUp",
-          "rollback",
-          "planKind",
-          "candidate"
-        ],
-        "title": "ChangePlanV4",
-        "description": "Approval contract for one compiler-resolved existing instruction edit."
-      },
-      "ChangePlanV5-Input": {
-        "properties": {
-          "changeMode": {
-            "type": "string",
-            "const": "offline_working_copy_revision",
-            "title": "Changemode"
-          },
-          "requestScope": {
-            "type": "string",
-            "enum": [
-              "offline_candidate_revision",
-              "permanent_offline_revision"
-            ],
-            "title": "Requestscope"
-          },
-          "candidateEvidenceId": {
-            "type": "string",
-            "maxLength": 36,
-            "minLength": 36,
-            "title": "Candidateevidenceid"
-          },
-          "baselineBinding": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MneFullProgramBaselineBindingV2-Input"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "impact": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Impact"
-          },
-          "risks": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Risks"
-          },
-          "assumptions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "title": "Assumptions"
-          },
-          "blockingUnknowns": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 0,
-            "title": "Blockingunknowns"
-          },
-          "alternatives": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Alternatives"
-          },
-          "acceptanceCriteria": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Acceptancecriteria"
-          },
-          "observationSignals": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Observationsignals"
-          },
-          "stopConditions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Stopconditions"
-          },
-          "coverage": {
-            "items": {
-              "$ref": "#/components/schemas/ChangeCoverageItemV1"
-            },
-            "type": "array",
-            "maxItems": 10,
-            "minItems": 10,
-            "title": "Coverage"
-          },
-          "verificationScope": {
-            "type": "string",
-            "enum": [
-              "offline_native_reopen",
-              "offline_native_reopen_xgsim"
-            ],
-            "title": "Verificationscope"
-          },
-          "validation": {
-            "items": {
-              "type": "string",
-              "enum": [
-                "structural_diff",
-                "xg5000_program_check",
-                "project_save",
-                "project_reopen"
-              ]
-            },
-            "type": "array",
-            "maxItems": 4,
-            "minItems": 4,
-            "title": "Validation"
-          },
-          "manualFollowUp": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Manualfollowup"
-          },
-          "rollback": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Rollback"
-          },
-          "planKind": {
-            "type": "string",
-            "const": "mne_instruction_batch_patch",
-            "title": "Plankind"
-          },
-          "candidate": {
-            "$ref": "#/components/schemas/MneInstructionBatchPatchCandidateV5-Input"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "changeMode",
-          "requestScope",
-          "candidateEvidenceId",
-          "impact",
-          "risks",
-          "blockingUnknowns",
-          "alternatives",
-          "acceptanceCriteria",
-          "observationSignals",
-          "stopConditions",
-          "coverage",
-          "verificationScope",
-          "validation",
-          "manualFollowUp",
-          "rollback",
-          "planKind",
-          "candidate"
-        ],
-        "title": "ChangePlanV5",
-        "description": "Approval contract for 2..16 compiler-resolved instruction edits."
-      },
-      "ChangePlanV5-Output": {
-        "properties": {
-          "changeMode": {
-            "type": "string",
-            "const": "offline_working_copy_revision",
-            "title": "Changemode"
-          },
-          "requestScope": {
-            "type": "string",
-            "enum": [
-              "offline_candidate_revision",
-              "permanent_offline_revision"
-            ],
-            "title": "Requestscope"
-          },
-          "candidateEvidenceId": {
-            "type": "string",
-            "maxLength": 36,
-            "minLength": 36,
-            "title": "Candidateevidenceid"
-          },
-          "baselineBinding": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MneFullProgramBaselineBindingV2-Output"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "impact": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Impact"
-          },
-          "risks": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Risks"
-          },
-          "assumptions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "title": "Assumptions"
-          },
-          "blockingUnknowns": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 0,
-            "title": "Blockingunknowns"
-          },
-          "alternatives": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Alternatives"
-          },
-          "acceptanceCriteria": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Acceptancecriteria"
-          },
-          "observationSignals": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Observationsignals"
-          },
-          "stopConditions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Stopconditions"
-          },
-          "coverage": {
-            "items": {
-              "$ref": "#/components/schemas/ChangeCoverageItemV1"
-            },
-            "type": "array",
-            "maxItems": 10,
-            "minItems": 10,
-            "title": "Coverage"
-          },
-          "verificationScope": {
-            "type": "string",
-            "enum": [
-              "offline_native_reopen",
-              "offline_native_reopen_xgsim"
-            ],
-            "title": "Verificationscope"
-          },
-          "validation": {
-            "items": {
-              "type": "string",
-              "enum": [
-                "structural_diff",
-                "xg5000_program_check",
-                "project_save",
-                "project_reopen"
-              ]
-            },
-            "type": "array",
-            "maxItems": 4,
-            "minItems": 4,
-            "title": "Validation"
-          },
-          "manualFollowUp": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Manualfollowup"
-          },
-          "rollback": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Rollback"
-          },
-          "planKind": {
-            "type": "string",
-            "const": "mne_instruction_batch_patch",
-            "title": "Plankind"
-          },
-          "candidate": {
-            "$ref": "#/components/schemas/MneInstructionBatchPatchCandidateV5-Output"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "changeMode",
-          "requestScope",
-          "candidateEvidenceId",
-          "impact",
-          "risks",
-          "blockingUnknowns",
-          "alternatives",
-          "acceptanceCriteria",
-          "observationSignals",
-          "stopConditions",
-          "coverage",
-          "verificationScope",
-          "validation",
-          "manualFollowUp",
-          "rollback",
-          "planKind",
-          "candidate"
-        ],
-        "title": "ChangePlanV5",
-        "description": "Approval contract for 2..16 compiler-resolved instruction edits."
-      },
-      "ChangePlanV6-Input": {
-        "properties": {
-          "changeMode": {
-            "type": "string",
-            "const": "offline_working_copy_revision",
-            "title": "Changemode"
-          },
-          "requestScope": {
-            "type": "string",
-            "enum": [
-              "offline_candidate_revision",
-              "permanent_offline_revision"
-            ],
-            "title": "Requestscope"
-          },
-          "candidateEvidenceId": {
-            "type": "string",
-            "maxLength": 36,
-            "minLength": 36,
-            "title": "Candidateevidenceid"
-          },
-          "baselineBinding": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MneFullProgramBaselineBindingV2-Input"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "impact": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Impact"
-          },
-          "risks": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Risks"
-          },
-          "assumptions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "title": "Assumptions"
-          },
-          "blockingUnknowns": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 0,
-            "title": "Blockingunknowns"
-          },
-          "alternatives": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Alternatives"
-          },
-          "acceptanceCriteria": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Acceptancecriteria"
-          },
-          "observationSignals": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Observationsignals"
-          },
-          "stopConditions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Stopconditions"
-          },
-          "coverage": {
-            "items": {
-              "$ref": "#/components/schemas/ChangeCoverageItemV1"
-            },
-            "type": "array",
-            "maxItems": 10,
-            "minItems": 10,
-            "title": "Coverage"
-          },
-          "verificationScope": {
-            "type": "string",
-            "enum": [
-              "offline_native_reopen",
-              "offline_native_reopen_xgsim"
-            ],
-            "title": "Verificationscope"
-          },
-          "validation": {
-            "items": {
-              "type": "string",
-              "enum": [
-                "structural_diff",
-                "xg5000_program_check",
-                "project_save",
-                "project_reopen"
-              ]
-            },
-            "type": "array",
-            "maxItems": 4,
-            "minItems": 4,
-            "title": "Validation"
-          },
-          "manualFollowUp": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Manualfollowup"
-          },
-          "rollback": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Rollback"
-          },
-          "planKind": {
-            "type": "string",
-            "const": "mne_rung_patch",
-            "title": "Plankind"
-          },
-          "candidate": {
-            "$ref": "#/components/schemas/MneRungPatchCandidateV6-Input"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "changeMode",
-          "requestScope",
-          "candidateEvidenceId",
-          "impact",
-          "risks",
-          "blockingUnknowns",
-          "alternatives",
-          "acceptanceCriteria",
-          "observationSignals",
-          "stopConditions",
-          "coverage",
-          "verificationScope",
-          "validation",
-          "manualFollowUp",
-          "rollback",
-          "planKind",
-          "candidate"
-        ],
-        "title": "ChangePlanV6",
-        "description": "Approval contract for one compiler-resolved complete-rung patch."
-      },
-      "ChangePlanV6-Output": {
-        "properties": {
-          "changeMode": {
-            "type": "string",
-            "const": "offline_working_copy_revision",
-            "title": "Changemode"
-          },
-          "requestScope": {
-            "type": "string",
-            "enum": [
-              "offline_candidate_revision",
-              "permanent_offline_revision"
-            ],
-            "title": "Requestscope"
-          },
-          "candidateEvidenceId": {
-            "type": "string",
-            "maxLength": 36,
-            "minLength": 36,
-            "title": "Candidateevidenceid"
-          },
-          "baselineBinding": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MneFullProgramBaselineBindingV2-Output"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "impact": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Impact"
-          },
-          "risks": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Risks"
-          },
-          "assumptions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "title": "Assumptions"
-          },
-          "blockingUnknowns": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 0,
-            "title": "Blockingunknowns"
-          },
-          "alternatives": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Alternatives"
-          },
-          "acceptanceCriteria": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Acceptancecriteria"
-          },
-          "observationSignals": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Observationsignals"
-          },
-          "stopConditions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Stopconditions"
-          },
-          "coverage": {
-            "items": {
-              "$ref": "#/components/schemas/ChangeCoverageItemV1"
-            },
-            "type": "array",
-            "maxItems": 10,
-            "minItems": 10,
-            "title": "Coverage"
-          },
-          "verificationScope": {
-            "type": "string",
-            "enum": [
-              "offline_native_reopen",
-              "offline_native_reopen_xgsim"
-            ],
-            "title": "Verificationscope"
-          },
-          "validation": {
-            "items": {
-              "type": "string",
-              "enum": [
-                "structural_diff",
-                "xg5000_program_check",
-                "project_save",
-                "project_reopen"
-              ]
-            },
-            "type": "array",
-            "maxItems": 4,
-            "minItems": 4,
-            "title": "Validation"
-          },
-          "manualFollowUp": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Manualfollowup"
-          },
-          "rollback": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Rollback"
-          },
-          "planKind": {
-            "type": "string",
-            "const": "mne_rung_patch",
-            "title": "Plankind"
-          },
-          "candidate": {
-            "$ref": "#/components/schemas/MneRungPatchCandidateV6-Output"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "changeMode",
-          "requestScope",
-          "candidateEvidenceId",
-          "impact",
-          "risks",
-          "blockingUnknowns",
-          "alternatives",
-          "acceptanceCriteria",
-          "observationSignals",
-          "stopConditions",
-          "coverage",
-          "verificationScope",
-          "validation",
-          "manualFollowUp",
-          "rollback",
-          "planKind",
-          "candidate"
-        ],
-        "title": "ChangePlanV6",
-        "description": "Approval contract for one compiler-resolved complete-rung patch."
-      },
       "ChangeReceiptAcknowledgementV1": {
         "properties": {
           "transaction": {
@@ -4829,7 +2911,6 @@
             "type": "string",
             "enum": [
               "native_location",
-              "mne_anchor",
               "program"
             ],
             "title": "Focuskind"
@@ -4858,16 +2939,6 @@
               }
             ],
             "title": "Payloadsha256"
-          },
-          "mneAnchor": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MneAnchorFocusV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "additionalProperties": false,
@@ -5017,6 +3088,16 @@
           "targetIdentity": {
             "$ref": "#/components/schemas/ChangeTargetIdentityV1"
           },
+          "executionTargetIdentity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChangeTargetIdentityV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "mutationScope": {
             "type": "string",
             "title": "Mutationscope"
@@ -5036,27 +3117,7 @@
             "title": "Intent"
           },
           "plan": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ChangePlanV1"
-              },
-              {
-                "$ref": "#/components/schemas/ChangePlanV2-Output"
-              },
-              {
-                "$ref": "#/components/schemas/ChangePlanV3-Output"
-              },
-              {
-                "$ref": "#/components/schemas/ChangePlanV4-Output"
-              },
-              {
-                "$ref": "#/components/schemas/ChangePlanV5-Output"
-              },
-              {
-                "$ref": "#/components/schemas/ChangePlanV6-Output"
-              }
-            ],
-            "title": "Plan"
+            "$ref": "#/components/schemas/ChangePlanV1"
           },
           "planDigest": {
             "type": "string",
@@ -5197,6 +3258,129 @@
           "updatedAt"
         ],
         "title": "ChangeTransactionV1"
+      },
+      "CloseIdleXG5000InstanceRequestV1": {
+        "properties": {
+          "expectedPlanDigest": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Expectedplandigest"
+          },
+          "pid": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Pid"
+          },
+          "hwnd": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Hwnd"
+          },
+          "processCreateTime": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Processcreatetime"
+          },
+          "confirmIdleClose": {
+            "type": "boolean",
+            "const": true,
+            "title": "Confirmidleclose"
+          },
+          "timeoutSeconds": {
+            "type": "number",
+            "maximum": 15.0,
+            "minimum": 0.1,
+            "title": "Timeoutseconds",
+            "default": 12
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expectedPlanDigest",
+          "pid",
+          "hwnd",
+          "processCreateTime",
+          "confirmIdleClose"
+        ],
+        "title": "CloseIdleXG5000InstanceRequestV1",
+        "description": "Recovery-scoped request to close one proven blank XG5000 instance."
+      },
+      "CloseIdleXG5000InstanceResponseV1": {
+        "properties": {
+          "operation": {
+            "type": "string",
+            "const": "xg5000.close_idle_instance",
+            "title": "Operation"
+          },
+          "verified": {
+            "type": "boolean",
+            "const": true,
+            "title": "Verified"
+          },
+          "status": {
+            "type": "string",
+            "const": "closed",
+            "title": "Status"
+          },
+          "idleBinding": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Idlebinding"
+          },
+          "closeAction": {
+            "type": "string",
+            "const": "wm_close",
+            "title": "Closeaction"
+          },
+          "promptObserved": {
+            "type": "boolean",
+            "const": false,
+            "title": "Promptobserved"
+          },
+          "modalObserved": {
+            "type": "boolean",
+            "const": false,
+            "title": "Modalobserved"
+          },
+          "noSavePromptClicked": {
+            "type": "boolean",
+            "const": false,
+            "title": "Nosavepromptclicked"
+          },
+          "processExited": {
+            "type": "boolean",
+            "const": true,
+            "title": "Processexited"
+          },
+          "processTerminated": {
+            "type": "boolean",
+            "const": false,
+            "title": "Processterminated"
+          },
+          "receiptDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Receiptdigest"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "operation",
+          "verified",
+          "status",
+          "idleBinding",
+          "closeAction",
+          "promptObserved",
+          "modalObserved",
+          "noSavePromptClicked",
+          "processExited",
+          "processTerminated",
+          "receiptDigest"
+        ],
+        "title": "CloseIdleXG5000InstanceResponseV1"
       },
       "ConfirmKnowledgeMemoryRequestV1": {
         "properties": {
@@ -5771,6 +3955,83 @@
         ],
         "title": "ControllerRestoreWorkspaceProvenanceV1"
       },
+      "ConversationCompletionV1": {
+        "properties": {
+          "schemaVersion": {
+            "type": "string",
+            "const": "1",
+            "title": "Schemaversion",
+            "default": "1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "not_claimed",
+              "phase_complete",
+              "goal_complete",
+              "blocked"
+            ],
+            "title": "Status"
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "planning",
+              "engineering"
+            ],
+            "title": "Phase"
+          },
+          "basis": {
+            "type": "string",
+            "enum": [
+              "no_completion_evidence",
+              "planning_needs_clarification",
+              "planning_ready_for_review",
+              "planning_reviewed",
+              "engineering_in_progress",
+              "engineering_waiting_for_user",
+              "engineering_waiting_for_approval",
+              "engineering_cycle_budget_exhausted",
+              "engineering_objective_achieved",
+              "engineering_blocked",
+              "invalid_engineering_mission"
+            ],
+            "title": "Basis"
+          },
+          "sourceMessageId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourcemessageid"
+          },
+          "sourceDigest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourcedigest"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "phase",
+          "basis"
+        ],
+        "title": "ConversationCompletionV1",
+        "description": "External completion state for a conversation's user-visible goal.\n\nA completed Agent turn (and a published planning revision) is not the same\nthing as completing the user's end-to-end goal.  The Host exposes this\ndistinction explicitly so clients cannot infer goal completion from a run\nstate or a planning publication alone."
+      },
       "ConversationCreateV1": {
         "properties": {
           "title": {
@@ -5805,18 +4066,14 @@
               }
             ]
           },
-          "nativeProjectId": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 256,
-                "minLength": 1
-              },
-              {
-                "type": "null"
-              }
+          "targetScope": {
+            "type": "string",
+            "enum": [
+              "current",
+              "none"
             ],
-            "title": "Nativeprojectid"
+            "title": "Targetscope",
+            "default": "current"
           }
         },
         "additionalProperties": false,
@@ -5995,6 +4252,33 @@
         ],
         "title": "ConversationMessageV1"
       },
+      "ConversationNativeProjectV1": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "allocated",
+              "executing",
+              "completed",
+              "failed",
+              "quarantined"
+            ],
+            "title": "State"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updatedat"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "state",
+          "updatedAt"
+        ],
+        "title": "ConversationNativeProjectV1"
+      },
       "ConversationPageV1": {
         "properties": {
           "items": {
@@ -6149,6 +4433,19 @@
               }
             ]
           },
+          "latestNativeProject": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConversationNativeProjectV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "goalCompletion": {
+            "$ref": "#/components/schemas/ConversationCompletionV1"
+          },
           "messages": {
             "items": {
               "$ref": "#/components/schemas/ConversationMessageV1"
@@ -6220,27 +4517,7 @@
             "title": "Risklevel"
           },
           "plan": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ChangePlanV1"
-              },
-              {
-                "$ref": "#/components/schemas/ChangePlanV2-Input"
-              },
-              {
-                "$ref": "#/components/schemas/ChangePlanV3-Input"
-              },
-              {
-                "$ref": "#/components/schemas/ChangePlanV4-Input"
-              },
-              {
-                "$ref": "#/components/schemas/ChangePlanV5-Input"
-              },
-              {
-                "$ref": "#/components/schemas/ChangePlanV6-Input"
-              }
-            ],
-            "title": "Plan"
+            "$ref": "#/components/schemas/ChangePlanV1"
           },
           "approvalTtlSeconds": {
             "type": "integer",
@@ -6346,85 +4623,6 @@
           "content"
         ],
         "title": "CreateKnowledgeMemoryRequestV1"
-      },
-      "CreateNativeProjectRequestV1": {
-        "properties": {
-          "operationId": {
-            "type": "string",
-            "title": "Operationid"
-          },
-          "projectName": {
-            "type": "string",
-            "maxLength": 80,
-            "minLength": 1,
-            "title": "Projectname"
-          },
-          "workspaceParent": {
-            "type": "string",
-            "maxLength": 32768,
-            "minLength": 1,
-            "title": "Workspaceparent"
-          },
-          "plcSeries": {
-            "type": "string",
-            "enum": [
-              "XGK",
-              "XGB"
-            ],
-            "title": "Plcseries"
-          },
-          "cpuModel": {
-            "type": "string",
-            "maxLength": 64,
-            "minLength": 1,
-            "title": "Cpumodel"
-          },
-          "programName": {
-            "type": "string",
-            "maxLength": 80,
-            "minLength": 1,
-            "title": "Programname",
-            "default": "MAIN"
-          },
-          "language": {
-            "type": "string",
-            "const": "LD",
-            "title": "Language",
-            "default": "LD"
-          },
-          "description": {
-            "type": "string",
-            "maxLength": 1024,
-            "title": "Description",
-            "default": ""
-          },
-          "xg5000Pid": {
-            "type": "integer",
-            "exclusiveMinimum": 0.0,
-            "title": "Xg5000Pid"
-          },
-          "xg5000Hwnd": {
-            "type": "integer",
-            "exclusiveMinimum": 0.0,
-            "title": "Xg5000Hwnd"
-          },
-          "reviewedPlan": {
-            "$ref": "#/components/schemas/ReviewedProjectPlanBindingV1"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "operationId",
-          "projectName",
-          "workspaceParent",
-          "plcSeries",
-          "cpuModel",
-          "xg5000Pid",
-          "xg5000Hwnd",
-          "reviewedPlan"
-        ],
-        "title": "CreateNativeProjectRequestV1"
       },
       "EngineeringAlternativeV1": {
         "properties": {
@@ -6634,12 +4832,6 @@
             "title": "Schemaversion",
             "default": "1"
           },
-          "nativeProjectId": {
-            "type": "string",
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Nativeprojectid"
-          },
           "planningConversationId": {
             "type": "string",
             "maxLength": 256,
@@ -6683,36 +4875,29 @@
             "pattern": "^[0-9a-f]{64}$",
             "title": "Buildreceiptdigest"
           },
-          "simulationReceiptSchemaVersion": {
-            "type": "string",
-            "enum": [
-              "controlstudio-native-simulation-receipt/v3",
-              "controlstudio-native-simulation-receipt/v4",
-              "controlstudio-native-simulation-receipt/v5"
+          "reopenReceiptSchemaVersion": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "controlstudio-native-reopen-receipt/v2"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Simulationreceiptschemaversion"
+            "title": "Reopenreceiptschemaversion"
           },
-          "simulationReceiptDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Simulationreceiptdigest"
-          },
-          "simulationTrialId": {
-            "type": "string",
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Simulationtrialid"
-          },
-          "acceptedByActorId": {
-            "type": "string",
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Acceptedbyactorid"
-          },
-          "acceptedAt": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Acceptedat"
+          "reopenReceiptDigest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reopenreceiptdigest"
           },
           "projectSha256": {
             "type": "string",
@@ -6723,7 +4908,6 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "nativeProjectId",
           "planningConversationId",
           "planningMessageId",
           "reviewedPlanDigest",
@@ -6732,14 +4916,10 @@
           "buildBundleId",
           "buildReceiptSchemaVersion",
           "buildReceiptDigest",
-          "simulationReceiptSchemaVersion",
-          "simulationReceiptDigest",
-          "simulationTrialId",
-          "acceptedByActorId",
-          "acceptedAt",
           "projectSha256"
         ],
-        "title": "EngineeringConversationHandoffV1"
+        "title": "EngineeringConversationHandoffV1",
+        "description": "Immutable planning-to-engineering provenance exposed to HTTP clients.\n\nReopen evidence was added after the first handoff records were persisted.\nThe fields are therefore nullable at this DTO boundary so a legacy record\ncan still be read.  New handoffs are constructed only from the Host's\naccepted-native-project path, which requires and fills both values before\npersistence; a partially populated pair is never accepted here."
       },
       "EngineeringCoverageV2": {
         "properties": {
@@ -7192,6 +5372,21 @@
             "minLength": 1,
             "title": "Objective"
           },
+          "completionKind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "analysis",
+                  "native_change"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completionkind"
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -7541,6 +5736,21 @@
           "evidenceRefs"
         ],
         "title": "EngineeringObservationV1"
+      },
+      "EngineeringProgramFocusRequestV1": {
+        "properties": {
+          "displayIntent": {
+            "type": "string",
+            "const": "LD",
+            "title": "Displayintent"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "displayIntent"
+        ],
+        "title": "EngineeringProgramFocusRequestV1"
       },
       "EngineeringProgramFocusV1": {
         "properties": {
@@ -8063,6 +6273,11 @@
             "title": "Readready",
             "default": false
           },
+          "offlineCandidateEligible": {
+            "type": "boolean",
+            "title": "Offlinecandidateeligible",
+            "default": false
+          },
           "targetWorkspaceId": {
             "anyOf": [
               {
@@ -8180,36 +6395,6 @@
           "expectedPlanDigest"
         ],
         "title": "ExecuteChangeTransactionRequestV1"
-      },
-      "FinalizeSimulationChangeRequestV1": {
-        "properties": {
-          "decision": {
-            "type": "string",
-            "enum": [
-              "accept",
-              "revert"
-            ],
-            "title": "Decision"
-          },
-          "expectedPlanDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Expectedplandigest"
-          },
-          "expectedSimulationReceiptDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Expectedsimulationreceiptdigest"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "decision",
-          "expectedPlanDigest",
-          "expectedSimulationReceiptDigest"
-        ],
-        "title": "FinalizeSimulationChangeRequestV1"
       },
       "HTTPValidationError": {
         "properties": {
@@ -9729,6 +7914,131 @@
         ],
         "title": "LSControllerValueV1"
       },
+      "LaunchIdleXG5000RequestV1": {
+        "properties": {
+          "confirmIdleLaunch": {
+            "type": "boolean",
+            "const": true,
+            "title": "Confirmidlelaunch"
+          },
+          "timeoutSeconds": {
+            "type": "number",
+            "maximum": 30.0,
+            "minimum": 0.1,
+            "title": "Timeoutseconds",
+            "default": 20
+          },
+          "launchMode": {
+            "type": "string",
+            "enum": [
+              "when_none",
+              "new_instance"
+            ],
+            "title": "Launchmode",
+            "default": "when_none"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "confirmIdleLaunch"
+        ],
+        "title": "LaunchIdleXG5000RequestV1"
+      },
+      "LaunchIdleXG5000ResponseV1": {
+        "properties": {
+          "operation": {
+            "type": "string",
+            "const": "xg5000.launch_idle",
+            "title": "Operation"
+          },
+          "verified": {
+            "type": "boolean",
+            "const": true,
+            "title": "Verified"
+          },
+          "status": {
+            "type": "string",
+            "const": "launched",
+            "title": "Status"
+          },
+          "launchAction": {
+            "type": "string",
+            "const": "process_start",
+            "title": "Launchaction"
+          },
+          "launchMode": {
+            "type": "string",
+            "enum": [
+              "when_none",
+              "new_instance"
+            ],
+            "title": "Launchmode",
+            "default": "when_none"
+          },
+          "launchedIdentity": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Launchedidentity"
+          },
+          "idleBinding": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Idlebinding"
+          },
+          "noExistingInstances": {
+            "type": "boolean",
+            "title": "Noexistinginstances"
+          },
+          "blankWindow": {
+            "type": "boolean",
+            "const": true,
+            "title": "Blankwindow"
+          },
+          "modalObserved": {
+            "type": "boolean",
+            "const": false,
+            "title": "Modalobserved"
+          },
+          "attentionReason": {
+            "type": "null",
+            "title": "Attentionreason"
+          },
+          "processExited": {
+            "type": "boolean",
+            "const": false,
+            "title": "Processexited"
+          },
+          "processTerminated": {
+            "type": "boolean",
+            "const": false,
+            "title": "Processterminated"
+          },
+          "receiptDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Receiptdigest"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "operation",
+          "verified",
+          "status",
+          "launchAction",
+          "launchedIdentity",
+          "idleBinding",
+          "noExistingInstances",
+          "blankWindow",
+          "modalObserved",
+          "attentionReason",
+          "processExited",
+          "processTerminated",
+          "receiptDigest"
+        ],
+        "title": "LaunchIdleXG5000ResponseV1"
+      },
       "LauncherHandoffV1": {
         "properties": {
           "handoffTicket": {
@@ -10099,1326 +8409,6 @@
         ],
         "title": "MCPStatusV1"
       },
-      "MneAnchorFocusV1": {
-        "properties": {
-          "instructionIndex": {
-            "type": "integer",
-            "maximum": 4095.0,
-            "minimum": 0.0,
-            "title": "Instructionindex"
-          },
-          "command": {
-            "type": "string",
-            "enum": [
-              "LOAD",
-              "LOAD NOT",
-              "AND",
-              "AND NOT",
-              "OR",
-              "OR NOT",
-              "AND LOAD",
-              "OR LOAD",
-              "OUT",
-              "SET",
-              "RST",
-              "TON",
-              "END"
-            ],
-            "title": "Command"
-          },
-          "operand": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Operand"
-          },
-          "instructionDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Instructiondigest"
-          },
-          "baselineMneSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Baselinemnesha256"
-          },
-          "baselineLdSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Baselineldsha256"
-          },
-          "baselineInstructionCount": {
-            "type": "integer",
-            "maximum": 4096.0,
-            "minimum": 1.0,
-            "title": "Baselineinstructioncount"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "instructionIndex",
-          "command",
-          "instructionDigest",
-          "baselineMneSha256",
-          "baselineLdSha256",
-          "baselineInstructionCount"
-        ],
-        "title": "MneAnchorFocusV1"
-      },
-      "MneFieldIoBindingV1": {
-        "properties": {
-          "device": {
-            "type": "string",
-            "pattern": "^P[0-9A-F]+$",
-            "title": "Device"
-          },
-          "direction": {
-            "type": "string",
-            "enum": [
-              "input",
-              "output"
-            ],
-            "title": "Direction"
-          },
-          "pointKind": {
-            "type": "string",
-            "enum": [
-              "digital_input",
-              "digital_output"
-            ],
-            "title": "Pointkind"
-          },
-          "module": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Module"
-          },
-          "channel": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Channel"
-          },
-          "terminalRange": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Terminalrange"
-          },
-          "bindingDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Bindingdigest"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "device",
-          "direction",
-          "pointKind",
-          "module",
-          "channel",
-          "terminalRange",
-          "bindingDigest"
-        ],
-        "title": "MneFieldIoBindingV1",
-        "description": "Public, typed terminal fact attached only to physical-P proposals."
-      },
-      "MneFullProgramBaselineBindingV2-Input": {
-        "properties": {
-          "schema": {
-            "type": "string",
-            "const": "controlstudio-mne-approved-baseline/v1",
-            "title": "Schema",
-            "default": "controlstudio-mne-approved-baseline/v1"
-          },
-          "projectSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Projectsha256"
-          },
-          "programId": {
-            "type": "string",
-            "maxLength": 512,
-            "minLength": 1,
-            "title": "Programid"
-          },
-          "programName": {
-            "type": "string",
-            "maxLength": 80,
-            "minLength": 1,
-            "title": "Programname"
-          },
-          "ldPayloadSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Ldpayloadsha256"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "projectSha256",
-          "programId",
-          "programName",
-          "ldPayloadSha256"
-        ],
-        "title": "MneFullProgramBaselineBindingV2",
-        "description": "Host-derived project and raw-LD identity approved for replacement."
-      },
-      "MneFullProgramBaselineBindingV2-Output": {
-        "additionalProperties": true,
-        "type": "object"
-      },
-      "MneFullProgramTargetV2-Input": {
-        "properties": {
-          "schema": {
-            "type": "string",
-            "const": "controlstudio-mne-target-program/v1",
-            "title": "Schema",
-            "default": "controlstudio-mne-target-program/v1"
-          },
-          "programId": {
-            "type": "string",
-            "maxLength": 512,
-            "minLength": 1,
-            "title": "Programid"
-          },
-          "programName": {
-            "type": "string",
-            "maxLength": 80,
-            "minLength": 1,
-            "title": "Programname"
-          },
-          "designDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Designdigest",
-            "default": "0000000000000000000000000000000000000000000000000000000000000000"
-          },
-          "instructionCount": {
-            "type": "integer",
-            "maximum": 4096.0,
-            "minimum": 1.0,
-            "title": "Instructioncount",
-            "default": 0
-          },
-          "instructions": {
-            "items": {
-              "$ref": "#/components/schemas/MneProgramReplacementInstructionV2"
-            },
-            "type": "array",
-            "maxItems": 4096,
-            "minItems": 1,
-            "title": "Instructions"
-          },
-          "targetProgramDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Targetprogramdigest",
-            "default": "0000000000000000000000000000000000000000000000000000000000000000"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "programId",
-          "programName",
-          "instructions"
-        ],
-        "title": "MneFullProgramTargetV2",
-        "description": "Exact program identity and Host-derived canonical target envelope."
-      },
-      "MneFullProgramTargetV2-Output": {
-        "additionalProperties": true,
-        "type": "object"
-      },
-      "MneInstructionBatchPatchCandidateV5-Input": {
-        "properties": {
-          "schema": {
-            "type": "string",
-            "const": "xg5000.mne-instruction-batch-patch-candidate/1.0",
-            "title": "Schema",
-            "default": "xg5000.mne-instruction-batch-patch-candidate/1.0"
-          },
-          "projectSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Projectsha256"
-          },
-          "programId": {
-            "type": "string",
-            "maxLength": 512,
-            "minLength": 1,
-            "title": "Programid"
-          },
-          "programName": {
-            "type": "string",
-            "maxLength": 80,
-            "minLength": 1,
-            "title": "Programname"
-          },
-          "baselineMneSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Baselinemnesha256"
-          },
-          "baselineLdSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Baselineldsha256"
-          },
-          "baselineInstructionCount": {
-            "type": "integer",
-            "maximum": 4096.0,
-            "minimum": 2.0,
-            "title": "Baselineinstructioncount"
-          },
-          "patches": {
-            "items": {
-              "$ref": "#/components/schemas/MneInstructionPatchV4-Input"
-            },
-            "type": "array",
-            "maxItems": 16,
-            "minItems": 2,
-            "title": "Patches"
-          },
-          "targetInstructionCount": {
-            "type": "integer",
-            "maximum": 4096.0,
-            "minimum": 2.0,
-            "title": "Targetinstructioncount"
-          },
-          "targetMneSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Targetmnesha256"
-          },
-          "designDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Designdigest"
-          },
-          "targetProgramDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Targetprogramdigest"
-          },
-          "hardwareContextDigest": {
-            "anyOf": [
-              {
-                "type": "string",
-                "pattern": "^[0-9a-f]{64}$"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Hardwarecontextdigest"
-          },
-          "fieldIoBindings": {
-            "items": {
-              "$ref": "#/components/schemas/MneFieldIoBindingV1"
-            },
-            "type": "array",
-            "title": "Fieldiobindings"
-          },
-          "candidateDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Candidatedigest"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "projectSha256",
-          "programId",
-          "programName",
-          "baselineMneSha256",
-          "baselineLdSha256",
-          "baselineInstructionCount",
-          "patches",
-          "targetInstructionCount",
-          "targetMneSha256",
-          "designDigest",
-          "targetProgramDigest",
-          "candidateDigest"
-        ],
-        "title": "MneInstructionBatchPatchCandidateV5"
-      },
-      "MneInstructionBatchPatchCandidateV5-Output": {
-        "additionalProperties": true,
-        "type": "object"
-      },
-      "MneInstructionPatchCandidateV4-Input": {
-        "properties": {
-          "schema": {
-            "type": "string",
-            "const": "xg5000.mne-instruction-patch-candidate/1.0",
-            "title": "Schema",
-            "default": "xg5000.mne-instruction-patch-candidate/1.0"
-          },
-          "projectSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Projectsha256"
-          },
-          "programId": {
-            "type": "string",
-            "maxLength": 512,
-            "minLength": 1,
-            "title": "Programid"
-          },
-          "programName": {
-            "type": "string",
-            "maxLength": 80,
-            "minLength": 1,
-            "title": "Programname"
-          },
-          "baselineMneSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Baselinemnesha256"
-          },
-          "baselineLdSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Baselineldsha256"
-          },
-          "baselineInstructionCount": {
-            "type": "integer",
-            "maximum": 4096.0,
-            "minimum": 2.0,
-            "title": "Baselineinstructioncount"
-          },
-          "patch": {
-            "$ref": "#/components/schemas/MneInstructionPatchV4-Input"
-          },
-          "targetInstructionCount": {
-            "type": "integer",
-            "maximum": 4096.0,
-            "minimum": 2.0,
-            "title": "Targetinstructioncount"
-          },
-          "targetMneSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Targetmnesha256"
-          },
-          "designDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Designdigest"
-          },
-          "targetProgramDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Targetprogramdigest"
-          },
-          "hardwareContextDigest": {
-            "anyOf": [
-              {
-                "type": "string",
-                "pattern": "^[0-9a-f]{64}$"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Hardwarecontextdigest"
-          },
-          "fieldIoBindings": {
-            "items": {
-              "$ref": "#/components/schemas/MneFieldIoBindingV1"
-            },
-            "type": "array",
-            "title": "Fieldiobindings"
-          },
-          "candidateDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Candidatedigest"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "projectSha256",
-          "programId",
-          "programName",
-          "baselineMneSha256",
-          "baselineLdSha256",
-          "baselineInstructionCount",
-          "patch",
-          "targetInstructionCount",
-          "targetMneSha256",
-          "designDigest",
-          "targetProgramDigest",
-          "candidateDigest"
-        ],
-        "title": "MneInstructionPatchCandidateV4"
-      },
-      "MneInstructionPatchCandidateV4-Output": {
-        "additionalProperties": true,
-        "type": "object"
-      },
-      "MneInstructionPatchRowV4": {
-        "properties": {
-          "command": {
-            "type": "string",
-            "enum": [
-              "LOAD",
-              "LOAD NOT",
-              "AND",
-              "AND NOT",
-              "OR",
-              "OR NOT",
-              "AND LOAD",
-              "OR LOAD",
-              "OUT",
-              "SET",
-              "RST",
-              "TON",
-              "END"
-            ],
-            "title": "Command"
-          },
-          "operand": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 128
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Operand"
-          },
-          "index": {
-            "type": "integer",
-            "maximum": 4095.0,
-            "minimum": 0.0,
-            "title": "Index"
-          },
-          "instructionDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Instructiondigest"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "command",
-          "operand",
-          "index",
-          "instructionDigest"
-        ],
-        "title": "MneInstructionPatchRowV4"
-      },
-      "MneInstructionPatchV4-Input": {
-        "properties": {
-          "schema": {
-            "type": "string",
-            "const": "controlstudio-mne-instruction-patch/v1",
-            "title": "Schema",
-            "default": "controlstudio-mne-instruction-patch/v1"
-          },
-          "operation": {
-            "type": "string",
-            "enum": [
-              "insert_before",
-              "insert_after",
-              "replace",
-              "delete"
-            ],
-            "title": "Operation"
-          },
-          "anchorInstructionIndex": {
-            "type": "integer",
-            "maximum": 4094.0,
-            "minimum": 0.0,
-            "title": "Anchorinstructionindex"
-          },
-          "anchor": {
-            "$ref": "#/components/schemas/MneInstructionPatchRowV4"
-          },
-          "instruction": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MneProgramReplacementInstructionV2"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "contextBefore": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MneInstructionPatchRowV4"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "contextAfter": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MneInstructionPatchRowV4"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "operation",
-          "anchorInstructionIndex",
-          "anchor"
-        ],
-        "title": "MneInstructionPatchV4"
-      },
-      "MneInstructionPatchV4-Output": {
-        "additionalProperties": true,
-        "type": "object"
-      },
-      "MneProgramReplacementInstructionV2": {
-        "properties": {
-          "command": {
-            "type": "string",
-            "enum": [
-              "LOAD",
-              "LOAD NOT",
-              "AND",
-              "AND NOT",
-              "OR",
-              "OR NOT",
-              "AND LOAD",
-              "OR LOAD",
-              "OUT",
-              "SET",
-              "RST",
-              "TON",
-              "END"
-            ],
-            "title": "Command"
-          },
-          "operand": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 128
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Operand"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "command",
-          "operand"
-        ],
-        "title": "MneProgramReplacementInstructionV2",
-        "description": "One typed instruction in a model-visible full-program target."
-      },
-      "MneRungBaselineV6-Input": {
-        "properties": {
-          "startInstructionIndex": {
-            "type": "integer",
-            "maximum": 4094.0,
-            "minimum": 0.0,
-            "title": "Startinstructionindex"
-          },
-          "conditionInstructionCount": {
-            "type": "integer",
-            "maximum": 128.0,
-            "minimum": 1.0,
-            "title": "Conditioninstructioncount"
-          },
-          "actionInstructionCount": {
-            "type": "integer",
-            "maximum": 16.0,
-            "minimum": 1.0,
-            "title": "Actioninstructioncount"
-          },
-          "condition": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/MneRungContactConditionV6"
-              },
-              {
-                "$ref": "#/components/schemas/MneRungCompositeConditionV6-Input"
-              }
-            ],
-            "title": "Condition",
-            "discriminator": {
-              "propertyName": "kind",
-              "mapping": {
-                "all_of": "#/components/schemas/MneRungCompositeConditionV6-Input",
-                "any_of": "#/components/schemas/MneRungCompositeConditionV6-Input",
-                "contact": "#/components/schemas/MneRungContactConditionV6"
-              }
-            }
-          },
-          "actions": {
-            "items": {
-              "$ref": "#/components/schemas/MneInstructionPatchRowV4"
-            },
-            "type": "array",
-            "maxItems": 16,
-            "minItems": 1,
-            "title": "Actions"
-          },
-          "rungDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Rungdigest"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "startInstructionIndex",
-          "conditionInstructionCount",
-          "actionInstructionCount",
-          "condition",
-          "actions",
-          "rungDigest"
-        ],
-        "title": "MneRungBaselineV6"
-      },
-      "MneRungBaselineV6-Output": {
-        "properties": {
-          "startInstructionIndex": {
-            "type": "integer",
-            "maximum": 4094.0,
-            "minimum": 0.0,
-            "title": "Startinstructionindex"
-          },
-          "conditionInstructionCount": {
-            "type": "integer",
-            "maximum": 128.0,
-            "minimum": 1.0,
-            "title": "Conditioninstructioncount"
-          },
-          "actionInstructionCount": {
-            "type": "integer",
-            "maximum": 16.0,
-            "minimum": 1.0,
-            "title": "Actioninstructioncount"
-          },
-          "condition": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/MneRungContactConditionV6"
-              },
-              {
-                "$ref": "#/components/schemas/MneRungCompositeConditionV6-Output"
-              }
-            ],
-            "title": "Condition",
-            "discriminator": {
-              "propertyName": "kind",
-              "mapping": {
-                "all_of": "#/components/schemas/MneRungCompositeConditionV6-Output",
-                "any_of": "#/components/schemas/MneRungCompositeConditionV6-Output",
-                "contact": "#/components/schemas/MneRungContactConditionV6"
-              }
-            }
-          },
-          "actions": {
-            "items": {
-              "$ref": "#/components/schemas/MneInstructionPatchRowV4"
-            },
-            "type": "array",
-            "maxItems": 16,
-            "minItems": 1,
-            "title": "Actions"
-          },
-          "rungDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Rungdigest"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "startInstructionIndex",
-          "conditionInstructionCount",
-          "actionInstructionCount",
-          "condition",
-          "actions",
-          "rungDigest"
-        ],
-        "title": "MneRungBaselineV6"
-      },
-      "MneRungCompositeConditionV6-Input": {
-        "properties": {
-          "kind": {
-            "type": "string",
-            "enum": [
-              "all_of",
-              "any_of"
-            ],
-            "title": "Kind"
-          },
-          "terms": {
-            "items": {
-              "oneOf": [
-                {
-                  "$ref": "#/components/schemas/MneRungContactConditionV6"
-                },
-                {
-                  "$ref": "#/components/schemas/MneRungCompositeConditionV6-Input"
-                }
-              ],
-              "discriminator": {
-                "propertyName": "kind",
-                "mapping": {
-                  "all_of": "#/components/schemas/MneRungCompositeConditionV6-Input",
-                  "any_of": "#/components/schemas/MneRungCompositeConditionV6-Input",
-                  "contact": "#/components/schemas/MneRungContactConditionV6"
-                }
-              }
-            },
-            "type": "array",
-            "maxItems": 20,
-            "minItems": 2,
-            "title": "Terms"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "kind",
-          "terms"
-        ],
-        "title": "MneRungCompositeConditionV6"
-      },
-      "MneRungCompositeConditionV6-Output": {
-        "properties": {
-          "kind": {
-            "type": "string",
-            "enum": [
-              "all_of",
-              "any_of"
-            ],
-            "title": "Kind"
-          },
-          "terms": {
-            "items": {
-              "oneOf": [
-                {
-                  "$ref": "#/components/schemas/MneRungContactConditionV6"
-                },
-                {
-                  "$ref": "#/components/schemas/MneRungCompositeConditionV6-Output"
-                }
-              ],
-              "discriminator": {
-                "propertyName": "kind",
-                "mapping": {
-                  "all_of": "#/components/schemas/MneRungCompositeConditionV6-Output",
-                  "any_of": "#/components/schemas/MneRungCompositeConditionV6-Output",
-                  "contact": "#/components/schemas/MneRungContactConditionV6"
-                }
-              }
-            },
-            "type": "array",
-            "maxItems": 20,
-            "minItems": 2,
-            "title": "Terms"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "kind",
-          "terms"
-        ],
-        "title": "MneRungCompositeConditionV6"
-      },
-      "MneRungContactConditionV6": {
-        "properties": {
-          "kind": {
-            "type": "string",
-            "const": "contact",
-            "title": "Kind"
-          },
-          "operand": {
-            "type": "string",
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Operand"
-          },
-          "state": {
-            "type": "string",
-            "enum": [
-              "on",
-              "off"
-            ],
-            "title": "State"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "kind",
-          "operand",
-          "state"
-        ],
-        "title": "MneRungContactConditionV6"
-      },
-      "MneRungPatchCandidateV6-Input": {
-        "properties": {
-          "schema": {
-            "type": "string",
-            "const": "xg5000.mne-rung-patch-candidate/1.0",
-            "title": "Schema",
-            "default": "xg5000.mne-rung-patch-candidate/1.0"
-          },
-          "projectSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Projectsha256"
-          },
-          "programId": {
-            "type": "string",
-            "maxLength": 512,
-            "minLength": 1,
-            "title": "Programid"
-          },
-          "programName": {
-            "type": "string",
-            "maxLength": 80,
-            "minLength": 1,
-            "title": "Programname"
-          },
-          "baselineMneSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Baselinemnesha256"
-          },
-          "baselineLdSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Baselineldsha256"
-          },
-          "baselineInstructionCount": {
-            "type": "integer",
-            "maximum": 4096.0,
-            "minimum": 2.0,
-            "title": "Baselineinstructioncount"
-          },
-          "patch": {
-            "$ref": "#/components/schemas/MneRungPatchV6-Input"
-          },
-          "targetInstructionCount": {
-            "type": "integer",
-            "maximum": 4096.0,
-            "minimum": 2.0,
-            "title": "Targetinstructioncount"
-          },
-          "targetMneSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Targetmnesha256"
-          },
-          "designDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Designdigest"
-          },
-          "targetProgramDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Targetprogramdigest"
-          },
-          "simulationProfile": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Simulationprofile"
-          },
-          "hardwareContextDigest": {
-            "anyOf": [
-              {
-                "type": "string",
-                "pattern": "^[0-9a-f]{64}$"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Hardwarecontextdigest"
-          },
-          "fieldIoBindings": {
-            "items": {
-              "$ref": "#/components/schemas/MneFieldIoBindingV1"
-            },
-            "type": "array",
-            "title": "Fieldiobindings"
-          },
-          "candidateDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Candidatedigest"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "projectSha256",
-          "programId",
-          "programName",
-          "baselineMneSha256",
-          "baselineLdSha256",
-          "baselineInstructionCount",
-          "patch",
-          "targetInstructionCount",
-          "targetMneSha256",
-          "designDigest",
-          "targetProgramDigest",
-          "candidateDigest"
-        ],
-        "title": "MneRungPatchCandidateV6"
-      },
-      "MneRungPatchCandidateV6-Output": {
-        "additionalProperties": true,
-        "type": "object"
-      },
-      "MneRungPatchV6-Input": {
-        "properties": {
-          "schema": {
-            "type": "string",
-            "const": "controlstudio-mne-rung-patch/v1",
-            "title": "Schema",
-            "default": "controlstudio-mne-rung-patch/v1"
-          },
-          "operation": {
-            "type": "string",
-            "enum": [
-              "replace_condition",
-              "replace_rung",
-              "insert_before",
-              "delete"
-            ],
-            "title": "Operation"
-          },
-          "anchor": {
-            "$ref": "#/components/schemas/MneInstructionPatchRowV4"
-          },
-          "anchorRung": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MneRungBaselineV6-Input"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "targetRung": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MneRungTargetV6-Input"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "operation",
-          "anchor",
-          "anchorRung",
-          "targetRung"
-        ],
-        "title": "MneRungPatchV6"
-      },
-      "MneRungPatchV6-Output": {
-        "additionalProperties": true,
-        "type": "object"
-      },
-      "MneRungTargetV6-Input": {
-        "properties": {
-          "condition": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/MneRungContactConditionV6"
-              },
-              {
-                "$ref": "#/components/schemas/MneRungCompositeConditionV6-Input"
-              }
-            ],
-            "title": "Condition",
-            "discriminator": {
-              "propertyName": "kind",
-              "mapping": {
-                "all_of": "#/components/schemas/MneRungCompositeConditionV6-Input",
-                "any_of": "#/components/schemas/MneRungCompositeConditionV6-Input",
-                "contact": "#/components/schemas/MneRungContactConditionV6"
-              }
-            }
-          },
-          "actions": {
-            "items": {
-              "$ref": "#/components/schemas/MneProgramReplacementInstructionV2"
-            },
-            "type": "array",
-            "maxItems": 16,
-            "minItems": 1,
-            "title": "Actions"
-          },
-          "rungDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Rungdigest"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "condition",
-          "actions",
-          "rungDigest"
-        ],
-        "title": "MneRungTargetV6"
-      },
-      "MneRungTargetV6-Output": {
-        "properties": {
-          "condition": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/MneRungContactConditionV6"
-              },
-              {
-                "$ref": "#/components/schemas/MneRungCompositeConditionV6-Output"
-              }
-            ],
-            "title": "Condition",
-            "discriminator": {
-              "propertyName": "kind",
-              "mapping": {
-                "all_of": "#/components/schemas/MneRungCompositeConditionV6-Output",
-                "any_of": "#/components/schemas/MneRungCompositeConditionV6-Output",
-                "contact": "#/components/schemas/MneRungContactConditionV6"
-              }
-            }
-          },
-          "actions": {
-            "items": {
-              "$ref": "#/components/schemas/MneProgramReplacementInstructionV2"
-            },
-            "type": "array",
-            "maxItems": 16,
-            "minItems": 1,
-            "title": "Actions"
-          },
-          "rungDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Rungdigest"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "condition",
-          "actions",
-          "rungDigest"
-        ],
-        "title": "MneRungTargetV6"
-      },
-      "MneSeriesGuardCandidateV3-Input": {
-        "properties": {
-          "schema": {
-            "type": "string",
-            "const": "xg5000.mne-series-guard-candidate/1.0",
-            "title": "Schema",
-            "default": "xg5000.mne-series-guard-candidate/1.0"
-          },
-          "projectSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Projectsha256"
-          },
-          "programId": {
-            "type": "string",
-            "maxLength": 512,
-            "minLength": 1,
-            "title": "Programid"
-          },
-          "programName": {
-            "type": "string",
-            "maxLength": 80,
-            "minLength": 1,
-            "title": "Programname"
-          },
-          "baselineMneSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Baselinemnesha256"
-          },
-          "baselineLdSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Baselineldsha256"
-          },
-          "baselineInstructionCount": {
-            "type": "integer",
-            "maximum": 4095.0,
-            "minimum": 2.0,
-            "title": "Baselineinstructioncount"
-          },
-          "patch": {
-            "$ref": "#/components/schemas/MneSeriesGuardPatchV3-Input"
-          },
-          "targetInstructionCount": {
-            "type": "integer",
-            "maximum": 4096.0,
-            "minimum": 2.0,
-            "title": "Targetinstructioncount"
-          },
-          "targetMneSha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Targetmnesha256"
-          },
-          "designDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Designdigest"
-          },
-          "targetProgramDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Targetprogramdigest"
-          },
-          "hardwareContextDigest": {
-            "anyOf": [
-              {
-                "type": "string",
-                "pattern": "^[0-9a-f]{64}$"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Hardwarecontextdigest"
-          },
-          "fieldIoBindings": {
-            "items": {
-              "$ref": "#/components/schemas/MneFieldIoBindingV1"
-            },
-            "type": "array",
-            "title": "Fieldiobindings"
-          },
-          "candidateDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Candidatedigest"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "projectSha256",
-          "programId",
-          "programName",
-          "baselineMneSha256",
-          "baselineLdSha256",
-          "baselineInstructionCount",
-          "patch",
-          "targetInstructionCount",
-          "targetMneSha256",
-          "designDigest",
-          "targetProgramDigest",
-          "candidateDigest"
-        ],
-        "title": "MneSeriesGuardCandidateV3",
-        "description": "Digest-only compiler receipt; no raw program payload crosses the API."
-      },
-      "MneSeriesGuardCandidateV3-Output": {
-        "additionalProperties": true,
-        "type": "object"
-      },
-      "MneSeriesGuardPatchV3-Input": {
-        "properties": {
-          "schema": {
-            "type": "string",
-            "const": "controlstudio-mne-series-guard-patch/v1",
-            "title": "Schema",
-            "default": "controlstudio-mne-series-guard-patch/v1"
-          },
-          "guardCommand": {
-            "type": "string",
-            "enum": [
-              "AND",
-              "AND NOT"
-            ],
-            "title": "Guardcommand"
-          },
-          "guardOperand": {
-            "type": "string",
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Guardoperand"
-          },
-          "outputOperand": {
-            "type": "string",
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Outputoperand"
-          },
-          "outputInstructionIndex": {
-            "type": "integer",
-            "maximum": 4093.0,
-            "minimum": 1.0,
-            "title": "Outputinstructionindex"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "guardCommand",
-          "guardOperand",
-          "outputOperand",
-          "outputInstructionIndex"
-        ],
-        "title": "MneSeriesGuardPatchV3",
-        "description": "The only structural edit currently exposed to the engineering Agent."
-      },
-      "MneSeriesGuardPatchV3-Output": {
-        "additionalProperties": true,
-        "type": "object"
-      },
       "ModelCapabilityFlagsV1": {
         "properties": {
           "completion": {
@@ -11470,6 +8460,16 @@
           "message": {
             "type": "string",
             "title": "Message"
+          },
+          "modelContext": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelContextV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -11481,6 +8481,93 @@
           "message"
         ],
         "title": "ModelCapabilityResultV1"
+      },
+      "ModelContextV1": {
+        "properties": {
+          "detectedTotalTokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detectedtotaltokens"
+          },
+          "requiredInputTokens": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Requiredinputtokens",
+            "default": 200000
+          },
+          "outputReserveTokens": {
+            "type": "integer",
+            "minimum": 16608.0,
+            "title": "Outputreservetokens",
+            "default": 16608
+          },
+          "source": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Source",
+            "default": "unknown"
+          },
+          "historyBudgetTokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Historybudgettokens"
+          },
+          "historyBudgetStatus": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "insufficient",
+              "unknown"
+            ],
+            "title": "Historybudgetstatus",
+            "default": "unknown"
+          },
+          "historyBudgetSource": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Historybudgetsource"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "insufficient",
+              "unknown"
+            ],
+            "title": "Status",
+            "readOnly": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "ModelContextV1",
+        "description": "An explicit, provider-neutral context-capacity observation.\n\nThe Host may forward this projection when a trusted provider capability\nsource has actually measured the endpoint.  ``None`` is intentional: it\nmeans the endpoint's capacity is unknown, not that the product requirement\nhas been met.  The contract keeps the 200k input requirement explicit so\ncallers cannot silently substitute the currently observed 196608 window."
       },
       "ModelSettingsV1": {
         "properties": {
@@ -11509,6 +8596,27 @@
             "type": "number",
             "title": "Timeoutseconds"
           },
+          "reasoningEffort": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoningeffort"
+          },
           "hasApiKey": {
             "type": "boolean",
             "title": "Hasapikey"
@@ -11528,6 +8636,16 @@
               }
             ],
             "title": "Updatedat"
+          },
+          "modelContext": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelContextV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -11542,217 +8660,12 @@
         ],
         "title": "ModelSettingsV1"
       },
-      "NativeProjectCreatedV1": {
-        "properties": {
-          "operation": {
-            "$ref": "#/components/schemas/NativeProjectOperationV1"
-          },
-          "created": {
-            "type": "boolean",
-            "title": "Created"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "operation",
-          "created"
-        ],
-        "title": "NativeProjectCreatedV1"
-      },
-      "NativeProjectOperationV1": {
-        "properties": {
-          "nativeProjectId": {
-            "type": "string",
-            "title": "Nativeprojectid"
-          },
-          "operationId": {
-            "type": "string",
-            "title": "Operationid"
-          },
-          "state": {
-            "type": "string",
-            "enum": [
-              "allocated",
-              "executing",
-              "completed",
-              "failed",
-              "quarantined"
-            ],
-            "title": "State"
-          },
-          "requestDigest": {
-            "type": "string",
-            "title": "Requestdigest"
-          },
-          "actorId": {
-            "type": "string",
-            "title": "Actorid"
-          },
-          "request": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Request"
-          },
-          "planDigest": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Plandigest"
-          },
-          "destinationDirectory": {
-            "type": "string",
-            "title": "Destinationdirectory"
-          },
-          "result": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Result"
-          },
-          "errorCode": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Errorcode"
-          },
-          "errorDetail": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Errordetail"
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Createdat"
-          },
-          "updatedAt": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Updatedat"
-          },
-          "completedAt": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Completedat"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "nativeProjectId",
-          "operationId",
-          "state",
-          "requestDigest",
-          "actorId",
-          "request",
-          "destinationDirectory",
-          "result",
-          "createdAt",
-          "updatedAt"
-        ],
-        "title": "NativeProjectOperationV1"
-      },
-      "NativeProjectReconciliationV1": {
-        "properties": {
-          "operation": {
-            "$ref": "#/components/schemas/NativeProjectOperationV1"
-          },
-          "reconciled": {
-            "type": "boolean",
-            "title": "Reconciled"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "operation",
-          "reconciled"
-        ],
-        "title": "NativeProjectReconciliationV1"
-      },
-      "NativeSimulationTrialDecisionRequestV1": {
-        "properties": {
-          "decision": {
-            "type": "string",
-            "enum": [
-              "accept",
-              "revert",
-              "acknowledge_quarantine"
-            ],
-            "title": "Decision"
-          },
-          "expectedReceiptDigest": {
-            "anyOf": [
-              {
-                "type": "string",
-                "pattern": "^[0-9a-f]{64}$"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Expectedreceiptdigest"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "decision"
-        ],
-        "title": "NativeSimulationTrialDecisionRequestV1"
-      },
-      "NativeSimulationTrialDecisionV1": {
-        "properties": {
-          "operation": {
-            "$ref": "#/components/schemas/NativeProjectOperationV1"
-          },
-          "decisionRecorded": {
-            "type": "boolean",
-            "title": "Decisionrecorded"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "operation",
-          "decisionRecorded"
-        ],
-        "title": "NativeSimulationTrialDecisionV1"
-      },
       "NewBuildWorkspaceProvenanceV1": {
         "properties": {
           "schema": {
             "type": "string",
             "const": "controlstudio-new-build-workspace-provenance/v1",
             "title": "Schema"
-          },
-          "nativeProjectId": {
-            "type": "string",
-            "pattern": "^[0-9a-f-]{36}$",
-            "title": "Nativeprojectid"
           },
           "reviewedPlanDigest": {
             "type": "string",
@@ -11784,7 +8697,6 @@
         "type": "object",
         "required": [
           "schema",
-          "nativeProjectId",
           "reviewedPlanDigest",
           "buildBundleId",
           "buildReceiptDigest",
@@ -11925,10 +8837,8 @@
               "new_project_planning",
               "local_project_analysis",
               "program_focus",
-              "native_project_create",
               "online_observe",
               "offline_mutate",
-              "full_program_replacement",
               "controller_project_restore",
               "online_modify",
               "multi_vendor"
@@ -11973,7 +8883,8 @@
                   "missing",
                   "valid",
                   "expired",
-                  "runtime_mismatch"
+                  "runtime_mismatch",
+                  "runtime_checked_at_plan"
                 ]
               },
               {
@@ -11997,6 +8908,12 @@
       },
       "ProjectBriefV1": {
         "properties": {
+          "supplementalRequirements": {
+            "type": "string",
+            "maxLength": 20000,
+            "title": "Supplementalrequirements",
+            "default": ""
+          },
           "projectName": {
             "type": "string",
             "maxLength": 200,
@@ -12133,6 +9050,14 @@
       },
       "ProjectPlanArtifactV1": {
         "properties": {
+          "requirementSources": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectRequirementSourceV1"
+            },
+            "type": "array",
+            "maxItems": 5,
+            "title": "Requirementsources"
+          },
           "schemaVersion": {
             "type": "string",
             "const": "2",
@@ -12452,7 +9377,6 @@
             },
             "type": "array",
             "maxItems": 20,
-            "minItems": 1,
             "title": "Permitall"
           },
           "outputSignalId": {
@@ -12471,7 +9395,108 @@
         ],
         "title": "ProjectPlanControlNetworkV1"
       },
+      "ProjectPlanIndexAcceptanceBindingsV1": {
+        "properties": {
+          "schemaVersion": {
+            "type": "string",
+            "const": "controlstudio-index-acceptance-bindings/v1",
+            "title": "Schemaversion",
+            "default": "controlstudio-index-acceptance-bindings/v1"
+          },
+          "signals": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Signals"
+          },
+          "modes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Modes"
+          },
+          "alarms": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Alarms"
+          },
+          "timerId": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Timerid"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "signals",
+          "modes",
+          "alarms",
+          "timerId"
+        ],
+        "title": "ProjectPlanIndexAcceptanceBindingsV1"
+      },
       "ProjectPlanIoPointV1": {
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "digital_input"
+                  ]
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "safeState": {
+                  "enum": [
+                    "not_applicable"
+                  ]
+                }
+              },
+              "required": [
+                "safeState"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "digital_output",
+                    "internal_bit"
+                  ]
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "safeState": {
+                  "enum": [
+                    "on",
+                    "off"
+                  ]
+                }
+              },
+              "required": [
+                "safeState"
+              ]
+            }
+          }
+        ],
         "properties": {
           "signalId": {
             "type": "string",
@@ -12487,6 +9512,18 @@
             "type": "string",
             "pattern": "^[PM]\\d{3,4}[0-9A-F]$",
             "title": "Address"
+          },
+          "nativeType": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nativetype"
           },
           "kind": {
             "type": "string",
@@ -12517,7 +9554,8 @@
               "off",
               "not_applicable"
             ],
-            "title": "Safestate"
+            "title": "Safestate",
+            "description": "digital_input requires not_applicable; digital_output and internal_bit require on or off. This is a kind/safe_state relationship, not a prescribed safety-state choice for writable signals."
           }
         },
         "additionalProperties": false,
@@ -12646,6 +9684,73 @@
         ],
         "title": "ProjectPlanLadderActionV1"
       },
+      "ProjectPlanLadderCompareConditionV1": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "compare",
+            "title": "Kind"
+          },
+          "lhs": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProjectPlanLadderDataRegisterOperandV1"
+              },
+              {
+                "$ref": "#/components/schemas/ProjectPlanLadderConstantOperandV1"
+              }
+            ],
+            "title": "Lhs",
+            "discriminator": {
+              "propertyName": "kind",
+              "mapping": {
+                "constant": "#/components/schemas/ProjectPlanLadderConstantOperandV1",
+                "data_register": "#/components/schemas/ProjectPlanLadderDataRegisterOperandV1"
+              }
+            }
+          },
+          "relation": {
+            "type": "string",
+            "enum": [
+              "eq",
+              "ne",
+              "gt",
+              "lt",
+              "ge",
+              "le"
+            ],
+            "title": "Relation"
+          },
+          "rhs": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProjectPlanLadderDataRegisterOperandV1"
+              },
+              {
+                "$ref": "#/components/schemas/ProjectPlanLadderConstantOperandV1"
+              }
+            ],
+            "title": "Rhs",
+            "discriminator": {
+              "propertyName": "kind",
+              "mapping": {
+                "constant": "#/components/schemas/ProjectPlanLadderConstantOperandV1",
+                "data_register": "#/components/schemas/ProjectPlanLadderDataRegisterOperandV1"
+              }
+            }
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "lhs",
+          "relation",
+          "rhs"
+        ],
+        "title": "ProjectPlanLadderCompareConditionV1",
+        "description": "A typed signed-16 LOAD comparison over D registers or constants."
+      },
       "ProjectPlanLadderCompositeConditionV1": {
         "properties": {
           "kind": {
@@ -12663,6 +9768,9 @@
                   "$ref": "#/components/schemas/ProjectPlanLadderContactConditionV1"
                 },
                 {
+                  "$ref": "#/components/schemas/ProjectPlanLadderCompareConditionV1"
+                },
+                {
                   "$ref": "#/components/schemas/ProjectPlanLadderCompositeConditionV1"
                 }
               ],
@@ -12671,6 +9779,7 @@
                 "mapping": {
                   "all_of": "#/components/schemas/ProjectPlanLadderCompositeConditionV1",
                   "any_of": "#/components/schemas/ProjectPlanLadderCompositeConditionV1",
+                  "compare": "#/components/schemas/ProjectPlanLadderCompareConditionV1",
                   "contact": "#/components/schemas/ProjectPlanLadderContactConditionV1"
                 }
               }
@@ -12688,6 +9797,29 @@
           "terms"
         ],
         "title": "ProjectPlanLadderCompositeConditionV1"
+      },
+      "ProjectPlanLadderConstantOperandV1": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "constant",
+            "title": "Kind"
+          },
+          "value": {
+            "type": "integer",
+            "maximum": 32767.0,
+            "minimum": -32768.0,
+            "title": "Value"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "value"
+        ],
+        "title": "ProjectPlanLadderConstantOperandV1",
+        "description": "One literal in the native signed-16 comparison domain."
       },
       "ProjectPlanLadderContactConditionV1": {
         "properties": {
@@ -12730,6 +9862,49 @@
           "state"
         ],
         "title": "ProjectPlanLadderContactConditionV1"
+      },
+      "ProjectPlanLadderDataRegisterOperandV1": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "data_register",
+            "title": "Kind"
+          },
+          "address": {
+            "type": "string",
+            "pattern": "^D\\d{5}$",
+            "title": "Address"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "address"
+        ],
+        "title": "ProjectPlanLadderDataRegisterOperandV1",
+        "description": "One directly addressed signed-16 data-register operand."
+      },
+      "ProjectPlanLadderIncrementActionV1": {
+        "properties": {
+          "instruction": {
+            "type": "string",
+            "const": "INCP",
+            "title": "Instruction"
+          },
+          "destinationAddress": {
+            "type": "string",
+            "pattern": "^D\\d{5}$",
+            "title": "Destinationaddress"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "instruction",
+          "destinationAddress"
+        ],
+        "title": "ProjectPlanLadderIncrementActionV1"
       },
       "ProjectPlanLadderMoveActionV1": {
         "properties": {
@@ -12779,6 +9954,9 @@
                 "$ref": "#/components/schemas/ProjectPlanLadderContactConditionV1"
               },
               {
+                "$ref": "#/components/schemas/ProjectPlanLadderCompareConditionV1"
+              },
+              {
                 "$ref": "#/components/schemas/ProjectPlanLadderCompositeConditionV1"
               }
             ],
@@ -12788,6 +9966,7 @@
               "mapping": {
                 "all_of": "#/components/schemas/ProjectPlanLadderCompositeConditionV1",
                 "any_of": "#/components/schemas/ProjectPlanLadderCompositeConditionV1",
+                "compare": "#/components/schemas/ProjectPlanLadderCompareConditionV1",
                 "contact": "#/components/schemas/ProjectPlanLadderContactConditionV1"
               }
             }
@@ -12799,12 +9978,16 @@
               },
               {
                 "$ref": "#/components/schemas/ProjectPlanLadderMoveActionV1"
+              },
+              {
+                "$ref": "#/components/schemas/ProjectPlanLadderIncrementActionV1"
               }
             ],
             "title": "Action",
             "discriminator": {
               "propertyName": "instruction",
               "mapping": {
+                "INCP": "#/components/schemas/ProjectPlanLadderIncrementActionV1",
                 "MOV": "#/components/schemas/ProjectPlanLadderMoveActionV1",
                 "OUT": "#/components/schemas/ProjectPlanLadderActionV1",
                 "RST": "#/components/schemas/ProjectPlanLadderActionV1",
@@ -12882,6 +10065,45 @@
                 "type": "null"
               }
             ]
+          },
+          "indexAcceptanceBindings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectPlanIndexAcceptanceBindingsV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "simulationScenario": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Simulationscenario"
+          },
+          "nativeSymbols": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array",
+                "maxItems": 4096
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nativesymbols",
+            "description": "Optional ordered, model-authored native CSV symbol metadata. Supply explicit symbol, address, data_type and comment; this does not declare I/O, generate logic or infer timer/counter labels or native types."
           },
           "ioPoints": {
             "items": {
@@ -13757,6 +10979,47 @@
         ],
         "title": "ProjectPlanTimerV1"
       },
+      "ProjectRequirementSourceV1": {
+        "properties": {
+          "field": {
+            "type": "string",
+            "enum": [
+              "sequence",
+              "hardware_and_io",
+              "safety_and_interlocks",
+              "operating_modes",
+              "performance_and_acceptance"
+            ],
+            "title": "Field"
+          },
+          "quote": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Quote"
+          },
+          "messageId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Messageid"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "field",
+          "quote"
+        ],
+        "title": "ProjectRequirementSourceV1"
+      },
       "ReadLSControllerRequestV1": {
         "properties": {
           "conversationId": {
@@ -13852,61 +11115,6 @@
         "title": "ReconcileChangeTransactionRequestV1",
         "description": "Explicit XG5000 target for recovery-only reconciliation."
       },
-      "ReconcileNativeProjectRequestV1": {
-        "properties": {
-          "pid": {
-            "type": "integer",
-            "exclusiveMinimum": 0.0,
-            "title": "Pid"
-          },
-          "hwnd": {
-            "type": "integer",
-            "exclusiveMinimum": 0.0,
-            "title": "Hwnd"
-          },
-          "expectedProjectPath": {
-            "type": "string",
-            "maxLength": 32768,
-            "minLength": 1,
-            "title": "Expectedprojectpath"
-          },
-          "observedProjectPath": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 32768,
-                "minLength": 1
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Observedprojectpath"
-          },
-          "expectedProjectSha256": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 64,
-                "minLength": 64,
-                "pattern": "^[0-9a-fA-F]{64}$"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Expectedprojectsha256"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "pid",
-          "hwnd",
-          "expectedProjectPath"
-        ],
-        "title": "ReconcileNativeProjectRequestV1"
-      },
       "ResumeLocalWorkspaceRequestV1": {
         "properties": {
           "timeoutSeconds": {
@@ -13923,12 +11131,6 @@
       },
       "ReviewedNoSaveCloseRequestV1": {
         "properties": {
-          "sessionId": {
-            "type": "string",
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Sessionid"
-          },
           "pid": {
             "type": "integer",
             "exclusiveMinimum": 0.0,
@@ -13944,15 +11146,42 @@
             "exclusiveMinimum": 0.0,
             "title": "Processcreatetime"
           },
+          "sessionId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sessionid"
+          },
           "projectPath": {
-            "type": "string",
-            "maxLength": 32768,
-            "minLength": 1,
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32768,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Projectpath"
           },
           "projectHash": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Projecthash"
           },
           "confirmNoSave": {
@@ -13971,12 +11200,9 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "sessionId",
           "pid",
           "hwnd",
           "processCreateTime",
-          "projectPath",
-          "projectHash",
           "confirmNoSave"
         ],
         "title": "ReviewedNoSaveCloseRequestV1",
@@ -14044,73 +11270,6 @@
           "nextStep"
         ],
         "title": "ReviewedNoSaveCloseResponseV1"
-      },
-      "ReviewedProjectPlanBindingV1": {
-        "properties": {
-          "schemaVersion": {
-            "type": "string",
-            "const": "2",
-            "title": "Schemaversion"
-          },
-          "conversationId": {
-            "type": "string",
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Conversationid"
-          },
-          "messageId": {
-            "type": "string",
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Messageid"
-          },
-          "planDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Plandigest"
-          },
-          "projectBriefDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Projectbriefdigest"
-          },
-          "attachmentRevisionDigest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Attachmentrevisiondigest"
-          },
-          "reviewedSectionIds": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 100,
-            "minItems": 1,
-            "title": "Reviewedsectionids"
-          },
-          "reviewedItemIds": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 100000,
-            "minItems": 1,
-            "title": "Revieweditemids"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "schemaVersion",
-          "conversationId",
-          "messageId",
-          "planDigest",
-          "projectBriefDigest",
-          "attachmentRevisionDigest",
-          "reviewedSectionIds",
-          "reviewedItemIds"
-        ],
-        "title": "ReviewedProjectPlanBindingV1"
       },
       "RunCancellationV1": {
         "properties": {
@@ -14200,10 +11359,31 @@
           },
           "timeoutSeconds": {
             "type": "number",
-            "maximum": 300.0,
+            "maximum": 3600.0,
             "minimum": 1.0,
             "title": "Timeoutseconds",
             "default": 60
+          },
+          "reasoningEffort": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoningeffort"
           },
           "externalModelConsent": {
             "type": "boolean",
@@ -14263,7 +11443,8 @@
                 "type": "string",
                 "enum": [
                   "analysis_only",
-                  "offline_candidate_revision"
+                  "offline_candidate_revision",
+                  "permanent_offline_revision"
                 ]
               },
               {
@@ -14275,8 +11456,8 @@
           "verificationScope": {
             "type": "string",
             "enum": [
-              "offline_native_reopen",
-              "offline_native_reopen_xgsim"
+              "offline_native_check_only",
+              "offline_native_reopen"
             ],
             "title": "Verificationscope",
             "default": "offline_native_reopen"
@@ -14825,6 +12006,8 @@
             "enum": [
               "strong_readback",
               "controlled_launch_read_only",
+              "controlled_launch_official_open_read_only",
+              "controlled_launch_native_file_read_only",
               "unverified"
             ],
             "title": "Identityassurance",
@@ -14873,5 +12056,5 @@
       }
     }
   },
-  "x-controlstudio-contract-major": 6
+  "x-controlstudio-contract-major": 7
 }

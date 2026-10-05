@@ -13,10 +13,16 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StrictBool,
+    StrictInt,
+    computed_field,
     field_validator,
     model_serializer,
     model_validator,
 )
+from pydantic_core import PydanticCustomError
+
+pass
 
 
 def _to_camel(value: str) -> str:
@@ -189,10 +195,10 @@ class ProductFeatureStatusV1(ApiModel):
         "new_project_planning",
         "local_project_analysis",
         "program_focus",
-        "native_project_create",
+        
         "online_observe",
         "offline_mutate",
-        "full_program_replacement",
+        
         "controller_project_restore",
         "online_modify",
         "multi_vendor",
@@ -347,21 +353,76 @@ class ProjectPlanSignalConditionV1(ApiModel):
     state: Literal["on", "off"]
 
 
+def _io_safe_state_schema(schema: dict[str, Any]) -> None:
+    field = "safeState" if "safeState" in schema.get("properties", {}) else "safe_state"
+    schema["allOf"] = [
+        {
+            "if": {"properties": {"kind": {"enum": kinds}}, "required": ["kind"]},
+            "then": {"properties": {field: {"enum": states}}, "required": [field]},
+        }
+        for kinds, states in (
+            (["digital_input"], ["not_applicable"]),
+            (["digital_output", "internal_bit"], ["on", "off"]),
+        )
+    ]
+
+
 class ProjectPlanIoPointV1(ApiModel):
+    model_config = ConfigDict(json_schema_extra=_io_safe_state_schema)
+
     signal_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     symbol: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
     address: str = Field(pattern=r"^[PM]\d{3,4}[0-9A-F]$")
+    # Historical drafts predate explicit native symbol types.  Keep them
+    # readable, but require the value when materializing a symbol update.
+    native_type: str | None = Field(
+        default=None,
+        min_length=1,
+        alias="nativeType",
+        exclude_if=lambda value: value is None,
+    )
     kind: Literal["digital_input", "digital_output", "internal_bit"]
     description: str
     normal_state: Literal["on", "off", "unknown"]
-    safe_state: Literal["on", "off", "not_applicable"]
+    safe_state: Literal["on", "off", "not_applicable"] = Field(
+        description="digital_input requires not_applicable; digital_output and "
+        "internal_bit require on or off. This is a kind/safe_state relationship, "
+        "not a prescribed safety-state choice for writable signals.",
+    )
+
+    @field_validator("native_type")
+    @classmethod
+    def validate_native_type(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if not value.strip() or any(ord(character) < 32 for character in value):
+            raise ValueError("native_type must be non-blank plain text")
+        return value
 
     @model_validator(mode="after")
     def validate_safe_state(self) -> ProjectPlanIoPointV1:
         if self.kind == "digital_input" and self.safe_state != "not_applicable":
-            raise ValueError("digital_input safe_state must be not_applicable")
+            raise PydanticCustomError(
+                "io_safe_state_relation",
+                "IO kind and safe state violate the required relationship",
+                {
+                    "constraintKind": "kind_safe_state_relation",
+                    "constraintField": "safe_state",
+                    "allowedKinds": ["digital_input"],
+                    "allowedStates": ["not_applicable"],
+                },
+            )
         if self.kind != "digital_input" and self.safe_state == "not_applicable":
-            raise ValueError("writable signal safe_state must be on or off")
+            raise PydanticCustomError(
+                "io_safe_state_relation",
+                "IO kind and safe state violate the required relationship",
+                {
+                    "constraintKind": "kind_safe_state_relation",
+                    "constraintField": "safe_state",
+                    "allowedKinds": ["digital_output", "internal_bit"],
+                    "allowedStates": ["on", "off"],
+                },
+            )
         return self
 
 
@@ -406,6 +467,35 @@ class ProjectPlanLadderContactConditionV1(ApiModel):
     state: Literal["on", "off"]
 
 
+class ProjectPlanLadderDataRegisterOperandV1(ApiModel):
+    """One directly addressed signed-16 data-register operand."""
+
+    kind: Literal["data_register"]
+    address: str = Field(pattern=r"^D\d{5}$")
+
+
+class ProjectPlanLadderConstantOperandV1(ApiModel):
+    """One literal in the native signed-16 comparison domain."""
+
+    kind: Literal["constant"]
+    value: StrictInt = Field(ge=-32_768, le=32_767)
+
+
+ProjectPlanLadderCompareOperandV1 = Annotated[
+    ProjectPlanLadderDataRegisterOperandV1 | ProjectPlanLadderConstantOperandV1,
+    Field(discriminator="kind"),
+]
+
+
+class ProjectPlanLadderCompareConditionV1(ApiModel):
+    """A typed signed-16 LOAD comparison over D registers or constants."""
+
+    kind: Literal["compare"]
+    lhs: ProjectPlanLadderCompareOperandV1
+    relation: Literal["eq", "ne", "gt", "lt", "ge", "le"]
+    rhs: ProjectPlanLadderCompareOperandV1
+
+
 class ProjectPlanLadderCompositeConditionV1(ApiModel):
     kind: Literal["all_of", "any_of"]
     terms: list["ProjectPlanLadderConditionV1"] = Field(
@@ -415,7 +505,9 @@ class ProjectPlanLadderCompositeConditionV1(ApiModel):
 
 
 ProjectPlanLadderConditionV1 = Annotated[
-    ProjectPlanLadderContactConditionV1 | ProjectPlanLadderCompositeConditionV1,
+    ProjectPlanLadderContactConditionV1
+    | ProjectPlanLadderCompareConditionV1
+    | ProjectPlanLadderCompositeConditionV1,
     Field(discriminator="kind"),
 ]
 ProjectPlanLadderCompositeConditionV1.model_rebuild()
@@ -431,7 +523,7 @@ class ProjectPlanLadderActionV1(ApiModel):
         allowed_targets = {
             "OUT": {"signal"},
             "SET": {"signal", "step", "sequence_reset"},
-            "RST": {"signal"},
+            "RST": {"signal", "timer"},
             "TON": {"timer"},
         }
         if self.target_type not in allowed_targets[self.instruction]:
@@ -475,7 +567,10 @@ class ProjectPlanLadderRungV1(ApiModel):
     @model_validator(mode="after")
     def validate_condition_depth(self) -> ProjectPlanLadderRungV1:
         def depth(condition: ProjectPlanLadderConditionV1) -> int:
-            if isinstance(condition, ProjectPlanLadderContactConditionV1):
+            if isinstance(
+                condition,
+                (ProjectPlanLadderContactConditionV1, ProjectPlanLadderCompareConditionV1),
+            ):
                 return 1
             return 1 + max(depth(term) for term in condition.terms)
 
@@ -716,6 +811,20 @@ class ProjectPlanNativeDesignV1(ApiModel):
     index_acceptance_bindings: ProjectPlanIndexAcceptanceBindingsV1 | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
+    # A scenario is an optional, model-authored singleton.  Keep it absent
+    # from legacy serialized designs when it was never supplied; the
+    # planning draft transport uses the same omission-preserving contract.
+    simulation_scenario: dict[str, Any] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    native_symbols: list[dict[str, Any]] | None = Field(
+        default=None, max_length=4096, exclude_if=lambda value: value is None,
+        description=(
+            "Optional ordered, model-authored native CSV symbol metadata. Supply "
+            "explicit symbol, address, data_type and comment; this does not declare "
+            "I/O, generate logic or infer timer/counter labels or native types."
+        ),
+    )
     io_points: list[ProjectPlanIoPointV1] = Field(max_length=500)
     operating_modes: list[ProjectPlanOperatingModeV1] = Field(max_length=50)
     control_networks: list[ProjectPlanControlNetworkV1] = Field(max_length=200)
@@ -807,11 +916,6 @@ class ProjectPlanNativeDesignV1(ApiModel):
                 and decision.basis not in allowed_bases[name]
             ):
                 raise ValueError(f"{name} has an unsupported N/A basis")
-        if (
-            self.collection_scope.recovery_rules.status == "not_applicable"
-            and (self.alarms or self.sequences)
-        ):
-            raise ValueError("alarm or sequence logic requires confirmed recovery_rules")
         if (
             self.collection_scope.safety_rules.status == "not_applicable"
             and self.collection_scope.safety_rules.basis
@@ -1355,6 +1459,7 @@ class EngineeringMissionStepV1(ApiModel):
 class EngineeringMissionSnapshotV1(ApiModel):
     schema_version: Literal["1"] = "1"
     objective: str = Field(min_length=1, max_length=4_000)
+    completion_kind: Literal["analysis", "native_change"] | None = None
     status: Literal[
         "active",
         "waiting_for_user",
@@ -1394,9 +1499,11 @@ class EngineeringMissionSnapshotV1(ApiModel):
             raise ValueError("engineering mission stepId values must be unique")
         active_steps = [step.step_id for step in self.steps if step.status == "active"]
         if self.status == "active":
-            if len(active_steps) != 1 or self.active_step_id != active_steps[0]:
+            if len(active_steps) > 1 or self.active_step_id != (
+                active_steps[0] if active_steps else None
+            ):
                 raise ValueError(
-                    "active engineering mission requires one matching activeStepId"
+                    "active engineering mission step must match activeStepId when present"
                 )
             if self.blocking_questions or self.next_action is None:
                 raise ValueError(
@@ -1484,6 +1591,35 @@ class EngineeringMissionSummaryV1(ApiModel):
     updated_at: datetime
 
 
+class ConversationCompletionV1(ApiModel):
+    """External completion state for a conversation's user-visible goal.
+
+    A completed Agent turn (and a published planning revision) is not the same
+    thing as completing the user's end-to-end goal.  The Host exposes this
+    distinction explicitly so clients cannot infer goal completion from a run
+    state or a planning publication alone.
+    """
+
+    schema_version: Literal["1"] = "1"
+    status: Literal["not_claimed", "phase_complete", "goal_complete", "blocked"]
+    phase: Literal["planning", "engineering"]
+    basis: Literal[
+        "no_completion_evidence",
+        "planning_needs_clarification",
+        "planning_ready_for_review",
+        "planning_reviewed",
+        "engineering_in_progress",
+        "engineering_waiting_for_user",
+        "engineering_waiting_for_approval",
+        "engineering_cycle_budget_exhausted",
+        "engineering_objective_achieved",
+        "engineering_blocked",
+        "invalid_engineering_mission",
+    ]
+    source_message_id: str | None = None
+    source_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
 class ConversationMessageV1(ApiModel):
     message_id: str
     role: Literal["user", "assistant", "system"]
@@ -1539,8 +1675,17 @@ class EngineeringTargetBindingV1(ApiModel):
 
 
 class EngineeringConversationHandoffV1(ApiModel):
+    """Immutable planning-to-engineering provenance exposed to HTTP clients.
+
+    Reopen evidence was added after the first handoff records were persisted.
+    The fields are therefore nullable at this DTO boundary so a legacy record
+    can still be read.  New handoffs are constructed only from the Host's
+    accepted-native-project path, which requires and fills both values before
+    persistence; a partially populated pair is never accepted here.
+    """
+
     schema_version: Literal["1"] = "1"
-    native_project_id: str = Field(min_length=1, max_length=256)
+    pass
     planning_conversation_id: str = Field(min_length=1, max_length=256)
     planning_message_id: str = Field(min_length=1, max_length=256)
     reviewed_plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -1551,9 +1696,30 @@ class EngineeringConversationHandoffV1(ApiModel):
         "controlstudio-native-build-receipt/v3"
     ]
     build_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    reopen_receipt_schema_version: Literal["controlstudio-native-reopen-receipt/v2"]
-    reopen_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reopen_receipt_schema_version: Literal[
+        "controlstudio-native-reopen-receipt/v2"
+    ] | None = None
+    reopen_receipt_digest: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     project_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_reopen_receipt_pair(self) -> EngineeringConversationHandoffV1:
+        if (self.reopen_receipt_schema_version is None) != (
+            self.reopen_receipt_digest is None
+        ):
+            raise ValueError(
+                "reopen receipt schema version and digest must be supplied together"
+            )
+        return self
+
+
+class ConversationNativeProjectV1(ApiModel):
+    pass
+    state: Literal["allocated", "executing", "completed", "failed", "quarantined"]
+    updated_at: datetime
 
 
 class ConversationV1(ApiModel):
@@ -1564,6 +1730,18 @@ class ConversationV1(ApiModel):
     engineering_target: EngineeringTargetBindingV1 | None = None
     engineering_handoff: EngineeringConversationHandoffV1 | None = None
     engineering_mission: EngineeringMissionV1 | None = None
+    latest_native_project: ConversationNativeProjectV1 | None = None
+    # The Host always supplies this projection in current responses.  Keeping
+    # a deterministic default makes the additive field backward-compatible
+    # for legacy model constructors and persisted response fixtures while
+    # retaining a non-null schema for new clients.
+    goal_completion: ConversationCompletionV1 = Field(
+        default_factory=lambda: ConversationCompletionV1(
+            status="not_claimed",
+            phase="planning",
+            basis="no_completion_evidence",
+        )
+    )
     messages: list[ConversationMessageV1]
     updated_at: datetime
 
@@ -1585,11 +1763,21 @@ class ConversationPageV1(ApiModel):
     offset: int
 
 
+class EmptyNativeProgramSourceV1(ApiModel):
+    """Identity of an empty program in the bound saved native project."""
+
+    kind: Literal["saved-native"]
+    project_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    program_id: str = Field(min_length=1, max_length=512)
+    program_name: str = Field(min_length=1, max_length=80)
+    source_program_data_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class ConversationCreateV1(ApiModel):
     title: str | None = Field(default=None, min_length=1, max_length=200)
     workflow: Literal["engineering", "new_project_planning"] = "engineering"
     project_brief: ProjectBriefV1 | None = None
-    native_project_id: str | None = Field(default=None, min_length=1, max_length=256)
+    pass
     target_scope: Literal["current", "none"] = "current"
 
     @model_validator(mode="after")
@@ -1598,10 +1786,9 @@ class ConversationCreateV1(ApiModel):
             raise ValueError("projectBrief is required for new_project_planning")
         if self.workflow == "engineering" and self.project_brief is not None:
             raise ValueError("projectBrief is only valid for new_project_planning")
-        if self.workflow != "engineering" and self.native_project_id is not None:
-            raise ValueError("nativeProjectId is only valid for engineering handoff")
+        pass
         if self.target_scope == "none" and (
-            self.workflow != "engineering" or self.native_project_id is not None
+            self.workflow != "engineering" or None is not None
         ):
             raise ValueError("targetScope none is only valid for general engineering analysis")
         return self
@@ -1629,6 +1816,15 @@ class SendMessageRequestV1(ApiModel):
     operation_id: str = Field(min_length=8, max_length=128)
     workflow: Literal["engineering", "new_project_planning"] = "engineering"
     project_brief: ProjectBriefV1 | None = None
+    # This is a typed, already reviewed native-create request supplied by the
+    # user-facing planning flow.  It is a forward reference because the native
+    # request model is declared later in this module; the model is rebuilt
+    # after that declaration below.  Host execution still revalidates review,
+    # actor, run and target authority separately.
+    pass
+    # A reviewed test request is a separate authority.  Creating a native
+    # project never grants the model permission to start XG-SIM.
+    pass
     change_request_scope: (
         Literal[
             "analysis_only",
@@ -1640,7 +1836,7 @@ class SendMessageRequestV1(ApiModel):
     verification_scope: Literal[
         "offline_native_check_only",
         "offline_native_reopen",
-        "offline_native_reopen_xgsim",
+        
     ] = "offline_native_reopen"
     offline_operand_mission: OfflineOperandMissionV1 | None = None
 
@@ -1653,6 +1849,13 @@ class SendMessageRequestV1(ApiModel):
             self.verification_scope = "offline_native_check_only"
         if self.workflow == "engineering" and self.project_brief is not None:
             raise ValueError("projectBrief is only valid for new_project_planning")
+        pass
+        pass
+        pass
+        pass
+        pass
+        pass
+        pass
         if self.workflow == "new_project_planning" and self.change_request_scope is not None:
             raise ValueError("changeRequestScope is only valid for engineering messages")
         if (
@@ -1660,13 +1863,7 @@ class SendMessageRequestV1(ApiModel):
             and self.verification_scope != "offline_native_reopen"
         ):
             raise ValueError("verificationScope is only valid for engineering messages")
-        if (
-            self.verification_scope == "offline_native_reopen_xgsim"
-            and self.change_request_scope != "offline_candidate_revision"
-        ):
-            raise ValueError(
-                "offline_native_reopen_xgsim requires offline_candidate_revision"
-            )
+        pass
         if (
             self.verification_scope == "offline_native_check_only"
             and self.change_request_scope != "permanent_offline_revision"
@@ -1789,6 +1986,7 @@ class RunCancellationV1(ApiModel):
 
 
 VerificationScope = Literal["offline_native_check_only", "offline_native_reopen"]
+pass
 ChangeMode = Literal["offline_working_copy_revision"]
 ChangeRequestScope = Literal[
     "offline_candidate_revision",
@@ -1811,24 +2009,20 @@ OFFLINE_NATIVE_CHECK_ONLY_VALIDATION_STEPS = (
     "xg5000_program_check",
     "project_save",
 )
-MNE_FULL_PROGRAM_VALIDATION_STEPS = (
-    "structural_diff",
-    "xg5000_program_check",
-    "project_save",
-    "project_reopen",
-)
-MNE_TARGET_PROGRAM_SCHEMA = "controlstudio-mne-target-program/v1"
-MNE_PROGRAM_DESIGN_SCHEMA = "controlstudio-mne-program-design/v1"
-MNE_APPROVED_BASELINE_SCHEMA = "controlstudio-mne-approved-baseline/v1"
-MNE_SERIES_GUARD_CANDIDATE_SCHEMA = "xg5000.mne-series-guard-candidate/1.0"
-MNE_SERIES_GUARD_PATCH_SCHEMA = "controlstudio-mne-series-guard-patch/v1"
-MNE_INSTRUCTION_PATCH_CANDIDATE_SCHEMA = "xg5000.mne-instruction-patch-candidate/1.0"
-MNE_INSTRUCTION_PATCH_SCHEMA = "controlstudio-mne-instruction-patch/v1"
-MNE_INSTRUCTION_BATCH_PATCH_CANDIDATE_SCHEMA = (
-    "xg5000.mne-instruction-batch-patch-candidate/1.0"
-)
-MNE_RUNG_PATCH_CANDIDATE_SCHEMA = "xg5000.mne-rung-patch-candidate/1.0"
-MNE_RUNG_PATCH_SCHEMA = "controlstudio-mne-rung-patch/v1"
+pass
+pass
+pass
+# Historical public name remains the v1 contract for existing readers.
+pass
+pass
+pass
+pass
+pass
+pass
+pass
+pass
+pass
+pass
 
 ChangeCoverageArea = Literal[
     "target_identity",
@@ -1859,10 +2053,7 @@ REQUIRED_CHANGE_COVERAGE_AREAS = (
     "validation",
     "rollback",
 )
-MNE_COMPILER_CANDIDATE_REQUIRED_COVERAGE_AREAS = (
-    "target_identity",
-    "direct_impact",
-)
+pass
 
 
 class ChangeCoverageItemV1(ApiModel):
@@ -2399,58 +2590,31 @@ class ChangePlanV1(ApiModel):
             )
 
 
-MneProgramReplacementCommandV2 = Literal[
-    "LOAD",
-    "LOAD NOT",
-    "AND",
-    "AND NOT",
-    "OR",
-    "OR NOT",
-    "AND LOAD",
-    "OR LOAD",
-    "OUT",
-    "SET",
-    "RST",
-    "TON",
-    "END",
-]
-MneFullProgramValidationStepV2 = Literal[
-    "structural_diff",
-    "xg5000_program_check",
-    "project_save",
-    "project_reopen",
-]
+pass
+pass
+pass
 
-_MNE_CONTACT_OPERAND = (
-    r"(?:[PM]\d{3,4}[0-9A-F]|T\d{3,4}|S(?:\d{2}|1[01]\d|12[0-7])\.\d{2})"
-)
-_MNE_WRITABLE_OPERAND = (
-    r"(?:[PM]\d{3,4}[0-9A-F]|S(?:\d{2}|1[01]\d|12[0-7])\.\d{2})"
-)
-_MNE_PROGRAM_REPLACEMENT_OPERANDS = {
-    "LOAD": rf"^{_MNE_CONTACT_OPERAND}$",
-    "LOAD NOT": rf"^{_MNE_CONTACT_OPERAND}$",
-    "AND": rf"^{_MNE_CONTACT_OPERAND}$",
-    "AND NOT": rf"^{_MNE_CONTACT_OPERAND}$",
-    "OR": rf"^{_MNE_CONTACT_OPERAND}$",
-    "OR NOT": rf"^{_MNE_CONTACT_OPERAND}$",
-    "OUT": r"^[PM]\d{3,4}[0-9A-F]$",
-    "SET": rf"^{_MNE_WRITABLE_OPERAND}$",
-    "RST": r"^[PM]\d{3,4}[0-9A-F]$",
-    "TON": r"^T\d{3,4} [1-9]\d{0,4}$",
-}
-_MNE_PROGRAM_REPLACEMENT_NO_OPERAND = frozenset(
-    {"END", "AND LOAD", "OR LOAD"}
-)
-_MNE_BOOLEAN_CONTACT_COMMANDS = frozenset(
-    {"LOAD", "LOAD NOT", "AND", "AND NOT", "OR", "OR NOT"}
-)
-_MNE_PATCH_ANCHOR_COMMANDS = _MNE_BOOLEAN_CONTACT_COMMANDS | {
-    "OUT",
-    "SET",
-    "RST",
-    "TON",
-}
+pass
+pass
+pass
+pass
+pass
+
+
+
+
+
+
+
+
+pass
+pass
+pass
+pass
+pass
+pass
+pass
+pass
 
 
 def _canonical_sha256(value: Any) -> str:
@@ -2464,1186 +2628,203 @@ def _canonical_sha256(value: Any) -> str:
     ).hexdigest()
 
 
-class MneProgramReplacementInstructionV2(ApiModel):
-    """One typed instruction in a model-visible full-program target."""
-
-    command: MneProgramReplacementCommandV2
-    operand: str | None = Field(max_length=128)
-
-    @model_validator(mode="after")
-    def validate_instruction(self) -> MneProgramReplacementInstructionV2:
-        if self.command in _MNE_PROGRAM_REPLACEMENT_NO_OPERAND:
-            if self.operand is not None:
-                raise ValueError(f"{self.command} must have a null operand")
-            return self
-        if self.operand is None:
-            raise ValueError(f"{self.command} requires an operand")
-        if self.operand != self.operand.strip().upper():
-            raise ValueError(
-                f"{self.command} operand must be exact canonical uppercase text"
-            )
-        pattern = _MNE_PROGRAM_REPLACEMENT_OPERANDS[self.command]
-        if re.fullmatch(pattern, self.operand) is None:
-            raise ValueError(f"unsupported operand format for {self.command}")
-        if self.command == "TON" and int(self.operand.rsplit(" ", 1)[1]) > 65_535:
-            raise ValueError("TON preset exceeds 65535 ticks")
-        return self
+CHANGE_ATTEMPT_IDENTITY_SCHEMA = "controlstudio-change-attempt-identity/v1"
+CHANGE_ATTEMPT_RESULT_SCHEMA = "controlstudio-change-attempt-result/v1"
 
 
-class MneFullProgramTargetV2(ApiModel):
-    """Exact program identity and Host-derived canonical target envelope."""
+class ChangeAttemptIdentityV1(ApiModel):
+    """Immutable Host identity for one candidate/source execution attempt.
 
-    schema_value: Literal["controlstudio-mne-target-program/v1"] = Field(
-        default=MNE_TARGET_PROGRAM_SCHEMA,
+    A conversation and working copy may survive a follow-up request, but the
+    source revision, candidate, or approved plan cannot silently reuse an old
+    native receipt.  ``attempt_id`` is deliberately derived from every input
+    below, so resume is stable only for the exact same attempt inputs.
+    """
+
+    schema_value: Literal["controlstudio-change-attempt-identity/v1"] = Field(
+        default=CHANGE_ATTEMPT_IDENTITY_SCHEMA,
         alias="schema",
     )
-    program_id: str = Field(min_length=1, max_length=512)
-    program_name: str = Field(min_length=1, max_length=80)
-    design_digest: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
-    instruction_count: int = Field(default=0, ge=1, le=4_096)
-    instructions: list[MneProgramReplacementInstructionV2] = Field(
-        min_length=1,
-        max_length=4_096,
-    )
-    target_program_digest: str = Field(
-        default="0" * 64,
-        pattern=r"^[0-9a-f]{64}$",
-    )
+    attempt_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    transaction_id: str = Field(min_length=1, max_length=256)
+    workspace_id: str = Field(min_length=1, max_length=256)
+    revision_id: str = Field(min_length=1, max_length=256)
+    source_artifact_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    working_artifact_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidate_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_serializer(mode="wrap")
-    def serialize_target(self, handler: Any) -> dict[str, Any]:
-        serialized = handler(self)
-        if "schema_value" in serialized:
-            serialized["schema"] = serialized.pop("schema_value")
-        return serialized
-
-    @model_validator(mode="before")
-    @classmethod
-    def derive_canonical_envelope(cls, value: Any) -> dict[str, Any]:
-        if not isinstance(value, dict):
-            raise ValueError("targetProgram must be an object")
-
-        aliases = {
-            "schema": "schema",
-            "program_id": "programId",
-            "program_name": "programName",
-            "design_digest": "designDigest",
-            "instruction_count": "instructionCount",
-            "instructions": "instructions",
-            "target_program_digest": "targetProgramDigest",
-        }
-        allowed = set(aliases) | set(aliases.values())
-        unknown = sorted(str(key) for key in set(value).difference(allowed))
-        if unknown:
-            raise ValueError(
-                "targetProgram contains forbidden fields: " + ", ".join(unknown)
-            )
-
-        def supplied(name: str) -> tuple[bool, Any]:
-            alias = aliases[name]
-            if name != alias and name in value and alias in value:
-                raise ValueError(
-                    f"targetProgram cannot contain both {name} and {alias}"
-                )
-            if name in value:
-                return True, value[name]
-            if alias in value:
-                return True, value[alias]
-            return False, None
-
-        has_program_id, program_id = supplied("program_id")
-        has_program_name, program_name = supplied("program_name")
-        has_instructions, raw_instructions = supplied("instructions")
-        if not has_program_id or not has_program_name or not has_instructions:
-            raise ValueError(
-                "targetProgram requires programId, programName, and instructions"
-            )
-        if (
-            not isinstance(program_id, str)
-            or not program_id
-            or program_id != program_id.strip()
-            or not isinstance(program_name, str)
-            or not program_name
-            or program_name != program_name.strip()
-        ):
-            raise ValueError("targetProgram identity must be exact non-blank text")
-        if not isinstance(raw_instructions, list):
-            raise ValueError("targetProgram.instructions must be a list")
-        instructions = [
-            MneProgramReplacementInstructionV2.model_validate(item)
-            for item in raw_instructions
-        ]
-        if not 1 <= len(instructions) <= 4_096:
-            raise ValueError("targetProgram instruction count is outside the Host bound")
-        if instructions[-1].command != "END" or any(
-            instruction.command == "END" for instruction in instructions[:-1]
-        ):
-            raise ValueError("targetProgram must contain exactly one final END")
-        canonical_instructions = [
-            instruction.model_dump(mode="json") for instruction in instructions
-        ]
-        design_digest = _canonical_sha256(
-            {
-                "schema": MNE_PROGRAM_DESIGN_SCHEMA,
-                "program_id": program_id,
-                "program_name": program_name,
-                "instructions": canonical_instructions,
-            }
-        )
-        instruction_count = len(canonical_instructions)
-        target_unsigned = {
-            "schema": MNE_TARGET_PROGRAM_SCHEMA,
-            "program_id": program_id,
-            "program_name": program_name,
-            "design_digest": design_digest,
-            "instruction_count": instruction_count,
-            "instructions": canonical_instructions,
-        }
-        target_program_digest = _canonical_sha256(target_unsigned)
-        derived = {
-            **target_unsigned,
-            "target_program_digest": target_program_digest,
-        }
-        for field_name, expected in (
-            ("schema", MNE_TARGET_PROGRAM_SCHEMA),
-            ("design_digest", design_digest),
-            ("instruction_count", instruction_count),
-            ("target_program_digest", target_program_digest),
-        ):
-            is_supplied, candidate = supplied(field_name)
-            invalid_type = (
-                field_name == "instruction_count"
-                and (
-                    not isinstance(candidate, int)
-                    or isinstance(candidate, bool)
-                )
-            ) or (
-                field_name != "instruction_count"
-                and not isinstance(candidate, str)
-            )
-            if is_supplied and (invalid_type or candidate != expected):
-                raise ValueError(
-                    f"targetProgram.{aliases[field_name]} is not Host-canonical"
-                )
-        return derived
-
-
-class MneFullProgramBaselineBindingV2(ApiModel):
-    """Host-derived project baseline with raw provenance and semantic LD identity."""
-
-    schema_value: Literal["controlstudio-mne-approved-baseline/v1"] = Field(
-        default=MNE_APPROVED_BASELINE_SCHEMA,
-        alias="schema",
-    )
-    project_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    program_id: str = Field(min_length=1, max_length=512)
-    program_name: str = Field(min_length=1, max_length=80)
-    # The raw digest is retained as capture provenance.  New structural plans
-    # bind their meaning to the canonical digest because the native LD header
-    # contains volatile bytes.
-    ld_payload_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    ld_canonical_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-
-    @model_serializer(mode="wrap")
-    def serialize_binding(self, handler: Any) -> dict[str, Any]:
-        serialized = handler(self)
-        if "schema_value" in serialized:
-            serialized["schema"] = serialized.pop("schema_value")
-        if serialized.get("ld_payload_sha256") is None:
-            serialized.pop("ld_payload_sha256", None)
-        if serialized.get("ld_canonical_sha256") is None:
-            serialized.pop("ld_canonical_sha256", None)
-        return serialized
-
-
-class MneSeriesGuardPatchV3(ApiModel):
-    """The only structural edit currently exposed to the engineering Agent."""
-
-    schema_value: Literal["controlstudio-mne-series-guard-patch/v1"] = Field(
-        default=MNE_SERIES_GUARD_PATCH_SCHEMA,
-        alias="schema",
-    )
-    guard_command: Literal["AND", "AND NOT"]
-    guard_operand: str = Field(min_length=1, max_length=128)
-    output_operand: str = Field(min_length=1, max_length=128)
-    output_instruction_index: int = Field(ge=1, le=4_093)
-
-    @model_serializer(mode="wrap")
-    def serialize_patch(self, handler: Any) -> dict[str, Any]:
+    def serialize_identity(self, handler: Any) -> dict[str, Any]:
         serialized = handler(self)
         if "schema_value" in serialized:
             serialized["schema"] = serialized.pop("schema_value")
         return serialized
 
     @model_validator(mode="after")
-    def validate_patch(self) -> MneSeriesGuardPatchV3:
-        if self.guard_operand != self.guard_operand.strip().upper():
-            raise ValueError("patch.guardOperand must be canonical uppercase text")
-        if self.output_operand != self.output_operand.strip().upper():
-            raise ValueError("patch.outputOperand must be canonical uppercase text")
-        if re.fullmatch(
-            _MNE_PROGRAM_REPLACEMENT_OPERANDS[self.guard_command],
-            self.guard_operand,
-        ) is None:
-            raise ValueError("patch.guardOperand is outside the supported contact slice")
-        if re.fullmatch(
-            _MNE_PROGRAM_REPLACEMENT_OPERANDS["OUT"],
-            self.output_operand,
-        ) is None:
-            raise ValueError("patch.outputOperand is outside the supported OUT slice")
-        if self.guard_operand == self.output_operand:
-            raise ValueError("patch.guardOperand must differ from patch.outputOperand")
+    def validate_attempt_digest(self) -> ChangeAttemptIdentityV1:
+        unsigned = self.model_dump(mode="json", exclude={"attempt_id"})
+        if self.attempt_id != _canonical_sha256(unsigned):
+            raise ValueError("change attempt identity digest is invalid")
         return self
 
 
-class MneFieldIoBindingV1(ApiModel):
-    """Public, typed terminal fact attached only to physical-P proposals."""
+def canonical_change_attempt_identity(
+    *,
+    transaction_id: str,
+    workspace_id: str,
+    revision_id: str,
+    source_artifact_hash: str,
+    working_artifact_hash: str,
+    candidate_digest: str,
+    plan_digest: str,
+) -> dict[str, Any]:
+    """Build and validate the one canonical attempt identity envelope."""
 
-    device: str = Field(pattern=r"^P[0-9A-F]+$")
-    direction: Literal["input", "output"]
-    point_kind: Literal["digital_input", "digital_output"]
-    module: dict[str, Any]
-    channel: dict[str, Any]
-    terminal_range: dict[str, Any]
+    unsigned = {
+        "schema": CHANGE_ATTEMPT_IDENTITY_SCHEMA,
+        "transaction_id": transaction_id,
+        "workspace_id": workspace_id,
+        "revision_id": revision_id,
+        "source_artifact_hash": source_artifact_hash,
+        "working_artifact_hash": working_artifact_hash,
+        "candidate_digest": candidate_digest,
+        "plan_digest": plan_digest,
+    }
+    identity = {
+        **unsigned,
+        "attempt_id": _canonical_sha256(unsigned),
+    }
+    return ChangeAttemptIdentityV1.model_validate(identity).model_dump(mode="json")
+
+
+class ChangeAttemptResultV1(ApiModel):
+    """Host binding of native persistence/readback and the test receipt."""
+
+    schema_value: Literal["controlstudio-change-attempt-result/v1"] = Field(
+        default=CHANGE_ATTEMPT_RESULT_SCHEMA,
+        alias="schema",
+    )
+    attempt: ChangeAttemptIdentityV1
+    native_persisted_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    native_readback_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    test_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     binding_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
-    @model_validator(mode="after")
-    def validate_typed_terminal_binding(self) -> MneFieldIoBindingV1:
-        if not self.module or not self.channel or not self.terminal_range:
-            raise ValueError("field I/O binding must retain module, channel, and terminal range")
-        if (self.direction == "input") != (self.point_kind == "digital_input"):
-            raise ValueError("field I/O direction and point kind disagree")
-        return self
-
-
-def _validate_mne_field_io_envelope(
-    hardware_context_digest: str | None,
-    bindings: list[MneFieldIoBindingV1],
-) -> None:
-    if (hardware_context_digest is None) != (not bindings):
-        raise ValueError(
-            "hardwareContextDigest and fieldIoBindings must be supplied together"
-        )
-    keys = [(binding.device, binding.direction) for binding in bindings]
-    if keys != sorted(keys) or len(keys) != len(set(keys)):
-        raise ValueError("fieldIoBindings must be uniquely ordered by device and direction")
-
-
-class MneSeriesGuardCandidateV3(ApiModel):
-    """Digest-only compiler receipt; no raw program payload crosses the API."""
-
-    schema_value: Literal["xg5000.mne-series-guard-candidate/1.0"] = Field(
-        default=MNE_SERIES_GUARD_CANDIDATE_SCHEMA,
-        alias="schema",
-    )
-    project_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    program_id: str = Field(min_length=1, max_length=512)
-    program_name: str = Field(min_length=1, max_length=80)
-    baseline_mne_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    baseline_ld_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    baseline_ld_canonical_sha256: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
-    )
-    baseline_instruction_count: int = Field(ge=2, le=4_095)
-    patch: MneSeriesGuardPatchV3
-    target_instruction_count: int = Field(ge=2, le=4_096)
-    target_mne_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    design_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    target_program_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    hardware_context_digest: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
-    )
-    field_io_bindings: list[MneFieldIoBindingV1] = Field(
-        default_factory=list, max_length=64
-    )
-    candidate_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-
     @model_serializer(mode="wrap")
-    def serialize_candidate(self, handler: Any) -> dict[str, Any]:
-        serialized = handler(self)
-        if "schema_value" in serialized:
-            serialized["schema"] = serialized.pop("schema_value")
-        if serialized.get("baseline_ld_canonical_sha256") is None:
-            serialized.pop("baseline_ld_canonical_sha256", None)
-        if serialized.get("hardware_context_digest") is None:
-            serialized.pop("hardware_context_digest", None)
-            serialized.pop("field_io_bindings", None)
-        return serialized
-
-    @model_validator(mode="after")
-    def validate_candidate(self) -> MneSeriesGuardCandidateV3:
-        if self.program_id != self.program_id.strip() or self.program_name != self.program_name.strip():
-            raise ValueError("candidate program identity must be exact non-blank text")
-        _validate_mne_field_io_envelope(
-            self.hardware_context_digest, self.field_io_bindings
-        )
-        if self.target_instruction_count != self.baseline_instruction_count + 1:
-            raise ValueError("candidate targetInstructionCount must add exactly one guard")
-        if self.patch.output_instruction_index >= self.baseline_instruction_count - 1:
-            raise ValueError("candidate outputInstructionIndex is outside baseline")
-        # The candidate originates at MCP and its digest covers that exact
-        # snake-case receipt. Public camelCase serialization must not redefine it.
-        unsigned = self.model_dump(
-            mode="json", by_alias=False, exclude={"candidate_digest"}
-        )
-        if self.hardware_context_digest is None:
-            unsigned.pop("hardware_context_digest", None)
-            unsigned.pop("field_io_bindings", None)
-        if self.baseline_ld_canonical_sha256 is None:
-            unsigned.pop("baseline_ld_canonical_sha256", None)
-        if self.candidate_digest != _canonical_sha256(unsigned):
-            raise ValueError("candidate.candidateDigest is not canonical")
-        return self
-
-
-class MneInstructionPatchRowV4(MneProgramReplacementInstructionV2):
-    index: int = Field(ge=0, le=4_095)
-    instruction_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-    @model_validator(mode="after")
-    def validate_row_digest(self) -> MneInstructionPatchRowV4:
-        expected = _canonical_sha256(
-            {
-                "index": self.index,
-                "command": self.command,
-                "operand": self.operand,
-            }
-        )
-        if self.instruction_digest != expected:
-            raise ValueError("instruction patch row digest is invalid")
-        return self
-
-
-class MneInstructionPatchV4(ApiModel):
-    schema_value: Literal["controlstudio-mne-instruction-patch/v1"] = Field(
-        default=MNE_INSTRUCTION_PATCH_SCHEMA,
-        alias="schema",
-    )
-    operation: Literal["insert_before", "insert_after", "replace", "delete"]
-    anchor_instruction_index: int = Field(ge=0, le=4_094)
-    anchor: MneInstructionPatchRowV4
-    instruction: MneProgramReplacementInstructionV2 | None = None
-    context_before: MneInstructionPatchRowV4 | None = None
-    context_after: MneInstructionPatchRowV4 | None = None
-
-    @model_serializer(mode="wrap")
-    def serialize_patch(self, handler: Any) -> dict[str, Any]:
+    def serialize_result(self, handler: Any) -> dict[str, Any]:
         serialized = handler(self)
         if "schema_value" in serialized:
             serialized["schema"] = serialized.pop("schema_value")
         return serialized
 
     @model_validator(mode="after")
-    def validate_patch(self) -> MneInstructionPatchV4:
-        if (
-            self.anchor.index != self.anchor_instruction_index
-            or self.anchor.command not in _MNE_PATCH_ANCHOR_COMMANDS
-        ):
-            raise ValueError("instruction patch anchor is invalid")
-        if (self.operation == "delete") != (self.instruction is None):
-            raise ValueError("delete requires no instruction; other operations require one")
-        if self.instruction is not None and self.instruction.command == "END":
-            raise ValueError("instruction patch cannot insert or replace END")
-        if self.anchor.command in _MNE_BOOLEAN_CONTACT_COMMANDS and (
-            self.operation != "replace"
-            or self.instruction is None
-            or self.instruction.command not in _MNE_BOOLEAN_CONTACT_COMMANDS
-        ):
-            raise ValueError(
-                "a Boolean contact anchor supports replacement by another contact only"
-            )
-        if self.operation == "replace" and self.instruction is not None and (
-            self.instruction.command == self.anchor.command
-            and self.instruction.operand == self.anchor.operand
-        ):
-            raise ValueError("instruction patch replacement must change the anchor")
-        if self.context_before is not None and self.context_before.index != self.anchor.index - 1:
-            raise ValueError("instruction patch contextBefore is not adjacent")
-        if self.context_after is not None and self.context_after.index != self.anchor.index + 1:
-            raise ValueError("instruction patch contextAfter is not adjacent")
+    def validate_result_digest(self) -> ChangeAttemptResultV1:
+        unsigned = self.model_dump(mode="json", exclude={"binding_digest"})
+        if self.binding_digest != _canonical_sha256(unsigned):
+            raise ValueError("change attempt result binding digest is invalid")
         return self
 
 
-class MneInstructionPatchCandidateV4(ApiModel):
-    schema_value: Literal["xg5000.mne-instruction-patch-candidate/1.0"] = Field(
-        default=MNE_INSTRUCTION_PATCH_CANDIDATE_SCHEMA,
-        alias="schema",
-    )
-    project_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    program_id: str = Field(min_length=1, max_length=512)
-    program_name: str = Field(min_length=1, max_length=80)
-    baseline_mne_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    baseline_ld_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    baseline_ld_canonical_sha256: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
-    )
-    baseline_instruction_count: int = Field(ge=2, le=4_096)
-    patch: MneInstructionPatchV4
-    target_instruction_count: int = Field(ge=2, le=4_096)
-    target_mne_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    design_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    target_program_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    hardware_context_digest: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
-    )
-    field_io_bindings: list[MneFieldIoBindingV1] = Field(
-        default_factory=list, max_length=64
-    )
-    candidate_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-    @model_serializer(mode="wrap")
-    def serialize_candidate(self, handler: Any) -> dict[str, Any]:
-        serialized = handler(self)
-        if "schema_value" in serialized:
-            serialized["schema"] = serialized.pop("schema_value")
-        if serialized.get("baseline_ld_canonical_sha256") is None:
-            serialized.pop("baseline_ld_canonical_sha256", None)
-        if serialized.get("hardware_context_digest") is None:
-            serialized.pop("hardware_context_digest", None)
-            serialized.pop("field_io_bindings", None)
-        return serialized
-
-    @model_validator(mode="after")
-    def validate_candidate(self) -> MneInstructionPatchCandidateV4:
-        if self.program_id != self.program_id.strip() or self.program_name != self.program_name.strip():
-            raise ValueError("candidate program identity must be exact non-blank text")
-        _validate_mne_field_io_envelope(
-            self.hardware_context_digest, self.field_io_bindings
-        )
-        if self.patch.anchor_instruction_index >= self.baseline_instruction_count - 1:
-            raise ValueError("candidate anchor is outside the executable baseline")
-        if (self.patch.context_before is None) != (self.patch.anchor_instruction_index == 0):
-            raise ValueError("candidate contextBefore does not match the anchor position")
-        if self.patch.context_after is None:
-            raise ValueError("candidate contextAfter is required for a non-END anchor")
-        delta = (
-            -1
-            if self.patch.operation == "delete"
-            else (0 if self.patch.operation == "replace" else 1)
-        )
-        if self.target_instruction_count != self.baseline_instruction_count + delta:
-            raise ValueError("candidate targetInstructionCount is inconsistent")
-        unsigned = self.model_dump(
-            mode="json", by_alias=False, exclude={"candidate_digest"}
-        )
-        if self.hardware_context_digest is None:
-            unsigned.pop("hardware_context_digest", None)
-            unsigned.pop("field_io_bindings", None)
-        if self.baseline_ld_canonical_sha256 is None:
-            unsigned.pop("baseline_ld_canonical_sha256", None)
-        if self.candidate_digest != _canonical_sha256(unsigned):
-            raise ValueError("candidate.candidateDigest is not canonical")
-        return self
-
-
-class MneInstructionBatchPatchCandidateV5(ApiModel):
-    schema_value: Literal[
-        "xg5000.mne-instruction-batch-patch-candidate/1.0"
-    ] = Field(
-        default=MNE_INSTRUCTION_BATCH_PATCH_CANDIDATE_SCHEMA,
-        alias="schema",
-    )
-    project_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    program_id: str = Field(min_length=1, max_length=512)
-    program_name: str = Field(min_length=1, max_length=80)
-    baseline_mne_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    baseline_ld_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    baseline_ld_canonical_sha256: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
-    )
-    baseline_instruction_count: int = Field(ge=2, le=4_096)
-    patches: list[MneInstructionPatchV4] = Field(min_length=2, max_length=16)
-    target_instruction_count: int = Field(ge=2, le=4_096)
-    target_mne_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    design_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    target_program_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    hardware_context_digest: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
-    )
-    field_io_bindings: list[MneFieldIoBindingV1] = Field(
-        default_factory=list, max_length=64
-    )
-    candidate_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-    @model_serializer(mode="wrap")
-    def serialize_candidate(self, handler: Any) -> dict[str, Any]:
-        serialized = handler(self)
-        if "schema_value" in serialized:
-            serialized["schema"] = serialized.pop("schema_value")
-        if serialized.get("baseline_ld_canonical_sha256") is None:
-            serialized.pop("baseline_ld_canonical_sha256", None)
-        if serialized.get("hardware_context_digest") is None:
-            serialized.pop("hardware_context_digest", None)
-            serialized.pop("field_io_bindings", None)
-        return serialized
-
-    @model_validator(mode="after")
-    def validate_candidate(self) -> MneInstructionBatchPatchCandidateV5:
-        if self.program_id != self.program_id.strip() or self.program_name != self.program_name.strip():
-            raise ValueError("candidate program identity must be exact non-blank text")
-        _validate_mne_field_io_envelope(
-            self.hardware_context_digest, self.field_io_bindings
-        )
-        anchor_indexes = [item.anchor_instruction_index for item in self.patches]
-        if anchor_indexes != sorted(anchor_indexes) or len(anchor_indexes) != len(
-            set(anchor_indexes)
-        ):
-            raise ValueError("candidate patch anchors must be unique and ordered")
-        if any(index >= self.baseline_instruction_count - 1 for index in anchor_indexes):
-            raise ValueError("candidate patch anchor is outside the executable baseline")
-        for patch in self.patches:
-            if (patch.context_before is None) != (patch.anchor_instruction_index == 0):
-                raise ValueError("candidate contextBefore does not match an anchor position")
-            if patch.context_after is None:
-                raise ValueError("candidate contextAfter is required for each non-END anchor")
-        delta = sum(
-            -1
-            if patch.operation == "delete"
-            else (0 if patch.operation == "replace" else 1)
-            for patch in self.patches
-        )
-        if self.target_instruction_count != self.baseline_instruction_count + delta:
-            raise ValueError("candidate targetInstructionCount is inconsistent")
-        unsigned = self.model_dump(
-            mode="json", by_alias=False, exclude={"candidate_digest"}
-        )
-        if self.hardware_context_digest is None:
-            unsigned.pop("hardware_context_digest", None)
-            unsigned.pop("field_io_bindings", None)
-        if self.baseline_ld_canonical_sha256 is None:
-            unsigned.pop("baseline_ld_canonical_sha256", None)
-        if self.candidate_digest != _canonical_sha256(unsigned):
-            raise ValueError("candidate.candidateDigest is not canonical")
-        return self
-
-
-class MneRungContactConditionV6(ApiModel):
-    kind: Literal["contact"]
-    operand: str = Field(min_length=1, max_length=128)
-    state: Literal["on", "off"]
-
-    @model_validator(mode="after")
-    def validate_contact(self) -> MneRungContactConditionV6:
-        MneProgramReplacementInstructionV2(
-            command="LOAD NOT" if self.state == "off" else "LOAD",
-            operand=self.operand,
-        )
-        return self
-
-
-class MneRungCompositeConditionV6(ApiModel):
-    kind: Literal["all_of", "any_of"]
-    terms: list[
-        Annotated[
-            MneRungContactConditionV6 | MneRungCompositeConditionV6,
-            Field(discriminator="kind"),
-        ]
-    ] = Field(min_length=2, max_length=20)
-
-
-MneRungConditionV6 = Annotated[
-    MneRungContactConditionV6 | MneRungCompositeConditionV6,
-    Field(discriminator="kind"),
-]
-
-
-def _validate_mne_rung_condition_depth(
-    value: MneRungConditionV6,
+def canonical_change_attempt_result(
     *,
-    depth: int = 1,
-) -> None:
-    if isinstance(value, MneRungContactConditionV6):
-        return
-    if depth > 8:
-        raise ValueError("rung condition nesting exceeds eight levels")
-    for term in value.terms:
-        _validate_mne_rung_condition_depth(term, depth=depth + 1)
+    attempt: ChangeAttemptIdentityV1 | dict[str, Any],
+    native_persisted_hash: str,
+    native_readback_hash: str,
+    test_receipt_digest: str,
+) -> dict[str, Any]:
+    """Build and validate the Host-side result binding for one attempt."""
 
-
-def _mne_rung_condition_instruction_count(value: MneRungConditionV6) -> int:
-    if isinstance(value, MneRungContactConditionV6):
-        return 1
-    count = _mne_rung_condition_instruction_count(value.terms[0])
-    for term in value.terms[1:]:
-        count += 1 if isinstance(term, MneRungContactConditionV6) else (
-            _mne_rung_condition_instruction_count(term) + 1
-        )
-    return count
-
-
-_MNE_RUNG_ACTION_COMMANDS = frozenset({"OUT", "SET", "RST", "TON"})
-
-
-def _mne_rung_digest(
-    condition: MneRungConditionV6,
-    actions: list[MneProgramReplacementInstructionV2],
-) -> str:
-    return _canonical_sha256(
-        {
-            "condition": condition.model_dump(mode="json", by_alias=False),
-            "actions": [
-                {"command": action.command, "operand": action.operand}
-                for action in actions
-            ],
-        }
+    normalized_attempt = ChangeAttemptIdentityV1.model_validate(attempt).model_dump(
+        mode="json"
     )
-
-
-class MneRungBaselineV6(ApiModel):
-    start_instruction_index: int = Field(ge=0, le=4_094)
-    condition_instruction_count: int = Field(ge=1, le=128)
-    action_instruction_count: int = Field(ge=1, le=16)
-    condition: MneRungConditionV6
-    actions: list[MneInstructionPatchRowV4] = Field(min_length=1, max_length=16)
-    rung_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-    @model_validator(mode="after")
-    def validate_rung(self) -> MneRungBaselineV6:
-        _validate_mne_rung_condition_depth(self.condition)
-        if self.action_instruction_count != len(self.actions):
-            raise ValueError("baseline rung counts are inconsistent")
-        action_start = self.start_instruction_index + self.condition_instruction_count
-        if any(
-            action.command not in _MNE_RUNG_ACTION_COMMANDS
-            or action.index != action_start + offset
-            for offset, action in enumerate(self.actions)
-        ):
-            raise ValueError("baseline rung actions are not contiguous")
-        if self.rung_digest != _mne_rung_digest(self.condition, self.actions):
-            raise ValueError("baseline rung digest is invalid")
-        return self
-
-
-class MneRungTargetV6(ApiModel):
-    condition: MneRungConditionV6
-    actions: list[MneProgramReplacementInstructionV2] = Field(
-        min_length=1,
-        max_length=16,
-    )
-    rung_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-    @model_validator(mode="after")
-    def validate_rung(self) -> MneRungTargetV6:
-        _validate_mne_rung_condition_depth(self.condition)
-        if (
-            _mne_rung_condition_instruction_count(self.condition) > 128
-            or any(action.command not in _MNE_RUNG_ACTION_COMMANDS for action in self.actions)
-        ):
-            raise ValueError("target rung is outside the supported instruction slice")
-        if self.rung_digest != _mne_rung_digest(self.condition, self.actions):
-            raise ValueError("target rung digest is invalid")
-        return self
-
-
-class MneRungPatchV6(ApiModel):
-    schema_value: Literal["controlstudio-mne-rung-patch/v1"] = Field(
-        default=MNE_RUNG_PATCH_SCHEMA,
-        alias="schema",
-    )
-    operation: Literal[
-        "replace_condition",
-        "replace_rung",
-        "insert_before",
-        "delete",
-    ]
-    anchor: MneInstructionPatchRowV4
-    anchor_rung: MneRungBaselineV6 | None
-    target_rung: MneRungTargetV6 | None
-
-    @model_serializer(mode="wrap")
-    def serialize_patch(self, handler: Any) -> dict[str, Any]:
-        serialized = handler(self)
-        if "schema_value" in serialized:
-            serialized["schema"] = serialized.pop("schema_value")
-        return serialized
-
-    @model_validator(mode="after")
-    def validate_patch(self) -> MneRungPatchV6:
-        if self.anchor.command not in _MNE_RUNG_ACTION_COMMANDS | {"END"}:
-            raise ValueError("rung patch anchor must be an action or END")
-        if self.operation == "insert_before":
-            if self.target_rung is None:
-                raise ValueError("rung insertion requires a target rung")
-        elif self.operation == "replace_condition":
-            if self.anchor.command == "END" or self.anchor_rung is None or self.target_rung is None:
-                raise ValueError("condition replacement requires an existing rung")
-            if self.target_rung.condition == self.anchor_rung.condition or [
-                (item.command, item.operand) for item in self.target_rung.actions
-            ] != [(item.command, item.operand) for item in self.anchor_rung.actions]:
-                raise ValueError("condition replacement must change only the condition")
-        elif self.operation == "replace_rung":
-            if self.anchor.command == "END" or self.anchor_rung is None or self.target_rung is None:
-                raise ValueError("rung replacement requires an existing and target rung")
-            if self.target_rung.condition == self.anchor_rung.condition and [
-                (item.command, item.operand) for item in self.target_rung.actions
-            ] == [(item.command, item.operand) for item in self.anchor_rung.actions]:
-                raise ValueError("rung replacement must change condition or actions")
-        elif self.anchor.command == "END" or self.anchor_rung is None or self.target_rung is not None:
-            raise ValueError("rung delete requires an existing rung and no target rung")
-        if self.anchor.command != "END":
-            if self.anchor_rung is None or not any(
-                item.index == self.anchor.index
-                and item.command == self.anchor.command
-                and item.operand == self.anchor.operand
-                for item in self.anchor_rung.actions
-            ):
-                raise ValueError("rung action anchor is outside the baseline rung")
-        return self
-
-
-class MneRungPatchCandidateV6(ApiModel):
-    schema_value: Literal["xg5000.mne-rung-patch-candidate/1.0"] = Field(
-        default=MNE_RUNG_PATCH_CANDIDATE_SCHEMA,
-        alias="schema",
-    )
-    project_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    program_id: str = Field(min_length=1, max_length=512)
-    program_name: str = Field(min_length=1, max_length=80)
-    baseline_mne_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    baseline_ld_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    baseline_ld_canonical_sha256: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
-    )
-    baseline_instruction_count: int = Field(ge=2, le=4_096)
-    patch: MneRungPatchV6
-    target_instruction_count: int = Field(ge=2, le=4_096)
-    target_mne_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    design_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    target_program_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    simulation_profile: dict[str, Any] | None = None
-    hardware_context_digest: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
-    )
-    field_io_bindings: list[MneFieldIoBindingV1] = Field(
-        default_factory=list, max_length=64
-    )
-    candidate_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-    @model_serializer(mode="wrap")
-    def serialize_candidate(self, handler: Any) -> dict[str, Any]:
-        serialized = handler(self)
-        if "schema_value" in serialized:
-            serialized["schema"] = serialized.pop("schema_value")
-        if serialized.get("baseline_ld_canonical_sha256") is None:
-            serialized.pop("baseline_ld_canonical_sha256", None)
-        if serialized.get("hardware_context_digest") is None:
-            serialized.pop("hardware_context_digest", None)
-            serialized.pop("field_io_bindings", None)
-        return serialized
-
-    @model_validator(mode="after")
-    def validate_candidate(self) -> MneRungPatchCandidateV6:
-        if self.program_id != self.program_id.strip() or self.program_name != self.program_name.strip():
-            raise ValueError("candidate program identity must be exact non-blank text")
-        _validate_mne_field_io_envelope(
-            self.hardware_context_digest, self.field_io_bindings
-        )
-        if self.patch.anchor.index >= self.baseline_instruction_count:
-            raise ValueError("candidate anchor is outside the baseline")
-        baseline_rung = self.patch.anchor_rung
-        target_rung = self.patch.target_rung
-        if baseline_rung is not None and (
-            baseline_rung.start_instruction_index
-            + baseline_rung.condition_instruction_count
-            + baseline_rung.action_instruction_count
-            > self.baseline_instruction_count - 1
-        ):
-            raise ValueError("candidate baseline rung is outside the executable program")
-        if self.patch.operation == "insert_before":
-            assert target_rung is not None
-            if self.patch.anchor.command == "END":
-                if self.patch.anchor.index != self.baseline_instruction_count - 1:
-                    raise ValueError("rung insertion END anchor must be final")
-                if baseline_rung is None or (
-                    baseline_rung.start_instruction_index
-                    + baseline_rung.condition_instruction_count
-                    + baseline_rung.action_instruction_count
-                    != self.patch.anchor.index
-                ):
-                    raise ValueError("rung insertion END context is inconsistent")
-            target_delta = (
-                _mne_rung_condition_instruction_count(target_rung.condition)
-                + len(target_rung.actions)
-            )
-        elif self.patch.operation == "replace_condition":
-            assert baseline_rung is not None and target_rung is not None
-            target_delta = (
-                _mne_rung_condition_instruction_count(target_rung.condition)
-                - baseline_rung.condition_instruction_count
-            )
-        elif self.patch.operation == "replace_rung":
-            assert baseline_rung is not None and target_rung is not None
-            target_delta = (
-                _mne_rung_condition_instruction_count(target_rung.condition)
-                + len(target_rung.actions)
-                - baseline_rung.condition_instruction_count
-                - baseline_rung.action_instruction_count
-            )
-        else:
-            assert baseline_rung is not None
-            target_delta = -(
-                baseline_rung.condition_instruction_count
-                + baseline_rung.action_instruction_count
-            )
-        expected_count = self.baseline_instruction_count + target_delta
-        if self.target_instruction_count != expected_count:
-            raise ValueError("candidate targetInstructionCount is inconsistent")
-        if self.simulation_profile is not None:
-            profile = self.simulation_profile
-            simple_profile_keys = {
-                "schema", "normal_assignments", "deny_assignments",
-                "restore_assignments", "output_addresses", "target_rung_digest",
-                "program_count", "catalog_digest", "profile_digest",
-            }
-            scenario_profile_keys = {
-                "schema", "scenario", "output_addresses", "target_rung_digest",
-                "program_count", "catalog_digest", "profile_digest",
-            }
-            if (
-                set(profile) not in (simple_profile_keys, scenario_profile_keys)
-                or profile.get("schema") != "controlstudio-mne-rung-xgsim-profile/v1"
-            ):
-                raise ValueError("candidate simulationProfile has an unexpected contract")
-            input_keys: set[str]
-            if set(profile) == simple_profile_keys:
-                assignment_names = (
-                    "normal_assignments", "deny_assignments", "restore_assignments"
-                )
-                assignments = [profile.get(name) for name in assignment_names]
-                if any(not isinstance(item, dict) or not item for item in assignments):
-                    raise ValueError("candidate simulationProfile assignments are invalid")
-                input_keys = set(assignments[0])
-                if any(set(item) != input_keys for item in assignments[1:]) or any(
-                    re.fullmatch(r"[PM]\d{3,4}[0-9A-F]", str(address)) is None
-                    for address in input_keys
-                ) or any(
-                    isinstance(value, bool) or value not in {0, 1}
-                    for assignment in assignments for value in assignment.values()
-                ):
-                    raise ValueError("candidate simulationProfile assignments are not canonical")
-            else:
-                scenario = profile.get("scenario")
-                steps = scenario.get("steps") if isinstance(scenario, dict) and set(scenario) == {"steps"} else None
-                if not isinstance(steps, list) or not 2 <= len(steps) <= 16:
-                    raise ValueError("candidate simulationProfile scenario steps are invalid")
-                if sum(
-                    step.get("hold_ms", 0) for step in steps
-                    if isinstance(step, dict) and type(step.get("hold_ms", 0)) is int
-                ) > 30_000:
-                    raise ValueError("candidate simulationProfile total hold time exceeds 30000 ms")
-                input_keys = set()
-                names: set[str] = set()
-                for index, step in enumerate(steps):
-                    if not isinstance(step, dict) or set(step) not in (
-                        {"name", "drive", "observe"}, {"name", "drive", "observe", "hold_ms"},
-                    ):
-                        raise ValueError("candidate simulationProfile scenario step is invalid")
-                    hold_ms = step.get("hold_ms", 0)
-                    if type(hold_ms) is not int or not 0 <= hold_ms <= 10_000:
-                        raise ValueError("candidate simulationProfile hold_ms is invalid")
-                    name, drive, observe = step.get("name"), step.get("drive"), step.get("observe")
-                    if (
-                        not isinstance(name, str)
-                        or not name.strip()
-                        or name in names
-                        or not isinstance(drive, dict)
-                        or not drive
-                        or not isinstance(observe, dict)
-                        or not observe
-                    ):
-                        raise ValueError("candidate simulationProfile scenario step is invalid")
-                    if any(
-                        re.fullmatch(r"[PM]\d{3,4}[0-9A-F]", str(address)) is None
-                        or isinstance(value, bool)
-                        or value not in {0, 1}
-                        for assignments in (drive, observe)
-                        for address, value in assignments.items()
-                    ):
-                        raise ValueError("candidate simulationProfile scenario assignment is invalid")
-                    if set(drive).intersection(observe):
-                        raise ValueError("candidate simulationProfile scenario drives an observed bit")
-                    if index == 0:
-                        input_keys = set(drive)
-                    elif set(drive) != input_keys:
-                        raise ValueError("candidate simulationProfile scenario drive sets differ")
-                    names.add(name)
-            outputs = profile.get("output_addresses")
-            if (
-                not isinstance(outputs, list)
-                or not outputs
-                or len(set(outputs)) != len(outputs)
-                or any(
-                    not isinstance(address, str)
-                    or re.fullmatch(r"[PM]\d{3,4}[0-9A-F]", address) is None
-                    for address in outputs
-                )
-                or any(address in input_keys for address in outputs)
-                or self.patch.target_rung is None
-                or profile.get("target_rung_digest") != self.patch.target_rung.rung_digest
-            ):
-                raise ValueError("candidate simulationProfile outputs are invalid")
-            if set(profile) == scenario_profile_keys and any(
-                not set(outputs).issubset(step["observe"])
-                for step in profile["scenario"]["steps"]
-            ):
-                raise ValueError("candidate simulationProfile scenario omits target output")
-            unsigned_profile = {
-                key: value for key, value in profile.items() if key != "profile_digest"
-            }
-            if profile.get("profile_digest") != _canonical_sha256(unsigned_profile):
-                raise ValueError("candidate simulationProfile digest is invalid")
-            if (
-                profile.get("program_count") != 1
-                or re.fullmatch(r"[0-9a-f]{64}", str(profile.get("catalog_digest") or ""))
-                is None
-            ):
-                raise ValueError("candidate simulationProfile catalog proof is invalid")
-        unsigned = self.model_dump(
-            mode="json", by_alias=False, exclude={"candidate_digest"}
-        )
-        if self.hardware_context_digest is None:
-            unsigned.pop("hardware_context_digest", None)
-            unsigned.pop("field_io_bindings", None)
-        if self.baseline_ld_canonical_sha256 is None:
-            unsigned.pop("baseline_ld_canonical_sha256", None)
-        if self.candidate_digest != _canonical_sha256(unsigned):
-            raise ValueError("candidate.candidateDigest is not canonical")
-        return self
-
-
-def _validate_mne_plan_common(
-    plan: Any,
-    *,
-    required_coverage_areas: tuple[str, ...] = REQUIRED_CHANGE_COVERAGE_AREAS,
-) -> None:
-    """Shared human-approval contract for both MNE change shapes."""
-
-    text_lists = {
-        "impact": plan.impact,
-        "risks": plan.risks,
-        "assumptions": plan.assumptions,
-        "alternatives": plan.alternatives,
-        "acceptanceCriteria": plan.acceptance_criteria,
-        "observationSignals": plan.observation_signals,
-        "stopConditions": plan.stop_conditions,
-        "manualFollowUp": plan.manual_follow_up,
-        "rollback": plan.rollback,
+    unsigned = {
+        "schema": CHANGE_ATTEMPT_RESULT_SCHEMA,
+        "attempt": normalized_attempt,
+        "native_persisted_hash": native_persisted_hash,
+        "native_readback_hash": native_readback_hash,
+        "test_receipt_digest": test_receipt_digest,
     }
-    for field_name, values in text_lists.items():
-        if any(not item.strip() or len(item) > 4_000 for item in values):
-            raise ValueError(
-                f"plan.{field_name} must contain bounded non-empty text items"
-            )
-    if plan.blocking_unknowns:
-        raise ValueError("plan.blockingUnknowns must be empty before transaction creation")
-    expected_validation = (
-        OFFLINE_NATIVE_CHECK_ONLY_VALIDATION_STEPS
-        if plan.verification_scope == "offline_native_check_only"
-        else MNE_FULL_PROGRAM_VALIDATION_STEPS
-    )
-    if tuple(plan.validation) != expected_validation:
-        raise ValueError(
-            f"{plan.verification_scope} has an invalid native validation sequence"
-        )
-    coverage_by_area = {item.area: item for item in plan.coverage}
-    if (
-        len(coverage_by_area) != len(plan.coverage)
-        or not set(required_coverage_areas).issubset(coverage_by_area)
-    ):
-        raise ValueError("plan.coverage is missing a required area or repeats an area")
-    for area, item in coverage_by_area.items():
-        if item.status == "unknown_blocking":
-            raise ValueError(f"plan.coverage[{area}] is unresolved")
-        if item.status == "confirmed" and not item.evidence_refs:
-            raise ValueError(f"plan.coverage[{area}] requires evidenceRefs")
+    return ChangeAttemptResultV1.model_validate(
+        {**unsigned, "binding_digest": _canonical_sha256(unsigned)}
+    ).model_dump(mode="json")
 
 
-class ChangePlanV2(ApiModel):
-    """Approval contract for one typed full-program MNE replacement proposal."""
-
-    plan_kind: Literal["mne_full_program_replacement"]
-    change_mode: ChangeMode
-    request_scope: ChangeRequestScope
-    target_program: MneFullProgramTargetV2
-    baseline_binding: MneFullProgramBaselineBindingV2 | None = None
-    impact: list[str] = Field(min_length=1, max_length=200)
-    risks: list[str] = Field(min_length=1, max_length=200)
-    assumptions: list[str] = Field(default_factory=list, max_length=200)
-    blocking_unknowns: list[str] = Field(max_length=0)
-    alternatives: list[str] = Field(min_length=1, max_length=200)
-    acceptance_criteria: list[str] = Field(min_length=1, max_length=200)
-    observation_signals: list[str] = Field(min_length=1, max_length=200)
-    stop_conditions: list[str] = Field(min_length=1, max_length=200)
-    coverage: list[ChangeCoverageItemV1] = Field(
-        min_length=len(REQUIRED_CHANGE_COVERAGE_AREAS),
-        max_length=len(REQUIRED_CHANGE_COVERAGE_AREAS),
-    )
-    verification_scope: VerificationScope
-    validation: list[MneFullProgramValidationStepV2] = Field(
-        min_length=3,
-        max_length=4,
-    )
-    manual_follow_up: list[str] = Field(min_length=1, max_length=200)
-    rollback: list[str] = Field(min_length=1, max_length=200)
-
-    @model_validator(mode="after")
-    def validate_full_program_contract(self) -> ChangePlanV2:
-        self.validate_executable_contract()
-        return self
-
-    def validate_executable_contract(self) -> None:
-        """Validate an approvable proposal; execution is a separate capability."""
-        _validate_mne_plan_common(self)
-        if self.baseline_binding is not None and (
-            self.baseline_binding.program_id != self.target_program.program_id
-            or self.baseline_binding.program_name != self.target_program.program_name
-        ):
-            raise ValueError(
-                "plan.baselineBinding must match the exact target program identity"
-            )
 
 
-class MneCandidateChangePlanBase(ApiModel):
-    """Shared approval envelope for a compiler-produced private-baseline patch."""
-
-    change_mode: ChangeMode
-    request_scope: ChangeRequestScope
-    candidate_evidence_id: str = Field(min_length=36, max_length=36)
-    baseline_binding: MneFullProgramBaselineBindingV2 | None = None
-    impact: list[str] = Field(min_length=1, max_length=200)
-    risks: list[str] = Field(min_length=1, max_length=200)
-    assumptions: list[str] = Field(default_factory=list, max_length=200)
-    blocking_unknowns: list[str] = Field(max_length=0)
-    alternatives: list[str] = Field(min_length=1, max_length=200)
-    acceptance_criteria: list[str] = Field(min_length=1, max_length=200)
-    observation_signals: list[str] = Field(min_length=1, max_length=200)
-    stop_conditions: list[str] = Field(min_length=1, max_length=200)
-    coverage: list[ChangeCoverageItemV1] = Field(
-        min_length=len(MNE_COMPILER_CANDIDATE_REQUIRED_COVERAGE_AREAS),
-        max_length=len(REQUIRED_CHANGE_COVERAGE_AREAS),
-    )
-    verification_scope: VerificationScope
-    validation: list[MneFullProgramValidationStepV2] = Field(min_length=3, max_length=4)
-    manual_follow_up: list[str] = Field(min_length=1, max_length=200)
-    rollback: list[str] = Field(min_length=1, max_length=200)
 
 
-def _validate_mne_candidate_plan(plan: Any, candidate: Any) -> None:
-    _validate_mne_plan_common(
-        plan,
-        required_coverage_areas=MNE_COMPILER_CANDIDATE_REQUIRED_COVERAGE_AREAS,
-    )
-    coverage_by_area = {item.area: item for item in plan.coverage}
-    for area in MNE_COMPILER_CANDIDATE_REQUIRED_COVERAGE_AREAS:
-        item = coverage_by_area[area]
-        if (
-            item.status != "confirmed"
-            or plan.candidate_evidence_id not in item.evidence_refs
-        ):
-            raise ValueError(
-                f"plan.coverage[{area}] must confirm the exact compiler candidate"
-            )
-    if plan.baseline_binding is not None and (
-        plan.baseline_binding.project_sha256 != candidate.project_sha256
-        or plan.baseline_binding.program_id != candidate.program_id
-        or plan.baseline_binding.program_name != candidate.program_name
-        or (
-            candidate.baseline_ld_canonical_sha256 is not None
-            and plan.baseline_binding.ld_canonical_sha256
-            != candidate.baseline_ld_canonical_sha256
-        )
-        or (
-            candidate.baseline_ld_canonical_sha256 is None
-            and plan.baseline_binding.ld_payload_sha256 != candidate.baseline_ld_sha256
-        )
-    ):
-        raise ValueError("plan.baselineBinding must match the compiler candidate")
-    try:
-        if str(uuid.UUID(plan.candidate_evidence_id)) != plan.candidate_evidence_id:
-            raise ValueError
-    except ValueError as exc:
-        raise ValueError("plan.candidateEvidenceId must be a canonical UUID") from exc
 
 
-class ChangePlanV3(MneCandidateChangePlanBase):
-    """Approval contract for one compiler-certified series guard insertion."""
-
-    plan_kind: Literal["mne_series_guard_patch"]
-    candidate: MneSeriesGuardCandidateV3
-
-    @model_validator(mode="after")
-    def validate_series_guard_contract(self) -> ChangePlanV3:
-        _validate_mne_candidate_plan(self, self.candidate)
-        return self
-
-    def validate_executable_contract(self) -> None:
-        self.validate_series_guard_contract()
+# Resolve historical planning metadata for stored conversation compatibility.
+ProjectPlanNativeDesignV1.model_rebuild()
 
 
-class ChangePlanV4(MneCandidateChangePlanBase):
-    """Approval contract for one compiler-resolved existing instruction edit."""
-
-    plan_kind: Literal["mne_instruction_patch"]
-    candidate: MneInstructionPatchCandidateV4
-
-    @model_validator(mode="after")
-    def validate_instruction_patch_contract(self) -> ChangePlanV4:
-        _validate_mne_candidate_plan(self, self.candidate)
-        return self
-
-    def validate_executable_contract(self) -> None:
-        self.validate_instruction_patch_contract()
 
 
-class ChangePlanV5(MneCandidateChangePlanBase):
-    """Approval contract for 2..16 compiler-resolved instruction edits."""
-
-    plan_kind: Literal["mne_instruction_batch_patch"]
-    candidate: MneInstructionBatchPatchCandidateV5
-
-    @model_validator(mode="after")
-    def validate_instruction_batch_patch_contract(self) -> ChangePlanV5:
-        _validate_mne_candidate_plan(self, self.candidate)
-        return self
-
-    def validate_executable_contract(self) -> None:
-        self.validate_instruction_batch_patch_contract()
 
 
-class ChangePlanV6(MneCandidateChangePlanBase):
-    """Approval contract for one compiler-resolved complete-rung patch."""
-
-    plan_kind: Literal["mne_rung_patch"]
-    verification_scope: Literal[
-        "offline_native_check_only",
-        "offline_native_reopen",
-        "offline_native_reopen_xgsim",
-    ]
-    candidate: MneRungPatchCandidateV6
-
-    @model_validator(mode="after")
-    def validate_rung_patch_contract(self) -> ChangePlanV6:
-        _validate_mne_candidate_plan(self, self.candidate)
-        if self.verification_scope == "offline_native_reopen_xgsim":
-            profile = self.candidate.simulation_profile
-            if not isinstance(profile, dict) or not profile.get("profile_digest"):
-                raise ValueError(
-                    "XG-SIM verification requires the compiler-derived rung profile"
-                )
-        return self
-
-    def validate_executable_contract(self) -> None:
-        self.validate_rung_patch_contract()
 
 
-ChangePlanContract = (
-    ChangePlanV1
-    | ChangePlanV2
-    | ChangePlanV3
-    | ChangePlanV4
-    | ChangePlanV5
-    | ChangePlanV6
-)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+pass
+
+
+
+
+
+
+pass
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ChangePlanContract = ChangePlanV1
 
 
 class CreateChangeTransactionRequestV1(ApiModel):
@@ -3670,12 +2851,11 @@ class CreateChangeTransactionRequestV1(ApiModel):
         )
         allowed_scope_pairs = {
             ("offline_candidate_revision", "offline_native_reopen"),
-            ("offline_candidate_revision", "offline_native_reopen_xgsim"),
             ("permanent_offline_revision", "offline_native_check_only"),
         }
         if scope_pair not in allowed_scope_pairs:
             raise ValueError(
-                "new change transactions require candidate+reopen(/XG-SIM) "
+                "new change transactions require candidate+reopen "
                 "or permanent+check-only scope"
             )
         return self
@@ -3706,10 +2886,6 @@ class ExecuteChangeTransactionRequestV1(ApiModel):
         return normalized
 
 
-class FinalizeSimulationChangeRequestV1(ApiModel):
-    decision: Literal["accept", "revert"]
-    expected_plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    expected_simulation_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class ReconcileChangeTransactionRequestV1(ExecuteChangeTransactionRequestV1):
@@ -3774,6 +2950,7 @@ class ChangeTransactionV1(ApiModel):
     run_id: str | None = None
     state: str
     target_identity: ChangeTargetIdentityV1
+    execution_target_identity: ChangeTargetIdentityV1 | None = None
     mutation_scope: str
     risk_level: Literal["low", "medium", "high", "critical"]
     intent: str
@@ -3819,15 +2996,129 @@ class ChangeReceiptAcknowledgementV1(ApiModel):
     acknowledgement_recorded: bool
 
 
+ReasoningEffortV1 = Literal[
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+]
+
+
 class ModelSettingsV1(ApiModel):
     protocol: Literal["openai_chat_completions"] = "openai_chat_completions"
     base_url: str
     model: str
     custom_header_names: list[str]
     timeout_seconds: float
+    reasoning_effort: ReasoningEffortV1 | None = None
     has_api_key: bool
     external_endpoint: bool
     updated_at: datetime | None = None
+    model_context: ModelContextV1 | None = None
+
+
+MODEL_CONTEXT_REQUIRED_INPUT_TOKENS = 200_000
+MODEL_CONTEXT_OUTPUT_RESERVE_TOKENS = 16_608
+
+ModelContextStatusV1 = Literal["verified", "insufficient", "unknown"]
+
+
+class ModelContextV1(ApiModel):
+    """An explicit, provider-neutral context-capacity observation.
+
+    The Host may forward this projection when a trusted provider capability
+    source has actually measured the endpoint.  ``None`` is intentional: it
+    means the endpoint's capacity is unknown, not that the product requirement
+    has been met.  The contract keeps the 200k input requirement explicit so
+    callers cannot silently substitute the currently observed 196608 window.
+    """
+
+    detected_total_tokens: int | None = Field(default=None, ge=0, strict=True)
+    required_input_tokens: int = Field(
+        default=MODEL_CONTEXT_REQUIRED_INPUT_TOKENS,
+        ge=1,
+        strict=True,
+    )
+    output_reserve_tokens: int = Field(
+        default=MODEL_CONTEXT_OUTPUT_RESERVE_TOKENS,
+        ge=MODEL_CONTEXT_OUTPUT_RESERVE_TOKENS,
+        strict=True,
+    )
+    source: str = Field(default="unknown", min_length=1, max_length=200)
+    history_budget_tokens: int | None = Field(default=None, ge=0, strict=True)
+    history_budget_status: ModelContextStatusV1 = "unknown"
+    history_budget_source: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @field_validator("source")
+    @classmethod
+    def normalize_source(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("model context source must be non-empty")
+        return normalized
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_serialized_status(cls, value: Any) -> Any:
+        """Treat the wire-only capability status as a derived read value.
+
+        ``ModelContextV1`` is also the persistence boundary for the provider
+        observation.  A serialized observation now contains the computed
+        ``status`` field, so old and new stored payloads must be decodable
+        without allowing that field to become caller-controlled state.  The
+        canonical status is always recomputed from the measured fields below.
+        """
+
+        if isinstance(value, dict) and "status" in value:
+            value = dict(value)
+            value.pop("status", None)
+        return value
+
+    @model_validator(mode="after")
+    def validate_requirement(self) -> ModelContextV1:
+        if self.required_input_tokens != MODEL_CONTEXT_REQUIRED_INPUT_TOKENS:
+            raise ValueError(
+                "model context required_input_tokens must remain 200000"
+            )
+        if self.history_budget_status == "verified" and (
+            self.history_budget_tokens is None or self.history_budget_source is None
+        ):
+            raise ValueError(
+                "verified history budget requires history_budget_tokens and "
+                "history_budget_source"
+            )
+        if self.history_budget_status == "insufficient" and (
+            self.history_budget_tokens is None and self.history_budget_source is None
+        ):
+            raise ValueError(
+                "insufficient history budget requires a measured budget or source"
+            )
+        return self
+
+    @computed_field(return_type=ModelContextStatusV1)
+    @property
+    def status(self) -> ModelContextStatusV1:
+        if self.detected_total_tokens is None:
+            return "unknown"
+        if self.detected_total_tokens < (
+            self.required_input_tokens + self.output_reserve_tokens
+        ):
+            return "insufficient"
+        return "verified"
+
+    @property
+    def available_input_tokens(self) -> int | None:
+        if self.detected_total_tokens is None:
+            return None
+        return max(0, self.detected_total_tokens - self.output_reserve_tokens)
+
+    @property
+    def product_capability_status(self) -> ModelContextStatusV1:
+        return self.status
 
 
 class SaveModelSettingsRequestV1(ApiModel):
@@ -3837,6 +3128,7 @@ class SaveModelSettingsRequestV1(ApiModel):
     api_key: str | None = Field(default=None, max_length=2048)
     custom_headers: dict[str, str] | None = None
     timeout_seconds: float = Field(default=60, ge=1, le=3600)
+    reasoning_effort: ReasoningEffortV1 | None = None
     external_model_consent: bool = False
     insecure_http_consent: bool = False
 
@@ -3854,6 +3146,7 @@ class ModelCapabilityResultV1(ApiModel):
     tested_at: datetime
     capabilities: ModelCapabilityFlagsV1
     message: str
+    model_context: ModelContextV1 | None = None
 
 
 class XG5000InstancesV1(ApiModel):
@@ -4058,121 +3351,31 @@ class ReviewedProjectPlanBindingV1(ApiModel):
         return value
 
 
-class CreateNativeProjectRequestV1(ApiModel):
-    operation_id: str
-    project_name: str = Field(min_length=1, max_length=80)
-    workspace_parent: str = Field(min_length=1, max_length=32_768)
-    plc_series: Literal["XGK", "XGB"]
-    cpu_model: str = Field(min_length=1, max_length=64)
-    program_name: str = Field(default="MAIN", min_length=1, max_length=80)
-    language: Literal["LD"] = "LD"
-    description: str = Field(default="", max_length=1024)
-    xg5000_pid: int = Field(gt=0)
-    xg5000_hwnd: int = Field(gt=0)
-    reviewed_plan: ReviewedProjectPlanBindingV1
-
-    @field_validator("operation_id")
-    @classmethod
-    def validate_operation_id(cls, value: str) -> str:
-        try:
-            normalized = str(uuid.UUID(value))
-        except ValueError as exc:
-            raise ValueError("operationId must be a UUID") from exc
-        if normalized != value:
-            raise ValueError("operationId must use canonical UUID form")
-        return normalized
 
 
-class NativeProjectOperationV1(ApiModel):
-    native_project_id: str
-    operation_id: str
-    state: Literal[
-        "allocated",
-        "executing",
-        "completed",
-        "failed",
-        "quarantined",
-    ]
-    request_digest: str
-    actor_id: str
-    request: dict[str, Any]
-    plan_digest: str | None = None
-    destination_directory: str
-    result: dict[str, Any]
-    error_code: str | None = None
-    error_detail: str | None = None
-    created_at: datetime
-    updated_at: datetime
-    completed_at: datetime | None = None
 
 
-class NativeProjectCreatedV1(ApiModel):
-    operation: NativeProjectOperationV1
-    created: bool
 
 
-class NativeSimulationTrialDecisionRequestV1(ApiModel):
-    decision: Literal["accept", "revert", "acknowledge_quarantine"]
-    expected_receipt_digest: str | None = Field(
-        default=None,
-        pattern=r"^[0-9a-f]{64}$",
-    )
-
-    @model_validator(mode="after")
-    def validate_receipt_digest(self) -> NativeSimulationTrialDecisionRequestV1:
-        if self.decision in {"accept", "revert"} and self.expected_receipt_digest is None:
-            raise ValueError("expectedReceiptDigest is required for accept or revert")
-        return self
 
 
-class NativeSimulationTrialDecisionV1(ApiModel):
-    operation: NativeProjectOperationV1
-    decision_recorded: bool
 
 
-class ReconcileNativeProjectRequestV1(ApiModel):
-    pid: int = Field(gt=0)
-    hwnd: int = Field(gt=0)
-    expected_project_path: str = Field(min_length=1, max_length=32_768)
-    observed_project_path: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=32_768,
-    )
-    expected_project_sha256: str | None = Field(
-        default=None,
-        min_length=64,
-        max_length=64,
-        pattern=r"^[0-9a-fA-F]{64}$",
-    )
 
 
-class NativeProjectReconciliationV1(ApiModel):
-    operation: NativeProjectOperationV1
-    reconciled: bool
 
 
-class ResumeNativeProjectRequestV1(ApiModel):
-    pid: int = Field(gt=0)
-    hwnd: int = Field(gt=0)
-    expected_request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    reopened_pid: int | None = Field(default=None, gt=0)
-    reopened_hwnd: int | None = Field(default=None, gt=0)
-    run_simulation: bool = False
-    simulation_reviewed_plan: ReviewedProjectPlanBindingV1 | None = None
-
-    @model_validator(mode="after")
-    def validate_reopened_target(self) -> ResumeNativeProjectRequestV1:
-        if (self.reopened_pid is None) != (self.reopened_hwnd is None):
-            raise ValueError("reopenedPid and reopenedHwnd must be supplied together")
-        if self.simulation_reviewed_plan is not None and not self.run_simulation:
-            raise ValueError("simulationReviewedPlan requires runSimulation")
-        return self
 
 
-class NativeProjectResumedV1(ApiModel):
-    operation: NativeProjectOperationV1
-    resumed: bool
+
+
+# ``SendMessageRequestV1`` is defined before these native request models so the
+# public message DTO can keep workflow models grouped with other message types.
+# Resolve all forward references only after the complete authority contract is
+# available.
+SendMessageRequestV1.model_rebuild()
+
+
 
 
 class ConnectLSControllerRequestV1(ApiModel):
@@ -4462,7 +3665,7 @@ class NewBuildWorkspaceProvenanceV1(ApiModel):
     receipt_schema: Literal[
         "controlstudio-new-build-workspace-provenance/v1"
     ] = Field(alias="schema")
-    native_project_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
+    pass
     reviewed_plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     build_bundle_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     build_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -4471,11 +3674,11 @@ class NewBuildWorkspaceProvenanceV1(ApiModel):
 
     @model_validator(mode="after")
     def validate_provenance(self) -> NewBuildWorkspaceProvenanceV1:
-        if str(uuid.UUID(self.native_project_id)) != self.native_project_id:
+        if str(uuid.UUID(None)) != None:
             raise ValueError("new-build provenance nativeProjectId is not canonical")
         unsigned = {
             "schema": self.receipt_schema,
-            "native_project_id": self.native_project_id,
+            "native_project_id": None,
             "reviewed_plan_digest": self.reviewed_plan_digest,
             "build_bundle_id": self.build_bundle_id,
             "build_receipt_digest": self.build_receipt_digest,
@@ -4689,6 +3892,10 @@ class EngineeringProgramsV1(ApiModel):
     programs: list[EngineeringProgramV1]
 
 
+class EngineeringProgramFocusRequestV1(ApiModel):
+    display_intent: Literal["LD"]
+
+
 class EngineeringProgramFocusV1(ApiModel):
     status: Literal["focused"] = "focused"
     verified: Literal[True]
@@ -4711,32 +3918,6 @@ class EngineeringLocationFocusV1(ApiModel):
     payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
-class MneAnchorFocusV1(ApiModel):
-    instruction_index: int = Field(ge=0, le=4_095)
-    command: MneProgramReplacementCommandV2
-    operand: str | None = None
-    instruction_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    baseline_mne_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    baseline_ld_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    baseline_ld_canonical_sha256: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
-    )
-    baseline_instruction_count: int = Field(ge=1, le=4_096)
-
-    @model_validator(mode="after")
-    def validate_anchor_digest(self) -> MneAnchorFocusV1:
-        expected = _canonical_sha256(
-            {
-                "index": self.instruction_index,
-                "command": self.command,
-                "operand": self.operand,
-            }
-        )
-        if self.instruction_digest != expected:
-            raise ValueError("MNE focus anchor digest is invalid")
-        if self.instruction_index >= self.baseline_instruction_count:
-            raise ValueError("MNE focus anchor is outside the approved baseline")
-        return self
 
 
 class ChangeTargetFocusV1(ApiModel):
@@ -4746,11 +3927,10 @@ class ChangeTargetFocusV1(ApiModel):
     project_unchanged: Literal[True]
     transaction_id: str = Field(min_length=1, max_length=128)
     plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    focus_kind: Literal["native_location", "mne_anchor", "program"]
+    focus_kind: Literal["native_location",  "program"]
     program: EngineeringProgramV1
     location: EngineeringLocationV2 | None = None
     payload_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    mne_anchor: MneAnchorFocusV1 | None = None
 
     @model_validator(mode="after")
     def validate_focus_kind(self) -> ChangeTargetFocusV1:
@@ -4763,8 +3943,6 @@ class ChangeTargetFocusV1(ApiModel):
             self.location is not None or self.payload_sha256 is not None
         ):
             raise ValueError("only native_location focus may carry an LD location")
-        if (self.mne_anchor is not None) != (self.focus_kind == "mne_anchor"):
-            raise ValueError("mne_anchor focus requires one exact mnemonic anchor")
         return self
 
 
@@ -4809,6 +3987,7 @@ class PrepareOfflineCandidateSessionResponseV1(ApiModel):
 class LaunchIdleXG5000RequestV1(ApiModel):
     confirm_idle_launch: Literal[True]
     timeout_seconds: float = Field(default=20, ge=0.1, le=30)
+    launch_mode: Literal["when_none", "new_instance"] = "when_none"
 
 
 class LaunchIdleXG5000ResponseV1(ApiModel):
@@ -4816,9 +3995,10 @@ class LaunchIdleXG5000ResponseV1(ApiModel):
     verified: Literal[True]
     status: Literal["launched"]
     launch_action: Literal["process_start"]
+    launch_mode: Literal["when_none", "new_instance"] = "when_none"
     launched_identity: dict[str, Any]
     idle_binding: dict[str, Any]
-    no_existing_instances: Literal[True]
+    no_existing_instances: StrictBool
     blank_window: Literal[True]
     modal_observed: Literal[False]
     attention_reason: None
@@ -4826,15 +4006,22 @@ class LaunchIdleXG5000ResponseV1(ApiModel):
     process_terminated: Literal[False]
     receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
+    @model_validator(mode="after")
+    def validate_launch_mode(self) -> LaunchIdleXG5000ResponseV1:
+        if self.launch_mode == "when_none" and not self.no_existing_instances:
+            raise ValueError("when-none idle launch requires no existing instances")
+        return self
+
 
 class LaunchIdleXG5000AttentionV1(ApiModel):
     operation: Literal["xg5000.launch_idle"]
     verified: Literal[False]
     status: Literal["needs_attention"]
     launch_action: Literal["process_start"]
+    launch_mode: Literal["when_none", "new_instance"] = "when_none"
     launched_identity: dict[str, Any]
     idle_binding: dict[str, Any] | None
-    no_existing_instances: Literal[True]
+    no_existing_instances: StrictBool
     blank_window: Literal[False]
     modal_observed: bool
     attention_reason: Literal[
@@ -4849,6 +4036,8 @@ class LaunchIdleXG5000AttentionV1(ApiModel):
 
     @model_validator(mode="after")
     def validate_attention_outcome(self) -> LaunchIdleXG5000AttentionV1:
+        if self.launch_mode == "when_none" and not self.no_existing_instances:
+            raise ValueError("when-none idle launch requires no existing instances")
         if self.modal_observed != (self.attention_reason == "owned_modal"):
             raise ValueError("idle-launch attention receipt has an invalid modal outcome")
         if self.idle_binding is None and self.attention_reason not in {

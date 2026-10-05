@@ -1,3 +1,9 @@
+import type { ChangeTransaction } from "./types";
+
+export function executionTargetIdentity(transaction: ChangeTransaction) {
+  return transaction.executionTargetIdentity ?? transaction.targetIdentity;
+}
+
 export interface RecoveryRelaunchTarget {
   pid: number;
   hwnd: number;
@@ -37,19 +43,23 @@ export function canOfferRecoveryRelaunch(
   {
     transactionState,
     recoverySupported,
-    inventoryConfirmedEmpty,
+    inventoryConfirmed,
+    instances,
     targetIdentity,
   }: {
     transactionState: string;
     recoverySupported: boolean;
-    inventoryConfirmedEmpty: boolean;
+    inventoryConfirmed: boolean;
+    instances: ReadonlyArray<{ pid: number; hwnd: number }>;
     targetIdentity: unknown;
   },
 ): boolean {
+  const target = journaledRecoveryRelaunchTarget(targetIdentity);
   return (
     transactionState === "quarantined" &&
     recoverySupported &&
-    inventoryConfirmedEmpty &&
-    journaledRecoveryRelaunchTarget(targetIdentity) !== null
+    inventoryConfirmed &&
+    target !== null &&
+    !instances.some((instance) => instance.pid === target.pid && instance.hwnd === target.hwnd)
   );
 }

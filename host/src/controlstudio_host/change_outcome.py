@@ -5,6 +5,10 @@ import json
 import uuid
 from typing import Any
 
+from controlstudio_contracts import (
+    ProgramCheckFailureObservationV1,
+)
+
 from .models import ChangeTransaction, ChangeTransactionState
 
 TERMINAL_CHANGE_OUTCOME_DISPOSITIONS = {
@@ -43,6 +47,16 @@ def change_outcome_projection(transaction: ChangeTransaction) -> dict[str, Any]:
         ),
         "errorCode": transaction.error_code,
     }
+    if transaction.state is ChangeTransactionState.ROLLED_BACK:
+        verification = transaction.result.get("verification")
+        rejection = verification.get("native_rejection") if isinstance(verification, dict) else None
+        if isinstance(rejection, dict) and rejection.get("code") == "PROGRAM_CHECK_FAILED":
+            diagnostic = rejection.get("programCheckFailure")
+            if diagnostic is not None:
+                observation = ProgramCheckFailureObservationV1.model_validate(diagnostic)
+                unsigned["programCheckFailure"] = observation.model_dump(mode="json", by_alias=True)
+        receipt = verification.get("simulation_receipt") if isinstance(verification, dict) else None
+        pass
     outcome_digest = _digest(unsigned)
     return {
         **unsigned,

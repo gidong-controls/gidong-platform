@@ -25,17 +25,7 @@ from controlstudio_contracts import (
 )
 
 from .agent_protocol import scrub_agent_tool_result
-from .api_models import (
-    LocalWorkspaceCompareV1,
-    LSControllerObservationV1,
-    LSControllerReadV1,
-    LSControllerTraceV1,
-    MneInstructionBatchPatchCandidateV5,
-    MneInstructionPatchCandidateV4,
-    MneRungPatchCandidateV6,
-    MneSeriesGuardCandidateV3,
-    is_hardware_free_m_operand_target,
-)
+from .api_models import EmptyNativeProgramSourceV1, LocalWorkspaceCompareV1, LSControllerObservationV1, LSControllerReadV1, LSControllerTraceV1, is_hardware_free_m_operand_target
 from .mcp_client import (
     AGENT_CONTROLLER_MCP_TOOLS,
     AGENT_TOOL_NAMES,
@@ -49,6 +39,7 @@ from .mcp_client import (
     MCPToolRejectedError,
     MCPTransportError,
 )
+pass
 from .structural_evidence import (
     STRUCTURAL_ANALYSIS_TOOL_COVERAGE,
     build_structural_evidence_contract,
@@ -59,6 +50,50 @@ logger = logging.getLogger(__name__)
 
 ToolEventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 ToolCompletionGate = Callable[[dict[str, Any], Any], Awaitable[None]]
+
+
+def _saved_only_program_read(result: Mapping[str, Any]) -> bool:
+    """Keep a saved-body observation distinct from a live editor capture."""
+    if "read_source" not in result:
+        return False
+    if (
+        result.get("read_source") != "saved_native_project"
+        or result.get("content_state") != "empty"
+        or any(key in result for key in (
+            "stable_repeat", "visual_row_count", "live_editor_readback",
+        ))
+    ):
+        raise MCPToolError("program read source contradicts its observation scope")
+    return True
+
+
+def _empty_program_read_source(
+    result: Mapping[str, Any], program: Mapping[str, Any], project_hash: str,
+    *, require_decoded: bool = True,
+) -> dict[str, Any]:
+    source = EmptyNativeProgramSourceV1.model_validate(result.get("empty_program_source"))
+    if (
+        source.project_sha256 != project_hash
+        or source.program_id != program["program_id"]
+        or source.program_name != program["name"]
+        or require_decoded
+        and result.get("decoded") != {
+            "name": program["name"], "rows": [], "semantic_rungs": [],
+        }
+        or any(
+            key in result
+            for key in (
+                "payload_sha256",
+                "canonical_sha256",
+                "payload_size",
+                "payload_path",
+                "private_payload_handoff",
+                "_payload",
+            )
+        )
+    ):
+        raise MCPToolError("empty program source differs from its native target")
+    return source.model_dump()
 ControllerPreflight = Callable[[str, str], Awaitable[bool]]
 
 _WORKSPACE_COMPARE_FIELDS = {
@@ -130,11 +165,8 @@ _PROJECT_STRUCTURE_INDEX_ENVELOPE_FIELDS = {
 }
 _PROGRAM_ID = re.compile(r"^ld:[0-9a-f]{16}$")
 _SAFE_CODE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,255}$")
-_HARDWARE_MODEL = re.compile(
-    r"^(?:(?:XBC|XBM|XEC|XMC|XEM|XBE|XBF|XGF|XGL)-[A-Z0-9/+.\-]+|"
-    r"(?:XGK|XGI|XGR)-CPU[A-Z0-9/+.\-]*)$",
-    re.IGNORECASE,
-)
+# Observed catalog labels are facts, not an execution-support allowlist.
+_HARDWARE_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/()+ -]{0,127}$")
 _CONTROLLER_VARIABLE = re.compile(r"^%[A-Za-z][XxBbWwDdLl][A-Za-z0-9.]{0,13}$")
 _CONTROLLER_DATA_TYPES = frozenset({"BIT", "BYTE", "WORD", "DWORD", "LWORD"})
 _CONTROLLER_SCHEMA_VERSION = "1.0"
@@ -197,8 +229,8 @@ _AGENT_HARDWARE_BINDING_LIMIT = 64
 _AGENT_HARDWARE_CHANNEL_LIMIT = 16
 _AGENT_BLOCKER_LIMIT = 128
 _AGENT_SNAPSHOT_PROGRAM_LIMIT = 128
-_MNE_FIELD_IO_BINDING_LIMIT = 64
-_MNE_SIMULATION_BIT_LIMIT = 32
+pass
+pass
 _HARDWARE_CONTEXT_BINDING_PRECONDITION = (
     "project.hardware_context must be called before binding its digest"
 )
@@ -507,12 +539,11 @@ def _ld_record_projection(value: Any) -> dict[str, Any]:
             maximum=2**31 - 1,
             nullable=True,
         ),
-        # A wire has no operand. Preserve its decoder-produced empty token;
+        # Wires and branches have no operand. Preserve their decoder-produced empty token;
         # contacts/instructions still require a nonempty bounded operand.
         "value": (
             ""
-            if value.get("kind") == "WIRE"
-            and value.get("opcode") == "0"
+            if (value.get("kind"), value.get("opcode")) in (("WIRE", "0"), ("BRANCH", "1"))
             and value.get("value") == ""
             else _ld_text(value.get("value"), "LD record value")
         ),
@@ -1603,6 +1634,14 @@ class MCPExecutionBroker:
                     raise MCPToolError("Host-bound controller endpoint is unavailable")
                 expected_controller_endpoint = dict(endpoint)
             expected_session_identity = self._gateway.agent_session_identity_snapshot
+            if raw_name == "xg5000.inspect_owned_modal":
+                if (
+                    set(request.arguments) - {"schema_version"}
+                    or request.arguments.get("schema_version", "1.0") != "1.0"
+                ):
+                    raise MCPToolError("owned-modal inspection does not accept arguments")
+            elif raw_name == "xg5000.cancel_owned_modal":
+                self._validate_owned_modal_cancel_request(request.arguments)
             if raw_name == "program.change_target_analysis":
                 # A digest cached only inside MCP is not evidence authority. It
                 # must already be backed by a Host-journaled receipt retained
@@ -1681,7 +1720,18 @@ class MCPExecutionBroker:
                     raise MCPToolError(
                         "Project search context is not bound to its evidence receipt"
                     )
-            if (
+            if raw_name == "xg5000.inspect_owned_modal":
+                result = self._owned_modal_inspection_result_projection(
+                    result,
+                    expected_session_identity=expected_session_identity,
+                )
+            elif raw_name == "xg5000.cancel_owned_modal":
+                result = self._owned_modal_cancellation_result_projection(
+                    result,
+                    expected_session_identity=expected_session_identity,
+                    request_arguments=request.arguments,
+                )
+            elif (
                 raw_name != "xg5000.session_status"
                 and raw_name not in STRUCTURAL_ANALYSIS_TOOL_COVERAGE
             ):
@@ -1798,7 +1848,7 @@ class MCPExecutionBroker:
                 request_arguments=arguments,
             )
         if raw_name == "project.hardware_context":
-            return cls._hardware_context_evidence_contract(
+            return cls._hardware_context_contract_from_result(
                 result,
                 expected_session_identity=expected_session_identity,
             )
@@ -1842,18 +1892,7 @@ class MCPExecutionBroker:
                 expected_session_identity=expected_session_identity,
                 request_arguments=arguments,
             )
-        if raw_name in {
-            "program.compile_mne_instruction_batch_patch_candidate",
-            "program.compile_mne_instruction_patch_candidate",
-            "program.compile_mne_rung_patch_candidate",
-            "program.compile_mne_series_guard_candidate",
-        }:
-            return cls._mne_patch_candidate_evidence_contract(
-                raw_name,
-                result,
-                expected_session_identity=expected_session_identity,
-                request_arguments=arguments,
-            )
+        pass
         return build_structural_evidence_contract(
             raw_name,
             result,
@@ -1929,6 +1968,20 @@ class MCPExecutionBroker:
         }:
             raise MCPToolError("XG5000 session authorization is invalid")
         access_profile = authorization.get("access_profile")
+        metadata = result.get("metadata")
+        identity_assurance = (
+            metadata.get("project_identity_assurance")
+            if isinstance(metadata, Mapping)
+            else None
+        )
+        quarantine_observation = identity_assurance == "quarantine_observation_only"
+        if quarantine_observation:
+            cls._validate_quarantine_observation_binding(
+                metadata,
+                result=result,
+                expected_session_identity=expected_identity,
+                expected_session_id=expected_identity["session_id"],
+            )
         expected_grants = {
             "analysis": ("read", "analyze"),
             "simulation_operator": ("read", "analyze", "simulate"),
@@ -1940,7 +1993,18 @@ class MCPExecutionBroker:
             ),
         }.get(access_profile)
         granted_capabilities = authorization.get("granted_capabilities")
-        if (
+        if quarantine_observation:
+            if (
+                access_profile != "analysis"
+                or not isinstance(granted_capabilities, (list, tuple))
+                or tuple(granted_capabilities) != ("read",)
+                or stage != "ATTACHED"
+                or target != "ENGINEERING_IDE"
+                or plc_policy != "read_only_unverified"
+            ):
+                raise MCPToolError("XG5000 quarantine observation scope is inconsistent")
+            expected_grants = ("read",)
+        elif (
             expected_grants is None
             or not isinstance(granted_capabilities, (list, tuple))
             or tuple(granted_capabilities) != expected_grants
@@ -1975,17 +2039,19 @@ class MCPExecutionBroker:
                 raise MCPToolError("XG5000 session capability state is invalid")
             capability_states[capability_name] = str(capability["state"])
 
-        metadata = result.get("metadata")
-        identity_assurance = (
-            metadata.get("project_identity_assurance")
-            if isinstance(metadata, Mapping)
-            else None
-        )
+        if quarantine_observation and any(
+            state != "unavailable" for state in capability_states.values()
+        ):
+            raise MCPToolError("XG5000 quarantine observation has an active capability")
         if identity_assurance not in {
             "unverified",
             "strong_readback",
             "controlled_launch_read_only",
-        }:
+            "quarantine_observation_only",
+        } or (
+            identity_assurance == "quarantine_observation_only"
+            and not quarantine_observation
+        ):
             raise MCPToolError("XG5000 project identity assurance is invalid")
 
         events = result.get("events")
@@ -2050,15 +2116,380 @@ class MCPExecutionBroker:
             "plcPolicy": plc_policy,
             "projectIdentityAssurance": identity_assurance,
             "authorization": {
+                "scope": (
+                    "quarantine_observation_only"
+                    if quarantine_observation
+                    else "current_native_session"
+                ),
                 "accessProfile": access_profile,
                 "grantedCapabilities": list(expected_grants),
             },
             "capabilityStates": capability_states,
+            "executionRouting": {
+                "offlineChanges": "host_approved_change_workflow",
+                "simulation": "host_approved_change_workflow",
+            },
             "eventSummary": event_summary,
             "rawResultOmitted": True,
         }
         contract["receiptDigest"] = _canonical_digest(contract)
         return contract
+
+    @staticmethod
+    def _validate_quarantine_observation_binding(
+        metadata: Mapping[str, Any],
+        *,
+        result: Mapping[str, Any],
+        expected_session_identity: Mapping[str, Any],
+        expected_session_id: str,
+    ) -> None:
+        """Accept only the exact reduced-read target used by quarantine diagnostics."""
+
+        binding = metadata.get("quarantine_observation_binding")
+        expected_fields = {
+            "host_transaction_id",
+            "transaction_id",
+            "source_session_id",
+            "diagnostic_session_id",
+            "pid",
+            "main_hwnd",
+            "process_create_time",
+            "project_path",
+            "project_hash",
+        }
+        if (
+            not isinstance(binding, Mapping)
+            or set(binding) != expected_fields
+            or not _is_canonical_uuid(binding.get("host_transaction_id"))
+            or not _is_canonical_uuid(binding.get("transaction_id"))
+            or not isinstance(binding.get("source_session_id"), str)
+            or not binding["source_session_id"].strip()
+            or not _is_canonical_uuid(binding.get("diagnostic_session_id"))
+            or binding.get("diagnostic_session_id") == binding.get("source_session_id")
+            or binding.get("diagnostic_session_id") != expected_session_id
+            or expected_session_identity.get("session_id") != expected_session_id
+            or metadata.get("quarantine_observation_session_id") != expected_session_id
+            or result.get("session_id") != expected_session_id
+            or metadata.get("controlled_open_read_proof") is not None
+            or metadata.get("project_identity_read_only_bound_to_selected_pid") is True
+        ):
+            raise MCPToolError("XG5000 quarantine observation binding is invalid")
+
+        pid = binding.get("pid")
+        hwnd = binding.get("main_hwnd")
+        created = binding.get("process_create_time")
+        path = binding.get("project_path")
+        project_hash = binding.get("project_hash")
+        if (
+            isinstance(pid, bool)
+            or not isinstance(pid, int)
+            or pid != expected_session_identity.get("pid")
+            or isinstance(hwnd, bool)
+            or not isinstance(hwnd, int)
+            or hwnd != expected_session_identity.get("hwnd")
+            or not isinstance(path, str)
+            or not path
+            or path != expected_session_identity.get("project_path")
+            or not _is_sha256(project_hash)
+            or project_hash != expected_session_identity.get("project_hash")
+        ):
+            raise MCPToolError("XG5000 quarantine observation target changed")
+        _bounded_number(
+            created,
+            "quarantine observation process lifetime",
+            minimum=0.000001,
+            maximum=1e15,
+        )
+        expected_created = expected_session_identity.get("process_create_time")
+        if expected_created is not None:
+            _bounded_number(
+                expected_created,
+                "expected quarantine process lifetime",
+                minimum=0.000001,
+                maximum=1e15,
+            )
+            if abs(float(created) - float(expected_created)) >= 0.001:
+                raise MCPToolError("XG5000 quarantine observation process lifetime changed")
+
+    @staticmethod
+    def _validate_owned_modal_cancel_request(arguments: Mapping[str, Any]) -> None:
+        allowed = {"snapshot_digest", "button_hwnd", "schema_version"}
+        if (
+            not isinstance(arguments, Mapping)
+            or set(arguments) - allowed
+            or arguments.get("schema_version", "1.0") != "1.0"
+            or not _is_sha256(arguments.get("snapshot_digest"))
+        ):
+            raise MCPToolError("owned-modal cancel selection is invalid")
+        _bounded_integer(
+            arguments.get("button_hwnd"), "owned-modal button HWND", minimum=1
+        )
+
+    @classmethod
+    def _owned_modal_inspection_result_projection(
+        cls,
+        result: Any,
+        *,
+        expected_session_identity: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        bound = cls._validate_session_result_binding(
+            result,
+            expected_session_identity=expected_session_identity,
+            project_hash_fields=("project_hash_before", "project_hash_after"),
+            require_project_path=True,
+            require_session_id=True,
+        )
+        if (
+            bound.get("operation") != "xg5000.inspect_owned_modal"
+            or bound.get("ok") is not True
+            or bound.get("verified") is not True
+            or bound.get("project_unchanged") is not True
+        ):
+            raise MCPToolError("owned-modal observation receipt is invalid")
+        raw = bound.get("observation")
+        if not isinstance(raw, Mapping):
+            raise MCPToolError("owned-modal observation is missing")
+        expected_raw_fields = {
+            "schema", "pid", "main_hwnd", "process_create_time",
+            "observed_monotonic", "main_window", "modals",
+            "snapshot_digest", "main_enabled",
+        }
+        pid = _bounded_integer(raw.get("pid"), "owned-modal process ID", minimum=1)
+        main_hwnd = _bounded_integer(raw.get("main_hwnd"), "owned-modal main HWND", minimum=1)
+        _bounded_number(
+            raw.get("process_create_time"),
+            "owned-modal process lifetime",
+            minimum=0.000001,
+            maximum=1e15,
+        )
+        _bounded_number(
+            raw.get("observed_monotonic"),
+            "owned-modal observation time",
+            minimum=0,
+            maximum=1e15,
+        )
+        snapshot_digest = raw.get("snapshot_digest")
+        main_window = raw.get("main_window")
+        modals = raw.get("modals")
+        if (
+            set(raw) != expected_raw_fields
+            or raw.get("schema") != "xg5000-owned-modal-snapshot/v1"
+            or not _is_sha256(snapshot_digest)
+            or not isinstance(expected_session_identity, Mapping)
+            or pid != expected_session_identity.get("pid")
+            or main_hwnd != expected_session_identity.get("hwnd")
+            or not isinstance(main_window, Mapping)
+            or set(main_window) != {"hwnd", "pid", "visible", "enabled"}
+            or main_window.get("hwnd") != main_hwnd
+            or main_window.get("pid") != pid
+            or main_window.get("visible") is not True
+            or type(main_window.get("enabled")) is not bool
+            or raw.get("main_enabled") is not main_window.get("enabled")
+            or not isinstance(modals, list)
+            or len(modals) > 8
+        ):
+            raise MCPToolError("owned-modal observation identity or shape mismatched")
+        digest_payload = {
+            field: raw[field]
+            for field in (
+                "schema", "pid", "main_hwnd", "process_create_time",
+                "main_window", "modals",
+            )
+        }
+        if _canonical_digest(digest_payload) != snapshot_digest:
+            raise MCPToolError("owned-modal observation digest mismatched")
+
+        projected_modals: list[dict[str, Any]] = []
+        modal_hwnds: set[int] = set()
+        control_hwnds: set[int] = set()
+        for modal in modals:
+            if not isinstance(modal, Mapping) or set(modal) != {
+                "hwnd", "pid", "owner_hwnd", "class_name", "title",
+                "visible", "enabled", "controls",
+            }:
+                raise MCPToolError("owned-modal window observation is invalid")
+            modal_hwnd = _bounded_integer(
+                modal.get("hwnd"), "owned-modal HWND", minimum=1
+            )
+            class_name = cls._owned_modal_text(modal.get("class_name"), "modal class")
+            title = cls._owned_modal_text(modal.get("title"), "modal title")
+            modal_visible = modal.get("visible")
+            modal_enabled = modal.get("enabled")
+            controls = modal.get("controls")
+            if (
+                modal.get("pid") != pid
+                or modal.get("owner_hwnd") != main_hwnd
+                or modal_hwnd in modal_hwnds
+                or modal_hwnd == main_hwnd
+                or modal_hwnd in control_hwnds
+                or type(modal_visible) is not bool
+                or type(modal_enabled) is not bool
+                or not isinstance(controls, list)
+                or len(controls) > 128
+            ):
+                raise MCPToolError("owned-modal ownership or state mismatched")
+            modal_hwnds.add(modal_hwnd)
+            projected_controls: list[dict[str, Any]] = []
+            for control in controls:
+                if not isinstance(control, Mapping) or set(control) - {
+                    "hwnd", "class_name", "role", "label", "cancel_candidate",
+                    "control_id", "visible", "enabled",
+                } or {
+                    "hwnd", "class_name", "role", "label", "control_id",
+                    "visible", "enabled",
+                } - set(control):
+                    raise MCPToolError("owned-modal control observation is invalid")
+                control_hwnd = _bounded_integer(
+                    control.get("hwnd"), "owned-modal control HWND", minimum=1
+                )
+                control_class = cls._owned_modal_text(
+                    control.get("class_name"), "control class"
+                )
+                role = control.get("role")
+                label = cls._owned_modal_text(
+                    control.get("label"), "control label", nullable=True
+                )
+                control_id = control.get("control_id")
+                visible = control.get("visible")
+                enabled = control.get("enabled")
+                candidate = control.get("cancel_candidate")
+                if (
+                    control_hwnd in control_hwnds
+                    or control_hwnd in modal_hwnds
+                    or control_hwnd in {main_hwnd, modal_hwnd}
+                    or role not in {"button", "static_text", "edit", "other"}
+                    or isinstance(control_id, bool)
+                    or not isinstance(control_id, int)
+                    or not -(2**31) <= control_id < 2**31
+                    or type(visible) is not bool
+                    or type(enabled) is not bool
+                    or ("cancel_candidate" in control and type(candidate) is not bool)
+                    or (role in {"edit", "other"} and label is not None)
+                    or (candidate and role != "button")
+                ):
+                    raise MCPToolError("owned-modal control identity or state mismatched")
+                control_hwnds.add(control_hwnd)
+                projected_control = {
+                    "hwnd": control_hwnd,
+                    "class_name": control_class,
+                    "role": role,
+                    "label": label,
+                    "control_id": control_id,
+                    "visible": visible,
+                    "enabled": enabled,
+                }
+                if "cancel_candidate" in control:
+                    projected_control["cancel_candidate"] = candidate
+                projected_controls.append(projected_control)
+            projected_modals.append({
+                "hwnd": modal_hwnd,
+                "title": title,
+                "class_name": class_name,
+                "visible": modal_visible,
+                "enabled": modal_enabled,
+                "controls": projected_controls,
+            })
+        projected = {
+            "schema": "controlstudio-owned-modal-observation/v1",
+            "operation": "xg5000.inspect_owned_modal",
+            "ok": True,
+            "verified": True,
+            "project_unchanged": True,
+            "observation": {
+                "snapshot_digest": snapshot_digest,
+                "pid": pid,
+                "main_hwnd": main_hwnd,
+                "main_enabled": main_window["enabled"],
+                "modals": projected_modals,
+            },
+            "rawResultOmitted": True,
+        }
+        return projected
+
+    @staticmethod
+    def _owned_modal_text(
+        value: Any,
+        label: str,
+        *,
+        nullable: bool = False,
+    ) -> str | None:
+        if value is None and nullable:
+            return None
+        if not isinstance(value, str) or len(value) > 512:
+            raise MCPToolError(f"owned-modal {label} is invalid")
+        return value
+
+    @classmethod
+    def _owned_modal_cancellation_result_projection(
+        cls,
+        result: Any,
+        *,
+        expected_session_identity: Mapping[str, Any] | None,
+        request_arguments: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        bound = cls._validate_session_result_binding(
+            result,
+            expected_session_identity=expected_session_identity,
+            project_hash_fields=("project_hash_before", "project_hash_after"),
+            require_project_path=True,
+            require_session_id=True,
+        )
+        cancellation = bound.get("cancellation")
+        if (
+            bound.get("operation") != "xg5000.cancel_owned_modal"
+            or bound.get("ok") is not True
+            or bound.get("verified") is not True
+            or bound.get("project_unchanged") is not True
+            or not isinstance(cancellation, Mapping)
+        ):
+            raise MCPToolError("owned-modal cancellation receipt is invalid")
+        button_hwnd = request_arguments.get("button_hwnd")
+        snapshot_digest = request_arguments.get("snapshot_digest")
+        expected_pid = expected_session_identity.get("pid") if isinstance(
+            expected_session_identity, Mapping
+        ) else None
+        expected_hwnd = expected_session_identity.get("hwnd") if isinstance(
+            expected_session_identity, Mapping
+        ) else None
+        modal_hwnd = cancellation.get("modal_hwnd")
+        process_create_time = cancellation.get("process_create_time")
+        if (
+            cancellation.get("schema") != "xg5000-owned-modal-cancel/v1"
+            or cancellation.get("cancelled") is not True
+            or cancellation.get("pid") != expected_pid
+            or cancellation.get("main_hwnd") != expected_hwnd
+            or isinstance(process_create_time, bool)
+            or not isinstance(process_create_time, (int, float))
+            or not 0 < float(process_create_time) < 1e15
+            or cancellation.get("button_hwnd") != button_hwnd
+            or isinstance(button_hwnd, bool)
+            or not isinstance(button_hwnd, int)
+            or button_hwnd <= 0
+            or isinstance(modal_hwnd, bool)
+            or not isinstance(modal_hwnd, int)
+            or modal_hwnd <= 0
+            or cancellation.get("snapshot_digest") != snapshot_digest
+            or not _is_sha256(snapshot_digest)
+            or cancellation.get("modal_closed") is not True
+            or cancellation.get("main_reenabled") is not True
+            or cancellation.get("parent_enabled") is not True
+        ):
+            raise MCPToolError("owned-modal cancellation differs from the selected control")
+        return {
+            "schema": "controlstudio-owned-modal-cancellation/v1",
+            "operation": "xg5000.cancel_owned_modal",
+            "ok": True,
+            "verified": True,
+            "project_unchanged": True,
+            "cancellation": {
+                "cancelled": True,
+                "button_hwnd": button_hwnd,
+                "modal_hwnd": modal_hwnd,
+                "parent_enabled": True,
+                "snapshot_digest": snapshot_digest,
+            },
+            "rawResultOmitted": True,
+        }
 
     def _agent_result_projection(
         self,
@@ -2072,6 +2503,31 @@ class MCPExecutionBroker:
     ) -> dict[str, Any]:
         """Return the only model-visible shape for a non-structural MCP tool."""
 
+        if raw_name == "project.export_symbols":
+            bound = self._validate_session_result_binding(
+                result, expected_session_identity=expected_session_identity,
+                project_hash_fields=("project_hash_before", "project_hash_after"),
+                require_project_path=True,
+            )
+            exported = bound.get("export")
+            if (
+                bound.get("operation") != raw_name or bound.get("ok") is not True
+                or bound.get("verified") is not True
+                or bound.get("project_unchanged") is not True
+                or not isinstance(exported, dict) or exported.get("verified") is not True
+                or not isinstance(exported.get("csv"), dict)
+            ):
+                raise MCPToolError("native symbol export is invalid")
+            return {
+                "schema": "controlstudio-symbol-export/v1", "operation": raw_name,
+                "ok": True, "verified": True, "project_unchanged": True,
+                "csv": deepcopy(exported["csv"]), "rawResultOmitted": True,
+            }
+        if raw_name in {"project.inspect_symbols_ui", "project.open_symbols_ui"}:
+            return self._symbols_inspection_result_projection(
+                result, expected_session_identity=expected_session_identity,
+                expected_operation=raw_name,
+            )
         if raw_name == "project.list_programs":
             return self._program_catalog_result_projection(
                 result,
@@ -2116,13 +2572,7 @@ class MCPExecutionBroker:
             )
         if raw_name == "program.change_target_analysis":
             return self._change_target_result_projection(evidence_contract)
-        if raw_name in {
-            "program.compile_mne_instruction_batch_patch_candidate",
-            "program.compile_mne_instruction_patch_candidate",
-            "program.compile_mne_rung_patch_candidate",
-            "program.compile_mne_series_guard_candidate",
-        }:
-            return self._mne_candidate_result_projection(raw_name, evidence_contract)
+        pass
         if raw_name in AGENT_CONTROLLER_MCP_TOOLS:
             return self._controller_result_projection(
                 raw_name,
@@ -2131,6 +2581,48 @@ class MCPExecutionBroker:
                 expected_endpoint=expected_controller_endpoint,
             )
         raise MCPToolError("Agent tool has no bounded result projection")
+
+    @classmethod
+    def _symbols_inspection_result_projection(
+        cls, result: Any, *,
+        expected_session_identity: Mapping[str, Any] | None,
+        expected_operation: str = "project.inspect_symbols_ui",
+    ) -> dict[str, Any]:
+        bound = cls._validate_session_result_binding(
+            result, expected_session_identity=expected_session_identity,
+            project_hash_fields=("project_hash_before", "project_hash_after"),
+            require_project_path=True,
+        )
+        observation = bound.get("observation")
+        navigation = bound.get("navigation")
+        navigation_result = expected_operation == "project.open_symbols_ui"
+        verified = bound.get("verified")
+        if (
+            bound.get("operation") != expected_operation
+            or bound.get("ok") is not True
+            or type(verified) is not bool
+            or (not navigation_result and verified is not True)
+            or (navigation_result and (
+                not isinstance(navigation, dict)
+                or navigation.get("verified") is not verified
+            ))
+            or bound.get("project_unchanged") is not True
+            or not isinstance(observation, dict)
+        ):
+            raise MCPToolError("symbol UI observation is invalid")
+        # The CLI bounds each inventory. Keep its incompleteness/truncation flags
+        # intact; an inventory is not proof of persisted symbol-table contents.
+        public_observation = {"observation": observation}
+        if navigation_result:
+            public_observation["navigation"] = navigation
+        if len(json.dumps(public_observation, ensure_ascii=False)) > 1_000_000:
+            raise MCPToolError("symbol UI observation exceeds the result budget")
+        return {
+            "schema": "controlstudio-symbol-ui-observation/v1",
+            "operation": expected_operation, "ok": True,
+            "verified": verified, "project_unchanged": True,
+            **deepcopy(public_observation), "rawResultOmitted": True,
+        }
 
     @staticmethod
     def _validate_session_result_binding(
@@ -2311,8 +2803,10 @@ class MCPExecutionBroker:
             require_session_id=True,
         )
         activation = bound.get("activation")
+        display_intent = request_arguments.get("display_intent")
         if (
-            set(request_arguments) - {"schema_version", "program_id"}
+            set(request_arguments) - {"schema_version", "program_id", "display_intent"}
+            or display_intent not in (None, "LD")
             or request_arguments.get("schema_version", "1.0") != "1.0"
             or bound.get("operation") != "program.focus"
             or bound.get("ok") is not True
@@ -2344,6 +2838,28 @@ class MCPExecutionBroker:
             )
         ):
             raise MCPToolError("program focus result is invalid")
+        display = bound.get("display")
+        projected_display: dict[str, Any] = {}
+        if display_intent == "LD":
+            command = display.get("command") if isinstance(display, Mapping) else None
+            if (
+                not isinstance(display, Mapping)
+                or set(display) != {"intent", "command", "post_transition_binding_verified", "visual_display_verified"}
+                or display.get("intent") != "LD"
+                or display.get("post_transition_binding_verified") is not True
+                or display.get("visual_display_verified") is not False
+                or not isinstance(command, Mapping)
+                or set(command) != {"backend", "command_id"}
+                or command.get("backend") != "wm-command"
+                or type(command.get("command_id")) is not int or command["command_id"] != 824
+            ):
+                raise MCPToolError("program focus LD display command facts are invalid")
+            projected_display = {"display": {
+                "intent": "LD", "command": {"backend": "wm-command", "command_id": 824},
+                "post_transition_binding_verified": True, "visual_display_verified": False,
+            }}
+        elif display is not None:
+            raise MCPToolError("program focus returned an unrequested display transition")
         return {
             "schema": "controlstudio-program-focus-tool-result/v1",
             "operation": "program.focus",
@@ -2360,6 +2876,7 @@ class MCPExecutionBroker:
             ),
             "project_unchanged": True,
             "rawResultOmitted": True,
+            **projected_display,
         }
 
     @staticmethod
@@ -2402,6 +2919,43 @@ class MCPExecutionBroker:
             require_session_id=True,
         )
         program = _project_program_identity(bound.get("program"), "read program")
+        saved_only = _saved_only_program_read(bound)
+        if (
+            set(request_arguments) - {"schema_version", "program_id"}
+            or request_arguments.get("schema_version", "1.0") != "1.0"
+            or program["program_id"] != request_arguments.get("program_id")
+            or bound.get("operation") != "program.read_ld"
+            or bound.get("ok") is not True
+            or bound.get("verified") is not True
+            or (not saved_only and bound.get("stable_repeat") is not True)
+            or bound.get("project_unchanged") is not True
+            or not _is_canonical_uuid(bound.get("operation_id"))
+            or receipt.get("programId") != program["program_id"]
+            or receipt.get("programName") != program["name"]
+        ):
+            raise MCPToolError("program read result differs from its evidence")
+        if bound.get("content_state") == "empty":
+            source = _empty_program_read_source(bound, program, str(receipt["projectSha256"]))
+            if (
+                receipt.get("contentState") != "empty"
+                or receipt.get("emptyProgramSource") != source
+                or receipt.get("readSource") != bound.get("read_source")
+                or (saved_only and "stableRepeat" in receipt)
+            ):
+                raise MCPToolError("empty program read differs from its evidence")
+            return {
+                "schema": "controlstudio-program-read-ld-tool-result/v1",
+                "operation": "program.read_ld", "ok": True, "verified": True,
+                "program": program, "content_state": "empty",
+                "empty_program_source": source,
+                "decoded": bound["decoded"],
+                **({"read_source": "saved_native_project"} if saved_only else {
+                    "visual_row_count": 0, "stable_repeat": True,
+                }),
+                "project_unchanged": True,
+                "evidenceReceiptDigest": receipt["receiptDigest"],
+                "rawResultOmitted": True,
+            }
         payload_size = _bounded_integer(
             bound.get("payload_size"),
             "program read payload size",
@@ -2414,20 +2968,10 @@ class MCPExecutionBroker:
             maximum=1_000_000,
         )
         if (
-            set(request_arguments) - {"schema_version", "program_id"}
-            or request_arguments.get("schema_version", "1.0") != "1.0"
-            or program["program_id"] != request_arguments.get("program_id")
-            or bound.get("operation") != "program.read_ld"
-            or bound.get("ok") is not True
-            or bound.get("verified") is not True
-            or bound.get("stable_repeat") is not True
-            or bound.get("project_unchanged") is not True
-            or not _is_canonical_uuid(bound.get("operation_id"))
-            or receipt.get("programId") != program["program_id"]
-            or receipt.get("programName") != program["name"]
-            or receipt.get("payloadSha256") != bound.get("payload_sha256")
+            receipt.get("payloadSha256") != bound.get("payload_sha256")
             or receipt.get("decodedProgramSha256")
             != bound.get("decoded_program_sha256")
+            or receipt.get("canonicalPayloadSha256") != bound.get("canonical_sha256")
         ):
             raise MCPToolError("program read result differs from its evidence")
         decoded = _ld_decoded_projection(
@@ -2444,6 +2988,8 @@ class MCPExecutionBroker:
             "program": program,
             "payload_size": payload_size,
             "payload_sha256": receipt["payloadSha256"],
+            **({"canonical_sha256": receipt["canonicalPayloadSha256"]}
+               if "canonicalPayloadSha256" in receipt else {}),
             "decoded_program_sha256": receipt["decodedProgramSha256"],
             "visual_row_count": visual_row_count,
             "decoded": decoded,
@@ -2566,6 +3112,7 @@ class MCPExecutionBroker:
             raise MCPToolError("read-only project snapshot result is invalid")
         projected_programs: list[dict[str, Any]] = []
         total_rows = 0
+        includes_saved_source = False
         for item in programs:
             if not isinstance(item, Mapping):
                 raise MCPToolError("project snapshot program is invalid")
@@ -2579,16 +3126,53 @@ class MCPExecutionBroker:
                 "project snapshot program name",
                 maximum=512,
             )
+            if (
+                not isinstance(program_id, str)
+                or _PROGRAM_ID.fullmatch(program_id) is None
+                or not isinstance(name, str)
+            ):
+                raise MCPToolError("project snapshot program is invalid")
+            if item.get("content_state") == "empty":
+                saved_only = _saved_only_program_read(item)
+                includes_saved_source = includes_saved_source or saved_only
+                expected_empty_fields = {
+                    "program_id",
+                    "name",
+                    "content_state",
+                    "empty_program_source",
+                }
+                if saved_only:
+                    expected_empty_fields.add("read_source")
+                if set(item) != expected_empty_fields:
+                    raise MCPToolError("project snapshot empty program is invalid")
+                source = _empty_program_read_source(
+                    item,
+                    {"program_id": program_id, "name": name},
+                    str(bound["project_hash"]),
+                    require_decoded=False,
+                )
+                row_count = 0
+                total_rows += row_count
+                if len(projected_programs) < _AGENT_SNAPSHOT_PROGRAM_LIMIT:
+                    projected_programs.append(
+                        {
+                            "programId": program_id,
+                            "name": name,
+                            "contentState": "empty",
+                            "emptyProgramSource": source,
+                            **({"readSource": "saved_native_project"} if saved_only else {
+                                "visualRowCount": row_count,
+                            }),
+                        }
+                    )
+                continue
             row_count = _bounded_integer(
                 item.get("visual_row_count"),
                 "project snapshot row count",
                 maximum=1_000_000,
             )
             if (
-                not isinstance(program_id, str)
-                or _PROGRAM_ID.fullmatch(program_id) is None
-                or not isinstance(name, str)
-                or not isinstance(row_count, int)
+                not isinstance(row_count, int)
                 or not _is_sha256(item.get("payload_sha256"))
                 or not isinstance(item.get("payload_path"), str)
                 or not item.get("payload_path")
@@ -2604,7 +3188,8 @@ class MCPExecutionBroker:
                         "visualRowCount": row_count,
                     }
                 )
-        if bound.get("total_visual_rows") != total_rows:
+        expected_total_rows = None if includes_saved_source else total_rows
+        if bound.get("total_visual_rows") != expected_total_rows:
             raise MCPToolError("project snapshot row total is invalid")
         return {
             "schema": "controlstudio-project-snapshot-tool-result/v1",
@@ -2613,7 +3198,7 @@ class MCPExecutionBroker:
             "verified": True,
             "snapshot_id": snapshot_id,
             "programCount": len(programs),
-            "totalVisualRows": total_rows,
+            **({} if includes_saved_source else {"totalVisualRows": total_rows}),
             "programs": projected_programs,
             "programsTruncated": len(programs) > len(projected_programs),
             "transaction_id": None,
@@ -3093,7 +3678,7 @@ class MCPExecutionBroker:
         }
 
     @classmethod
-    def _mne_field_io_binding_from_outer(
+    def _field_io_binding_from_outer(
         cls,
         value: Any,
         *,
@@ -3112,13 +3697,13 @@ class MCPExecutionBroker:
             "binding_digest",
         }
         if not isinstance(value, Mapping) or set(value) != required:
-            raise MCPToolError("MNE patch field I/O binding is invalid")
+            raise MCPToolError("Field I/O binding is invalid")
         binding = dict(value)
         supplied_digest = binding.pop("binding_digest", None)
         proposal_scope = value.get("proposal_scope")
         direction = value.get("direction")
         point_kind = value.get("point_kind")
-        device = _hardware_device(value.get("device"), "MNE field I/O device")
+        device = _hardware_device(value.get("device"), "Field I/O device")
         if (
             value.get("schema") != "xg5000.project.field-io-binding/1.0"
             or value.get("context_digest") != expected_context_digest
@@ -3135,7 +3720,7 @@ class MCPExecutionBroker:
             or not _is_sha256(supplied_digest)
             or supplied_digest != _canonical_digest(binding)
         ):
-            raise MCPToolError("MNE patch field I/O binding is invalid")
+            raise MCPToolError("Field I/O binding is invalid")
         module = cls._field_io_module_projection(value.get("module"))
         channel = cls._field_io_channel_projection(value.get("channel"))
         terminal = cls._field_io_terminal_projection(
@@ -3145,7 +3730,7 @@ class MCPExecutionBroker:
         device_offset = int(device[1:], 16)
         start_offset = int(terminal["address_start"][1:], 16)
         if not start_offset <= device_offset <= int(terminal["address_end"][1:], 16):
-            raise MCPToolError("MNE field I/O device is outside its terminal range")
+            raise MCPToolError("Field I/O device is outside its terminal range")
         return {
             "device": device,
             "direction": direction,
@@ -3156,241 +3741,8 @@ class MCPExecutionBroker:
             "binding_digest": supplied_digest,
         }
 
-    @staticmethod
-    def _xgsim_assignments(value: Any, label: str) -> dict[str, int]:
-        if (
-            not isinstance(value, Mapping)
-            or not value
-            or len(value) > _MNE_SIMULATION_BIT_LIMIT
-        ):
-            raise MCPToolError(f"{label} is invalid")
-        projected: dict[str, int] = {}
-        for address, assignment in value.items():
-            if (
-                not isinstance(address, str)
-                or re.fullmatch(r"[PM]\d{3,4}[0-9A-F]", address) is None
-                or isinstance(assignment, bool)
-                or assignment not in {0, 1}
-            ):
-                raise MCPToolError(f"{label} is invalid")
-            projected[address] = assignment
-        return dict(sorted(projected.items()))
 
-    @classmethod
-    def _mne_condition_assignment(
-        cls,
-        value: Any,
-        *,
-        asserted: bool,
-    ) -> dict[str, int] | None:
-        if not isinstance(value, Mapping):
-            return None
-        kind = value.get("kind")
-        if kind == "contact":
-            operand = value.get("operand")
-            state = value.get("state")
-            if (
-                not isinstance(operand, str)
-                or re.fullmatch(r"[PM]\d{3,4}[0-9A-F]", operand) is None
-                or state not in {"on", "off"}
-            ):
-                return None
-            enabled = 1 if state == "on" else 0
-            return {operand: enabled if asserted else 1 - enabled}
-        terms = value.get("terms")
-        if kind not in {"all_of", "any_of"} or not isinstance(terms, list) or not terms:
-            return None
-        requested = (
-            [asserted] * len(terms)
-            if kind == "all_of"
-            else ([True, *([False] * (len(terms) - 1))] if asserted else [False] * len(terms))
-        )
-        result: dict[str, int] = {}
-        for term, term_asserted in zip(terms, requested, strict=True):
-            nested = cls._mne_condition_assignment(term, asserted=term_asserted)
-            if nested is None or any(
-                address in result and result[address] != assignment
-                for address, assignment in nested.items()
-            ):
-                return None
-            result.update(nested)
-        return dict(sorted(result.items()))
 
-    @classmethod
-    def _validate_mne_simulation_profile(
-        cls,
-        candidate: Mapping[str, Any],
-        *,
-        request_arguments: Mapping[str, Any],
-    ) -> None:
-        profile = candidate.get("simulation_profile")
-        requested_scenario = request_arguments.get("simulation_scenario")
-        if profile is None:
-            if requested_scenario is not None:
-                raise MCPToolError("MNE candidate omitted its requested simulation scenario")
-            return
-        simple_fields = {
-            "schema",
-            "normal_assignments",
-            "deny_assignments",
-            "restore_assignments",
-            "output_addresses",
-            "target_rung_digest",
-            "program_count",
-            "catalog_digest",
-            "profile_digest",
-        }
-        scenario_fields = {
-            "schema",
-            "scenario",
-            "output_addresses",
-            "target_rung_digest",
-            "program_count",
-            "catalog_digest",
-            "profile_digest",
-        }
-        patch = candidate.get("patch")
-        target_rung = patch.get("target_rung") if isinstance(patch, Mapping) else None
-        actions = target_rung.get("actions") if isinstance(target_rung, Mapping) else None
-        outputs = (
-            [item.get("operand") for item in actions]
-            if isinstance(actions, list)
-            and all(
-                isinstance(item, Mapping)
-                and item.get("command") == "OUT"
-                and isinstance(item.get("operand"), str)
-                for item in actions
-            )
-            else []
-        )
-        if (
-            not isinstance(profile, Mapping)
-            or frozenset(profile)
-            not in {frozenset(simple_fields), frozenset(scenario_fields)}
-            or profile.get("schema") != "controlstudio-mne-rung-xgsim-profile/v1"
-            or not outputs
-            or len(outputs) != len(set(outputs))
-            or any(re.fullmatch(r"[PM]\d{3,4}[0-9A-F]", item) is None for item in outputs)
-            or profile.get("output_addresses") != outputs
-            or profile.get("target_rung_digest") != target_rung.get("rung_digest")
-            or profile.get("program_count") != 1
-            or not _is_sha256(profile.get("catalog_digest"))
-            or not _is_sha256(profile.get("profile_digest"))
-            or profile.get("profile_digest")
-            != _canonical_digest(
-                {key: item for key, item in profile.items() if key != "profile_digest"}
-            )
-        ):
-            raise MCPToolError("MNE candidate simulation profile is invalid")
-        if set(profile) == simple_fields:
-            if requested_scenario is not None:
-                raise MCPToolError("MNE candidate simulation profile differs from its request")
-            normal = cls._mne_condition_assignment(
-                target_rung.get("condition"),
-                asserted=True,
-            )
-            denied = cls._mne_condition_assignment(
-                target_rung.get("condition"),
-                asserted=False,
-            )
-            if (
-                normal is None
-                or denied is None
-                or normal == denied
-                or cls._xgsim_assignments(
-                    profile.get("normal_assignments"),
-                    "MNE normal simulator assignments",
-                )
-                != normal
-                or cls._xgsim_assignments(
-                    profile.get("deny_assignments"),
-                    "MNE deny simulator assignments",
-                )
-                != denied
-                or cls._xgsim_assignments(
-                    profile.get("restore_assignments"),
-                    "MNE restore simulator assignments",
-                )
-                != normal
-                or set(outputs).intersection(normal)
-                or set(outputs).intersection(denied)
-            ):
-                raise MCPToolError("MNE candidate simulation profile is inconsistent")
-            return
-        scenario = profile.get("scenario")
-        steps = scenario.get("steps") if isinstance(scenario, Mapping) else None
-        if (
-            not isinstance(scenario, Mapping)
-            or set(scenario) != {"steps"}
-            or not isinstance(steps, list)
-            or not 2 <= len(steps) <= 16
-        ):
-            raise MCPToolError("MNE candidate simulation scenario is invalid")
-        if not isinstance(requested_scenario, Mapping) or set(requested_scenario) != {
-            "steps"
-        }:
-            raise MCPToolError("MNE candidate simulation scenario differs from its request")
-        requested_steps = requested_scenario.get("steps")
-        if not isinstance(requested_steps, list) or len(requested_steps) != len(steps):
-            raise MCPToolError("MNE candidate simulation scenario differs from its request")
-        normalized_requested_steps: list[dict[str, Any]] = []
-        for requested_step in requested_steps:
-            if not isinstance(requested_step, Mapping) or set(requested_step) != {
-                "name",
-                "drive",
-                "observe",
-            }:
-                raise MCPToolError("MNE simulator scenario request step is invalid")
-            normalized_requested_steps.append(
-                {
-                    "name": requested_step.get("name"),
-                    "drive": cls._xgsim_assignments(
-                        requested_step.get("drive"),
-                        "MNE requested simulator scenario drive",
-                    ),
-                    "observe": cls._xgsim_assignments(
-                        requested_step.get("observe"),
-                        "MNE requested simulator scenario observation",
-                    ),
-                }
-            )
-        if scenario != {"steps": normalized_requested_steps}:
-            raise MCPToolError("MNE candidate simulation scenario differs from its request")
-        names: set[str] = set()
-        drive_addresses: set[str] | None = None
-        observed_addresses: set[str] = set()
-        for step in steps:
-            if not isinstance(step, Mapping) or set(step) != {"name", "drive", "observe"}:
-                raise MCPToolError("MNE candidate simulation scenario step is invalid")
-            name = step.get("name")
-            drive = cls._xgsim_assignments(
-                step.get("drive"),
-                "MNE simulator scenario drive",
-            )
-            observe = cls._xgsim_assignments(
-                step.get("observe"),
-                "MNE simulator scenario observation",
-            )
-            if (
-                not isinstance(name, str)
-                or not name.strip()
-                or len(name) > 512
-                or name in names
-                or set(drive).intersection(observe)
-                or drive_addresses is not None
-                and set(drive) != drive_addresses
-                or not set(outputs).issubset(observe)
-            ):
-                raise MCPToolError("MNE candidate simulation scenario step is invalid")
-            names.add(name)
-            drive_addresses = set(drive)
-            observed_addresses.update(observe)
-        if (
-            drive_addresses is None
-            or len(drive_addresses) > 32
-            or len(observed_addresses) > 32
-        ):
-            raise MCPToolError("MNE candidate simulation scenario is invalid")
 
     @classmethod
     def _change_target_result_projection(
@@ -3612,35 +3964,6 @@ class MCPExecutionBroker:
             "blockingReasons": blockers,
         }
 
-    @classmethod
-    def _mne_candidate_result_projection(
-        cls,
-        raw_name: str,
-        evidence_contract: Mapping[str, Any] | None,
-    ) -> dict[str, Any]:
-        receipt = cls._validated_result_evidence(
-            evidence_contract,
-            schemas={
-                "controlstudio-mne-series-guard-candidate-evidence/v1",
-                "controlstudio-mne-instruction-patch-candidate-evidence/v1",
-                "controlstudio-mne-instruction-batch-patch-candidate-evidence/v1",
-                "controlstudio-mne-rung-patch-candidate-evidence/v1",
-            },
-        )
-        candidate = receipt.get("candidate")
-        if not isinstance(candidate, Mapping) or not _is_sha256(
-            candidate.get("candidate_digest")
-        ):
-            raise MCPToolError("MNE candidate evidence is invalid")
-        return {
-            "schema": "controlstudio-mne-candidate-tool-result/v1",
-            "operation": raw_name,
-            "ok": True,
-            "verified": True,
-            "candidate": deepcopy(dict(candidate)),
-            "evidenceReceiptDigest": receipt["receiptDigest"],
-            "rawResultOmitted": True,
-        }
 
     @classmethod
     def _controller_result_projection(
@@ -4055,11 +4378,12 @@ class MCPExecutionBroker:
         project_path = expected_session_identity["project_path"]
         project_hash = expected_session_identity["project_hash"]
         program = result.get("program")
+        saved_only = _saved_only_program_read(result)
         if (
             result.get("operation") != "program.read_ld"
             or result.get("ok") is not True
             or result.get("verified") is not True
-            or result.get("stable_repeat") is not True
+            or (not saved_only and result.get("stable_repeat") is not True)
             or result.get("project_unchanged") is not True
             or not _is_canonical_uuid(result.get("operation_id"))
             or set(request_arguments) - {"schema_version", "program_id"}
@@ -4079,8 +4403,15 @@ class MCPExecutionBroker:
             or result.get("project_hash_after") != project_hash
             or result.get("project_sha256_before") != project_hash
             or result.get("project_sha256_after") != project_hash
-            or not _is_sha256(result.get("payload_sha256"))
-            or not _is_sha256(result.get("decoded_program_sha256"))
+            or (
+                result.get("content_state") != "empty"
+                and (
+                    not _is_sha256(result.get("payload_sha256"))
+                    or not _is_sha256(result.get("decoded_program_sha256"))
+                    or ("canonical_sha256" in result
+                        and not _is_sha256(result["canonical_sha256"]))
+                )
+            )
             or not isinstance(program, Mapping)
         ):
             raise MCPToolError("program.read_ld evidence binding is invalid")
@@ -4097,12 +4428,22 @@ class MCPExecutionBroker:
             "projectSha256": project_hash,
             "programId": projected_program["program_id"],
             "programName": projected_program["name"],
-            "payloadSha256": result["payload_sha256"],
-            "decodedProgramSha256": result["decoded_program_sha256"],
             "verified": True,
-            "stableRepeat": True,
+            **({"readSource": "saved_native_project"} if saved_only else {
+                "stableRepeat": True,
+            }),
             "projectUnchanged": True,
         }
+        if result.get("content_state") == "empty":
+            contract["contentState"] = "empty"
+            contract["emptyProgramSource"] = _empty_program_read_source(
+                result, projected_program, str(project_hash),
+            )
+        else:
+            contract["payloadSha256"] = result["payload_sha256"]
+            contract["decodedProgramSha256"] = result["decoded_program_sha256"]
+            if "canonical_sha256" in result:
+                contract["canonicalPayloadSha256"] = result["canonical_sha256"]
         contract["receiptDigest"] = _canonical_digest(contract)
         return contract
 
@@ -4685,7 +5026,7 @@ class MCPExecutionBroker:
                 requested_hardware, str
             ):
                 raise MCPToolError("bound physical I/O omitted its field binding")
-            safe_binding = cls._mne_field_io_binding_from_outer(
+            safe_binding = cls._field_io_binding_from_outer(
                 binding,
                 expected_context_digest=requested_hardware,
             )
@@ -4815,311 +5156,8 @@ class MCPExecutionBroker:
         contract["receiptDigest"] = _canonical_digest(contract)
         return contract
 
-    @staticmethod
-    def _validate_mne_instruction_request_patch(
-        candidate_patch: Any,
-        request_patch: Any,
-    ) -> None:
-        if (
-            not isinstance(candidate_patch, Mapping)
-            or not isinstance(request_patch, Mapping)
-            or set(request_patch) != {"operation", "anchor", "instruction"}
-        ):
-            raise MCPToolError("MNE instruction patch request is invalid")
-        requested_anchor = request_patch.get("anchor")
-        candidate_anchor = candidate_patch.get("anchor")
-        requested_instruction = request_patch.get("instruction")
-        candidate_instruction = candidate_patch.get("instruction")
-        if (
-            not isinstance(requested_anchor, Mapping)
-            or set(requested_anchor) != {"command", "operand"}
-            or not isinstance(candidate_anchor, Mapping)
-            or candidate_patch.get("operation") != request_patch.get("operation")
-            or candidate_anchor.get("command") != requested_anchor.get("command")
-            or candidate_anchor.get("operand") != requested_anchor.get("operand")
-        ):
-            raise MCPToolError("MNE instruction patch differs from its request")
-        if requested_instruction is None:
-            if candidate_instruction is not None:
-                raise MCPToolError("MNE instruction patch differs from its request")
-            return
-        if (
-            not isinstance(requested_instruction, Mapping)
-            or set(requested_instruction) != {"command", "operand"}
-            or not isinstance(candidate_instruction, Mapping)
-            or candidate_instruction.get("command")
-            != requested_instruction.get("command")
-            or candidate_instruction.get("operand")
-            != requested_instruction.get("operand")
-        ):
-            raise MCPToolError("MNE instruction patch differs from its request")
 
-    @staticmethod
-    def _validate_mne_rung_request_patch(
-        candidate_patch: Any,
-        request_arguments: Mapping[str, Any],
-    ) -> None:
-        if not isinstance(candidate_patch, Mapping):
-            raise MCPToolError("MNE rung patch request is invalid")
-        requested_anchor = request_arguments.get("anchor")
-        candidate_anchor = candidate_patch.get("anchor")
-        if (
-            not isinstance(requested_anchor, Mapping)
-            or set(requested_anchor) != {"command", "operand"}
-            or not isinstance(candidate_anchor, Mapping)
-            or candidate_patch.get("operation") != request_arguments.get("operation")
-            or candidate_anchor.get("command") != requested_anchor.get("command")
-            or candidate_anchor.get("operand") != requested_anchor.get("operand")
-        ):
-            raise MCPToolError("MNE rung patch differs from its request")
-        requested_condition = request_arguments.get("condition")
-        requested_actions = request_arguments.get("actions")
-        target_rung = candidate_patch.get("target_rung")
-        if requested_condition is None and requested_actions is None:
-            if target_rung is not None:
-                raise MCPToolError("MNE rung patch differs from its request")
-            return
-        if not isinstance(target_rung, Mapping):
-            raise MCPToolError("MNE rung patch target is invalid")
-        candidate_actions = target_rung.get("actions")
-        projected_actions = (
-            [
-                {"command": item.get("command"), "operand": item.get("operand")}
-                for item in candidate_actions
-            ]
-            if isinstance(candidate_actions, list)
-            and all(isinstance(item, Mapping) for item in candidate_actions)
-            else None
-        )
-        if (
-            target_rung.get("condition") != requested_condition
-            or projected_actions != requested_actions
-        ):
-            raise MCPToolError("MNE rung patch differs from its request")
 
-    @classmethod
-    def _mne_patch_candidate_evidence_contract(
-        cls,
-        raw_name: str,
-        result: Any,
-        *,
-        expected_session_identity: Mapping[str, Any] | None,
-        request_arguments: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        result_fields = {
-            "session_id",
-            "operation",
-            "ok",
-            "verified",
-            "candidate",
-            "hardware_context_digest",
-            "field_io_bindings",
-            "project_unchanged",
-            "operation_id",
-        }
-        if not isinstance(result, Mapping) or set(result) != result_fields:
-            raise MCPToolError("MNE patch compiler returned no structured result")
-        expected_session_id = (
-            expected_session_identity.get("session_id")
-            if isinstance(expected_session_identity, Mapping)
-            else None
-        )
-        expected_project_hash = (
-            expected_session_identity.get("project_hash")
-            if isinstance(expected_session_identity, Mapping)
-            else None
-        )
-        if (
-            not isinstance(expected_session_id, str)
-            or not expected_session_id
-            or not _is_sha256(expected_project_hash)
-            or result.get("session_id") != expected_session_id
-            or result.get("operation") != raw_name
-            or result.get("ok") is not True
-            or result.get("verified") is not True
-            or result.get("project_unchanged") is not True
-            or not _is_canonical_uuid(result.get("operation_id"))
-        ):
-            raise MCPToolError("MNE patch compiler target binding is invalid")
-        specific_arguments = {
-            "program.compile_mne_series_guard_candidate": {
-                "output_operand",
-                "guard_command",
-                "guard_operand",
-            },
-            "program.compile_mne_instruction_patch_candidate": {
-                "operation",
-                "anchor",
-                "instruction",
-            },
-            "program.compile_mne_instruction_batch_patch_candidate": {"patches"},
-            "program.compile_mne_rung_patch_candidate": {
-                "operation",
-                "anchor",
-                "condition",
-                "actions",
-                "simulation_scenario",
-            },
-        }
-        allowed_arguments = {
-            "schema_version",
-            "program_id",
-            "program_name",
-            "timeout_seconds",
-            "hardware_context_digest",
-        } | specific_arguments.get(raw_name, set())
-        timeout = request_arguments.get("timeout_seconds", 30.0)
-        if (
-            set(request_arguments) - allowed_arguments
-            or request_arguments.get("schema_version", "1.0") != "1.0"
-        ):
-            raise MCPToolError("MNE patch compiler request shape is invalid")
-        _bounded_number(
-            timeout,
-            "MNE patch compiler timeout",
-            minimum=1.0,
-            maximum=60.0,
-        )
-        if not isinstance(result.get("candidate"), Mapping):
-            raise MCPToolError("MNE patch compiler returned no candidate receipt")
-        contract_by_tool = {
-            "program.compile_mne_series_guard_candidate": (
-                MneSeriesGuardCandidateV3,
-                "controlstudio-mne-series-guard-candidate-evidence/v1",
-            ),
-            "program.compile_mne_instruction_patch_candidate": (
-                MneInstructionPatchCandidateV4,
-                "controlstudio-mne-instruction-patch-candidate-evidence/v1",
-            ),
-            "program.compile_mne_instruction_batch_patch_candidate": (
-                MneInstructionBatchPatchCandidateV5,
-                "controlstudio-mne-instruction-batch-patch-candidate-evidence/v1",
-            ),
-            "program.compile_mne_rung_patch_candidate": (
-                MneRungPatchCandidateV6,
-                "controlstudio-mne-rung-patch-candidate-evidence/v1",
-            ),
-        }
-        model, schema = contract_by_tool[raw_name]
-        try:
-            candidate = model.model_validate(result["candidate"]).model_dump(
-                mode="json",
-                by_alias=False,
-            )
-        except ValueError as exc:
-            raise MCPToolError("MNE patch compiler candidate is invalid") from exc
-        if (
-            candidate.get("project_sha256") != expected_project_hash
-            or candidate.get("program_id") != request_arguments.get("program_id")
-            or candidate.get("program_name") != request_arguments.get("program_name")
-            or candidate.get("hardware_context_digest")
-            != request_arguments.get("hardware_context_digest")
-        ):
-            raise MCPToolError("MNE patch compiler candidate differs from its request")
-        candidate_patch = candidate.get("patch")
-        if (
-            raw_name != "program.compile_mne_instruction_batch_patch_candidate"
-            and not isinstance(candidate_patch, Mapping)
-        ):
-            raise MCPToolError("MNE patch compiler candidate patch is invalid")
-        if raw_name == "program.compile_mne_series_guard_candidate":
-            for field in ("output_operand", "guard_command", "guard_operand"):
-                if candidate_patch.get(field) != request_arguments.get(field):
-                    raise MCPToolError("MNE series guard differs from its request")
-        elif raw_name == "program.compile_mne_instruction_patch_candidate":
-            cls._validate_mne_instruction_request_patch(
-                candidate_patch,
-                {
-                    field: request_arguments.get(field)
-                    for field in ("operation", "anchor", "instruction")
-                },
-            )
-        elif raw_name == "program.compile_mne_instruction_batch_patch_candidate":
-            requested_patches = request_arguments.get("patches")
-            candidate_patches = candidate.get("patches")
-            if (
-                not isinstance(requested_patches, list)
-                or not isinstance(candidate_patches, list)
-                or len(candidate_patches) != len(requested_patches)
-            ):
-                raise MCPToolError("MNE instruction batch differs from its request")
-            for candidate_item, requested_item in zip(
-                candidate_patches,
-                requested_patches,
-                strict=True,
-            ):
-                cls._validate_mne_instruction_request_patch(
-                    candidate_item,
-                    requested_item,
-                )
-        else:
-            cls._validate_mne_rung_request_patch(
-                candidate_patch,
-                request_arguments,
-            )
-            cls._validate_mne_simulation_profile(
-                candidate,
-                request_arguments=request_arguments,
-            )
-        contract = {
-            "schema": schema,
-            "candidate": candidate,
-        }
-        hardware_context_digest = result.get("hardware_context_digest")
-        field_io_bindings = result.get("field_io_bindings")
-        if hardware_context_digest is not None or field_io_bindings:
-            if (
-                not isinstance(hardware_context_digest, str)
-                or re.fullmatch(r"[0-9a-f]{64}", hardware_context_digest) is None
-                or hardware_context_digest
-                != request_arguments.get("hardware_context_digest")
-                or not isinstance(field_io_bindings, list)
-                or not 1 <= len(field_io_bindings) <= _MNE_FIELD_IO_BINDING_LIMIT
-            ):
-                raise MCPToolError("MNE patch physical I/O binding is invalid")
-            safe_bindings: list[dict[str, Any]] = []
-            for binding in field_io_bindings:
-                safe_bindings.append(
-                    cls._mne_field_io_binding_from_outer(
-                        binding,
-                        expected_context_digest=hardware_context_digest,
-                    )
-                )
-            binding_keys = [
-                (item["device"], item["direction"]) for item in safe_bindings
-            ]
-            if binding_keys != sorted(binding_keys) or len(binding_keys) != len(
-                set(binding_keys)
-            ):
-                raise MCPToolError("MNE patch field I/O bindings are not uniquely ordered")
-            candidate_bindings = candidate.get("field_io_bindings")
-            if (
-                candidate.get("hardware_context_digest") != hardware_context_digest
-                or not isinstance(candidate_bindings, list)
-                or candidate_bindings != safe_bindings
-            ):
-                raise MCPToolError(
-                    "MNE patch candidate hardware binding differs from compiler evidence"
-                )
-            contract["hardwareContextDigest"] = hardware_context_digest
-            contract["fieldIoBindings"] = [
-                {
-                    "device": item["device"],
-                    "direction": item["direction"],
-                    "pointKind": item["point_kind"],
-                    "module": item["module"],
-                    "channel": item["channel"],
-                    "terminalRange": item["terminal_range"],
-                    "bindingDigest": item["binding_digest"],
-                }
-                for item in safe_bindings
-            ]
-        elif candidate.get("hardware_context_digest") is not None or candidate.get(
-            "field_io_bindings"
-        ):
-            raise MCPToolError("MNE patch candidate has an unproven hardware binding")
-        contract["receiptDigest"] = _canonical_digest(contract)
-        return contract
 
     def _public_schema(self, raw_name: str, schema: dict[str, Any]) -> dict[str, Any] | None:
         engineering_tool = raw_name in AGENT_TOOL_REQUIRED_IDENTITY_FIELDS
@@ -5146,9 +5184,8 @@ class MCPExecutionBroker:
         if controller_tool:
             blocked.update(CONTROLLER_ENDPOINT_FIELDS)
         if raw_name == "project.snapshot":
-            # Agent snapshots are read-only evidence.  The Host-owned change
-            # executor alone can request a private MNE snapshot or bind it to a
-            # durable transaction after explicit approval.
+            # Agent snapshots are read-only evidence; transaction authority
+            # remains private to the approved Host-owned change executor.
             blocked.update(
                 {
                     "workspace_id",

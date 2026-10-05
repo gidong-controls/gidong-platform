@@ -18,168 +18,48 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from pydantic import ValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__
 from .agent_client import (
+    _SAFE_PRIOR_DESIGN_FAILURE_REASON_CODES,
+    _SAFE_PRIOR_DESIGN_RUN_ID,
     AgentSupervisor,
     SubprocessAgentClient,
     _bounded_design_failure_diagnostics,
+    _bounded_prior_design_failure_diagnostics,
+    _safe_design_edit_attempt_summary,
+    _validated_approval_handoff,
     build_historical_evidence_bundle,
     project_historical_evidence,
 )
-from .agent_protocol import AgentProtocolError, scrub_agent_tool_result
+from .agent_protocol import (
+    AgentProtocolError, scrub_agent_tool_result, validated_transcript_checkpoint,
+)
 from .agent_runtime import (
-    MAX_ENGINEERING_AUTONOMOUS_CYCLES,
     AgentOutputContractDiagnostic,
     AgentOutputContractError,
     AgentRuntimeDiagnostic,
     AgentRuntimeError,
     ModelCapabilityResult,
 )
-from .api_models import (
-    MNE_COMPILER_CANDIDATE_REQUIRED_COVERAGE_AREAS,
-    AgentStatusV1,
-    AttachXG5000RequestV1,
-    AttachXG5000ResponseV1,
-    BootstrapV1,
-    BrowserSessionV1,
-    ChangeApprovalV1,
-    ChangeDecisionRequestV1,
-    ChangeDecisionResponseV1,
-    ChangeExecutionResponseV1,
-    ChangePlanContract,
-    ChangePlanV1,
-    ChangePlanV2,
-    ChangePlanV3,
-    ChangePlanV4,
-    ChangePlanV5,
-    ChangePlanV6,
-    ChangeReceiptAcknowledgementV1,
-    ChangeReconciliationResponseV1,
-    ChangeTargetFocusV1,
-    ChangeTargetIdentityV1,
-    ChangeTransactionCreatedV1,
-    ChangeTransactionV1,
-    CloseIdleXG5000InstanceAttentionV1,
-    CloseIdleXG5000InstanceRequestV1,
-    CloseIdleXG5000InstanceResponseV1,
-    ConfirmKnowledgeMemoryRequestV1,
-    ConnectLSControllerRequestV1,
-    ControllerRestoreBeginRequestV1,
-    ControllerRestoreCompletedV1,
-    ControllerRestoreCompleteRequestV1,
-    ControllerRestoreHandoffV1,
-    ControllerRestorePreflightRequestV1,
-    ControllerRestorePreflightV1,
-    ConversationCreateV1,
-    ConversationMessageV1,
-    ConversationPageV1,
-    ConversationSummaryV1,
-    ConversationV1,
-    CreateChangeTransactionRequestV1,
-    CreateKnowledgeMemoryRequestV1,
-    CreateNativeProjectRequestV1,
-    EngineeringAnalysisArtifactV1,
-    EngineeringConversationHandoffV1,
-    EngineeringLocationFocusRequestV1,
-    EngineeringLocationFocusV1,
-    EngineeringLocationV2,
-    EngineeringMissionBlockedStepReverifyRequestV1,
-    EngineeringMissionResumeRequestV1,
-    EngineeringMissionSnapshotV1,
-    EngineeringMissionSummaryV1,
-    EngineeringMissionV1,
-    EngineeringProgramFocusV1,
-    EngineeringProgramsV1,
-    EngineeringProgramV1,
-    EngineeringSystemStatusV1,
-    EngineeringTargetBindingV1,
-    ExecuteChangeTransactionRequestV1,
-    FinalizeSimulationChangeRequestV1,
-    HostRestartResponseV1,
-    HostStatusV1,
-    ImportKnowledgeRequestV1,
-    KnowledgeCitationV1,
-    KnowledgeImportResultV1,
-    KnowledgeSearchHitV1,
-    KnowledgeSearchResponseV1,
-    KnowledgeSourcePageV1,
-    KnowledgeSourceV1,
-    KnowledgeSummaryV1,
-    LauncherHandoffV1,
-    LauncherReadinessV1,
-    LaunchIdleXG5000AttentionV1,
-    LaunchIdleXG5000RequestV1,
-    LaunchIdleXG5000ResponseV1,
-    LocalWorkspaceCompareV1,
-    LocalWorkspaceV1,
-    LSControllerConnectionStatusV1,
-    LSControllerEndpointV1,
-    LSControllerObservationV1,
-    LSControllerReadV1,
-    LSControllerTraceV1,
-    MCPStatusV1,
-    MneAnchorFocusV1,
-    MneFullProgramBaselineBindingV2,
-    MneInstructionBatchPatchCandidateV5,
-    MneInstructionPatchCandidateV4,
-    MneRungPatchCandidateV6,
-    MneSeriesGuardCandidateV3,
-    ModelCapabilityFlagsV1,
-    ModelCapabilityResultV1,
-    ModelSettingsV1,
-    NativeProjectCreatedV1,
-    NativeProjectOperationV1,
-    NativeProjectReconciliationV1,
-    NativeProjectResumedV1,
-    NativeSimulationTrialDecisionRequestV1,
-    NativeSimulationTrialDecisionV1,
-    NewBuildWorkspaceProvenanceV1,
-    OfflineOperandMissionV1,
-    OpenLocalWorkspaceRequestV1,
-    OpenLocalWorkspaceResponseV1,
-    PrepareOfflineCandidateSessionRequestV1,
-    PrepareOfflineCandidateSessionResponseV1,
-    ProductFeatureStatusV1,
-    ProjectBriefV1,
-    ProjectPlanArtifactV1,
-    ProjectPlanReviewRequestV1,
-    ProjectPlanReviewResponseV1,
-    ProjectPlanReviewV1,
-    ProjectPlanRevisionDeltaV1,
-    ReadLSControllerRequestV1,
-    ReconcileChangeTransactionRequestV1,
-    ReconcileNativeProjectRequestV1,
-    ResumeLocalWorkspaceRequestV1,
-    ResumeNativeProjectRequestV1,
-    ReviewedNoSaveCloseRequestV1,
-    ReviewedNoSaveCloseResponseV1,
-    RunCancellationV1,
-    SaveModelSettingsRequestV1,
-    SendMessageRequestV1,
-    SendMessageResponseV1,
-    ServiceStatusV1,
-    TraceLSControllerRequestV1,
-    WorkspaceSummaryV1,
-    XG5000InstancesV1,
-    XG5000ProjectFileSelectionV1,
-    XG5000ProjectLaunchV1,
-    canonical_engineering_mission_snapshot,
-    is_hardware_free_m_operand_target,
-)
+from .api_models import AgentStatusV1, AttachXG5000RequestV1, AttachXG5000ResponseV1, BootstrapV1, BrowserSessionV1, ChangeApprovalV1, ChangeDecisionRequestV1, ChangeDecisionResponseV1, ChangeExecutionResponseV1, ChangePlanContract, ChangePlanV1, ChangeReceiptAcknowledgementV1, ChangeReconciliationResponseV1, ChangeTargetFocusV1, ChangeTargetIdentityV1, ChangeTransactionCreatedV1, ChangeTransactionV1, CloseIdleXG5000InstanceAttentionV1, CloseIdleXG5000InstanceRequestV1, CloseIdleXG5000InstanceResponseV1, ConfirmKnowledgeMemoryRequestV1, ConnectLSControllerRequestV1, ControllerRestoreBeginRequestV1, ControllerRestoreCompletedV1, ControllerRestoreCompleteRequestV1, ControllerRestoreHandoffV1, ControllerRestorePreflightRequestV1, ControllerRestorePreflightV1, ConversationCompletionV1, ConversationCreateV1, ConversationMessageV1, ConversationPageV1, ConversationSummaryV1, ConversationV1, CreateChangeTransactionRequestV1, CreateKnowledgeMemoryRequestV1, EngineeringAnalysisArtifactV1, EngineeringConversationHandoffV1, EngineeringLocationFocusRequestV1, EngineeringLocationFocusV1, EngineeringLocationV2, EngineeringMissionBlockedStepReverifyRequestV1, EngineeringMissionResumeRequestV1, EngineeringMissionSnapshotV1, EngineeringMissionSummaryV1, EngineeringMissionV1, EngineeringProgramFocusRequestV1, EngineeringProgramFocusV1, EngineeringProgramsV1, EngineeringProgramV1, EngineeringSystemStatusV1, EngineeringTargetBindingV1, ExecuteChangeTransactionRequestV1, HostRestartResponseV1, HostStatusV1, ImportKnowledgeRequestV1, KnowledgeCitationV1, KnowledgeImportResultV1, KnowledgeSearchHitV1, KnowledgeSearchResponseV1, KnowledgeSourcePageV1, KnowledgeSourceV1, KnowledgeSummaryV1, LauncherHandoffV1, LauncherReadinessV1, LaunchIdleXG5000AttentionV1, LaunchIdleXG5000RequestV1, LaunchIdleXG5000ResponseV1, LocalWorkspaceCompareV1, LocalWorkspaceV1, LSControllerConnectionStatusV1, LSControllerEndpointV1, LSControllerObservationV1, LSControllerReadV1, LSControllerTraceV1, MCPStatusV1, ModelCapabilityFlagsV1, ModelCapabilityResultV1, ModelSettingsV1, OfflineOperandMissionV1, OpenLocalWorkspaceRequestV1, OpenLocalWorkspaceResponseV1, ProductFeatureStatusV1, ProjectBriefV1, ProjectPlanArtifactV1, ProjectPlanReviewRequestV1, ProjectPlanReviewResponseV1, ProjectPlanReviewV1, ProjectPlanRevisionDeltaV1, ReadLSControllerRequestV1, ReconcileChangeTransactionRequestV1, ResumeLocalWorkspaceRequestV1, ReviewedNoSaveCloseRequestV1, ReviewedNoSaveCloseResponseV1, RunCancellationV1, SaveModelSettingsRequestV1, SendMessageRequestV1, SendMessageResponseV1, ServiceStatusV1, TraceLSControllerRequestV1, WorkspaceSummaryV1, XG5000InstancesV1, XG5000ProjectFileSelectionV1, XG5000ProjectLaunchV1, canonical_engineering_mission_snapshot, is_hardware_free_m_operand_target
 from .change_execution import (
     ChangeExecutionFailedSafely,
     ChangeExecutionOutcomeUncertain,
     ChangeExecutionPreconditionError,
     ChangeExecutionService,
     ChangeRecoveryTarget,
+    MCPChangeExecutionService,
+    _same_path,
+    _sha256_file,
+    _transaction_lookup_checkpoint,
     calculate_plan_digest,
-    has_valid_terminal_ld_receipt,
     validated_terminal_ld_reopen,
 )
 from .change_outcome import (
@@ -195,6 +75,9 @@ from .execution_broker import (
     MCPExecutionBroker,
     validate_workspace_compare_result,
 )
+from .api_models import ProjectPlanAttachmentV1
+pass
+pass
 from .knowledge import (
     ControlPatternSeed,
     KnowledgeConflict,
@@ -208,18 +91,15 @@ from .knowledge_ingestion import (
     KnowledgeIngestionError,
     extract_local_knowledge_document,
 )
-from .mcp_client import AGENT_TOOL_NAMES, MCPGateway, MCPStartupError, MCPToolError
-from .mne_change_execution import (
-    MNE_PATCH_PLAN_CONTRACTS,
-    MNE_PLAN_KIND,
-    MNE_STRUCTURAL_PLAN_KINDS,
-    CompositeChangeExecutionService,
-    _same_path,
-    _transaction_lookup_checkpoint,
-    has_valid_terminal_mne_no_mutation_abort,
-    has_valid_terminal_mne_receipt,
-    validated_terminal_mne_reopen,
+from .mcp_client import (
+    AGENT_TOOL_NAMES,
+    MCPGateway,
+    MCPStartupError,
+    MCPToolContractError,
+    MCPToolError,
+    MCPToolRejectedError,
 )
+pass
 from .model_connection import (
     MODEL_PROTOCOL,
     ModelConnectionRepository,
@@ -232,6 +112,7 @@ from .model_connection import (
     validate_custom_headers,
     validate_model_base_url,
     validate_model_name,
+    validate_reasoning_effort,
     validate_secret_text,
     validate_timeout,
 )
@@ -250,28 +131,11 @@ from .models import (
     RunState,
     StoredEvent,
 )
-from .native_engineering_status import derive_native_engineering_status
-from .native_projects import (
-    NativeProjectConflict,
-    NativeProjectOperation,
-    NativeProjectPreconditionError,
-    NativeProjectRecoveryEvidence,
-    NativeProjectRepository,
-    NativeProjectService,
-    NativeProjectSpec,
-    _native_simulation_trial_id,
-    planning_native_failure_observation,
-    validated_new_build_workspace_provenance,
-)
-from .native_session_identity import (
-    fresh_native_trial_identity,
-    native_trial_resume_matches_expected,
-    native_trial_session_identity,
-)
-from .planning_drafts import (
-    ProjectDesignDraftRepository,
-    ProjectDesignDraftService,
-)
+pass
+pass
+pass
+pass
+pass
 from .project_planning import (
     build_project_plan_revision,
     calculate_project_brief_digest,
@@ -280,6 +144,10 @@ from .project_planning import (
     project_plan_review_item_ids,
     validate_project_plan_artifact,
     validate_project_plan_scope_evidence,
+)
+from .proposal_step_binding import (
+    bound_proposal_step_id,
+    record_proposal_step_binding,
 )
 from .restart import RestartBootstrapError, RestartHandoff, consume_restart_handoff
 from .ssh_handoff import SshInteractiveHandoffJournal
@@ -298,6 +166,7 @@ from .structural_evidence import (
     STRUCTURAL_ANALYSIS_EVIDENCE_SCHEMA,
     STRUCTURAL_ANALYSIS_TOOL_COVERAGE,
     location_membership_value,
+    program_source_identity,
     relation_membership_value,
     structural_observation_statement,
     structural_receipt_tool_name,
@@ -367,6 +236,24 @@ def _workspace_cli_failure_detail(error: Exception) -> str:
     return f"the verified workspace could not be reopened in XG5000 before acceptance: {kind}: {message}"
 
 
+def _idle_launch_failure_detail(error: Exception) -> str:
+    """Preserve the CLI's bounded diagnostic without exposing arbitrary MCP text."""
+
+    detail = "the blank XG5000 launch could not be verified"
+    diagnostic = _cli_failure_diagnostic(error)
+    if diagnostic is None:
+        return detail
+    kind, message = diagnostic
+    if kind == "OSError" and re.fullmatch(
+        r"Operating system failure winerror 740(?: errno [0-9]+)?", message
+    ):
+        return (
+            "XG5000 실행이 Windows 오류 740(권한 상승 필요)으로 거부됐습니다. "
+            "XG5000 실행에 필요한 관리자 권한과 UAC 승인을 직접 확인해 주세요."
+        )
+    return f"{detail}: {kind}: {message}"
+
+
 def _reviewed_no_save_close_failure_detail(error: MCPToolError) -> str:
     """Expose only the adapter's bounded reviewed-close failure envelope."""
 
@@ -406,6 +293,52 @@ def _reviewed_no_save_close_response(
         }
         | {"receipt_digest": receipt_digest}
     )
+
+
+def _validate_reviewed_no_save_close_binding(
+    raw: Mapping[str, Any],
+    *,
+    pid: int,
+    hwnd: int,
+    process_create_time: float,
+    context: Mapping[str, Any] | None = None,
+    require_no_discard: bool = False,
+) -> dict[str, Any]:
+    """Validate the exact reviewed-close receipt shared by close/reopen paths."""
+
+    binding = raw.get("reviewed_binding")
+    if (
+        raw.get("operation") != "xg5000.reviewed_no_save_close"
+        or raw.get("verified") is not True
+        or raw.get("source_closed") is not True
+        or raw.get("automatic_workspace_open") is not False
+        or raw.get("process_terminated") is not False
+        or not isinstance(binding, dict)
+        or binding.get("pid") != pid
+        or binding.get("hwnd") != hwnd
+        or not isinstance(binding.get("process_create_time"), (int, float))
+        or abs(float(binding["process_create_time"]) - process_create_time) >= 0.001
+        or (
+            require_no_discard
+            and (
+                raw.get("discardUnsavedChanges") is not False
+                or raw.get("unsavedChangesDiscarded") is not False
+            )
+        )
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="MCP reviewed close result did not prove the exact target closure",
+        )
+    if any(
+        binding.get(field) != value
+        for field, value in (context or {}).items()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="MCP reviewed close result changed the exact target context",
+        )
+    return dict(binding)
 
 
 def _close_idle_xg5000_instance_response(
@@ -467,7 +400,10 @@ def _launch_idle_xg5000_response(
     raw: dict[str, Any],
     *,
     receipt_digest: str,
+    launch_mode: Literal["when_none", "new_instance"] = "when_none",
 ) -> LaunchIdleXG5000ResponseV1:
+    if raw.get("launch_mode", "when_none") != launch_mode:
+        raise ValueError("MCP idle launch mode does not match the request")
     return LaunchIdleXG5000ResponseV1.model_validate(
         {
             field: raw.get(field)
@@ -486,7 +422,7 @@ def _launch_idle_xg5000_response(
                 "process_terminated",
             )
         }
-        | {"receipt_digest": receipt_digest}
+        | {"receipt_digest": receipt_digest, "launch_mode": raw.get("launch_mode", "when_none")}
     )
 
 
@@ -494,7 +430,10 @@ def _launch_idle_xg5000_attention(
     raw: dict[str, Any],
     *,
     receipt_digest: str,
+    launch_mode: Literal["when_none", "new_instance"] = "when_none",
 ) -> LaunchIdleXG5000AttentionV1:
+    if raw.get("launch_mode", "when_none") != launch_mode:
+        raise ValueError("MCP idle launch mode does not match the request")
     return LaunchIdleXG5000AttentionV1.model_validate(
         {
             field: raw.get(field)
@@ -513,7 +452,7 @@ def _launch_idle_xg5000_attention(
                 "process_terminated",
             )
         }
-        | {"receipt_digest": receipt_digest}
+        | {"receipt_digest": receipt_digest, "launch_mode": raw.get("launch_mode", "when_none")}
     )
 
 
@@ -579,6 +518,18 @@ _AGENT_TOOL_EVIDENCE: dict[str, tuple[str, str, str, str]] = {
         "현재 대상 XG5000 프로젝트에서 프로그램 목록을 읽었습니다.",
         "confirmed",
     ),
+    "project.inspect_symbols_ui": (
+        "program_location",
+        "변수·설명 창 조사",
+        "현재 XG5000의 변수·설명 관련 창과 컨트롤 상태를 읽었습니다.",
+        "confirmed",
+    ),
+    "project.open_symbols_ui": (
+        "program_location",
+        "변수·설명 창 탐색",
+        "현재 프로젝트의 변수·설명 창 탐색 결과와 표시 상태를 조사했습니다.",
+        "confirmed",
+    ),
     "program.focus": (
         "program_location",
         "XG5000 프로그램 위치",
@@ -639,30 +590,10 @@ _AGENT_TOOL_EVIDENCE: dict[str, tuple[str, str, str, str]] = {
         "정확한 값 토큰을 network·rung·값 의미·인과 경로·물리 출력 후보와 결속했습니다.",
         "confirmed",
     ),
-    "program.compile_mne_series_guard_candidate": (
-        "artifact",
-        "MNE series guard candidate",
-        "Compiled a bounded, digest-only structural guard candidate for one exact OUT instruction.",
-        "confirmed",
-    ),
-    "program.compile_mne_instruction_patch_candidate": (
-        "artifact",
-        "MNE instruction patch candidate",
-        "Compiled one bounded instruction edit from the private program baseline.",
-        "confirmed",
-    ),
-    "program.compile_mne_instruction_batch_patch_candidate": (
-        "artifact",
-        "MNE instruction batch patch candidate",
-        "Compiled 2–16 related instruction edits from one private program baseline.",
-        "confirmed",
-    ),
-    "program.compile_mne_rung_patch_candidate": (
-        "artifact",
-        "LD rung 변경 후보",
-        "현재 프로그램을 기준으로 승인 검토용 rung 변경 후보를 컴파일했습니다.",
-        "confirmed",
-    ),
+    
+    
+    
+    
     "program.logic_graph": (
         "artifact",
         "래더 논리 그래프",
@@ -727,6 +658,8 @@ _AGENT_TOOL_ACTIVITY_ROLE: dict[str, str] = {
     "xg5000.session_status": "상태 확인",
     "sim.target_status": "안전 확인",
     "project.list_programs": "프로젝트 읽기",
+    "project.inspect_symbols_ui": "변수·설명 조사",
+    "project.open_symbols_ui": "변수·설명 탐색",
     "program.focus": "프로그램 탐색",
     "program.read_ld": "래더 읽기",
     "project.hardware_context": "하드웨어 분석",
@@ -737,10 +670,10 @@ _AGENT_TOOL_ACTIVITY_ROLE: dict[str, str] = {
     "project.structure_index": "구조 분석",
     "project.search": "근거 검색",
     "program.change_target_analysis": "변경 영향 분석",
-    "program.compile_mne_series_guard_candidate": "변경 준비",
-    "program.compile_mne_instruction_patch_candidate": "변경 준비",
-    "program.compile_mne_instruction_batch_patch_candidate": "변경 준비",
-    "program.compile_mne_rung_patch_candidate": "변경 준비",
+    
+    
+    
+    
     "program.logic_graph": "논리 분석",
     "program.state_model": "상태 분석",
     "device.causal_impact": "영향 분석",
@@ -775,16 +708,18 @@ _AGENT_TOOL_ACTIVITY_TARGET: dict[str, str] = {
         tool_name: "현재 XG5000 프로젝트"
         for tool_name in {
             "project.list_programs",
+            "project.inspect_symbols_ui",
+            "project.open_symbols_ui",
             "program.focus",
             "program.read_ld",
             "project.hardware_context",
             "project.structure_index",
             "project.search",
             "program.change_target_analysis",
-            "program.compile_mne_series_guard_candidate",
-            "program.compile_mne_instruction_patch_candidate",
-            "program.compile_mne_instruction_batch_patch_candidate",
-            "program.compile_mne_rung_patch_candidate",
+            
+            
+            
+            
             "program.logic_graph",
             "program.state_model",
             "device.causal_impact",
@@ -807,9 +742,11 @@ _AGENT_TOOL_FAILURE_REASON_BY_CODE: dict[str, str] = {
         "실행 사전조건을 충족하지 못해 작업 사본을 변경하지 않았습니다."
     ),
     "change_execution_failed": "직접 변경 transaction이 실패 상태로 종료되었습니다.",
+    "change_proposal_invalid": "변경 계약의 입력 검증에 실패하여 제안을 만들지 않았습니다.",
     "design_revision_conflict": "설계 초안이 갱신되어 현재 내용을 다시 확인해야 합니다.",
     "design_edit_not_applied": "요청한 설계 수정을 적용하지 못했습니다.",
     "design_edit_unchanged": "기존 내용과 같아 초안을 변경하지 않았습니다.",
+    "native_execution_not_completed": "네이티브 실행이 완료되지 않았습니다. 반환된 작업 상태와 실패 관측을 확인해야 합니다.",
     "design_edit_scope_rejected": "현재 수정 범위 제한으로 해당 변경을 적용하지 못했습니다.",
     "design_edit_schema_invalid": "설계 내용 형식이 맞지 않아 해당 수정을 적용하지 못했습니다.",
     "design_publish_blocked": "검사를 통과하지 못해 검토안을 확정하지 않았습니다.",
@@ -827,10 +764,13 @@ def _agent_tool_failure_projection(payload: Mapping[str, Any]) -> dict[str, str]
 
     reason_code = payload.get("reason_code")
     if isinstance(reason_code, str) and reason_code in _AGENT_TOOL_FAILURE_REASON_BY_CODE:
-        return {
+        projected = {
             "failure_reason": _AGENT_TOOL_FAILURE_REASON_BY_CODE[reason_code],
             "reason_code": reason_code,
         }
+        if reason_code == "change_proposal_invalid" and payload.get("stage") == "proposal":
+            projected["stage"] = "proposal"
+        return projected
     failure_kind = payload.get("failure_kind")
     return {
         "failure_reason": _AGENT_TOOL_FAILURE_REASON_BY_KIND.get(
@@ -840,8 +780,195 @@ def _agent_tool_failure_projection(payload: Mapping[str, Any]) -> dict[str, str]
     }
 
 
+def _prior_design_failure_observation(
+    events: Sequence[StoredEvent],
+    *,
+    conversation_id: str,
+    current_run_id: str,
+) -> dict[str, Any] | None:
+    """Select the latest prior terminal design edit for a planning restart.
+
+    The event journal is the only source of this observation.  A later
+    successful ``design.edit`` is a deliberate tombstone for older failures;
+    an older failure must never be resurrected after a successful edit.  This
+    projection carries no design revision, digest, or validity claim: the
+    next Agent run must inspect/read the current draft before deciding what to
+    do.
+    """
+
+    for event in sorted(events, key=lambda item: item.sequence, reverse=True):
+        if (
+            event.conversation_id != conversation_id
+            or event.run_id is None
+            or event.run_id == current_run_id
+            or event.event_type not in {"tool.completed", "tool.failed"}
+            or not isinstance(event.payload, Mapping)
+            or event.payload.get("tool_name") != "design.edit"
+        ):
+            continue
+        if event.event_type == "tool.completed":
+            # The latest terminal edit, regardless of whether it changed the
+            # draft, supersedes all older failure observations.
+            return None
+        projected = _agent_tool_failure_projection(event.payload)
+        reason_code = projected.get("reason_code")
+        if reason_code not in _SAFE_PRIOR_DESIGN_FAILURE_REASON_CODES:
+            # Do not fall back to an older event when the latest failure is not
+            # a recognized, safely projectable design-edit failure.
+            return None
+        if (
+            not isinstance(event.sequence, int)
+            or isinstance(event.sequence, bool)
+            or not 1 <= event.sequence <= 9_223_372_036_854_775_807
+            or not isinstance(event.run_id, str)
+            or _SAFE_PRIOR_DESIGN_RUN_ID.fullmatch(event.run_id) is None
+            or not isinstance(event.created_at, datetime)
+            or event.created_at.tzinfo is None
+            or event.created_at.utcoffset() is None
+        ):
+            return None
+        return {
+            "kind": "historical_design_edit_failure",
+            "runId": event.run_id,
+            "eventSequence": event.sequence,
+            "eventCreatedAt": event.created_at.isoformat(),
+            "reasonCode": reason_code,
+            "diagnostics": _bounded_prior_design_failure_diagnostics(event.payload),
+        }
+    return None
+
+
 def _bounded_tool_activity_text(value: str, *, maximum: int = 180) -> str:
     return " ".join(value.split())[:maximum]
+
+
+_DESIGN_READ_ACTIVITY_SECTIONS = frozenset(
+    {
+        "narrative",
+        "technical_configuration",
+        "index_acceptance_bindings",
+        "simulation_scenario",
+        "collection_scope",
+        "io_points",
+        "operating_modes",
+        "control_networks",
+        "ladder_rungs",
+        "timers",
+        "sequences",
+        "alarms",
+        "recovery_rules",
+        "safety_rules",
+    }
+)
+
+
+def _safe_design_read_activity_metadata(
+    value: object,
+) -> dict[str, Any] | None:
+    """Project one successful design.read identity into durable activity.
+
+    The design.read result contains the requested section values, so it must
+    never be copied into an activity event.  This helper accepts only the
+    small, Host-defined identity vocabulary needed to distinguish a current
+    read from a historical read.  A malformed or untrusted projection is
+    omitted rather than partially persisted.
+    """
+
+    if not isinstance(value, Mapping):
+        return None
+    sections = value.get("sections")
+    if not isinstance(sections, list) or not sections:
+        return None
+    if any(
+        type(section) is not str
+        or section not in _DESIGN_READ_ACTIVITY_SECTIONS
+        for section in sections
+    ):
+        return None
+    if (
+        len(sections) > len(_DESIGN_READ_ACTIVITY_SECTIONS)
+        or len(sections) != len(set(sections))
+    ):
+        return None
+    read_revision = value.get("read_revision")
+    current_revision = value.get("current_revision")
+    is_current_revision = value.get("is_current_revision")
+    schema_requested = value.get("schema_requested")
+    if (
+        type(read_revision) is not int
+        or read_revision < 0
+        or type(current_revision) is not int
+        or current_revision < 0
+        or type(is_current_revision) is not bool
+        or is_current_revision != (read_revision == current_revision)
+        or type(schema_requested) is not bool
+    ):
+        return None
+    schema_request_explicit = value.get("schema_request_explicit")
+    if schema_request_explicit is not None and type(schema_request_explicit) is not bool:
+        return None
+    provided_sections = value.get("schema_sections_provided")
+    if provided_sections is not None and (
+        not isinstance(provided_sections, list)
+        or any(type(section) is not str or section not in sections for section in provided_sections)
+        or len(provided_sections) > len(sections)
+        or len(provided_sections) != len(set(provided_sections))
+    ):
+        return None
+    return {
+        "sections": list(sections),
+        "read_revision": read_revision,
+        "current_revision": current_revision,
+        "is_current_revision": is_current_revision,
+        "revision_scope": "current" if is_current_revision else "historical",
+        "schema_requested": schema_requested,
+        **({"schema_request_explicit": schema_request_explicit}
+           if schema_request_explicit is not None else {}),
+        **({"schema_sections_provided": list(provided_sections)}
+           if provided_sections is not None else {}),
+    }
+
+
+def _design_read_activity_from_result(
+    arguments: Mapping[str, Any],
+    result: object,
+) -> dict[str, Any] | None:
+    """Build the bounded activity identity from the Host-owned read result."""
+
+    if not isinstance(result, Mapping):
+        return None
+    schema_requested = arguments.get("include_schema", False)
+    if type(schema_requested) is not bool:
+        return None
+    requested_sections = arguments.get("sections")
+    result_sections = result.get("sections")
+    if (
+        not isinstance(requested_sections, list)
+        or not isinstance(result_sections, Mapping)
+        or any(type(section) is not str for section in requested_sections)
+        or any(type(section) is not str for section in result_sections)
+        or set(requested_sections) != set(result_sections)
+    ):
+        return None
+    schemas = result.get("sectionSchemas")
+    provided_metadata = {}
+    if (
+        result.get("sectionSchemaBasis") == "current_design_edit"
+        and isinstance(schemas, Mapping)
+        and all(isinstance(schema, Mapping) for schema in schemas.values())
+    ):
+        provided_metadata["schema_sections_provided"] = list(schemas)
+    return _safe_design_read_activity_metadata(
+        {
+            "sections": requested_sections,
+            "read_revision": result.get("readRevision"),
+            "current_revision": result.get("currentRevision"),
+            "is_current_revision": result.get("isCurrentRevision"),
+            "schema_requested": schema_requested,
+            "schema_request_explicit": "include_schema" in arguments,
+            **provided_metadata,
+        }
+    )
 
 
 def _agent_tool_activity_projection(
@@ -851,7 +978,8 @@ def _agent_tool_activity_projection(
     change_request_scope: str,
     change_outcome_state: str | None,
     simulator_target_status: dict[str, Any] | None,
-) -> dict[str, str]:
+    design_read_activity: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Return the Host-owned compact-card fields for one durable tool event."""
 
     canonical_tool_name = AGENT_TOOL_NAMES.get(tool_name, tool_name)
@@ -866,6 +994,11 @@ def _agent_tool_activity_projection(
             "부분 설계 검토",
             "수정에 필요한 설계 부분을 확인했습니다.",
         ),
+        "design.search": (
+            "설계 사용 위치 검색",
+            "수정 대상 조사",
+            "요청한 문자열이 쓰인 설계 항목과 위치를 확인했습니다.",
+        ),
         "design.edit": (
             "설계 내용 작성",
             "부분 설계 수정",
@@ -876,21 +1009,12 @@ def _agent_tool_activity_projection(
             "설계 검증",
             "현재 설계의 참조와 실행 가능성을 검사했습니다.",
         ),
-        "design.move_ladder_rung": (
-            "프로그램 실행 순서 수정",
-            "래더 순서 조정",
-            "설계 초안의 래더 실행 순서를 변경했습니다.",
-        ),
         "design.publish_review": (
             "검토안 확정",
             "검토 준비",
             "검사를 통과한 설계를 사용자 검토안으로 확정했습니다.",
         ),
-    }.get(
-        "design.edit"
-        if canonical_tool_name.startswith("design.edit_")
-        else canonical_tool_name
-    )
+    }.get(canonical_tool_name)
     if design_activity is not None:
         label, role, result = design_activity
         projection = {
@@ -900,6 +1024,12 @@ def _agent_tool_activity_projection(
         }
         if event_type == "tool.completed":
             projection["activity_result"] = result
+            if canonical_tool_name == "design.read":
+                bounded_read_activity = _safe_design_read_activity_metadata(
+                    design_read_activity
+                )
+                if bounded_read_activity is not None:
+                    projection["design_read_activity"] = bounded_read_activity
         return projection
     if canonical_tool_name == "change.propose_offline":
         if change_request_scope == "permanent_offline_revision":
@@ -1025,95 +1155,7 @@ _CHANGE_COVERAGE_MUST_BE_CONFIRMED = frozenset(
         "rollback",
     }
 )
-_MNE_FULL_PROGRAM_REQUIRED_EVIDENCE_TOOLS = frozenset(
-    {
-        "project.structure_index",
-        "program.logic_graph",
-        "program.state_model",
-        "device.references",
-        "device.causal_impact",
-        "project.behavior_report",
-        "project.hardware_context",
-    }
-)
-_MNE_COVERAGE_ALLOWED_TOOLS: dict[str, frozenset[str]] = {
-    "target_identity": frozenset(
-        {
-            "project.structure_index",
-            "program.logic_graph",
-            "program.state_model",
-            "project.hardware_context",
-        }
-    ),
-    "value_semantics": frozenset(
-        {
-            "program.logic_graph",
-            "program.state_model",
-            "project.behavior_report",
-            "project.hardware_context",
-        }
-    ),
-    "direct_impact": frozenset(
-        {
-            "program.logic_graph",
-            "device.references",
-            "device.causal_impact",
-            "project.behavior_report",
-            "project.hardware_context",
-        }
-    ),
-    "indirect_impact": frozenset(
-        {
-            "project.structure_index",
-            "device.references",
-            "device.causal_impact",
-            "project.behavior_report",
-        }
-    ),
-    "modes": frozenset({"program.state_model", "project.behavior_report"}),
-    "runtime": frozenset(
-        {
-            "project.behavior_report",
-            "controller.ls.status",
-            "controller.ls.read",
-            "controller.ls.trace",
-        }
-    ),
-    "external_integrations": frozenset(
-        {
-            "project.structure_index",
-            "project.behavior_report",
-            "project.hardware_context",
-        }
-    ),
-    "safety": frozenset(
-        {
-            "program.logic_graph",
-            "program.state_model",
-            "device.references",
-            "device.causal_impact",
-            "project.behavior_report",
-            "project.hardware_context",
-        }
-    ),
-    "validation": frozenset(
-        {
-            "xg5000.session_status",
-            "project.structure_index",
-            "program.logic_graph",
-            "program.state_model",
-            "project.hardware_context",
-            "project.snapshot",
-        }
-    ),
-    "rollback": frozenset(
-        {
-            "project.structure_index",
-            "project.hardware_context",
-            "project.snapshot",
-        }
-    ),
-}
+pass
 
 _LEGACY_PROJECT_BRIEF_LABELS = (
     ("project_name", "프로젝트 이름:"),
@@ -1133,6 +1175,24 @@ _LEGACY_UNKNOWN_VALUE = "아직 모름"
 
 class AgentRunPreconditionError(RuntimeError):
     """A product-authored precondition message safe to display and persist."""
+
+
+async def _proposal_precondition_result(
+    propose: Callable[[], Awaitable[dict[str, Any]]],
+    transaction_exists: Callable[[], bool],
+) -> dict[str, Any]:
+    try:
+        return await propose()
+    except AgentRunPreconditionError as exc:
+        if transaction_exists():
+            raise
+        return {
+            "status": "not_created",
+            "execution_permitted": False,
+            "next_action": "revise_proposal",
+            "reason_code": "proposal_precondition",
+            "message": str(exc)[:4000],
+        }
 
 
 def _agent_tool_evidence_ref(
@@ -1202,18 +1262,10 @@ def _agent_tool_evidence_ref(
             "controlstudio-workspace-hardware-context-evidence/v1"
         ),
         "program.change_target_analysis": "controlstudio-change-target-evidence/v2",
-        "program.compile_mne_series_guard_candidate": (
-            "controlstudio-mne-series-guard-candidate-evidence/v1"
-        ),
-        "program.compile_mne_instruction_patch_candidate": (
-            "controlstudio-mne-instruction-patch-candidate-evidence/v1"
-        ),
-        "program.compile_mne_instruction_batch_patch_candidate": (
-            "controlstudio-mne-instruction-batch-patch-candidate-evidence/v1"
-        ),
-        "program.compile_mne_rung_patch_candidate": (
-            "controlstudio-mne-rung-patch-candidate-evidence/v1"
-        ),
+        
+        
+        
+        
         **{
             tool_name: STRUCTURAL_ANALYSIS_EVIDENCE_SCHEMA
             for tool_name in STRUCTURAL_ANALYSIS_TOOL_COVERAGE
@@ -1243,7 +1295,11 @@ def _agent_tool_evidence_ref(
             program_name = evidence_contract.get("programName")
             if isinstance(program_name, str) and 0 < len(program_name) <= 512:
                 evidence["title"] = f"{program_name} · 래더 읽기"
-                evidence["summary"] = f"{program_name} 프로그램에서 접점과 명령을 읽었습니다."
+                evidence["summary"] = (
+                    f"{program_name} 프로그램은 비어 있습니다."
+                    if evidence_contract.get("contentState") == "empty"
+                    else f"{program_name} 프로그램에서 접점과 명령을 읽었습니다."
+                )
                 evidence["location"] = {"vendor": "LS", "program": program_name}
     if canonical_tool_name in {"project.search", "workspace.search"}:
         if not isinstance(evidence_context, dict) or not isinstance(
@@ -1531,6 +1587,58 @@ def _rejected_exact_operand_reauthorization_permitted(
     )
 
 
+def _validate_agent_approval_handoff(
+    output: Any, *, transaction: ChangeTransaction | None,
+    proposed_authority: tuple[str, str] | None,
+    transcript: Any, conversation_id: str, run_id: str, actor_id: str,
+    workspace_id: str | None, revision_id: str | None,
+) -> dict[str, str]:
+    """Admit an approval yield, not a model-authored mission or native result."""
+    try:
+        handoff = _validated_approval_handoff(output.approval_handoff)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise AgentOutputContractError("Agent approval handoff is invalid") from exc
+    if output.workflow != "engineering" or any(getattr(output, field, None) is not None for field in (
+        "engineering_mission", "digest", "cycle_disposition",
+        "engineering_analysis", "engineering_analysis_digest",
+        "plan_status", "plan_artifact", "plan_digest", "project_name",
+    )):
+        raise AgentOutputContractError("Agent approval handoff carries model completion artifacts")
+    if (
+        transaction is None
+        or proposed_authority != (handoff["transactionId"], handoff["planDigest"])
+        or transaction.id != handoff["transactionId"]
+        or transaction.plan_digest != handoff["planDigest"]
+        or transaction.conversation_id != conversation_id
+        or transaction.run_id != run_id
+        or transaction.requested_by_actor_id != actor_id
+        or transaction.state is not ChangeTransactionState.PENDING_APPROVAL
+        or transaction.approval_expires_at <= datetime.now(timezone.utc)
+    ):
+        raise AgentOutputContractError("Agent approval handoff differs from current run authority")
+    if (
+        transcript is None or transcript.source_run_id != run_id
+        or transcript.conversation_id != conversation_id
+        or transcript.workspace_id != workspace_id
+        or transcript.revision_id != revision_id
+    ):
+        raise AgentOutputContractError("Agent approval handoff has no current completed transcript")
+    _, _, tool_parts, _ = validated_transcript_checkpoint(transcript.checkpoint, transcript.digest)
+    if not any(
+        part.get("part_kind") == "tool-return"
+        and part.get("outcome") == "success"
+        and isinstance(part.get("content"), dict)
+        and part["content"].get("transaction_id") == transaction.id
+        and part["content"].get("plan_digest") == transaction.plan_digest
+        and part["content"].get("state") == "PENDING_APPROVAL"
+        and part["content"].get("execution_permitted") is False
+        and part["content"].get("next_action") == "human_approval_required"
+        for part in tool_parts
+    ):
+        raise AgentOutputContractError("Agent approval handoff lacks its completed proposal result")
+    return handoff
+
+
 def _expired_exact_operand_reproposal_callback_permitted(
     mission: dict[str, Any] | None,
     change_outcome: dict[str, Any] | None,
@@ -1654,142 +1762,33 @@ def _expired_exact_operand_reproposal_callback_permitted(
     return clean_terminal_wait or active_retry
 
 
-def _internal_mne_rung_reproposal_callback_permitted(
-    mission: dict[str, Any] | None,
-    change_outcome: dict[str, Any] | None,
-    linked_change: ChangeTransaction | None,
-) -> bool:
-    """Admit one fresh internal-only MNE rung proposal after a safe terminal stop.
 
-    The old authority remains terminal.  This narrow callback gate only lets
-    the Agent compile the current editor baseline and create a new proposal
-    for the exact same durable conversation after approval expiration, a proven
-    pre-mutation failure, or a verified isolated-recovery rollback. Physical
-    I/O, rejection, ordinary user rollback, uncertain failure, and every other
-    terminal outcome stay outside this route.
+
+
+
+
+
+def _stored_candidate_continuation_scope(
+    run_metadata: Mapping[str, Any], message_role: MessageRole | None,
+) -> tuple[str, str] | None:
+    """Recover candidate intent across retries without inheriting direct authority.
+
+    Continuations deliberately have an analysis-only ordinary scope. Their
+    separately journaled candidate intent must survive a later failed attempt;
+    the terminal receipt/target gates still authorize every subsequent run.
     """
-
+    verification = run_metadata.get("terminal_candidate_reproposal_verification_scope")
     if (
-        not isinstance(mission, dict)
-        or mission.get("status") not in {"waiting_for_approval", "active"}
-        or not isinstance(change_outcome, dict)
-        or linked_change is None
-    ):
-        return False
-    retryable_terminal = (
-        (
-            change_outcome.get("state") == "EXPIRED"
-            and change_outcome.get("disposition") == "expired"
-            and linked_change.state is ChangeTransactionState.EXPIRED
-        )
-        or (
-            change_outcome.get("state") == "FAILED"
-            and change_outcome.get("disposition") == "failed"
-            and change_outcome.get("errorCode") == "native_change_not_applied"
-            and linked_change.state is ChangeTransactionState.FAILED
-        )
-        or (
-            change_outcome.get("state") == "ROLLED_BACK"
-            and change_outcome.get("disposition") == "rolled_back"
-            and change_outcome.get("errorCode") == "explicit_mne_recovery_rolled_back"
-            and isinstance(change_outcome.get("verificationEvidenceDigest"), str)
-            and re.fullmatch(
-                r"[0-9a-f]{64}",
-                change_outcome["verificationEvidenceDigest"],
-            )
-            is not None
-            and linked_change.state is ChangeTransactionState.ROLLED_BACK
-        )
-    )
-    if not retryable_terminal:
-        return False
-    plan = linked_change.plan
-    if not isinstance(plan, dict) or (
-        plan.get("plan_kind", plan.get("planKind")) != "mne_rung_patch"
-        or plan.get("change_mode", plan.get("changeMode"))
-        != "offline_working_copy_revision"
-        or plan.get("request_scope", plan.get("requestScope"))
-        != "offline_candidate_revision"
-        or plan.get("verification_scope", plan.get("verificationScope"))
-        != "offline_native_reopen_xgsim"
-    ):
-        return False
-    candidate = plan.get("candidate")
-    if not isinstance(candidate, dict) or any(
-        key in candidate
-        for key in (
-            "field_io_bindings",
-            "fieldIoBindings",
-            "hardware_context_digest",
-            "hardwareContextDigest",
-        )
-    ):
-        return False
-    patch = candidate.get("patch")
-    profile = candidate.get("simulation_profile", candidate.get("simulationProfile"))
-    if not isinstance(patch, dict) or not isinstance(profile, dict):
-        return False
-    target_rung = patch.get("target_rung", patch.get("targetRung"))
-    scenario = profile.get("scenario")
-    if (
-        not isinstance(target_rung, dict)
-        or not isinstance(target_rung.get("condition"), dict)
-        or not isinstance(target_rung["condition"].get("operand"), str)
-        or not isinstance(target_rung.get("actions"), list)
-        or not isinstance(scenario, dict)
-        or not isinstance(scenario.get("steps"), list)
-        or not isinstance(profile.get("output_addresses", profile.get("outputAddresses")), list)
-    ):
-        return False
-    addresses = [target_rung["condition"]["operand"]]
-    for action in target_rung["actions"]:
-        if not isinstance(action, dict) or not isinstance(action.get("operand"), str):
-            return False
-        addresses.append(action["operand"])
-    for step in scenario["steps"]:
-        if not isinstance(step, dict):
-            return False
-        for assignments in (step.get("drive"), step.get("observe")):
-            if not isinstance(assignments, dict):
-                return False
-            addresses.extend(assignments)
-    addresses.extend(profile.get("output_addresses", profile.get("outputAddresses")))
-    return bool(addresses) and all(
-        isinstance(address, str)
-        and re.fullmatch(r"M\d{3,4}[0-9A-F]", address) is not None
-        for address in addresses
-    )
-
-
-def _terminal_candidate_reproposal_matches_authority(
-    *,
-    linked_change: ChangeTransaction | None,
-    request_scope: Any,
-    verification_scope: Any,
-    exact_operand_reproposal_permitted: bool,
-    internal_mne_rung_reproposal_permitted: bool,
-) -> bool:
-    """Keep a SYSTEM resume read-only except for a proven candidate retry."""
-
-    if linked_change is None or not isinstance(linked_change.plan, dict):
-        return False
-    plan = linked_change.plan
-    return bool(
-        request_scope == "offline_candidate_revision"
-        and verification_scope
-        in {
-            "offline_native_check_only",
-            "offline_native_reopen",
-            "offline_native_reopen_xgsim",
+        message_role is MessageRole.SYSTEM
+        and run_metadata.get("engineering_mission_continue") is True
+        and run_metadata.get("change_request_scope") == "analysis_only"
+        and run_metadata.get("terminal_candidate_reproposal_scope") == "offline_candidate_revision"
+        and verification in {
+            "offline_native_check_only", "offline_native_reopen", 
         }
-        and plan.get("request_scope", plan.get("requestScope")) == request_scope
-        and plan.get("verification_scope", plan.get("verificationScope"))
-        == verification_scope
-        and (
-            exact_operand_reproposal_permitted
-            or internal_mne_rung_reproposal_permitted
-        )
-    )
+    ):
+        return "offline_candidate_revision", str(verification)
+    return None
 
 
 def _explicit_user_direct_change_authority(
@@ -1818,17 +1817,41 @@ def _proposal_scopes_for_run(
 ) -> tuple[str, str]:
     """Separate ordinary run authority from the narrow terminal candidate path."""
 
-    if terminal_candidate_reproposal_authorized:
-        assert terminal_candidate_reproposal_verification_scope in {
-            "offline_native_check_only",
-            "offline_native_reopen",
-            "offline_native_reopen_xgsim",
-        }
-        return (
-            "offline_candidate_revision",
-            str(terminal_candidate_reproposal_verification_scope),
-        )
+    pass
     return change_request_scope, verification_scope
+
+
+def _allowed_verification_scopes_for_run(
+    *,
+    request_scope: str,
+    verification_scope: str,
+    simulation_capability_ready: bool,
+    engineering_mission_continue: bool,
+    terminal_candidate_reproposal_authorized: bool,
+) -> tuple[str, ...]:
+    """LD operand proposals use the explicitly selected verification scope."""
+    return (verification_scope,)
+
+
+
+
+def _proposal_verification_scope_for_callback(
+    *,
+    plan_kind: Any,
+    requested_scope: Any,
+    explicit_scope: str,
+    allowed_scopes: tuple[str, ...],
+) -> str:
+    """Validate the model-selected scope at the change callback boundary."""
+
+    if requested_scope != explicit_scope:
+        raise ValueError(
+            "legacy operand proposal verification_scope must equal "
+            "the explicit user selection"
+        )
+    if not isinstance(requested_scope, str):
+        raise ValueError("proposal verification_scope must be text")
+    return requested_scope
 
 
 def _acknowledged_terminal_source_run_change(
@@ -2269,6 +2292,140 @@ def _legacy_project_brief(detail: ConversationDetail) -> ProjectBriefV1 | None:
     return None
 
 
+def _conversation_completion_v1(
+    detail: ConversationDetail,
+    *,
+    project_plan_authority_digests: tuple[str, str] | None = None,
+    engineering_mission: EngineeringMission | None = None,
+) -> ConversationCompletionV1:
+    """Project goal state separately from completion of one Agent turn.
+
+    ``RunState.COMPLETED`` means only that one Agent turn produced a durable
+    response.  For planning, a ready/published revision is a completed design
+    phase that still needs the next product phase.  Only the already-validated
+    engineering mission terminal state can claim the user's goal complete.
+    """
+
+    def digest_or_none(value: Any) -> str | None:
+        return (
+            value
+            if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+            else None
+        )
+
+    if detail.workflow == "new_project_planning":
+        latest_plan_message = next(
+            (
+                item
+                for item in reversed(detail.messages)
+                if item.role is MessageRole.ASSISTANT
+                and isinstance(item.metadata.get("plan_artifact"), dict)
+                and digest_or_none(item.metadata.get("plan_digest")) is not None
+            ),
+            None,
+        )
+        if latest_plan_message is None:
+            return ConversationCompletionV1(
+                status="not_claimed",
+                phase="planning",
+                basis="no_completion_evidence",
+            )
+        plan_digest = digest_or_none(latest_plan_message.metadata.get("plan_digest"))
+        plan_status = latest_plan_message.metadata.get("plan_status")
+        if plan_status == "needs_clarification":
+            basis = "planning_needs_clarification"
+        elif plan_status == "ready_for_review":
+            review = latest_plan_message.project_plan_review
+            reviewed = bool(
+                review is not None
+                and review.schema_version == "2"
+                and review.plan_digest == plan_digest
+                and project_plan_authority_digests is not None
+                and review.project_brief_digest == project_plan_authority_digests[0]
+                and review.attachment_revision_digest == project_plan_authority_digests[1]
+            )
+            basis = "planning_reviewed" if reviewed else "planning_ready_for_review"
+        else:
+            return ConversationCompletionV1(
+                status="not_claimed",
+                phase="planning",
+                basis="no_completion_evidence",
+                source_message_id=latest_plan_message.id,
+                source_digest=plan_digest,
+            )
+        return ConversationCompletionV1(
+            # A planning publication is deliberately never an end-to-end goal
+            # claim. Native build, persistence, readback, and testing belong to
+            # the subsequent engineering phase. Clarification is not even a
+            # completed planning phase.
+            status=(
+                "phase_complete"
+                if basis in {"planning_ready_for_review", "planning_reviewed"}
+                else "not_claimed"
+            ),
+            phase="planning",
+            basis=basis,
+            source_message_id=latest_plan_message.id,
+            source_digest=plan_digest,
+        )
+
+    if engineering_mission is None:
+        return ConversationCompletionV1(
+            status="not_claimed",
+            phase="engineering",
+            basis="no_completion_evidence",
+        )
+    try:
+        snapshot, canonical_digest = _canonical_engineering_mission(
+            engineering_mission.engineering_mission
+        )
+    except (TypeError, ValueError):
+        return ConversationCompletionV1(
+            status="blocked",
+            phase="engineering",
+            basis="invalid_engineering_mission",
+            source_digest=digest_or_none(engineering_mission.digest),
+        )
+    if canonical_digest != engineering_mission.digest:
+        return ConversationCompletionV1(
+            status="blocked",
+            phase="engineering",
+            basis="invalid_engineering_mission",
+            source_digest=digest_or_none(engineering_mission.digest),
+        )
+    mission_status = snapshot["status"]
+    if mission_status == "completed":
+        return ConversationCompletionV1(
+            status="goal_complete",
+            phase="engineering",
+            basis="engineering_objective_achieved",
+            source_digest=canonical_digest,
+        )
+    if mission_status == "blocked":
+        return ConversationCompletionV1(
+            status="blocked",
+            phase="engineering",
+            basis="engineering_blocked",
+            source_digest=canonical_digest,
+        )
+    basis_by_status = {
+        "waiting_for_user": "engineering_waiting_for_user",
+        "waiting_for_approval": "engineering_waiting_for_approval",
+    }
+    if mission_status in basis_by_status:
+        basis = basis_by_status[mission_status]
+    elif snapshot["stopReason"] == "cycle_budget_exhausted":
+        basis = "engineering_cycle_budget_exhausted"
+    else:
+        basis = "engineering_in_progress"
+    return ConversationCompletionV1(
+        status="not_claimed",
+        phase="engineering",
+        basis=basis,
+        source_digest=canonical_digest,
+    )
+
+
 def _conversation_v1(
     detail: ConversationDetail,
     *,
@@ -2385,6 +2542,11 @@ def _conversation_v1(
         engineering_target=_conversation_target_v1(detail),
         engineering_handoff=_conversation_handoff_v1(detail),
         engineering_mission=_engineering_mission_v1(engineering_mission),
+        goal_completion=_conversation_completion_v1(
+            detail,
+            project_plan_authority_digests=project_plan_authority_digests,
+            engineering_mission=engineering_mission,
+        ),
         messages=messages,
         updated_at=detail.updated_at,
     )
@@ -2473,6 +2635,28 @@ def _conversation_summary_v1(
         engineering_mission=_engineering_mission_summary_v1(engineering_mission),
         updated_at=value.updated_at,
     )
+
+
+def _latest_historical_transcript_for_run(
+    store: HostStore, *, conversation_id: str,
+    workspace_id: str | None, revision_id: str | None,
+    checkpoint_updated_at: datetime | None,
+) -> dict[str, Any] | None:
+    """Select newer historical messages independently of mission authority."""
+    transcript = store.get_latest_engineering_transcript(
+        conversation_id, workspace_id=workspace_id, revision_id=revision_id,
+    )
+    # Equal timestamps retain the selected mission checkpoint's history.
+    if transcript is None or (
+        checkpoint_updated_at is not None and transcript.updated_at <= checkpoint_updated_at
+    ):
+        return None
+    source_run = store.get_run(transcript.source_run_id)
+    if (source_run is None or source_run.conversation_id != conversation_id
+            or source_run.request_message_id != transcript.request_message_id):
+        raise AgentRunPreconditionError("Agent transcript source run mismatched")
+    checkpoint, _, _, _ = validated_transcript_checkpoint(transcript.checkpoint, transcript.digest)
+    return checkpoint
 
 
 def _canonical_engineering_mission(
@@ -2565,6 +2749,7 @@ def _validate_engineering_mission_progression(
     current: dict[str, Any],
     *,
     current_run_evidence_refs: set[str],
+    legacy_completion_kind: str,
     allowed_removed_evidence_refs: set[str] | None = None,
     allowed_reopened_step_ids: set[str] | None = None,
 ) -> None:
@@ -2576,6 +2761,9 @@ def _validate_engineering_mission_progression(
         raise ValueError(
             "engineering mission completionCriteria changed autonomously"
         )
+    previous_completion_kind = previous.get("completionKind", legacy_completion_kind)
+    if current.get("completionKind") != previous_completion_kind:
+        raise ValueError("engineering mission completionKind changed autonomously")
     previous_steps = {step["stepId"]: step for step in previous["steps"]}
     current_steps = {step["stepId"]: step for step in current["steps"]}
     for previous_step in previous["steps"]:
@@ -2627,9 +2815,11 @@ def _model_settings_v1(
         model=value.model,
         custom_header_names=sorted(value.secrets.custom_headers),
         timeout_seconds=value.timeout_seconds,
+        reasoning_effort=value.reasoning_effort,
         has_api_key=bool(value.secrets.api_key),
         external_endpoint=is_external_model_endpoint(value.base_url),
         updated_at=value.updated_at,
+        model_context=value.model_context,
     )
 
 
@@ -2765,55 +2955,6 @@ def _workspace_launch_binding_matches(launch: dict[str, Any], working_path: str)
     )
 
 
-async def _authenticated_recovery_relaunch_working_hash(
-    mcp: MCPGateway,
-    transaction: ChangeTransaction,
-    *,
-    working_path: str,
-) -> str:
-    """Return the current disk hash only from the matching MNE journal checkpoint."""
-
-    try:
-        digest_builder = hashlib.sha256()
-        with Path(working_path).open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest_builder.update(chunk)
-        digest = digest_builder.hexdigest()
-    except OSError as exc:
-        raise ChangeExecutionPreconditionError(
-            "active recovery working-copy file is unavailable"
-        ) from exc
-    checkpoint, terminal_receipt = _transaction_lookup_checkpoint(
-        await mcp.call_recovery_tool(
-            "change.transaction_lookup",
-            {"host_transaction_id": transaction.id},
-        ),
-        host_transaction_id=transaction.id,
-    )
-    if checkpoint is None or terminal_receipt is not None:
-        raise ChangeExecutionPreconditionError(
-            "recovery relaunch requires one nonterminal MNE journal checkpoint"
-        )
-    journal_hash = checkpoint.get("current_project_hash")
-    if (
-        transaction.plan.get("plan_kind") not in MNE_STRUCTURAL_PLAN_KINDS
-        or checkpoint.get("host_transaction_id") != transaction.id
-        or checkpoint.get("workspace_id") != transaction.target.workspace_id
-        or checkpoint.get("plan_kind") != MNE_PLAN_KIND
-        or not _same_path(checkpoint.get("project_path"), transaction.target.project_path)
-        or checkpoint.get("state") != "QUARANTINED"
-        or checkpoint.get("recovery_action") != "rollback_required"
-        or checkpoint.get("mutation_possible") is not True
-        or checkpoint.get("terminal") is not False
-        or checkpoint.get("lease_status") not in {"live", "abandoned"}
-        or not isinstance(journal_hash, str)
-        or re.fullmatch(r"[0-9a-f]{64}", journal_hash.casefold()) is None
-        or not hmac.compare_digest(digest, journal_hash.casefold())
-    ):
-        raise ChangeExecutionPreconditionError(
-            "active recovery working copy differs from the authenticated MNE journal"
-        )
-    return journal_hash.casefold()
 
 
 async def _relaunch_unavailable_change_recovery_target(
@@ -2823,14 +2964,14 @@ async def _relaunch_unavailable_change_recovery_target(
     *,
     requested_pid: int,
     requested_hwnd: int,
-) -> tuple[ChangeRecoveryTarget, str]:
+) -> tuple[ChangeRecoveryTarget, str, dict[str, Any]]:
     """Open one exact working copy after its journaled XG5000 target has died.
 
     This intentionally does not attach or bind the controlled launch.  The
     recovery executor remains the only consumer of the resulting target.
     """
 
-    target = transaction.target
+    target = transaction.runtime_target
     if (
         target.engineering_process_id is None
         or target.engineering_window_handle is None
@@ -2855,17 +2996,20 @@ async def _relaunch_unavailable_change_recovery_target(
         raise ChangeExecutionPreconditionError(
             "active recovery workspace is not the transaction's verified working copy"
         )
-    if hmac.compare_digest(
-        workspace.working_copy.current_sha256.casefold(),
-        target.artifact_hash.casefold(),
-    ):
-        # Preserve the existing non-MNE/current-baseline relaunch behavior.
-        recovery_working_hash = workspace.working_copy.current_sha256.casefold()
+    try:
+        disk_working_hash = _sha256_file(Path(workspace.working_copy.path))
+    except OSError as exc:
+        raise ChangeExecutionPreconditionError(
+            "active recovery working-copy file is unavailable"
+        ) from exc
+    recovery_launch_arguments: dict[str, Any] = {}
+    availability_pids = {requested_pid}
+    if hmac.compare_digest(disk_working_hash, target.artifact_hash.casefold()):
+        # Preserve the existing current-baseline relaunch behavior.
+        recovery_working_hash = disk_working_hash
     else:
-        recovery_working_hash = await _authenticated_recovery_relaunch_working_hash(
-            mcp,
-            transaction,
-            working_path=workspace.working_copy.path,
+        raise ChangeExecutionPreconditionError(
+            "active recovery working copy differs from the transaction baseline"
         )
     try:
         observed = await mcp.call_read_tool("xg5000.instances", {})
@@ -2878,21 +3022,12 @@ async def _relaunch_unavailable_change_recovery_target(
         raise ChangeExecutionPreconditionError(
             "XG5000 instance inventory is invalid for recovery relaunch"
         )
-    if len(instances) > 1:
+    if any(
+        instance.get("pid") in availability_pids
+        for instance in instances
+    ):
         raise ChangeExecutionPreconditionError(
-            "multiple XG5000 instances prevent recovery-only relaunch"
-        )
-    if instances:
-        instance = instances[0]
-        if (
-            instance.get("pid") == requested_pid
-            and instance.get("hwnd") == requested_hwnd
-        ):
-            raise ChangeExecutionPreconditionError(
-                "the journaled XG5000 target is still available for recovery"
-            )
-        raise ChangeExecutionPreconditionError(
-            "a different XG5000 target prevents recovery-only relaunch"
+            "the journaled XG5000 target is still available for recovery"
         )
 
     try:
@@ -2901,6 +3036,7 @@ async def _relaunch_unavailable_change_recovery_target(
             {
                 "workspace_id": workspace.workspace_id,
                 "expected_working_hash": recovery_working_hash,
+                **recovery_launch_arguments,
                 # Cold XG5000 starts on the engineering workstation have
                 # exposed their exact PID/HWND before the UI thread becomes
                 # responsive. Recovery already owns one bounded launch and
@@ -2923,10 +3059,11 @@ async def _relaunch_unavailable_change_recovery_target(
         hwnd = instance.get("hwnd") if isinstance(instance, dict) else None
         one_returned_instance = (
             isinstance(observed_instances, list)
-            and len(observed_instances) == 1
-            and isinstance(observed_instances[0], dict)
-            and observed_instances[0].get("pid") == pid
-            and observed_instances[0].get("hwnd") == hwnd
+            and all(isinstance(item, dict) for item in observed_instances)
+            and sum(
+                item.get("pid") == pid and item.get("hwnd") == hwnd
+                for item in observed_instances
+            ) == 1
         )
         receipt_matches = (
             isinstance(launch, dict)
@@ -2940,6 +3077,10 @@ async def _relaunch_unavailable_change_recovery_target(
             and str(launch.get("working_hash") or "").casefold()
             == recovery_working_hash
             and launch.get("window_detected") is True
+            and isinstance(launch.get("process_create_time"), (int, float))
+            and not isinstance(launch.get("process_create_time"), bool)
+            and math.isfinite(float(launch["process_create_time"]))
+            and float(launch["process_create_time"]) > 0
             and isinstance(
                 launch.get("project_identity_verified_against_selected_pid"), bool
             )
@@ -2964,7 +3105,29 @@ async def _relaunch_unavailable_change_recovery_target(
         raise ChangeExecutionPreconditionError(
             "recovery-only XG5000 relaunch receipt is incomplete or mismatched"
         )
-    return ChangeRecoveryTarget(pid=pid, hwnd=hwnd), recovery_working_hash
+    try:
+        receipt_digest = _canonical_json_digest(launch)
+    except (TypeError, ValueError) as exc:
+        raise ChangeExecutionPreconditionError(
+            "recovery-only XG5000 relaunch receipt is not durable JSON"
+        ) from exc
+    relaunch_evidence = {
+        "host_transaction_id": transaction.id,
+        "workspace_id": workspace.workspace_id,
+        "revision_id": workspace.revision_id,
+        "project_path": str(workspace.working_copy.path),
+        "project_hash": recovery_working_hash,
+        "pid": pid,
+        "hwnd": hwnd,
+        "process_create_time": float(launch["process_create_time"]),
+        "receipt_digest": receipt_digest,
+        "launch_receipt": launch,
+    }
+    return ChangeRecoveryTarget(pid=pid, hwnd=hwnd), recovery_working_hash, relaunch_evidence
+
+
+
+
 
 
 async def _record_native_handoff_after_freshness(
@@ -2991,7 +3154,7 @@ def _reject_private_change_plan_material(value: Any) -> None:
         # Compiler candidates expose only these baseline SHA-256 identities,
         # never the corresponding baseline source or payload.
         baseline_digest_field = normalized in {
-            "baselinemnesha256",
+            
             "baselineldsha256",
             "baselineldcanonicalsha256",
         }
@@ -3001,7 +3164,7 @@ def _reject_private_change_plan_material(value: Any) -> None:
             in {
                 "clipboard",
                 "clipboardpayload",
-                "mnepayload",
+                
                 "ldpayload",
                 "privatepayload",
                 "privatematerial",
@@ -3009,11 +3172,11 @@ def _reject_private_change_plan_material(value: Any) -> None:
             or normalized.endswith("payload")
             or (not baseline_digest_field and normalized.startswith(
                 (
-                    "rawmne",
+                    
                     "rawld",
-                    "baselinemne",
+                    
                     "baselineld",
-                    "privatemne",
+                    
                     "privateld",
                 )
             ))
@@ -3022,18 +3185,10 @@ def _reject_private_change_plan_material(value: Any) -> None:
         _reject_private_change_plan_material(item)
 
 
+
+
 def _parse_change_plan(value: Any) -> ChangePlanContract:
-    if isinstance(
-        value,
-        (
-            ChangePlanV1,
-            ChangePlanV2,
-            ChangePlanV3,
-            ChangePlanV4,
-            ChangePlanV5,
-            ChangePlanV6,
-        ),
-    ):
+    if isinstance(value, ChangePlanV1):
         _reject_private_change_plan_material(value.model_dump(mode="json"))
         return value
     if not isinstance(value, dict):
@@ -3042,12 +3197,24 @@ def _parse_change_plan(value: Any) -> ChangePlanContract:
     plan_kind = value.get("planKind", value.get("plan_kind"))
     if plan_kind is None:
         return ChangePlanV1.model_validate(value)
-    if plan_kind == "mne_full_program_replacement":
-        return ChangePlanV2.model_validate(value)
-    patch_contract = MNE_PATCH_PLAN_CONTRACTS.get(plan_kind)
-    if patch_contract is not None:
-        return patch_contract.plan_model.model_validate(value)
+    pass
+    pass
+    pass
     raise ValueError(f"unsupported change plan kind: {plan_kind}")
+
+
+def _native_preparation_failure_detail(evidence: Any) -> str:
+    preparation = evidence.get("preparation") if isinstance(evidence, Mapping) else None
+    stage = preparation.get("stage") if isinstance(preparation, Mapping) else None
+    code = preparation.get("mcp_error_code") if isinstance(preparation, Mapping) else None
+    if (
+        isinstance(stage, str)
+        and stage in {"snapshot", "backup", "plan"}
+        and isinstance(code, str)
+        and re.fullmatch(r"[A-Z][A-Z0-9_]{2,79}", code)
+    ):
+        return f"Native change stopped before application at {stage} ({code})."
+    return "Native change stopped before a verified application."
 
 
 def _public_change_error_detail(value: ChangeTransaction) -> str | None:
@@ -3056,8 +3223,12 @@ def _public_change_error_detail(value: ChangeTransaction) -> str | None:
     error_code = value.error_code
     if error_code is None:
         return None
+    if error_code in {"explicit_recovery_rolled_back", }:
+        return None
     if error_code == "change_preflight_failed_before_mutation":
         return "Native preflight failed before execution; no mutation was attempted."
+    if error_code == "native_change_not_applied":
+        return _native_preparation_failure_detail(value.result.get("verification"))
     if error_code in {
         "native_change_outcome_uncertain",
         "unexpected_apply_failure",
@@ -3103,6 +3274,10 @@ def _change_transaction_v1(value: ChangeTransaction) -> ChangeTransactionV1:
         run_id=value.run_id,
         state=value.state.value.casefold(),
         target_identity=ChangeTargetIdentityV1.model_validate(value.target.model_dump()),
+        execution_target_identity=(
+            ChangeTargetIdentityV1.model_validate(value.execution_target.model_dump())
+            if value.execution_target is not None else None
+        ),
         mutation_scope=value.mutation_scope,
         risk_level=value.risk_level.value.casefold(),
         intent=value.intent,
@@ -3133,79 +3308,12 @@ def _change_transaction_v1(value: ChangeTransaction) -> ChangeTransactionV1:
     )
 
 
-def _public_native_project_result(value: dict[str, Any]) -> dict[str, Any]:
-    """Serialize embedded workspace contracts with the public camelCase schema."""
-
-    result = deepcopy(value)
-    workspace_paths = (
-        ("workspaceRegistration", "workspace"),
-        ("reopenVerification", "workspace"),
-        ("simulationVerification", "workspace"),
-    )
-    for parent_name, workspace_name in workspace_paths:
-        parent = result.get(parent_name)
-        workspace = parent.get(workspace_name) if isinstance(parent, dict) else None
-        if isinstance(workspace, dict):
-            parent[workspace_name] = _local_workspace_v1(workspace).model_dump(
-                mode="json",
-                by_alias=True,
-            )
-    return result
 
 
-def _native_project_operation_v1(
-    value: NativeProjectOperation,
-) -> NativeProjectOperationV1:
-    return NativeProjectOperationV1(
-        native_project_id=value.id,
-        operation_id=value.operation_id,
-        state=value.state.casefold(),
-        request_digest=value.request_digest,
-        actor_id=value.actor_id,
-        request=value.request,
-        plan_digest=value.plan_digest,
-        destination_directory=value.destination_directory,
-        result=_public_native_project_result(value.result),
-        error_code=value.error_code,
-        error_detail=value.error_detail,
-        created_at=value.created_at,
-        updated_at=value.updated_at,
-        completed_at=value.completed_at,
-    )
 
 
-def _native_project_target_lease_identity(
-    value: NativeProjectOperation,
-) -> dict[str, Any]:
-    """Rebuild the exact durable lease identity used by native creation."""
-
-    request = value.request
-    identity: dict[str, Any] = {
-        "operationId": value.operation_id,
-        "workspaceParent": request["workspaceParent"],
-        "projectName": request["projectName"],
-        "plcSeries": request["plcSeries"],
-        "cpuModel": request["cpuModel"],
-        "programName": request["programName"],
-        "language": request["language"],
-        "xg5000Pid": request["xg5000Pid"],
-        "xg5000Hwnd": request["xg5000Hwnd"],
-    }
-    if isinstance(request.get("reviewedPlan"), dict):
-        identity["reviewedPlan"] = request["reviewedPlan"]
-    build_bundle = request.get("buildBundle")
-    if isinstance(build_bundle, dict) and isinstance(build_bundle.get("bundleId"), str):
-        identity["buildBundleId"] = build_bundle["bundleId"]
-    return identity
 
 
-def _native_project_target_lease_must_remain(
-    value: NativeProjectOperation,
-) -> bool:
-    # A completed, independently reopened offline build is terminal. Historic
-    # XG-SIM receipts remain attached for audit, but an optional simulator
-    # quarantine cannot serialize or block a new offline target.
-    return value.state in {"EXECUTING", "QUARANTINED"}
 
 
 def _request_actor_id(request: Request) -> str:
@@ -3230,11 +3338,18 @@ def _ephemeral_model_settings(
     )
     model = validate_model_name(body.model)
     timeout = validate_timeout(body.timeout_seconds)
+    same_endpoint = existing is not None and existing.base_url == base_url
+    reasoning_effort = validate_reasoning_effort(
+        existing.reasoning_effort
+        if "reasoning_effort" not in body.model_fields_set
+        and same_endpoint
+        and existing is not None
+        else body.reasoning_effort
+    )
     if is_external_model_endpoint(base_url) and not body.external_model_consent:
         raise ModelSettingsError(
             "external_model_consent is required before sending data to this endpoint"
         )
-    same_endpoint = existing is not None and existing.base_url == base_url
     api_key = (
         existing.secrets.api_key
         if body.api_key is None and same_endpoint and existing is not None
@@ -3252,10 +3367,26 @@ def _ephemeral_model_settings(
         base_url=base_url,
         model=model,
         timeout_seconds=timeout,
+        reasoning_effort=reasoning_effort,
         updated_at=datetime.now(timezone.utc),
         capability_verified_at=None,
         secrets=ModelSecrets(api_key=api_key, custom_headers=headers),
     )
+
+
+def _existing_model_settings_for_write(
+    repository: ModelConnectionRepository,
+    body: SaveModelSettingsRequestV1,
+) -> StoredModelConnection | None:
+    try:
+        return repository.get()
+    except StoredModelSettingsError:
+        # A broken legacy credential must not trap the user in an unrecoverable
+        # GET-before-PUT cycle. Both secret fields must be explicitly supplied;
+        # otherwise their omission could silently erase valid user data.
+        if {"api_key", "custom_headers"} <= body.model_fields_set:
+            return None
+        raise
 
 
 def _required_model_capabilities_ready(result: ModelCapabilityResult) -> bool:
@@ -3276,6 +3407,7 @@ def _model_capability_cache_key(value: StoredModelConnection) -> tuple[Any, ...]
         value.base_url,
         value.model,
         value.timeout_seconds,
+        value.reasoning_effort,
         value.secrets.api_key,
         tuple(sorted(value.secrets.custom_headers.items())),
     )
@@ -3359,7 +3491,7 @@ def _engineering_session_identity_verified(session: dict[str, Any] | None) -> bo
     if proof.get("proof_source") not in {
         "verified_workspace_launch_cli",
         "verified_ld_reopen_cli",
-        "verified_mne_reopen_cli",
+        
     }:
         return False
     if (
@@ -3457,6 +3589,67 @@ def _engineering_session_exact_lifetime_binding(session: dict[str, Any]) -> bool
         ) == os.path.normcase(str(Path(str(session.get("project_path") or "")).resolve()))
     except (OSError, RuntimeError, ValueError):
         return False
+
+
+
+
+
+
+
+
+def _quarantined_diagnostic_context(
+    *,
+    conversation: Conversation,
+    mission: EngineeringMission | None,
+    transaction: ChangeTransaction | None,
+    session: dict[str, Any] | None,
+    workspace: dict[str, Any] | None,
+) -> dict[str, str] | None:
+    """Permit observation of one retained uncertain change, never a new mutation."""
+    if mission is None or transaction is None or transaction.state is not ChangeTransactionState.QUARANTINED:
+        return None
+    target = transaction.runtime_target
+    _canonical, digest = _canonical_engineering_mission(mission.engineering_mission)
+    normal_session_bound = (
+        _engineering_session_read_ready(session)
+        and _engineering_session_exact_lifetime_binding(session)
+    )
+    if (
+        mission.conversation_id != conversation.id
+        or transaction.conversation_id != conversation.id
+        or mission.change_transaction_id != transaction.id
+        or digest != mission.digest
+        or mission.workspace_id != conversation.workspace_id
+        or mission.revision_id != conversation.revision_id
+        or target.workspace_id != mission.workspace_id
+        or target.revision_id != mission.revision_id
+        or not normal_session_bound
+        or not isinstance(session, dict)
+        or (
+            (
+                session.get("session_id") != target.engineering_session_id
+                or session.get("pid") != target.engineering_process_id
+                or session.get("hwnd") != target.engineering_window_handle
+                or session.get("project_hash") != target.artifact_hash
+                or not _same_path(str(session.get("project_path") or ""), target.project_path)
+            )
+        )
+        or not isinstance(workspace, dict)
+        or workspace.get("workspace_id") != target.workspace_id
+        or workspace.get("revision_id") != target.revision_id
+        or (workspace.get("working_copy") or {}).get("current_sha256") != target.artifact_hash
+        or not _same_path(str((workspace.get("working_copy") or {}).get("path") or ""), target.project_path)
+        or (workspace.get("source") or {}).get("sha256") != target.source_artifact_hash
+    ):
+        raise AgentRunPreconditionError("quarantined diagnostic target is no longer exact")
+    verification = transaction.result.get("verification")
+    rejection = verification.get("native_rejection") if isinstance(verification, dict) else None
+    native_code = rejection.get("code") if isinstance(rejection, dict) else None
+    code = native_code if isinstance(native_code, str) else transaction.error_code or "outcome_uncertain"
+    return {
+        "state": "QUARANTINED",
+        "code": code if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,79}", code) else "outcome_uncertain",
+    }
 
 
 def _validated_engineering_session_result(
@@ -3764,6 +3957,23 @@ def _planning_requirement_message_sources(
         -1,
     )
     boundary_index = adoption_index if adoption_index >= 0 else reviewed_index
+    adopted_requirement_contents = {
+        item.content
+        for index, item in enumerate(messages)
+        if adoption_index >= 0
+        and index <= adoption_index
+        and item.role is MessageRole.USER
+        and not bool(item.metadata.get("structured_project_brief"))
+    }
+    latest_user_index = next(
+        (
+            index
+            for index in range(len(messages) - 1, -1, -1)
+            if messages[index].role is MessageRole.USER
+            and not bool(messages[index].metadata.get("structured_project_brief"))
+        ),
+        -1,
+    )
     return [
         {"message_id": item.id, "content": item.content}
         for index, item in enumerate(messages)
@@ -3771,30 +3981,79 @@ def _planning_requirement_message_sources(
         and not bool(item.metadata.get("structured_project_brief"))
         and (
             item.id in source_ids
+            or index == latest_user_index
             or index > boundary_index
+            and not (
+                adoption_index >= 0
+                and item.content in adopted_requirement_contents
+            )
         )
     ]
 
 
-def _is_exact_terminal_mne_no_mutation_abort(
+
+
+
+
+async def _explicit_clean_reviewed_close_matches(
+    mcp: MCPGateway,
     transaction: ChangeTransaction,
+    checkpoint: dict[str, Any],
+    workspace: dict[str, Any] | None,
+    request_body: dict[str, Any],
 ) -> bool:
-    """Recognize the one fully bound MNE outcome with no native mutation."""
-
-    return has_valid_terminal_mne_no_mutation_abort(transaction)
-
-
-def _has_valid_terminal_change_receipt(transaction: ChangeTransaction) -> bool:
-    """Require the canonical successful receipt before recording user review."""
-
-    if transaction.state not in {
-        ChangeTransactionState.COMPLETED,
-        ChangeTransactionState.ROLLED_BACK,
-    }:
+    """Authorize only clean Close of an explicitly reviewed live window, not adoption."""
+    if not isinstance(workspace, dict):
         return False
-    if transaction.plan.get("plan_kind") in MNE_STRUCTURAL_PLAN_KINDS:
-        return has_valid_terminal_mne_receipt(transaction)
-    return has_valid_terminal_ld_receipt(transaction)
+    working = workspace.get("working_copy")
+    source = workspace.get("source")
+    if not isinstance(working, dict) or not isinstance(source, dict):
+        return False
+    pid, hwnd = request_body.get("pid"), request_body.get("hwnd")
+    created = request_body.get("processCreateTime", request_body.get("process_create_time"))
+    path = request_body.get("projectPath", request_body.get("project_path"))
+    digest = request_body.get("projectHash", request_body.get("project_hash"))
+    return False
+    try:
+        if not hmac.compare_digest(_sha256_file(Path(path)), digest):
+            return False
+        observed = await mcp.call_read_tool("xg5000.instances", {})
+    except (OSError, ValueError, MCPToolError):
+        return False
+    instances = observed.get("instances") if isinstance(observed, dict) else None
+    if not isinstance(instances, list) or any(not isinstance(item, dict) for item in instances):
+        return False
+    matches = [item for item in instances if item.get("pid") == pid or item.get("hwnd") == hwnd]
+    if len(matches) != 1:
+        return False
+    instance = matches[0]
+    lifetime = instance.get("process_create_time")
+    return (
+        type(instance.get("pid")) is int and instance["pid"] == pid
+        and type(instance.get("hwnd")) is int and instance["hwnd"] == hwnd
+        and instance.get("visible") is True
+        and type(lifetime) in {int, float} and math.isfinite(lifetime) and lifetime > 0
+        and abs(lifetime - created) < 0.001
+    )
+
+
+async def _reviewed_change_close_checkpoint(
+    mcp: MCPGateway, transaction: ChangeTransaction | None,
+) -> dict[str, Any] | None:
+    if transaction is None:
+        return None
+    try:
+        checkpoint, terminal, _symbol_evidence = _transaction_lookup_checkpoint(
+            await mcp.call_recovery_tool(
+                "change.transaction_lookup", {"host_transaction_id": transaction.id},
+            ),
+            host_transaction_id=transaction.id,
+        )
+    except (MCPToolError, ChangeExecutionPreconditionError) as exc:
+        raise HTTPException(status_code=409, detail="현재 변경 거래의 복구 대상을 조회하지 못했습니다.") from exc
+    return checkpoint if terminal is None else None
+
+
 
 
 async def _recover_locked_reconciled_change_session(
@@ -3900,10 +4159,14 @@ async def _reconcile_late_workspace_open(
             }:
                 return None
             session = bind_session(attached)
+            mutation_identity_verified = _engineering_session_identity_verified(session)
             return (
                 XG5000ProjectLaunchV1(
                     operation="xg5000.open_project",
-                    verified=True,
+                    # A late attach is not itself a launch receipt.  Preserve
+                    # read-only late reconciliation, but never label a plain
+                    # native-file observation as a verified fresh open.
+                    verified=mutation_identity_verified,
                     workspace_id=workspace.workspace_id,
                     working_path=workspace.working_copy.path,
                     working_hash=workspace.working_copy.current_sha256,
@@ -3924,7 +4187,12 @@ async def _reconcile_late_workspace_open(
                     observed_instances=[dict(instance)],
                     detail=(
                         "the single late-ready XG5000 process was attached only after "
-                        "exact workspace path, hash, PID, and HWND readback"
+                        "exact workspace path, hash, PID, and HWND readback; "
+                        + (
+                            "the existing mutation identity was also verified"
+                            if mutation_identity_verified
+                            else "no fresh controlled-launch mutation proof was available"
+                        )
                     ),
                 ),
                 session,
@@ -3933,7 +4201,17 @@ async def _reconcile_late_workspace_open(
     return None
 
 
-async def _rebind_terminal_mne_session(
+
+
+
+
+
+
+
+
+
+
+async def _rebind_recorded_change_session(
     mcp: MCPGateway,
     transaction: ChangeTransaction,
     workspace: dict[str, Any],
@@ -3941,83 +4219,11 @@ async def _rebind_terminal_mne_session(
     expected_project_path: Path,
     expected_project_hash: str,
 ) -> dict[str, Any] | None:
-    reopen = validated_terminal_mne_reopen(transaction)
-    if reopen is None:
-        return None
+    """Reconnect the recorded editor through a fresh read-only identity check."""
     workspace_id = workspace.get("workspace_id")
-    try:
-        reopened_pid = int(reopen["pid"])
-        reopened_hwnd = int(reopen["hwnd"])
-        reopened_path = Path(str(reopen["project_path"])).resolve()
-    except (KeyError, TypeError, ValueError, OSError) as exc:
-        raise ChangeExecutionPreconditionError(
-            "terminal MNE reopen identity is incomplete"
-        ) from exc
-    if (
-        not isinstance(workspace_id, str)
-        or not workspace_id
-        or reopened_pid <= 0
-        or reopened_hwnd <= 0
-        or reopen.get("project_sha256") != expected_project_hash
-        or os.path.normcase(str(reopened_path))
-        != os.path.normcase(str(expected_project_path))
-    ):
-        raise ChangeExecutionPreconditionError(
-            "terminal MNE reopen differs from the refreshed working copy"
-        )
-    attached = await mcp.call_read_tool(
-        "xg5000.attach",
-        {
-            "pid": reopened_pid,
-            "hwnd": reopened_hwnd,
-            "access_profile": "analysis",
-            "project_path": str(expected_project_path),
-            "project_hash": expected_project_hash,
-            "workspace_id": workspace_id,
-        },
-    )
-    session = (
-        attached.get("session")
-        if isinstance(attached, dict) and isinstance(attached.get("session"), dict)
-        else attached
-    )
-    try:
-        session_path = Path(str(session["project_path"])).resolve()
-    except (KeyError, TypeError, ValueError, OSError) as exc:
-        raise ChangeExecutionPreconditionError(
-            "terminal MNE attach returned no exact project identity"
-        ) from exc
-    if (
-        not isinstance(session, dict)
-        or session.get("pid") != reopened_pid
-        or session.get("hwnd") != reopened_hwnd
-        or session.get("project_hash") != expected_project_hash
-        or os.path.normcase(str(session_path))
-        != os.path.normcase(str(expected_project_path))
-        or not _engineering_session_read_ready(session)
-    ):
-        raise ChangeExecutionPreconditionError(
-            "terminal MNE attach did not prove the independently reopened target"
-        )
-    return dict(session)
-
-
-async def _rebind_terminal_check_only_session(
-    mcp: MCPGateway,
-    transaction: ChangeTransaction,
-    workspace: dict[str, Any],
-    *,
-    expected_project_path: Path,
-    expected_project_hash: str,
-) -> dict[str, Any] | None:
-    """Revalidate the saved check-only target without claiming a reopen."""
-
-    if transaction.plan.get("verification_scope") != "offline_native_check_only":
-        return None
-    workspace_id = workspace.get("workspace_id")
-    session_id = transaction.target.engineering_session_id
-    pid = transaction.target.engineering_process_id
-    hwnd = transaction.target.engineering_window_handle
+    session_id = transaction.runtime_target.engineering_session_id
+    pid = transaction.runtime_target.engineering_process_id
+    hwnd = transaction.runtime_target.engineering_window_handle
     if (
         not isinstance(workspace_id, str)
         or not workspace_id
@@ -4077,14 +4283,11 @@ def _agent_runtime_user_message(diagnostic: AgentRuntimeDiagnostic) -> str:
     """Return the bounded user-facing message for a sidecar runtime diagnostic."""
 
     if diagnostic.reason_code == "tool_call_budget":
-        return (
-            "모델이 분석 도구 호출 예산을 소진해 결과를 저장하지 "
-            "않았습니다. 실제 변경은 수행되지 않았습니다."
-        )
+        return "도구 호출 한도에 도달해 실행이 종료됐습니다."
     if diagnostic.reason_code.startswith("provider_http_"):
         return (
             f"모델 서버가 HTTP {diagnostic.reason_code.removeprefix('provider_http_')} "
-            "오류를 반환해 실행을 완료하지 못했습니다. 실제 변경은 수행되지 않았습니다."
+            "오류를 반환해 실행을 완료하지 못했습니다."
         )
     if diagnostic.reason_code == "provider_timeout":
         return (
@@ -4174,18 +4377,21 @@ def create_app(
         ) -> SubprocessAgentClient:
             return SubprocessAgentClient(settings, broker, agent_supervisor)
 
-    change_executor = change_executor or CompositeChangeExecutionService(
+    change_executor = change_executor or MCPChangeExecutionService(
         mcp,
         checkpoint_callback=store.record_native_change_checkpoint,
     )
-    native_project_repository = NativeProjectRepository(config.database_path)
-    native_project_service = NativeProjectService(native_project_repository, mcp)
-    project_design_draft_repository = ProjectDesignDraftRepository(config.database_path)
-    project_design_draft_service = ProjectDesignDraftService(
-        project_design_draft_repository
-    )
+    pass
+    pass
+    pass
+    pass
     run_tasks: dict[str, asyncio.Task[None]] = {}
     active_change_executions: set[str] = set()
+    pass
+    # A single explicit native-test authority may dispatch at most one resume
+    # attempt during its model run.  The entry is cleared with the run task;
+    # a new user message is the only way to request a deliberate retest.
+    pass
     run_submission_lock = asyncio.Lock()
     file_dialog_lock = asyncio.Lock()
     browser_sessions: dict[str, datetime] = {}
@@ -4218,70 +4424,52 @@ def create_app(
             "working_sha256": parsed.working_copy.current_sha256.casefold(),
         }
 
+    def resolve_project_brief_attachments(
+        brief: dict[str, Any] | ProjectBriefV1,
+    ) -> list[dict[str, Any]]:
+        validated = brief if isinstance(brief, ProjectBriefV1) else ProjectBriefV1.model_validate(brief)
+        attachments = []
+        for source_id in validated.attachment_source_ids:
+            source = knowledge_store.get_source(source_id)
+            if source is None or source.kind not in _PROJECT_BRIEF_ATTACHMENT_KINDS or source.status is not KnowledgeStatus.CONFIRMED:
+                raise ValueError("project brief attachment is unavailable or unconfirmed")
+            attachment = ProjectPlanAttachmentV1.model_validate({
+                "source_id": source.source_id, "kind": source.kind.value,
+                "title": source.title, "scope": source.scope,
+                "vendor": source.vendor, "product_family": source.product_family,
+                "version": source.version, "language": source.language,
+                "revision": source.revision, "sha256": source.sha256,
+                "authority": source.authority,
+            })
+            attachments.append(attachment.model_dump(mode="json", by_alias=True))
+        return attachments
+
+    def current_project_plan_authority_digests(conversation_id: str) -> tuple[str, str]:
+        conversation = store.get_conversation(conversation_id)
+        if conversation is None or conversation.project_brief is None:
+            raise ProjectPlanReviewConflict("project brief is unavailable")
+        try:
+            return (
+                calculate_project_brief_digest(conversation.project_brief),
+                calculate_project_plan_attachment_revision_digest(resolve_project_brief_attachments(conversation.project_brief)),
+            )
+        except (TypeError, ValueError) as exc:
+            raise ProjectPlanReviewConflict("project brief attachment revisions are unavailable") from exc
+
     def bind_agent_workspace_target(workspace: LocalWorkspaceV1 | dict[str, Any]) -> None:
         execution_broker.bind_agent_workspace(workspace_agent_binding(workspace))
     active_ls_controller: dict[str, Any] | None = store.get_host_state("active_ls_controller")
 
-    def resolve_project_brief_attachments(
-        brief: dict[str, Any] | ProjectBriefV1,
-    ) -> list[dict[str, Any]]:
-        values = brief.model_dump() if isinstance(brief, ProjectBriefV1) else brief
-        source_ids = values.get("attachment_source_ids")
-        if source_ids is None:
-            return []
-        if not isinstance(source_ids, list) or not all(
-            isinstance(source_id, str) for source_id in source_ids
-        ):
-            raise ValueError("project brief attachment source ids are invalid")
-        attachments: list[dict[str, Any]] = []
-        for source_id in source_ids:
-            source = knowledge_store.get_source(source_id)
-            if source is None:
-                raise ValueError(f"attached project source no longer exists: {source_id}")
-            if source.kind not in _PROJECT_BRIEF_ATTACHMENT_KINDS:
-                raise ValueError(
-                    f"attached source is not a manual, standard, or project document: {source_id}"
-                )
-            if source.status is not KnowledgeStatus.CONFIRMED:
-                raise ValueError(f"attached project source is not confirmed: {source_id}")
-            attachments.append(
-                {
-                    "source_id": source.source_id,
-                    "title": source.title,
-                    "kind": source.kind.value,
-                    "scope": source.scope,
-                    "vendor": source.vendor,
-                    "product_family": source.product_family,
-                    "version": source.version,
-                    "language": source.language,
-                    "authority": source.authority,
-                    "sha256": source.sha256,
-                    "revision": source.revision,
-                }
-            )
-        return attachments
 
-    def current_project_plan_authority_digests(
-        conversation_id: str,
-    ) -> tuple[str, str]:
-        detail = store.get_conversation(conversation_id)
-        if detail is None:
-            raise ProjectPlanReviewConflict("planning conversation was not found")
-        if detail.workflow != "new_project_planning" or not detail.project_brief:
-            raise ProjectPlanReviewConflict(
-                "native execution requires the current Host project brief"
-            )
-        try:
-            brief = ProjectBriefV1.model_validate(detail.project_brief)
-            attachments = resolve_project_brief_attachments(brief)
-            return (
-                calculate_project_brief_digest(brief),
-                calculate_project_plan_attachment_revision_digest(attachments),
-            )
-        except (TypeError, ValueError) as exc:
-            raise ProjectPlanReviewConflict(
-                "current project brief or attachment source revisions are invalid"
-            ) from exc
+
+
+
+
+
+
+
+
+
 
     if active_ls_controller is not None:
         persisted_endpoint = active_ls_controller.get("endpoint")
@@ -4499,617 +4687,16 @@ def create_app(
         )
         return current == stored
 
-    def accepted_native_project_handoff(
-        native_project_id: str,
-        engineering_target: tuple[str, str, str],
-        *,
-        engineering_session: dict[str, Any] | None = None,
-    ) -> tuple[str, dict[str, Any]]:
-        """Reconstruct accepted plan/build/simulation lineage from Host authority."""
 
-        target_session = (
-            engineering_session
-            if engineering_session is not None
-            else active_engineering_session
-        )
 
-        candidate = native_project_repository.get(native_project_id)
-        if candidate is None:
-            raise NativeProjectConflict("native project operation was not found")
-        if candidate.state != "COMPLETED":
-            raise NativeProjectConflict(
-                "engineering handoff requires a completed native project"
-            )
 
-        request = candidate.request
-        result = candidate.result
-        reviewed_plan = request.get("reviewedPlan")
-        build_bundle = request.get("buildBundle")
-        build_receipt = result.get("buildBundleReceipt")
-        reopen_verification = result.get("reopenVerification")
-        workspace_registration = result.get("workspaceRegistration")
-        if not all(
-            isinstance(value, dict)
-            for value in (
-                reviewed_plan,
-                build_bundle,
-                build_receipt,
-                reopen_verification,
-                workspace_registration,
-            )
-        ):
-            raise NativeProjectConflict(
-                "native project handoff provenance is incomplete"
-            )
-        assert isinstance(reviewed_plan, dict)
-        assert isinstance(build_bundle, dict)
-        assert isinstance(build_receipt, dict)
-        assert isinstance(reopen_verification, dict)
-        assert isinstance(workspace_registration, dict)
-
-        reopen_receipt = reopen_verification.get("receipt")
-        simulation_verification = result.get("simulationVerification")
-        simulation_trial = (
-            simulation_verification.get("trial")
-            if isinstance(simulation_verification, dict)
-            else None
-        )
-        simulation_receipt = (
-            simulation_verification.get("receipt")
-            if isinstance(simulation_verification, dict)
-            else None
-        )
-        workspace = workspace_registration.get("workspace")
-        source = workspace.get("source") if isinstance(workspace, dict) else None
-        working_copy = (
-            workspace.get("working_copy") if isinstance(workspace, dict) else None
-        )
-        stored_build_provenance = validated_new_build_workspace_provenance(
-            candidate,
-            workspace,
-            require_capture_verification=True,
-        )
-        active_build_provenance = validated_new_build_workspace_provenance(
-            candidate,
-            active_workspace,
-        )
-        active_source = (
-            active_workspace.get("source") if isinstance(active_workspace, dict) else None
-        )
-        active_working_copy = (
-            active_workspace.get("working_copy") if isinstance(active_workspace, dict) else None
-        )
-        try:
-            active_workspace_is_exact = bool(
-                isinstance(source, dict)
-                and isinstance(working_copy, dict)
-                and isinstance(active_workspace, dict)
-                and isinstance(active_source, dict)
-                and isinstance(active_working_copy, dict)
-                and active_workspace.get("workspace_id")
-                == workspace.get("workspace_id")
-                == engineering_target[0]
-                and active_workspace.get("revision_id")
-                == workspace.get("revision_id")
-                == engineering_target[1]
-                and active_workspace.get("vendor") == workspace.get("vendor")
-                and active_workspace.get("engineering_system")
-                == workspace.get("engineering_system")
-                and active_source.get("sha256") == source.get("sha256")
-                and os.path.normcase(
-                    str(Path(str(active_source.get("original_path") or "")).resolve())
-                )
-                == os.path.normcase(str(Path(str(source.get("original_path") or "")).resolve()))
-                and os.path.normcase(
-                    str(Path(str(active_source.get("captured_path") or "")).resolve())
-                )
-                == os.path.normcase(str(Path(str(source.get("captured_path") or "")).resolve()))
-                and active_working_copy.get("baseline_sha256")
-                == working_copy.get("baseline_sha256")
-                and active_working_copy.get("current_sha256") == working_copy.get("current_sha256")
-                and active_working_copy.get("state") == working_copy.get("state")
-                and os.path.normcase(
-                    str(Path(str(active_working_copy.get("path") or "")).resolve())
-                )
-                == os.path.normcase(str(Path(str(working_copy.get("path") or "")).resolve()))
-            )
-        except (OSError, ValueError):
-            active_workspace_is_exact = False
-        if (
-            stored_build_provenance is None
-            or active_build_provenance != stored_build_provenance
-            or not active_workspace_is_exact
-        ):
-            raise NativeProjectConflict(
-                "native project handoff requires the exact new-build workspace provenance"
-            )
-        if (
-            result.get("engineeredProgramReady") is not True
-            or result.get("workspaceBound") is not True
-            or result.get("identityVerified") is not True
-            or result.get("controllerConnected") is not False
-            or result.get("plcWritePerformed") is not False
-            or workspace_registration.get("state") != "captured_and_bound"
-            or reopen_verification.get("state") != "verified"
-            or not isinstance(reopen_receipt, dict)
-            or reopen_receipt.get("schemaVersion")
-            != "controlstudio-native-reopen-receipt/v2"
-            or reopen_receipt.get("status") != "REOPEN_VERIFIED"
-            or not isinstance(workspace, dict)
-            or not isinstance(working_copy, dict)
-        ):
-            raise NativeProjectConflict(
-                "native project does not have verified offline reopen evidence"
-            )
-
-        planning_conversation_id = reviewed_plan.get("conversationId")
-        planning_message_id = reviewed_plan.get("messageId")
-        reviewed_plan_digest = reviewed_plan.get("planDigest")
-        project_brief_digest = reviewed_plan.get("projectBriefDigest")
-        attachment_revision_digest = reviewed_plan.get(
-            "attachmentRevisionDigest"
-        )
-        reviewed_section_ids = reviewed_plan.get("reviewedSectionIds")
-        reviewed_item_ids = reviewed_plan.get("reviewedItemIds")
-        if (
-            not isinstance(planning_conversation_id, str)
-            or not planning_conversation_id
-            or not isinstance(planning_message_id, str)
-            or not planning_message_id
-            or not isinstance(reviewed_plan_digest, str)
-            or re.fullmatch(r"[0-9a-f]{64}", reviewed_plan_digest) is None
-            or not isinstance(project_brief_digest, str)
-            or re.fullmatch(r"[0-9a-f]{64}", project_brief_digest) is None
-            or not isinstance(attachment_revision_digest, str)
-            or re.fullmatch(r"[0-9a-f]{64}", attachment_revision_digest) is None
-            or not isinstance(reviewed_section_ids, list)
-            or not reviewed_section_ids
-            or not all(isinstance(item, str) for item in reviewed_section_ids)
-            or not isinstance(reviewed_item_ids, list)
-            or not reviewed_item_ids
-            or not all(isinstance(item, str) for item in reviewed_item_ids)
-        ):
-            raise NativeProjectConflict("reviewed plan handoff binding is invalid")
-        try:
-            store.require_reviewed_project_plan(
-                conversation_id=planning_conversation_id,
-                message_id=planning_message_id,
-                plan_digest=reviewed_plan_digest,
-                reviewed_section_ids=reviewed_section_ids,
-                reviewed_item_ids=reviewed_item_ids,
-                project_brief_digest=project_brief_digest,
-                attachment_revision_digest=attachment_revision_digest,
-                expected_handoff_native_project_id=candidate.id,
-            )
-        except ProjectPlanReviewConflict as exc:
-            raise NativeProjectConflict(
-                "reviewed plan handoff authority is no longer exact"
-            ) from exc
-
-        bundle_id = build_bundle.get("bundleId")
-        build_receipt_schema = build_receipt.get("schemaVersion")
-        if (
-            not isinstance(bundle_id, str)
-            or not bundle_id
-            or build_receipt_schema
-            != "controlstudio-native-build-receipt/v3"
-            or build_receipt.get("status") != "APPLIED_VERIFIED"
-            or build_receipt.get("phase") != "engineered_control_program"
-            or build_receipt.get("bundleId") != bundle_id
-            or build_receipt.get("reviewedPlanDigest") != reviewed_plan_digest
-            or reopen_receipt.get("buildBundleId") != bundle_id
-            or reopen_receipt.get("reviewedPlanDigest") != reviewed_plan_digest
-        ):
-            raise NativeProjectConflict(
-                "verified build and reopen provenance do not match"
-            )
-
-        workspace_id, revision_id, engineering_session_id = engineering_target
-        build_project_sha256 = result.get("projectSha256")
-        project_sha256 = working_copy.get("current_sha256")
-        project_path = working_copy.get("path")
-        reopen_project = reopen_receipt.get("projectReadback")
-        accepted_simulation = bool(
-            isinstance(simulation_verification, dict)
-            and simulation_verification.get("state") == "verified"
-            and isinstance(simulation_trial, dict)
-            and simulation_trial.get("state") == "ACCEPTED"
-            and simulation_trial.get("safeRestorationVerified") is True
-            and isinstance(simulation_receipt, dict)
-            and simulation_receipt.get("schemaVersion")
-            == "controlstudio-native-simulation-receipt/v5"
-            and simulation_receipt.get("status") == "SIMULATION_VERIFIED"
-            and simulation_receipt.get("buildBundleId") == bundle_id
-            and simulation_receipt.get("reviewedPlanDigest") == reviewed_plan_digest
-        )
-        active_project_readback = (
-            simulation_receipt.get("projectReadback")
-            if accepted_simulation and isinstance(simulation_receipt, dict)
-            else reopen_project
-        )
-        active_project_unchanged = (
-            active_project_readback.get("projectUnchangedDuringRuntime") is True
-            if accepted_simulation and isinstance(active_project_readback, dict)
-            else isinstance(active_project_readback, dict)
-            and active_project_readback.get("projectUnchanged") is True
-        )
-        build_program = build_receipt.get("programReadback")
-        try:
-            active_project_path_matches = bool(
-                isinstance(project_path, str)
-                and project_path
-                and isinstance(target_session, dict)
-                and os.path.normcase(
-                    str(
-                        Path(
-                            str(target_session.get("project_path") or "")
-                        ).resolve()
-                    )
-                )
-                == os.path.normcase(str(Path(project_path).resolve()))
-            )
-        except (OSError, ValueError):
-            active_project_path_matches = False
-        if (
-            workspace.get("workspace_id") != workspace_id
-            or workspace.get("revision_id") != revision_id
-            or not isinstance(project_sha256, str)
-            or re.fullmatch(r"[0-9a-f]{64}", project_sha256) is None
-            or not isinstance(build_project_sha256, str)
-            or re.fullmatch(r"[0-9a-f]{64}", build_project_sha256) is None
-            or not isinstance(build_program, dict)
-            or build_program.get("savedProjectSha256") != build_project_sha256
-            or not isinstance(active_project_readback, dict)
-            or active_project_readback.get("projectSha256") != project_sha256
-            or not active_project_unchanged
-            or not isinstance(target_session, dict)
-            or target_session.get("session_id")
-            != engineering_session_id
-            or target_session.get("project_hash") != project_sha256
-            or not active_project_path_matches
-        ):
-            raise NativeProjectConflict(
-                "accepted native project is not the current read-ready target"
-            )
-
-        return planning_conversation_id, {
-            "schemaVersion": "1",
-            "nativeProjectId": candidate.id,
-            "planningConversationId": planning_conversation_id,
-            "planningMessageId": planning_message_id,
-            "reviewedPlanDigest": reviewed_plan_digest,
-            "projectBriefDigest": project_brief_digest,
-            "attachmentRevisionDigest": attachment_revision_digest,
-            "buildBundleId": bundle_id,
-            "buildReceiptSchemaVersion": build_receipt_schema,
-            "buildReceiptDigest": _canonical_json_digest(build_receipt),
-            "reopenReceiptSchemaVersion": reopen_receipt["schemaVersion"],
-            "reopenReceiptDigest": _canonical_json_digest(reopen_receipt),
-            "projectSha256": project_sha256,
-        }
-
-    def native_engineering_status_for_conversation(
-        detail: ConversationDetail,
-        engineering_target: tuple[str, str, str],
-    ) -> dict[str, Any] | None:
-        """Re-prove a stored handoff and expose only mission-continuity facts."""
-
-        raw_handoff = detail.engineering_handoff
-        if raw_handoff is None:
-            return None
-        if not isinstance(raw_handoff, dict):
-            raise NativeProjectConflict("engineering handoff record is invalid")
-        try:
-            stored_handoff = EngineeringConversationHandoffV1.model_validate(
-                raw_handoff
-            ).model_dump(mode="json", by_alias=True)
-        except (TypeError, ValueError) as exc:
-            raise NativeProjectConflict("engineering handoff record is invalid") from exc
-        if raw_handoff != stored_handoff:
-            raise NativeProjectConflict("engineering handoff record is not exact")
-
-        planning_conversation_id, current_handoff_raw = (
-            accepted_native_project_handoff(
-                str(stored_handoff["nativeProjectId"]),
-                engineering_target,
-            )
-        )
-        current_handoff = EngineeringConversationHandoffV1.model_validate(
-            current_handoff_raw
-        ).model_dump(mode="json", by_alias=True)
-        if (
-            planning_conversation_id != stored_handoff["planningConversationId"]
-            or current_handoff != stored_handoff
-        ):
-            raise NativeProjectConflict(
-                "engineering handoff no longer matches accepted native provenance"
-            )
-
-        operation = native_project_repository.get(
-            str(stored_handoff["nativeProjectId"])
-        )
-        reviewed_plan = operation.request.get("reviewedPlan") if operation else None
-        if not isinstance(reviewed_plan, dict):
-            raise NativeProjectConflict("reviewed plan handoff binding is missing")
-        if any(
-            reviewed_plan.get(reviewed_key) != stored_handoff.get(handoff_key)
-            for reviewed_key, handoff_key in (
-                ("conversationId", "planningConversationId"),
-                ("messageId", "planningMessageId"),
-                ("planDigest", "reviewedPlanDigest"),
-                ("projectBriefDigest", "projectBriefDigest"),
-                ("attachmentRevisionDigest", "attachmentRevisionDigest"),
-            )
-        ):
-            raise NativeProjectConflict("reviewed plan handoff binding changed")
-        reviewed_section_ids = reviewed_plan.get("reviewedSectionIds")
-        reviewed_item_ids = reviewed_plan.get("reviewedItemIds")
-        if (
-            not isinstance(reviewed_section_ids, list)
-            or not reviewed_section_ids
-            or not all(isinstance(item, str) for item in reviewed_section_ids)
-            or not isinstance(reviewed_item_ids, list)
-            or not reviewed_item_ids
-            or not all(isinstance(item, str) for item in reviewed_item_ids)
-        ):
-            raise NativeProjectConflict("reviewed plan handoff coverage is invalid")
-        try:
-            _review, reviewed_artifact = store.require_reviewed_project_plan(
-                conversation_id=str(stored_handoff["planningConversationId"]),
-                message_id=str(stored_handoff["planningMessageId"]),
-                plan_digest=str(stored_handoff["reviewedPlanDigest"]),
-                reviewed_section_ids=reviewed_section_ids,
-                reviewed_item_ids=reviewed_item_ids,
-                project_brief_digest=str(stored_handoff["projectBriefDigest"]),
-                attachment_revision_digest=str(
-                    stored_handoff["attachmentRevisionDigest"]
-                ),
-                expected_handoff_native_project_id=str(
-                    stored_handoff["nativeProjectId"]
-                ),
-            )
-        except ProjectPlanReviewConflict as exc:
-            raise NativeProjectConflict(
-                "reviewed plan handoff authority is no longer exact"
-            ) from exc
-        planning_detail = store.get_conversation(
-            str(stored_handoff["planningConversationId"])
-        )
-        if planning_detail is None or not isinstance(
-            planning_detail.project_brief,
-            dict,
-        ):
-            raise NativeProjectConflict("reviewed project brief is unavailable")
-        try:
-            return derive_native_engineering_status(
-                handoff=stored_handoff,
-                reviewed_plan=reviewed_artifact,
-                project_brief=planning_detail.project_brief,
-                native_project_result=operation.result,
-            )
-        except (TypeError, ValueError) as exc:
-            raise NativeProjectConflict(
-                "native engineering status could not be derived exactly"
-            ) from exc
-
-    async def revalidate_native_handoff_freshness(
-        engineering_target: tuple[str, str, str],
-        *,
-        native_project_id: str,
-        trial_id: str,
-        receipt_digest: str,
-    ) -> tuple[LocalWorkspaceV1, dict[str, Any]]:
-        """Refresh both MCP authorities immediately before the durable handoff write."""
-
-        cached_workspace_raw, cached_session = (
-            deepcopy(active_workspace),
-            deepcopy(active_engineering_session),
-        )
-        if (
-            not isinstance(cached_workspace_raw, dict)
-            or not isinstance(cached_session, dict)
-        ):
-            raise NativeProjectConflict("native project handoff target is no longer active")
-        try:
-            cached_workspace = _local_workspace_v1(cached_workspace_raw)
-            cached_identity = native_trial_session_identity(
-                cached_session,
-                cached_workspace,
-            )
-        except (TypeError, ValueError):
-            cached_identity = None
-        cached_resume = (
-            cached_identity.get("native_trial_resume")
-            if isinstance(cached_identity, dict)
-            else None
-        )
-        if (
-            not isinstance(cached_resume, dict)
-            or cached_resume.get("native_project_id") != native_project_id
-            or cached_resume.get("trial_id") != trial_id
-            or cached_resume.get("receipt_digest") != receipt_digest
-            or cached_session.get("session_id") != engineering_target[2]
-        ):
-            raise NativeProjectConflict("native project handoff cached identity changed")
-        try:
-            fresh_workspace, fresh_session = await fresh_native_trial_identity(
-                mcp,
-                cached_workspace,
-                cached_session,
-            )
-        except (MCPToolError, ValueError) as exc:
-            raise NativeProjectConflict(
-                "native project handoff freshness could not be verified"
-            ) from exc
-        if (
-            active_workspace != cached_workspace_raw
-            or active_engineering_session != cached_session
-            or current_engineering_conversation_target() != engineering_target
-            or not _engineering_session_read_ready(fresh_session)
-        ):
-            raise NativeProjectConflict(
-                "native project handoff target drifted before it could be recorded"
-            )
-        return fresh_workspace, fresh_session
-
-    def pending_native_project_handoff(
-        engineering_target: tuple[str, str, str] | None,
-    ) -> tuple[NativeProjectOperation, str] | None:
-        """Select an accepted native project that has not claimed a conversation.
-
-        An existing handoff is durable history, not a pending operation.  In
-        particular, a later reattach to the same workspace must not advertise
-        its original planning conversation as the active operation and replace
-        a user's currently selected engineering conversation.
-        """
-
-        fallback_without_conversation: tuple[NativeProjectOperation, str] | None = None
-        for candidate in native_project_repository.engineering_handoff_candidates():
-            reviewed_plan = candidate.request.get("reviewedPlan")
-            registration = candidate.result.get("workspaceRegistration")
-            workspace = (
-                registration.get("workspace") if isinstance(registration, dict) else None
-            )
-            source = workspace.get("source") if isinstance(workspace, dict) else None
-            working_copy = (
-                workspace.get("working_copy") if isinstance(workspace, dict) else None
-            )
-            if (
-                not isinstance(reviewed_plan, dict)
-                or not isinstance(workspace, dict)
-                or not isinstance(source, dict)
-                or not isinstance(working_copy, dict)
-            ):
-                continue
-            stored_build_provenance = validated_new_build_workspace_provenance(
-                candidate,
-                workspace,
-                require_capture_verification=True,
-            )
-            if stored_build_provenance is None:
-                continue
-            planning_conversation_id = reviewed_plan.get("conversationId")
-            expected_workspace_id = workspace.get("workspace_id")
-            expected_revision_id = workspace.get("revision_id")
-            expected_path = working_copy.get("path")
-            expected_hash = working_copy.get("current_sha256")
-            if not all(
-                isinstance(value, str) and value
-                for value in (
-                    planning_conversation_id,
-                    expected_workspace_id,
-                    expected_revision_id,
-                    expected_path,
-                    expected_hash,
-                )
-            ):
-                continue
-            assert isinstance(planning_conversation_id, str)
-            assert isinstance(expected_workspace_id, str)
-            assert isinstance(expected_revision_id, str)
-            assert isinstance(expected_path, str)
-            assert isinstance(expected_hash, str)
-
-            # An older accepted build must never replace the planning screen
-            # after that same conversation has produced a newer native
-            # lineage.  The newer operation may still be finishing its saved
-            # build verification, so advertising the older handoff would show
-            # a false success card and hide the actual continuation action.
-            latest_lineage = native_project_repository.latest_for_planning_conversation(
-                planning_conversation_id
-            )
-            if latest_lineage is not None and latest_lineage.id != candidate.id:
-                continue
-
-            current_target_matches = False
-            if (
-                engineering_target is not None
-                and engineering_target[0] == expected_workspace_id
-                and engineering_target[1] == expected_revision_id
-                and isinstance(active_engineering_session, dict)
-                and isinstance(active_workspace, dict)
-            ):
-                active_working_copy = active_workspace.get("working_copy")
-                active_source = active_workspace.get("source")
-                active_build_provenance = validated_new_build_workspace_provenance(
-                    candidate,
-                    active_workspace,
-                )
-                try:
-                    current_target_matches = bool(
-                        isinstance(active_working_copy, dict)
-                        and isinstance(active_source, dict)
-                        and active_build_provenance == stored_build_provenance
-                        and active_workspace.get("workspace_id") == expected_workspace_id
-                        and active_workspace.get("revision_id") == expected_revision_id
-                        and active_workspace.get("vendor") == workspace.get("vendor")
-                        and active_workspace.get("engineering_system")
-                        == workspace.get("engineering_system")
-                        and active_source.get("sha256") == source.get("sha256")
-                        and os.path.normcase(
-                            str(Path(str(active_source.get("original_path") or "")).resolve())
-                        )
-                        == os.path.normcase(
-                            str(Path(str(source.get("original_path") or "")).resolve())
-                        )
-                        and os.path.normcase(
-                            str(Path(str(active_source.get("captured_path") or "")).resolve())
-                        )
-                        == os.path.normcase(
-                            str(Path(str(source.get("captured_path") or "")).resolve())
-                        )
-                        and active_working_copy.get("baseline_sha256")
-                        == working_copy.get("baseline_sha256")
-                        and active_working_copy.get("state") == working_copy.get("state")
-                        and os.path.normcase(
-                            str(Path(str(active_working_copy.get("path") or "")).resolve())
-                        )
-                        == os.path.normcase(str(Path(expected_path).resolve()))
-                        and str(active_working_copy.get("current_sha256") or "").casefold()
-                        == expected_hash.casefold()
-                        and os.path.normcase(
-                            str(
-                                Path(
-                                    str(
-                                        active_engineering_session.get("project_path")
-                                        or ""
-                                    )
-                                ).resolve()
-                            )
-                        )
-                        == os.path.normcase(str(Path(expected_path).resolve()))
-                        and str(
-                            active_engineering_session.get("project_hash") or ""
-                        ).casefold()
-                        == expected_hash.casefold()
-                    )
-                except (OSError, ValueError):
-                    current_target_matches = False
-
-            existing = store.get_engineering_handoff_conversation(candidate.id)
-            # A handoff conversation owns this accepted operation already.
-            # Its continuity is re-proved only when that conversation is
-            # explicitly opened; status must not promote it over a current
-            # same-workspace conversation after an ordinary attach.
-            if existing is not None:
-                continue
-            pending = (candidate, planning_conversation_id)
-            if current_target_matches:
-                try:
-                    accepted_native_project_handoff(candidate.id, engineering_target)
-                except (NativeProjectConflict, ProjectPlanReviewConflict):
-                    continue
-                return pending
-            if fallback_without_conversation is None:
-                fallback_without_conversation = pending
-        return fallback_without_conversation
 
     async def refresh_terminal_change_identity(
         transaction: ChangeTransaction,
         *,
         retain_engineering_session: bool,
     ) -> bool:
-        """Refresh Host identity after a saved/reopened MNE checkpoint."""
+        """Refresh Host identity after a saved/reopened LD checkpoint."""
 
         nonlocal active_engineering_session, active_workspace
         if transaction.state not in {
@@ -5132,6 +4719,9 @@ def create_app(
             active_engineering_session = None
             execution_broker.clear_agent_session()
             return False
+        pass
+        prior_session = active_engineering_session
+        pass
         try:
             expected_path = Path(transaction.target.project_path).resolve()
             active_path = Path(str(working_copy.get("path") or "")).resolve()
@@ -5189,6 +4779,8 @@ def create_app(
             execution_broker.clear_agent_session()
             return False
 
+        pass
+
         refreshed_workspace = dict(workspace)
         refreshed_working_copy = dict(working_copy)
         refreshed_working_copy["current_sha256"] = digest
@@ -5201,28 +4793,17 @@ def create_app(
         active_workspace = refreshed_workspace
         store.set_host_state("active_workspace", active_workspace)
 
-        terminal_mne_no_mutation_abort = _is_exact_terminal_mne_no_mutation_abort(
-            transaction
-        )
+        pass
         terminal_check_only = bool(
             transaction.plan.get("verification_scope")
             == "offline_native_check_only"
             and transaction.state is ChangeTransactionState.COMPLETED
-            and not terminal_mne_no_mutation_abort
+            and not False
         )
-        terminal_mne_change = bool(
-            transaction.plan.get("plan_kind") in MNE_STRUCTURAL_PLAN_KINDS
-            and transaction.state
-            in {
-                ChangeTransactionState.COMPLETED,
-                ChangeTransactionState.ROLLED_BACK,
-            }
-            and not terminal_check_only
-            and not terminal_mne_no_mutation_abort
-        )
+        pass
         if terminal_check_only:
             try:
-                retained_session = await _rebind_terminal_check_only_session(
+                retained_session = await _rebind_recorded_change_session(
                     mcp,
                     transaction,
                     refreshed_workspace,
@@ -5254,57 +4835,24 @@ def create_app(
             broker_session.update(workspace_agent_binding(refreshed_workspace))
             execution_broker.bind_agent_session(broker_session)
             return True
-        if not terminal_mne_change:
-            try:
-                reopened_session = validated_terminal_ld_reopen(transaction)
-            except ChangeExecutionPreconditionError as exc:
-                logger.warning(
-                    "terminal LD target could not be rebound (transaction=%s, kind=%s)",
-                    transaction.id,
-                    type(exc).__name__,
-                )
-                active_engineering_session = None
-                bind_agent_workspace_target(active_workspace)
-                return False
-            if reopened_session is not None:
-                active_engineering_session = reopened_session
-                broker_session = dict(reopened_session)
-                broker_session.update(workspace_agent_binding(refreshed_workspace))
-                execution_broker.bind_agent_session(broker_session)
-                return True
-        if terminal_mne_change:
-            try:
-                reopened_session = await _rebind_terminal_mne_session(
-                    mcp,
-                    transaction,
-                    refreshed_workspace,
-                    expected_project_path=expected_path,
-                    expected_project_hash=digest,
-                )
-                if reopened_session is None:
-                    raise ChangeExecutionPreconditionError(
-                        "terminal MNE change has no independent reopen receipt"
-                    )
-            except (
-                MCPToolError,
-                ChangeExecutionPreconditionError,
-                OSError,
-                TypeError,
-                ValueError,
-            ) as exc:
-                logger.warning(
-                    "terminal MNE target could not be rebound (transaction=%s, kind=%s)",
-                    transaction.id,
-                    type(exc).__name__,
-                )
-                active_engineering_session = None
-                bind_agent_workspace_target(active_workspace)
-                return False
+        try:
+            reopened_session = validated_terminal_ld_reopen(transaction)
+        except ChangeExecutionPreconditionError as exc:
+            logger.warning(
+                "terminal LD target could not be rebound (transaction=%s, kind=%s)",
+                transaction.id,
+                type(exc).__name__,
+            )
+            active_engineering_session = None
+            bind_agent_workspace_target(active_workspace)
+            return False
+        if reopened_session is not None:
             active_engineering_session = reopened_session
             broker_session = dict(reopened_session)
             broker_session.update(workspace_agent_binding(refreshed_workspace))
             execution_broker.bind_agent_session(broker_session)
             return True
+        pass
 
         # A generic recovered LD transaction can finish in the MCP session used
         # for rollback/save.  That session has a different identity from the
@@ -5329,18 +4877,18 @@ def create_app(
 
         session = active_engineering_session
         session_matches = (
-            (retain_engineering_session or terminal_mne_no_mutation_abort)
+            (retain_engineering_session or False)
             and isinstance(session, dict)
             and (
-                session.get("session_id") == transaction.target.engineering_session_id
+                session.get("session_id") == transaction.runtime_target.engineering_session_id
                 or (
-                    terminal_mne_no_mutation_abort
+                    False
                     and str(session.get("project_hash") or "").casefold()
                     == digest.casefold()
                 )
             )
-            and session.get("pid") == transaction.target.engineering_process_id
-            and session.get("hwnd") == transaction.target.engineering_window_handle
+            and session.get("pid") == transaction.runtime_target.engineering_process_id
+            and session.get("hwnd") == transaction.runtime_target.engineering_window_handle
             and os.path.normcase(str(Path(str(session.get("project_path") or "")).resolve()))
             == os.path.normcase(str(expected_path))
         )
@@ -5380,64 +4928,19 @@ def create_app(
         """Serialize workspace/attach requests for their complete route lifetime."""
 
         holder_token = str(uuid.uuid4())
-        native_trial_operation: NativeProjectOperation | None = None
+        pass
         quarantined_reviewed_close = False
-        quarantined_native_reviewed_close: NativeProjectOperation | None = None
+        pass
         allowed_change_transaction_id: str | None = None
         try:
             raw_body = await request.json()
         except (json.JSONDecodeError, RuntimeError):
             raw_body = {}
-        native_trial_match = re.fullmatch(
-            r"/api/v1/native-projects/([0-9a-f-]{36})/simulation-trial/decision",
-            request.url.path,
-        )
-        if native_trial_match is not None:
-            native_trial_operation = native_project_repository.get(
-                native_trial_match.group(1)
-            )
-        if native_trial_operation is not None:
-            owner_kind = "native_project_create"
-            operation_id = native_trial_operation.operation_id
-            request_identity = _native_project_target_lease_identity(
-                native_trial_operation
-            )
-        elif request.url.path == "/api/v1/xg5000/reviewed-no-save-close":
+        pass
+        pass
+        if request.url.path == "/api/v1/xg5000/reviewed-no-save-close":
             recovery_authority = store.selected_target_recovery_authority()
             if (
-                recovery_authority is not None
-                and recovery_authority.get("owner_kind") == "native_project_create"
-                and recovery_authority.get("state") == "QUARANTINED"
-            ):
-                native_operation = native_project_repository.get(
-                    str(recovery_authority.get("operation_id") or "")
-                )
-                requested_pid = (
-                    raw_body.get("pid") if isinstance(raw_body, dict) else None
-                )
-                requested_hwnd = (
-                    raw_body.get("hwnd") if isinstance(raw_body, dict) else None
-                )
-                if (
-                    native_operation is None
-                    or native_operation.state != "QUARANTINED"
-                    or requested_pid != native_operation.request.get("xg5000Pid")
-                    or requested_hwnd != native_operation.request.get("xg5000Hwnd")
-                ):
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail=(
-                            "reviewed close target does not match the current "
-                            "quarantined native-project recovery"
-                        ),
-                    )
-                owner_kind = "native_project_create"
-                operation_id = native_operation.operation_id
-                request_identity = _native_project_target_lease_identity(
-                    native_operation
-                )
-                quarantined_native_reviewed_close = native_operation
-            elif (
                 recovery_authority is None
                 or recovery_authority.get("owner_kind") != "offline_change"
                 or recovery_authority.get("state") != ChangeTransactionState.QUARANTINED.value
@@ -5446,16 +4949,7 @@ def create_app(
             else:
                 transaction_id = str(recovery_authority.get("operation_id") or "")
                 transaction = store.get_change_transaction(transaction_id)
-                reconciliation = (
-                    transaction.result.get("reconciliation")
-                    if transaction is not None and isinstance(transaction.result, dict)
-                    else None
-                )
-                checkpoint = (
-                    reconciliation.get("status_checkpoint")
-                    if isinstance(reconciliation, dict)
-                    else None
-                )
+                checkpoint = await _reviewed_change_close_checkpoint(mcp, transaction)
                 requested_pid = (
                     raw_body.get("pid") if isinstance(raw_body, dict) else None
                 )
@@ -5467,12 +4961,27 @@ def create_app(
                     if isinstance(active_workspace, dict)
                     else None
                 )
+                prior_terminal_cleanup = False
+                explicit_clean_close = False
+                if (
+                    transaction is not None
+                    and isinstance(checkpoint, dict)
+                    and (checkpoint.get("pid"), checkpoint.get("hwnd"))
+                    != (requested_pid, requested_hwnd)
+                    and not False
+                ):
+                    prior_terminal_cleanup = await False
+                    if not prior_terminal_cleanup:
+                        explicit_clean_close = await _explicit_clean_reviewed_close_matches(
+                            mcp, transaction, checkpoint, active_workspace, raw_body,
+                        )
                 if (
                     transaction is None
                     or transaction.state is not ChangeTransactionState.QUARANTINED
                     or not isinstance(checkpoint, dict)
                     or checkpoint.get("host_transaction_id") != transaction.id
                     or checkpoint.get("workspace_id") != transaction.target.workspace_id
+                    or not _same_path(checkpoint.get("project_path"), transaction.target.project_path)
                     or checkpoint.get("state") != ChangeTransactionState.QUARANTINED.value
                     or checkpoint.get("recovery_action") != "rollback_required"
                     or requested_pid is None
@@ -5481,8 +4990,13 @@ def create_app(
                     or requested_hwnd is None
                     or isinstance(requested_hwnd, bool)
                     or not isinstance(requested_hwnd, int)
-                    or checkpoint.get("pid") != requested_pid
-                    or checkpoint.get("hwnd") != requested_hwnd
+                    or not (
+                        (checkpoint.get("pid") == requested_pid
+                         and checkpoint.get("hwnd") == requested_hwnd)
+                        or False
+                        or prior_terminal_cleanup
+                        or explicit_clean_close
+                    )
                     or workspace_id != transaction.target.workspace_id
                 ):
                     raise HTTPException(
@@ -5497,6 +5011,8 @@ def create_app(
                 request_identity = transaction.target.model_dump(mode="json")
                 allowed_change_transaction_id = transaction.id
                 quarantined_reviewed_close = True
+                request.state.prior_terminal_reviewed_close = prior_terminal_cleanup
+                request.state.explicit_clean_reviewed_close = explicit_clean_close
         elif request.url.path.endswith("/workspaces/open-local"):
             owner_kind = "workspace_open"
         elif request.url.path.endswith("/resume"):
@@ -5504,9 +5020,9 @@ def create_app(
         else:
             owner_kind = "engineering_attach"
         if (
-            native_trial_operation is None
+            None is None
             and not quarantined_reviewed_close
-            and quarantined_native_reviewed_close is None
+            and None is None
         ):
             request_identity = {
                 "route": request.url.path,
@@ -5535,48 +5051,14 @@ def create_app(
             lease_acquired = True
         except TargetOperationLeaseConflict as exc:
             parked_lease = store.active_target_operation_lease()
-            if not (
-                request.url.path == "/api/v1/xg5000/attach"
-                and exc.stale
-                and exc.owner_kind == "native_project_create"
-                and isinstance(parked_lease, dict)
-                and parked_lease.get("operation_id") == exc.operation_id
-                and parked_lease.get("owner_kind") == "native_project_create"
-                and parked_lease.get("state") == "STALE_BLOCKED"
-            ):
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         try:
             yield
         finally:
             if lease_acquired:
-                leased_native_operation = (
-                    native_trial_operation or quarantined_native_reviewed_close
-                )
-                current_native_operation = (
-                    native_project_repository.get(leased_native_operation.operation_id)
-                    if leased_native_operation is not None
-                    else None
-                )
-                if (
-                    current_native_operation is not None
-                    and _native_project_target_lease_must_remain(current_native_operation)
-                ):
-                    store.park_target_operation_lease(
-                        operation_id=operation_id,
-                        holder_token=holder_token,
-                        reason=(
-                            "quarantined_native_reviewed_close_requires_recovery"
-                            if quarantined_native_reviewed_close is not None
-                            else "native_simulation_trial_requires_decision_or_recovery"
-                        ),
-                    )
-                elif quarantined_native_reviewed_close is not None:
-                    store.release_target_operation_lease(
-                        operation_id=operation_id,
-                        holder_token=holder_token,
-                        reason="quarantined_native_project_reviewed_no_save_closed",
-                    )
-                elif quarantined_reviewed_close:
+                pass
+                pass
+                if quarantined_reviewed_close:
                     store.park_target_operation_lease(
                         operation_id=operation_id,
                         holder_token=holder_token,
@@ -6063,373 +5545,9 @@ def create_app(
             )
         validate_coverage(hardware_evidence_ref)
 
-    def validate_mne_coverage_evidence(
-        plan: ChangePlanV2 | ChangePlanV3 | ChangePlanV4 | ChangePlanV5 | ChangePlanV6,
-        *,
-        conversation_id: str | None,
-        run_id: str | None,
-        require_full_program_evidence: bool,
-    ) -> tuple[dict[str, dict[str, Any]], set[str]]:
-        if conversation_id is None or run_id is None:
-            raise ChangeExecutionPreconditionError(
-                "an MNE change plan must be bound to one ControlStudio "
-                "conversation and agent run"
-            )
-        evidence_by_id: dict[str, dict[str, Any]] = {}
-        for event in store.list_run_evidence(
-            conversation_id=conversation_id,
-            run_id=run_id,
-        ):
-            evidence_id = event.payload.get("evidenceId")
-            if isinstance(evidence_id, str) and evidence_id:
-                evidence_by_id[evidence_id] = event.payload
 
-        all_referenced_ids: set[str] = set()
-        confirmed_referenced_ids: set[str] = set()
-        for item in plan.coverage:
-            if len(set(item.evidence_refs)) != len(item.evidence_refs):
-                raise ChangeExecutionPreconditionError(
-                    f"MNE coverage {item.area} repeats an evidenceRef"
-                )
-            for evidence_ref in item.evidence_refs:
-                try:
-                    canonical_ref = str(uuid.UUID(evidence_ref))
-                except ValueError as exc:
-                    raise ChangeExecutionPreconditionError(
-                        "MNE evidenceRefs must be canonical UUIDs"
-                    ) from exc
-                if canonical_ref != evidence_ref:
-                    raise ChangeExecutionPreconditionError(
-                        "MNE evidenceRefs must be canonical UUIDs"
-                    )
-                all_referenced_ids.add(evidence_ref)
-                if item.status == "confirmed":
-                    confirmed_referenced_ids.add(evidence_ref)
-        missing_refs = sorted(all_referenced_ids.difference(evidence_by_id))
-        if missing_refs:
-            raise ChangeExecutionPreconditionError(
-                "MNE evidenceRefs do not resolve to the exact conversation "
-                "and run: " + ", ".join(missing_refs)
-            )
 
-        coverage_by_area = {item.area: item for item in plan.coverage}
-        required_confirmed_areas = (
-            _CHANGE_COVERAGE_MUST_BE_CONFIRMED
-            if require_full_program_evidence
-            else frozenset(MNE_COMPILER_CANDIDATE_REQUIRED_COVERAGE_AREAS)
-        )
-        for area in required_confirmed_areas:
-            if coverage_by_area[area].status != "confirmed":
-                raise ChangeExecutionPreconditionError(
-                    f"MNE coverage {area} must be confirmed with "
-                    "server-authored evidence"
-                )
-        compiler_tool: str | None = None
-        if not require_full_program_evidence:
-            patch_contract = MNE_PATCH_PLAN_CONTRACTS.get(plan.plan_kind)
-            compiler_tool = (
-                patch_contract.compiler_tool if patch_contract is not None else None
-            )
-            candidate_evidence_id = getattr(plan, "candidate_evidence_id", None)
-            if (
-                compiler_tool is None
-                or not isinstance(candidate_evidence_id, str)
-                or evidence_by_id.get(candidate_evidence_id, {}).get("toolName")
-                != compiler_tool
-                or any(
-                    candidate_evidence_id
-                    not in coverage_by_area[area].evidence_refs
-                    for area in required_confirmed_areas
-                )
-            ):
-                raise ChangeExecutionPreconditionError(
-                    "compiler candidate coverage must bind the exact current-run receipt"
-                )
-        for item in plan.coverage:
-            if item.status != "confirmed":
-                continue
-            observed_tools = {
-                str(evidence_by_id[evidence_ref].get("toolName") or "")
-                for evidence_ref in item.evidence_refs
-            }
-            if observed_tools.intersection(_STATIC_WORKSPACE_EVIDENCE_TOOLS):
-                raise ChangeExecutionPreconditionError(
-                    "static workspace file evidence cannot satisfy MNE coverage"
-                )
-            allowed_tools = _MNE_COVERAGE_ALLOWED_TOOLS[item.area]
-            if compiler_tool is not None and item.area in required_confirmed_areas:
-                allowed_tools = allowed_tools | frozenset({compiler_tool})
-            if not observed_tools.intersection(allowed_tools):
-                raise ChangeExecutionPreconditionError(
-                    f"MNE coverage {item.area} has no applicable "
-                    "server-authored evidence; received tools: "
-                    + ", ".join(sorted(tool for tool in observed_tools if tool))
-                )
 
-        if require_full_program_evidence:
-            selected_tools = {
-                str(evidence_by_id[evidence_ref].get("toolName") or "")
-                for evidence_ref in confirmed_referenced_ids
-            }
-            missing_tools = sorted(
-                _MNE_FULL_PROGRAM_REQUIRED_EVIDENCE_TOOLS.difference(selected_tools)
-            )
-            if missing_tools:
-                raise ChangeExecutionPreconditionError(
-                    "full-program proposal is missing required Host evidence tools: "
-                    + ", ".join(missing_tools)
-                )
-        return evidence_by_id, confirmed_referenced_ids
-
-    def validate_mne_program_evidence_binding(
-        plan: ChangePlanV2,
-        *,
-        target_identity: ChangeTargetIdentity,
-        conversation_id: str | None,
-        run_id: str | None,
-    ) -> MneFullProgramBaselineBindingV2:
-        evidence_by_id, confirmed_referenced_ids = validate_mne_coverage_evidence(
-            plan,
-            conversation_id=conversation_id,
-            run_id=run_id,
-            require_full_program_evidence=True,
-        )
-
-        target = plan.target_program
-        target_bound_tools: set[str] = set()
-        target_payload_identities: set[tuple[str, str]] = set()
-        structure_project_hashes: set[str] = set()
-        hardware_project_hashes: set[str] = set()
-        required_program_tools = (
-            _MNE_FULL_PROGRAM_REQUIRED_EVIDENCE_TOOLS
-            - {"project.structure_index", "project.hardware_context"}
-        )
-        for evidence_ref in confirmed_referenced_ids:
-            evidence = evidence_by_id[evidence_ref]
-            tool_name = str(evidence.get("toolName") or "")
-            if tool_name in STRUCTURAL_ANALYSIS_TOOL_COVERAGE:
-                try:
-                    receipt = validate_structural_evidence_contract(
-                        evidence.get("receipt"),
-                        expected_tool=structural_receipt_tool_name(tool_name),
-                    )
-                except (TypeError, ValueError, MCPToolError) as exc:
-                    raise ChangeExecutionPreconditionError(
-                        "full-program structural evidence receipt is invalid"
-                    ) from exc
-                if tool_name == "project.structure_index":
-                    structure_project_hashes.add(
-                        str(receipt["projectSnapshot"]["projectSha256"])
-                    )
-                    continue
-                exact_bindings = [
-                    binding
-                    for binding in receipt["scope"]["payloadBindings"]
-                    if binding["programId"] == target.program_id
-                    and binding["program"] == target.program_name
-                ]
-                if exact_bindings:
-                    target_bound_tools.add(tool_name)
-                    target_payload_identities.update(
-                        (str(binding["program"]), str(binding["payloadSha256"]))
-                        for binding in exact_bindings
-                    )
-                continue
-            if tool_name != "project.hardware_context":
-                continue
-            raw_receipt = evidence.get("receipt")
-            if not isinstance(raw_receipt, dict):
-                raise ChangeExecutionPreconditionError(
-                    "full-program hardware evidence has no durable receipt"
-                )
-            unsigned = dict(raw_receipt)
-            receipt_digest = unsigned.pop("receiptDigest", None)
-            actual_digest = hashlib.sha256(
-                json.dumps(
-                    unsigned,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    sort_keys=True,
-                ).encode("utf-8")
-            ).hexdigest()
-            project_hash = raw_receipt.get("projectHash")
-            if (
-                raw_receipt.get("schema")
-                != "controlstudio-hardware-context-evidence/v1"
-                or not isinstance(receipt_digest, str)
-                or not hmac.compare_digest(receipt_digest, actual_digest)
-                or raw_receipt.get("blockers") != []
-                or raw_receipt.get("offlineCandidateReady") is not True
-                or not isinstance(project_hash, str)
-                or re.fullmatch(r"[0-9a-f]{64}", project_hash) is None
-            ):
-                raise ChangeExecutionPreconditionError(
-                    "full-program hardware evidence receipt is not ready"
-                )
-            hardware_project_hashes.add(project_hash)
-
-        missing_program_bindings = sorted(
-            required_program_tools.difference(target_bound_tools)
-        )
-        if missing_program_bindings:
-            raise ChangeExecutionPreconditionError(
-                "full-program evidence is not bound to the exact programId and "
-                "programName for: " + ", ".join(missing_program_bindings)
-            )
-        if len(target_payload_identities) != 1:
-            raise ChangeExecutionPreconditionError(
-                "full-program structural receipts do not share one stable exact "
-                "program payload identity"
-            )
-        if (
-            len(structure_project_hashes) != 1
-            or len(hardware_project_hashes) != 1
-            or structure_project_hashes != hardware_project_hashes
-        ):
-            raise ChangeExecutionPreconditionError(
-                "full-program structure and hardware evidence disagree on the "
-                "exact project snapshot"
-            )
-        evidence_project_hash = next(iter(structure_project_hashes))
-        if evidence_project_hash != target_identity.artifact_hash:
-            raise ChangeExecutionPreconditionError(
-                "full-program evidence project hash differs from the current "
-                "Host engineering target"
-            )
-        baseline_program_name, baseline_payload_sha256 = next(
-            iter(target_payload_identities)
-        )
-        expected_binding = MneFullProgramBaselineBindingV2(
-            project_sha256=evidence_project_hash,
-            program_id=target.program_id,
-            program_name=baseline_program_name,
-            ld_payload_sha256=baseline_payload_sha256,
-        )
-        if plan.baseline_binding is not None and plan.baseline_binding != expected_binding:
-            raise ChangeExecutionPreconditionError(
-                "full-program approved baseline differs from current Host evidence"
-            )
-        return expected_binding
-
-    def mne_patch_candidate_for_run(
-        *,
-        plan_kind: str,
-        conversation_id: str,
-        run_id: str,
-        evidence_id: str,
-    ) -> (
-        MneSeriesGuardCandidateV3
-        | MneInstructionPatchCandidateV4
-        | MneInstructionBatchPatchCandidateV5
-        | MneRungPatchCandidateV6
-    ):
-        patch_contract = MNE_PATCH_PLAN_CONTRACTS.get(plan_kind)
-        if patch_contract is None:
-            raise ChangeExecutionPreconditionError(
-                "unsupported MNE patch candidate kind"
-            )
-        matched = [
-            event.payload
-            for event in store.list_run_evidence(
-                conversation_id=conversation_id,
-                run_id=run_id,
-            )
-            if event.payload.get("evidenceId") == evidence_id
-        ]
-        if len(matched) != 1:
-            raise ChangeExecutionPreconditionError(
-                "candidateEvidenceId must resolve to one current-run compiler receipt"
-            )
-        payload = matched[0]
-        receipt = payload.get("receipt")
-        if (
-            payload.get("toolName") != patch_contract.compiler_tool
-            or not isinstance(receipt, dict)
-        ):
-            raise ChangeExecutionPreconditionError(
-                "candidateEvidenceId is not the requested MNE patch compiler receipt"
-            )
-        unsigned = dict(receipt)
-        receipt_digest = unsigned.pop("receiptDigest", None)
-        try:
-            candidate = patch_contract.candidate_model.model_validate(
-                receipt.get("candidate")
-            )
-        except (TypeError, ValueError) as exc:
-            raise ChangeExecutionPreconditionError(
-                "MNE patch compiler receipt has an invalid candidate"
-            ) from exc
-        if (
-            receipt.get("schema") != patch_contract.evidence_schema
-            or not isinstance(receipt_digest, str)
-            or not hmac.compare_digest(
-                receipt_digest,
-                hashlib.sha256(
-                    json.dumps(
-                        unsigned,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    ).encode("utf-8")
-                ).hexdigest(),
-            )
-        ):
-            raise ChangeExecutionPreconditionError(
-                "MNE patch compiler receipt digest is invalid"
-            )
-        return candidate
-
-    def validate_mne_patch_evidence_binding(
-        plan: ChangePlanV3 | ChangePlanV4 | ChangePlanV5 | ChangePlanV6,
-        *,
-        target_identity: ChangeTargetIdentity,
-        conversation_id: str | None,
-        run_id: str | None,
-    ) -> MneFullProgramBaselineBindingV2:
-        """Bind one compiler candidate to its current target and evidence coverage."""
-        candidate = plan.candidate
-        validate_mne_coverage_evidence(
-            plan,
-            conversation_id=conversation_id,
-            run_id=run_id,
-            require_full_program_evidence=False,
-        )
-        if candidate.project_sha256 != target_identity.artifact_hash:
-            raise ChangeExecutionPreconditionError(
-                "MNE patch candidate differs from the current Host engineering target"
-            )
-        if candidate.baseline_ld_canonical_sha256 is None:
-            raise ChangeExecutionPreconditionError(
-                "MNE patch candidate lacks a canonical LD baseline identity"
-            )
-        observed = mne_patch_candidate_for_run(
-            plan_kind=plan.plan_kind,
-            conversation_id=conversation_id,
-            run_id=run_id,
-            evidence_id=plan.candidate_evidence_id,
-        )
-        if observed != candidate:
-            raise ChangeExecutionPreconditionError(
-                "MNE patch compiler receipt differs from the approved candidate"
-            )
-        baseline = MneFullProgramBaselineBindingV2(
-            project_sha256=candidate.project_sha256,
-            program_id=candidate.program_id,
-            program_name=candidate.program_name,
-            ld_payload_sha256=candidate.baseline_ld_sha256,
-            ld_canonical_sha256=candidate.baseline_ld_canonical_sha256,
-        )
-        if plan.baseline_binding is not None and (
-            plan.baseline_binding.project_sha256 != baseline.project_sha256
-            or plan.baseline_binding.program_id != baseline.program_id
-            or plan.baseline_binding.program_name != baseline.program_name
-            or plan.baseline_binding.ld_canonical_sha256
-            != baseline.ld_canonical_sha256
-        ):
-            raise ChangeExecutionPreconditionError(
-                "MNE patch approved baseline differs from its compiler candidate"
-            )
-        return baseline
 
     def validate_engineering_analysis_artifact(
         artifact_data: dict[str, Any] | None,
@@ -6600,7 +5718,7 @@ def create_app(
                     program_id = str(binding["programId"])
                     identity = (
                         str(binding["program"]),
-                        str(binding["payloadSha256"]),
+                        json.dumps(program_source_identity(binding), sort_keys=True),
                     )
                     previous = payload_identity_by_program.get(program_id)
                     if previous is not None and previous != identity:
@@ -6967,30 +6085,11 @@ def create_app(
             raise ChangeExecutionPreconditionError(
                 f"change plan does not satisfy the executable safety contract: {exc}"
             ) from exc
-        if isinstance(plan, ChangePlanV2):
-            baseline_binding = validate_mne_program_evidence_binding(
-                plan,
-                target_identity=current_change_target(),
-                conversation_id=conversation_id,
-                run_id=run_id,
-            )
-            plan = plan.model_copy(update={"baseline_binding": baseline_binding})
-            plan.validate_executable_contract()
-        elif isinstance(plan, (ChangePlanV3, ChangePlanV4, ChangePlanV5, ChangePlanV6)):
-            baseline_binding = validate_mne_patch_evidence_binding(
-                plan,
-                target_identity=current_change_target(),
-                conversation_id=conversation_id,
-                run_id=run_id,
-            )
-            plan = plan.model_copy(update={"baseline_binding": baseline_binding})
-            plan.validate_executable_contract()
-        else:
-            validate_plan_evidence_binding(
-                plan,
-                conversation_id=conversation_id,
-                run_id=run_id,
-            )
+        validate_plan_evidence_binding(
+            plan,
+            conversation_id=conversation_id,
+            run_id=run_id,
+        )
         return plan
 
     def create_server_change_transaction(
@@ -7022,30 +6121,11 @@ def create_app(
             raise ChangeExecutionPreconditionError(
                 f"change plan does not satisfy the executable safety contract: {exc}"
             ) from exc
-        if isinstance(plan, ChangePlanV2):
-            baseline_binding = validate_mne_program_evidence_binding(
-                plan,
-                target_identity=target,
-                conversation_id=conversation_id,
-                run_id=run_id,
-            )
-            plan = plan.model_copy(update={"baseline_binding": baseline_binding})
-            plan.validate_executable_contract()
-        elif isinstance(plan, (ChangePlanV3, ChangePlanV4, ChangePlanV5, ChangePlanV6)):
-            baseline_binding = validate_mne_patch_evidence_binding(
-                plan,
-                target_identity=target,
-                conversation_id=conversation_id,
-                run_id=run_id,
-            )
-            plan = plan.model_copy(update={"baseline_binding": baseline_binding})
-            plan.validate_executable_contract()
-        else:
-            validate_plan_evidence_binding(
-                plan,
-                conversation_id=conversation_id,
-                run_id=run_id,
-            )
+        validate_plan_evidence_binding(
+            plan,
+            conversation_id=conversation_id,
+            run_id=run_id,
+        )
         risk = ChangeRiskLevel(risk_level.upper())
         plan_data = plan.model_dump(mode="json")
         plan_digest = calculate_plan_digest(
@@ -7095,8 +6175,7 @@ def create_app(
         store.mark_previous_instance_target_leases_stale()
         store.reconcile_interrupted_runs()
         store.reconcile_interrupted_change_transactions()
-        native_project_repository.reconcile_interrupted()
-        store.release_terminal_native_target_operation_leases()
+        None
         store.supersede_stale_target_lease_for_durable_change_recovery()
 
         async def initialize_mcp_and_workspace() -> None:
@@ -7129,13 +6208,7 @@ def create_app(
             bind_agent_workspace_target(restored)
             for transaction in store.list_change_transactions(limit=100):
                 if (
-                    transaction.receipt_acknowledged_at is None
-                    or transaction.state
-                    not in {
-                        ChangeTransactionState.COMPLETED,
-                        ChangeTransactionState.ROLLED_BACK,
-                    }
-                    or transaction.target.workspace_id != restored.workspace_id
+                    transaction.target.workspace_id != restored.workspace_id
                     or transaction.target.revision_id != restored.revision_id
                 ):
                     continue
@@ -7147,13 +6220,32 @@ def create_app(
                 except (OSError, RuntimeError, ValueError):
                     continue
                 try:
-                    await refresh_terminal_change_identity(
-                        transaction,
-                        retain_engineering_session=False,
-                    )
+                    if transaction.state in {
+                        ChangeTransactionState.PENDING_APPROVAL,
+                        ChangeTransactionState.APPROVED,
+                    }:
+                        if transaction.target.artifact_hash == restored.working_copy.current_sha256:
+                            session = await _rebind_recorded_change_session(
+                                mcp,
+                                transaction,
+                                active_workspace,
+                                expected_project_path=Path(restored.working_copy.path).resolve(),
+                                expected_project_hash=restored.working_copy.current_sha256,
+                            )
+                            if session is not None:
+                                bind_engineering_session(session)
+                    elif transaction.state in {
+                        ChangeTransactionState.COMPLETED,
+                        ChangeTransactionState.ROLLED_BACK,
+                        ChangeTransactionState.OBSERVING,
+                    }:
+                        await refresh_terminal_change_identity(
+                            transaction,
+                            retain_engineering_session=False,
+                        )
                 except (MCPToolError, OSError, RuntimeError, TypeError, ValueError) as exc:
                     logger.warning(
-                        "acknowledged terminal change could not be rebound at startup "
+                        "latest workspace change could not be rebound at startup "
                         "(transaction=%s, kind=%s)",
                         transaction.id,
                         type(exc).__name__,
@@ -7198,9 +6290,11 @@ def create_app(
                         base_url=settings.base_url,
                         model=settings.model,
                         timeout_seconds=settings.timeout_seconds,
+                        reasoning_effort=settings.reasoning_effort,
                         api_key=settings.secrets.api_key,
                         custom_headers=settings.secrets.custom_headers,
                         capability_verified_at=result.tested_at,
+                        model_context=result.model_context,
                         inherit_missing_secrets=False,
                         allow_insecure_http=True,
                     )
@@ -7274,11 +6368,17 @@ def create_app(
     app.state.model_repository = model_repository
     app.state.run_tasks = run_tasks
     app.state.change_executor = change_executor
-    app.state.native_project_repository = native_project_repository
-    app.state.native_project_service = native_project_service
-    app.state.project_design_draft_repository = project_design_draft_repository
-    app.state.project_design_draft_service = project_design_draft_service
+    pass
+    pass
+    pass
+    pass
+    pass
+    pass
+    pass
+    pass
     app.state.active_change_executions = active_change_executions
+    pass
+    pass
     app.state.request_shutdown = None
     app.state.request_restart = None
     app.state.shutdown_event = shutdown_event
@@ -7612,7 +6712,7 @@ def create_app(
             and _normalized_workspace_path(str(active_session.get("project_path") or ""))
             == _normalized_workspace_path(str(active_working_copy.get("path") or ""))
         )
-        mne_execution_configured = offline_mutation_configured
+        pass
         restore_handoff_pending = False
         try:
             pending_restore = ControllerRestoreHandoffV1.model_validate(
@@ -7693,38 +6793,7 @@ def create_app(
                     "state": transaction.state.value.casefold(),
                     "kind": "change",
                 }
-        elif (
-            recovery_authority is not None
-            and recovery_authority.get("owner_kind") == "native_project_create"
-        ):
-            native_operation = native_project_repository.blocking_operation(
-                str(recovery_authority["operation_id"])
-            )
-            if native_operation is not None:
-                simulation = native_operation.result.get("simulationVerification")
-                trial = simulation.get("trial") if isinstance(simulation, dict) else None
-                native_reviewed_plan = native_operation.request.get("reviewedPlan")
-                native_planning_conversation_id = (
-                    native_reviewed_plan.get("conversationId")
-                    if isinstance(native_reviewed_plan, dict)
-                    else None
-                )
-                active_operation = {
-                    "nativeProjectId": native_operation.id,
-                    "operationId": native_operation.operation_id,
-                    "state": native_operation.state.casefold(),
-                    "kind": "native_project_create",
-                    "simulationTrialState": (
-                        trial.get("state") if isinstance(trial, dict) else None
-                    ),
-                }
-                if (
-                    isinstance(native_planning_conversation_id, str)
-                    and native_planning_conversation_id
-                ):
-                    active_operation["conversationId"] = (
-                        native_planning_conversation_id
-                    )
+        pass
         for transaction_id in active_change_executions:
             if active_operation is not None:
                 break
@@ -7762,22 +6831,8 @@ def create_app(
                     "state": run.state.value.casefold(),
                 }
                 break
-        pending_handoff = (
-            pending_native_project_handoff(current_engineering_conversation_target())
-            if active_operation is None
-            else None
-        )
-        if active_operation is None and pending_handoff is not None:
-            pending_operation, planning_conversation_id = pending_handoff
-            active_operation = {
-                "nativeProjectId": pending_operation.id,
-                "operationId": pending_operation.operation_id,
-                "conversationId": planning_conversation_id,
-                "state": pending_operation.state.casefold(),
-                "kind": "native_project_create",
-                "simulationTrialState": "ACCEPTED",
-                "label": "accepted_native_project_engineering_handoff_pending",
-            }
+        pass
+        pass
         return HostStatusV1(
             release_channel=config.release_channel,
             product_release=config.product_release,
@@ -7942,13 +6997,11 @@ def create_app(
                 "openai_compatible_model",
                 "event_replay",
                 "change_transactions",
-                *(["native_project_create"] if mcp_status.status == "ready" else []),
+                *([] if mcp_status.status == "ready" else []),
                 *(["online_observe"] if mcp_status.status == "ready" else []),
                 *(["offline_mutate"] if offline_mutation_configured else []),
                 *(
-                    ["mne_full_program_replacement"]
-                    if mne_execution_configured
-                    else []
+                    []
                 ),
             ],
             feature_readiness=[
@@ -7986,19 +7039,7 @@ def create_app(
                         "엔지니어링 세션이 준비된 경우에만 활성화합니다."
                     ),
                 ),
-                ProductFeatureStatusV1(
-                    feature_id="native_project_create",
-                    label="새 XG5000 제어 프로젝트 생성",
-                    maturity="supported",
-                    verification="real_runtime",
-                    current_ready=mcp_status.status == "ready",
-                    detail=(
-                        "검토 완료 계획, exact XG5000 PID/HWND, 빈 destination과 "
-                        "일회성 Host 승인을 결속합니다. XGK/XGB 기본 조합 프로그램의 "
-                        "mnemonic readback·LD 변환·Program Check·저장 hash와 보호 "
-                        "작업 복사본의 독립 새 프로세스 재열기까지 확인합니다."
-                    ),
-                ),
+                
                 ProductFeatureStatusV1(
                     feature_id="online_observe",
                     label="LS PLC 온라인 읽기 전용 관찰",
@@ -8022,28 +7063,7 @@ def create_app(
                         "journal로 처리합니다. 현재 대상 identity가 강하지 않으면 실행하지 않습니다."
                     ),
                 ),
-                ProductFeatureStatusV1(
-                    feature_id="full_program_replacement",
-                    label="기존 LD 구조 변경",
-                    maturity="preview",
-                    verification="not_verified",
-                    current_ready=(
-                        mne_execution_configured
-                    ),
-                    capability_status="runtime_checked_at_plan",
-                    detail=(
-                        "전체 프로그램·명령·완전 rung 변경은 exact selected-PID 결속과 "
-                        "작업공간 path/hash, code-owned adapter 전략 및 실행 직전의 live "
-                        "runtime 결속을 확인한 뒤 기존 승인·readback·저장·재열기 절차로 처리합니다."
-                        if mne_execution_configured
-                        else (
-                            "MNE 구조 변경에는 selected PID의 strong project readback과 "
-                            "active workspace의 exact project path/hash 결속이 먼저 "
-                            "필요합니다."
-                            if not offline_mutation_configured else "MNE adapter runtime binding을 준비할 수 없습니다."
-                        )
-                    ),
-                ),
+                
                 ProductFeatureStatusV1(
                     feature_id="controller_project_restore",
                     label="PLC에서 새 작업공간으로 프로젝트 읽기",
@@ -8531,6 +7551,7 @@ def create_app(
             bind_agent_workspace_target(active_workspace)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
+
     @app.post(
         "/api/v1/host/shutdown",
         status_code=status.HTTP_202_ACCEPTED,
@@ -8549,27 +7570,10 @@ def create_app(
                     detail=("ControlStudio cannot exit while a change transaction is active"),
                 )
             recovery_authority = store.selected_target_recovery_authority()
-            native_operation = native_project_repository.blocking_operation(
-                str(recovery_authority["operation_id"])
-                if recovery_authority is not None
-                and recovery_authority.get("owner_kind")
-                == "native_project_create"
-                else None
-            )
-            if native_operation is not None and native_operation.state == "EXECUTING":
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=(
-                        "ControlStudio cannot exit while native XG5000 project "
-                        "creation is executing"
-                    ),
-                )
+            pass
+            pass
             target_operation = store.active_target_operation_lease()
-            if target_operation is not None and target_operation.get("state") == "ACTIVE":
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=("ControlStudio cannot exit while an XG5000 target operation is active"),
-                )
+            pass
             shutdown_callback = app.state.request_shutdown
             if not callable(shutdown_callback):
                 raise HTTPException(
@@ -8588,7 +7592,7 @@ def create_app(
         )
         return {"status": "shutting_down"}
 
-    def _restart_is_safe() -> None:
+    async def _restart_is_safe() -> None:
         active_run_ids = [run_id for run_id, task in run_tasks.items() if not task.done()]
         if active_run_ids:
             raise HTTPException(
@@ -8601,23 +7605,10 @@ def create_app(
                 detail="ControlStudio cannot restart while a change transaction is active",
             )
         recovery_authority = store.selected_target_recovery_authority()
-        native_operation = native_project_repository.blocking_operation(
-            str(recovery_authority["operation_id"])
-            if recovery_authority is not None
-            and recovery_authority.get("owner_kind") == "native_project_create"
-            else None
-        )
-        if native_operation is not None and native_operation.state == "EXECUTING":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="ControlStudio cannot restart while native XG5000 project creation is executing",
-            )
+        pass
+        pass
         target_operation = store.active_target_operation_lease()
-        if target_operation is not None and target_operation.get("state") == "ACTIVE":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="ControlStudio cannot restart while an XG5000 target operation is active",
-            )
+        pass
 
     @app.post(
         "/api/v1/host/restart",
@@ -8635,7 +7626,7 @@ def create_app(
         """
 
         async with run_submission_lock:
-            _restart_is_safe()
+            await _restart_is_safe()
             restart_callback = app.state.request_restart
             if not callable(restart_callback):
                 raise HTTPException(
@@ -8734,56 +7725,20 @@ def create_app(
             if body.workflow == "engineering" and body.target_scope == "current"
             else None
         )
-        if body.native_project_id is not None:
-            if engineering_target is None:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=(
-                        "accepted native project handoff requires the current "
-                        "read-ready engineering target"
-                    ),
-                )
-            try:
-                planning_conversation_id, raw_provenance = (
-                    accepted_native_project_handoff(
-                        body.native_project_id,
-                        engineering_target,
-                    )
-                )
-                provenance = EngineeringConversationHandoffV1.model_validate(
-                    raw_provenance
-                ).model_dump(mode="json", by_alias=True)
-                conversation, created = store.create_engineering_handoff_conversation(
-                    title=body.title,
-                    native_project_id=body.native_project_id,
-                    planning_conversation_id=planning_conversation_id,
-                    workspace_id=engineering_target[0],
-                    revision_id=engineering_target[1],
-                    engineering_session_id=engineering_target[2],
-                    provenance=provenance,
-                )
-            except (NativeProjectConflict, ProjectPlanReviewConflict, ValueError) as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=str(exc),
-                ) from exc
-            if not created:
-                response.status_code = status.HTTP_200_OK
-        else:
-            conversation = store.create_conversation(
-                title=body.title,
-                workflow=body.workflow,
-                project_brief=project_brief,
-                workspace_id=(
-                    engineering_target[0] if engineering_target is not None else None
-                ),
-                revision_id=(
-                    engineering_target[1] if engineering_target is not None else None
-                ),
-                engineering_session_id=(
-                    engineering_target[2] if engineering_target is not None else None
-                ),
-            )
+        conversation = store.create_conversation(
+            title=body.title,
+            workflow=body.workflow,
+            project_brief=project_brief,
+            workspace_id=(
+                engineering_target[0] if engineering_target is not None else None
+            ),
+            revision_id=(
+                engineering_target[1] if engineering_target is not None else None
+            ),
+            engineering_session_id=(
+                engineering_target[2] if engineering_target is not None else None
+            ),
+        )
         detail = store.get_conversation(conversation.id)
         assert detail is not None
         return _conversation_v1(
@@ -8831,11 +7786,14 @@ def create_app(
                 # Keep the conversation readable, but fail closed when its brief or
                 # attached source revisions can no longer establish review authority.
                 pass
-        return _conversation_v1(
+        conversation = _conversation_v1(
             detail,
             project_plan_authority_digests=project_plan_authority_digests,
             engineering_mission=store.get_engineering_mission(detail.id),
         )
+        pass
+        pass
+        return conversation
 
     @app.post(
         "/api/v1/conversations/{conversation_id}/project-plan/review",
@@ -8921,7 +7879,7 @@ def create_app(
                 in {
                     "offline_native_check_only",
                     "offline_native_reopen",
-                    "offline_native_reopen_xgsim",
+                    
                 }
                 else "offline_native_reopen"
             )
@@ -8981,16 +7939,18 @@ def create_app(
                     "the engineering run has no verified target binding"
                 )
             native_engineering_status_snapshot: dict[str, Any] | None = None
+            pass
             if workflow == "engineering" and detail.engineering_handoff is not None:
                 assert expected_engineering_target is not None
                 try:
                     native_engineering_status_snapshot = (
-                        native_engineering_status_for_conversation(
-                            detail,
-                            expected_engineering_target,
-                        )
+                        None
                     )
-                except (NativeProjectConflict, ProjectPlanReviewConflict, ValueError) as exc:
+                    # Readiness does not imply that the source passed its trial.
+                    # Preserve diagnostics from this exact, validated handoff.
+                    handoff = detail.engineering_handoff
+                    pass
+                except (ProjectPlanReviewConflict, ValueError) as exc:
                     logger.warning(
                         "native engineering handoff precondition failed: %s",
                         exc,
@@ -9059,11 +8019,29 @@ def create_app(
             planning_brief: dict[str, Any] | None = None
             planning_project_brief_digest: str | None = None
             planning_attachment_revision_digest: str | None = None
-            planning_native_failure: dict[str, Any] | None = None
-            planning_retained_narrative: dict[str, Any] | None = None
+            pass
+            pass
+            planning_prior_design_failure: dict[str, Any] | None = None
             previous_plan_snapshot = None
             if workflow == "new_project_planning":
                 previous_plan_snapshot = latest_project_plan_snapshot(history)
+                planning_events: list[StoredEvent] = []
+                after_event_sequence = 0
+                while True:
+                    event_page = store.list_events(
+                        after_sequence=after_event_sequence,
+                        conversation_id=conversation_id,
+                        limit=250,
+                    )
+                    planning_events.extend(event_page)
+                    if len(event_page) < 250:
+                        break
+                    after_event_sequence = event_page[-1].sequence
+                planning_prior_design_failure = _prior_design_failure_observation(
+                    planning_events,
+                    conversation_id=conversation_id,
+                    current_run_id=run_id,
+                )
                 if detail.project_brief is not None:
                     try:
                         planning_attachments = resolve_project_brief_attachments(
@@ -9076,33 +8054,23 @@ def create_app(
                     planning_project_brief_digest = calculate_project_brief_digest(
                         detail.project_brief
                     )
-                    retained_narrative_context = (
-                        project_design_draft_service.retained_narrative_context(
-                            conversation_id,
-                            brief_digest=planning_project_brief_digest,
-                        )
-                    )
-                    planning_retained_narrative = (
-                        retained_narrative_context["narrative"]
-                        if retained_narrative_context is not None
-                        else None
-                    )
+                    pass
+                    pass
                     requirement_message_sources = (
                         _planning_requirement_message_sources(
                             detail.messages,
                             retained_message_ids=(
-                                project_design_draft_service
-                                .retained_requirement_message_ids(conversation_id)
+                                None
                             ),
                             narrative_adoption_boundary_message_id=(
-                                retained_narrative_context.get(
-                                    "adoption_boundary_message_id"
-                                )
-                                if retained_narrative_context is not None
-                                else None
+                                None
                             ),
                         )
                     )
+                    # Keep adoption/message provenance unchanged. Incomplete
+                    # working citations stay available through design tools,
+                    # not in the strict trusted-ready advisory handoff.
+                    pass
                     planning_brief = {
                         **detail.project_brief,
                         "attachments": planning_attachments,
@@ -9113,18 +8081,7 @@ def create_app(
                             planning_attachments
                         )
                     )
-                    planning_native_failure = planning_native_failure_observation(
-                        native_project_repository.latest_for_planning_conversation(
-                            conversation_id
-                        ),
-                        conversation_id=conversation_id,
-                        current_project_brief_digest=planning_project_brief_digest,
-                        current_plan_digest=(
-                            previous_plan_snapshot.plan_digest
-                            if previous_plan_snapshot is not None
-                            else None
-                        ),
-                    )
+                    pass
                 else:
                     raise AgentRunPreconditionError(
                         "legacy planning conversation has no Host-owned project brief; start a new plan"
@@ -9150,11 +8107,40 @@ def create_app(
             ):
                 raise AgentRunPreconditionError("MCP 안전 코어가 준비되지 않았습니다.")
 
+            if workflow == "engineering":
+                store.expire_change_approvals(conversation_id=conversation_id)
             stored_engineering_mission = (
                 store.get_engineering_mission(conversation_id)
                 if workflow == "engineering"
                 else None
             )
+            diagnostic_transaction = (
+                store.get_change_transaction(stored_engineering_mission.change_transaction_id)
+                if stored_engineering_mission is not None
+                and stored_engineering_mission.change_transaction_id is not None
+                else None
+            )
+            quarantine_failure = (
+                _quarantined_diagnostic_context(
+                    conversation=detail,
+                    mission=stored_engineering_mission,
+                    transaction=diagnostic_transaction,
+                    session=engineering_session_snapshot,
+                    workspace=knowledge_workspace_snapshot,
+                )
+                if workflow == "engineering"
+                and request_message is not None
+                and request_message.role is MessageRole.USER
+                and not engineering_mission_continue
+                else None
+            )
+            quarantine_diagnostic_only = quarantine_failure is not None
+            analysis_completion_run = targetless_analysis_run or quarantine_diagnostic_only
+            if quarantine_diagnostic_only:
+                # Do not resume/replace the durable mission. This local run can
+                # inspect its retained target while recovery owns the mutation lease.
+                stored_engineering_mission = None
+                change_request_scope = "analysis_only"
             if (
                 stored_engineering_mission is not None
                 and not engineering_mission_continue
@@ -9204,6 +8190,7 @@ def create_app(
                 )
             engineering_mission_snapshot: dict[str, Any] | None = None
             engineering_agent_checkpoint: dict[str, Any] | None = None
+            engineering_checkpoint_updated_at: datetime | None = None
             historical_evidence_bundle: dict[str, Any] | None = None
             mission_change_transaction_id: str | None = None
             linked_change: ChangeTransaction | None = None
@@ -9259,6 +8246,7 @@ def create_app(
                             "stored Agent checkpoint does not match the durable mission"
                         )
                     engineering_agent_checkpoint = stored_agent_checkpoint.checkpoint
+                    engineering_checkpoint_updated_at = stored_agent_checkpoint.updated_at
                 try:
                     historical_evidence_bundle = (
                         _historical_evidence_bundle_for_mission(
@@ -9348,8 +8336,18 @@ def create_app(
                     )
                 fresh_terminal_objective = (
                     not engineering_mission_continue
-                    and engineering_mission_snapshot.get("status")
-                    in {"completed", "blocked"}
+                    and (
+                        engineering_mission_snapshot.get("status")
+                        in {"completed", "blocked"}
+                        or (
+                            engineering_mission_snapshot.get("status") == "waiting_for_approval"
+                            and request_message is not None
+                            and request_message.role is MessageRole.USER
+                            and linked_change is not None
+                            and linked_terminal_change_state is not None
+                            and linked_change.receipt_acknowledged_at is not None
+                        )
+                    )
                 )
             if engineering_mission_continue and engineering_mission_snapshot is None:
                 raise AgentRunPreconditionError(
@@ -9381,6 +8379,7 @@ def create_app(
             )
             if (
                 engineering_mission_snapshot is not None
+                and not fresh_terminal_objective
                 and engineering_mission_snapshot.get("status")
                 == "waiting_for_approval"
                 and current_change_outcome is None
@@ -9394,18 +8393,29 @@ def create_app(
                     "approval-waiting mission no longer matches its pending change"
                 )
             if fresh_terminal_objective:
-                # A completed or blocked mission may be followed by a new
-                # explicit objective in the same conversation, regardless of
-                # scope. The previous checkpoint and evidence remain journaled;
-                # this run starts a new durable mission instead of resuming it.
+                # A terminal mission, including approval-waiting state whose
+                # exact linked change was acknowledged after termination, may
+                # be followed by a new explicit objective. The old checkpoint
+                # and evidence stay journaled; only this run starts afresh.
                 engineering_mission_snapshot = None
                 engineering_agent_checkpoint = None
+                engineering_checkpoint_updated_at = None
                 historical_evidence_bundle = None
                 mission_change_transaction_id = None
                 linked_change = None
                 linked_terminal_change_state = None
                 current_change_outcome = None
                 current_change_outcome_evidence = None
+            # Mission authority stays in the validated checkpoint. A newer
+            # same-context transcript supplies only historical messages.
+            transcript_checkpoint = (
+                _latest_historical_transcript_for_run(
+                    store, conversation_id=conversation_id,
+                    workspace_id=detail.workspace_id, revision_id=detail.revision_id,
+                    checkpoint_updated_at=engineering_checkpoint_updated_at,
+                )
+                if not quarantine_diagnostic_only else None
+            )
             target_live_change_transaction = (
                 store.live_change_approval_transaction(
                     mutation_scope=f"workspace:{detail.workspace_id}",
@@ -9447,38 +8457,22 @@ def create_app(
                     rejected_reauthorized=rejected_change_reauthorized,
                 )
             )
-            internal_mne_rung_reproposal_permitted = (
-                _internal_mne_rung_reproposal_callback_permitted(
-                    engineering_mission_snapshot,
-                    current_change_outcome,
-                    linked_change,
-                )
-            )
+            pass
             terminal_candidate_reproposal_requested = bool(
                 terminal_candidate_reproposal_scope is not None
                 or terminal_candidate_reproposal_verification_scope is not None
             )
-            terminal_candidate_reproposal_authorized = bool(
-                engineering_mission_continue
-                and request_message is not None
-                and request_message.role is MessageRole.SYSTEM
-                and _terminal_candidate_reproposal_matches_authority(
-                    linked_change=linked_change,
-                    request_scope=terminal_candidate_reproposal_scope,
-                    verification_scope=(
-                        terminal_candidate_reproposal_verification_scope
-                    ),
-                    exact_operand_reproposal_permitted=(
-                        exact_operand_reproposal_permitted
-                    ),
-                    internal_mne_rung_reproposal_permitted=(
-                        internal_mne_rung_reproposal_permitted
-                    ),
-                )
+            native_failure_step_id = (
+                bound_proposal_step_id(store, linked_change, engineering_mission_snapshot)
+                if linked_change is not None
+                else None
             )
+            pass
+            pass
+            pass
             if (
                 terminal_candidate_reproposal_requested
-                and not terminal_candidate_reproposal_authorized
+                and not False
             ):
                 raise AgentRunPreconditionError(
                     "terminal candidate reproposal authority is invalid"
@@ -9490,11 +8484,14 @@ def create_app(
                 change_request_scope=change_request_scope,
                 verification_scope=verification_scope,
                 terminal_candidate_reproposal_authorized=(
-                    terminal_candidate_reproposal_authorized
+                    False
                 ),
                 terminal_candidate_reproposal_verification_scope=(
                     terminal_candidate_reproposal_verification_scope
                 ),
+            )
+            allowed_verification_scopes: tuple[str, ...] = (
+                proposal_verification_scope,
             )
 
             latest_mission_checkpoint: tuple[
@@ -9507,6 +8504,7 @@ def create_app(
                 str | None,
             ] | None = None
             agent_tool_event_observed = False
+            pending_design_read_activity: dict[str, Any] | None = None
             evidence_free_general_analysis_completion = False
             direct_change_prior_evidence_ids: set[str] | None = None
 
@@ -9516,6 +8514,15 @@ def create_app(
                     conversation_id=conversation_id,
                     run_id=run_id,
                     payload={"delta": delta},
+                )
+
+            async def persist_transcript_checkpoint(
+                checkpoint: dict[str, Any], digest: str,
+            ) -> None:
+                store.checkpoint_engineering_transcript(
+                    conversation_id=conversation_id, run_id=run_id,
+                    workspace_id=detail.workspace_id, revision_id=detail.revision_id,
+                    checkpoint=checkpoint, digest=digest,
                 )
 
             async def publish_progress(stage: str, elapsed_seconds: int) -> None:
@@ -9565,7 +8572,7 @@ def create_app(
                     raise AgentOutputContractError(
                         "Agent engineering mission checkpoint cycle is invalid"
                     )
-                if cycle < 1 or cycle > MAX_ENGINEERING_AUTONOMOUS_CYCLES:
+                if cycle < 1:
                     raise AgentOutputContractError(
                         "Agent engineering mission checkpoint cycle is out of bounds"
                     )
@@ -9602,6 +8609,31 @@ def create_app(
                     if latest_mission_checkpoint is not None
                     else engineering_mission_snapshot
                 )
+                if progression_base is None and "completionKind" not in canonical_snapshot:
+                    raise AgentOutputContractError(
+                        "new engineering mission requires completionKind"
+                    )
+                if cycle_disposition == "checkpoint":
+                    if canonical_snapshot != progression_base:
+                        raise AgentOutputContractError(
+                            "transcript checkpoint cannot change the engineering mission"
+                        )
+                    try:
+                        store.checkpoint_engineering_mission(
+                            conversation_id=conversation_id, run_id=run_id,
+                            cycle=cycle, cycle_disposition="checkpoint",
+                            engineering_mission=canonical_snapshot, digest=digest,
+                            agent_checkpoint=agent_checkpoint,
+                            agent_checkpoint_digest=agent_checkpoint_digest,
+                            change_transaction_id=(
+                                latest_mission_checkpoint[6]
+                                if latest_mission_checkpoint is not None
+                                else mission_change_transaction_id
+                            ),
+                        )
+                    except EngineeringMissionConflict as exc:
+                        raise AgentOutputContractError(str(exc)) from exc
+                    return
                 current_run_evidence = store.list_run_evidence(
                     conversation_id=conversation_id,
                     run_id=run_id,
@@ -9680,6 +8712,15 @@ def create_app(
                             progression_base,
                             canonical_snapshot,
                             current_run_evidence_refs=current_run_evidence_refs,
+                            legacy_completion_kind=(
+                                "native_change"
+                                if change_request_scope
+                                in {
+                                    "offline_candidate_revision",
+                                    "permanent_offline_revision",
+                                }
+                                else "analysis"
+                            ),
                             allowed_removed_evidence_refs=(
                                 allowed_removed_evidence_refs
                                 | route_refresh_removed_evidence_refs
@@ -9808,9 +8849,11 @@ def create_app(
                     checkpoint_change_transaction_id = str(
                         current_change_outcome["transactionId"]
                     )
-                if (
-                    mission_status == "completed"
-                    and (
+                completion_kind = canonical_snapshot.get("completionKind")
+                requires_exact_change_outcome = (
+                    completion_kind == "native_change"
+                    if completion_kind is not None
+                    else (
                         change_request_scope
                         in {
                             "offline_candidate_revision",
@@ -9821,6 +8864,10 @@ def create_app(
                             and mission_change_transaction_id is not None
                         )
                     )
+                )
+                if (
+                    mission_status == "completed"
+                    and requires_exact_change_outcome
                     and linked_terminal_change_state
                     is not ChangeTransactionState.COMPLETED
                 ):
@@ -9833,18 +8880,6 @@ def create_app(
                 ):
                     raise AgentOutputContractError(
                         "continuing mission checkpoint has an invalid stop condition"
-                    )
-                if (
-                    cycle_disposition == "respond"
-                    and mission_status == "active"
-                    and (
-                        stop_reason != "cycle_budget_exhausted"
-                        or cycle != MAX_ENGINEERING_AUTONOMOUS_CYCLES
-                    )
-                ):
-                    raise AgentOutputContractError(
-                        "active responding mission checkpoint must exhaust the "
-                        "autonomous cycle budget"
                     )
                 if cycle_disposition == "continue":
                     try:
@@ -9954,6 +8989,7 @@ def create_app(
                 payload: dict[str, Any],
             ) -> dict[str, Any] | None:
                 nonlocal agent_tool_event_observed
+                nonlocal pending_design_read_activity
                 if event_type not in {
                     "tool.selected",
                     "tool.started",
@@ -9977,6 +9013,12 @@ def create_app(
                 tool_call_id = payload.get("tool_call_id")
                 if isinstance(tool_call_id, str) and tool_call_id:
                     safe_payload["tool_call_id"] = tool_call_id[:256]
+                if tool_name == "design.edit":
+                    edit_attempt = _safe_design_edit_attempt_summary(
+                        payload.get("edit_attempt")
+                    )
+                    if edit_attempt is not None:
+                        safe_payload["edit_attempt"] = edit_attempt
                 failure_kind = payload.get("failure_kind")
                 if failure_kind in {
                     "tool_error",
@@ -10017,6 +9059,12 @@ def create_app(
                     and isinstance(current_change_outcome.get("state"), str)
                     else None
                 )
+                design_read_activity = None
+                if AGENT_TOOL_NAMES.get(tool_name, tool_name) == "design.read":
+                    if event_type == "tool.completed":
+                        design_read_activity = pending_design_read_activity
+                    if event_type in {"tool.completed", "tool.failed"}:
+                        pending_design_read_activity = None
                 safe_payload.update(
                     _agent_tool_activity_projection(
                         tool_name=tool_name,
@@ -10026,6 +9074,7 @@ def create_app(
                         change_request_scope=change_request_scope,
                         change_outcome_state=change_outcome_state,
                         simulator_target_status=simulator_target_status,
+                        design_read_activity=design_read_activity,
                     )
                 )
                 if completion_preflight:
@@ -10093,38 +9142,15 @@ def create_app(
                     evidence=retained_hardware_evidence,
                 )
 
-            runtime = runtime_factory(settings, execution_broker)
-            bind_design_tools = getattr(runtime, "bind_design_tools", None)
-            if (
-                callable(bind_design_tools)
-                and workflow == "new_project_planning"
-                and planning_project_brief_digest is not None
-                and detail.project_brief is not None
-            ):
-                exact_project_brief = {
-                    **deepcopy(detail.project_brief),
-                    "requirement_message_sources": deepcopy(
-                        requirement_message_sources
-                    ),
-                }
-
-                async def execute_design_tool(
-                    tool_name: str,
-                    arguments: Mapping[str, Any],
-                ) -> dict[str, Any]:
-                    return await project_design_draft_service.execute(
-                        tool_name=tool_name,
-                        arguments=arguments,
-                        conversation_id=conversation_id,
-                        run_id=run_id,
-                        brief_digest=planning_project_brief_digest,
-                        project_brief=exact_project_brief,
-                    )
-
-                bind_design_tools(
-                    catalog=project_design_draft_service.tool_catalog,
-                    execute=execute_design_tool,
-                )
+            run_execution_broker = (
+                MCPExecutionBroker(mcp.diagnostic_session(engineering_session_snapshot))
+                if quarantine_diagnostic_only
+                else execution_broker
+            )
+            runtime = runtime_factory(settings, run_execution_broker)
+            pass
+            pass
+            pass
             bind_knowledge_snapshot = getattr(runtime, "bind_knowledge_snapshot", None)
             if callable(bind_knowledge_snapshot):
 
@@ -10136,18 +9162,29 @@ def create_app(
 
                 bind_knowledge_snapshot(sync_knowledge_sources_for_agent)
             bind_change_planner = getattr(runtime, "bind_change_planner", None)
-            mne_change_planner_available = False
+            fresh_user_proposal_requested = bool(
+                request_message is not None
+                and request_message.role is MessageRole.USER
+                and proposal_change_request_scope == "offline_candidate_revision"
+                and target_live_change_transaction is None
+            )
+            pass
             if (
                 callable(bind_change_planner)
                 and workflow == "engineering"
                 and (
                     current_change_outcome is None
+                    or fresh_user_proposal_requested
                     or _expired_exact_operand_reproposal_callback_permitted(
                         engineering_mission_snapshot,
                         current_change_outcome,
                         rejected_reauthorized=rejected_change_reauthorized,
                     )
-                    or internal_mne_rung_reproposal_permitted
+                    or False
+                    or (
+                        False
+                        and False
+                    )
                 )
                 and proposal_change_request_scope != "analysis_only"
                 and isinstance(knowledge_workspace_snapshot, dict)
@@ -10158,9 +9195,19 @@ def create_app(
                 # planning operations. Execution, when explicitly requested by the
                 # permanent check-only scope, still performs the independent
                 # valid-bundle preflight below.
-                mne_change_planner_available = offline_mutation_ready()
+                pass
+                pass
+                allowed_verification_scopes = _allowed_verification_scopes_for_run(
+                    request_scope=proposal_change_request_scope,
+                    verification_scope=proposal_verification_scope,
+                    simulation_capability_ready=False,
+                    engineering_mission_continue=engineering_mission_continue,
+                    terminal_candidate_reproposal_authorized=(
+                        False
+                    ),
+                )
 
-                async def propose_change(**values: Any) -> dict[str, Any]:
+                async def propose_change_impl(**values: Any) -> dict[str, Any]:
                     nonlocal current_change_outcome
                     nonlocal current_change_outcome_evidence
                     nonlocal detail
@@ -10199,125 +9246,32 @@ def create_app(
                             if isinstance(event.payload.get("evidenceId"), str)
                             and event.payload["evidenceId"]
                         }
+                    operation_id = f"agent-change:{run_id}"
+                    existing_transaction = next(
+                        (item for item in store.list_change_transactions(
+                            conversation_id=conversation_id, limit=100,
+                        ) if item.operation_id == operation_id),
+                        None,
+                    )
                     try:
+                        selected_proposal_verification_scope: str | None = None
+                        proposal_step_id = values.pop("_mission_step_id", None)
+                        if proposal_step_id is not None:
+                            raise ValueError("unexpected proposal mission-step metadata")
                         _reject_private_change_plan_material(values)
                         plan_kind = values.get("plan_kind")
-                        patch_contract = MNE_PATCH_PLAN_CONTRACTS.get(plan_kind)
-                        if plan_kind in MNE_STRUCTURAL_PLAN_KINDS and values.get(
-                            "verification_scope"
-                        ) != proposal_verification_scope:
-                            raise ValueError(
-                                "MNE proposal verification_scope must equal the explicit user selection"
-                            )
-                        if (
-                            plan_kind not in MNE_STRUCTURAL_PLAN_KINDS
-                            and values.get("verification_scope")
-                            != proposal_verification_scope
-                        ):
-                            raise ValueError(
-                                "legacy operand proposal verification_scope must equal "
-                                "the explicit user selection"
-                            )
-                        if (
-                            proposal_verification_scope
-                            == "offline_native_reopen_xgsim"
-                            and (patch_contract is None or not patch_contract.supports_xgsim)
-                        ):
-                            raise ValueError(
-                                "XG-SIM verification is only supported for V6 MNE rung patches"
-                            )
-                        if plan_kind in MNE_STRUCTURAL_PLAN_KINDS and not offline_mutation_ready():
-                            raise AgentRunPreconditionError(
-                                "MNE structural change planning is not currently available"
-                            )
-                        if plan_kind == "mne_full_program_replacement":
-                            expected_fields = {
-                                "plan_kind",
-                                "intent",
-                                "risk_level",
-                                "change_mode",
-                                "target_program",
-                                "impact",
-                                "risks",
-                                "assumptions",
-                                "blocking_unknowns",
-                                "alternatives",
-                                "acceptance_criteria",
-                                "observation_signals",
-                                "stop_conditions",
-                                "coverage",
-                                "verification_scope",
-                                "validation",
-                                "manual_follow_up",
-                                "rollback",
-                            }
-                            if set(values) != expected_fields:
-                                raise ValueError(
-                                    "full-program proposal callback fields are invalid"
-                                )
-                            target_program = values["target_program"]
-                            if not isinstance(target_program, dict) or set(
-                                target_program
-                            ) != {"program_id", "program_name", "instructions"}:
-                                raise ValueError(
-                                    "target_program must contain only exact identity "
-                                    "and typed instructions"
-                                )
-                            plan: ChangePlanContract = ChangePlanV2(
+                        pass
+                        selected_proposal_verification_scope = (
+                            _proposal_verification_scope_for_callback(
                                 plan_kind=plan_kind,
-                                change_mode=values["change_mode"],
-                                request_scope=proposal_change_request_scope,
-                                target_program=target_program,
-                                impact=values["impact"],
-                                risks=values["risks"],
-                                assumptions=values["assumptions"],
-                                blocking_unknowns=values["blocking_unknowns"],
-                                alternatives=values["alternatives"],
-                                acceptance_criteria=values["acceptance_criteria"],
-                                observation_signals=values["observation_signals"],
-                                stop_conditions=values["stop_conditions"],
-                                coverage=values["coverage"],
-                                verification_scope=values["verification_scope"],
-                                validation=values["validation"],
-                                manual_follow_up=values["manual_follow_up"],
-                                rollback=values["rollback"],
+                                requested_scope=values.get("verification_scope"),
+                                explicit_scope=proposal_verification_scope,
+                                allowed_scopes=allowed_verification_scopes,
                             )
-                        elif patch_contract is not None:
-                            expected_fields = {
-                                "plan_kind", "intent", "risk_level", "change_mode",
-                                "candidate_evidence_id", "impact", "risks", "assumptions",
-                                "blocking_unknowns", "alternatives", "acceptance_criteria",
-                                "observation_signals", "stop_conditions", "coverage",
-                                "verification_scope", "validation", "manual_follow_up", "rollback",
-                            }
-                            if set(values) != expected_fields:
-                                raise ValueError("MNE patch proposal callback fields are invalid")
-                            candidate = mne_patch_candidate_for_run(
-                                plan_kind=plan_kind,
-                                conversation_id=conversation_id,
-                                run_id=run_id,
-                                evidence_id=str(values["candidate_evidence_id"]),
-                            )
-                            plan = patch_contract.plan_model(
-                                plan_kind=plan_kind,
-                                change_mode=values["change_mode"],
-                                request_scope=proposal_change_request_scope,
-                                candidate=candidate,
-                                candidate_evidence_id=values["candidate_evidence_id"],
-                                impact=values["impact"], risks=values["risks"],
-                                assumptions=values["assumptions"],
-                                blocking_unknowns=values["blocking_unknowns"],
-                                alternatives=values["alternatives"],
-                                acceptance_criteria=values["acceptance_criteria"],
-                                observation_signals=values["observation_signals"],
-                                stop_conditions=values["stop_conditions"],
-                                coverage=values["coverage"],
-                                verification_scope=values["verification_scope"],
-                                validation=values["validation"],
-                                manual_follow_up=values["manual_follow_up"],
-                                rollback=values["rollback"],
-                            )
-                        elif plan_kind is None:
+                        )
+                        pass
+                        pass
+                        if plan_kind is None:
                             if offline_operand_mission is not None:
                                 _require_offline_operand_mission_plan(
                                     offline_operand_mission, values
@@ -10353,21 +9307,23 @@ def create_app(
                                 f"unsupported Agent change plan kind: {plan_kind}"
                             )
                     except (KeyError, TypeError, ValueError) as exc:
+                        if existing_transaction is None:
+                            if isinstance(exc, ValidationError):
+                                message = "; ".join(
+                                    ".".join(str(part) for part in error["loc"]) + ": " + error["msg"]
+                                    for error in exc.errors(include_input=False, include_url=False)[:12]
+                                )
+                            else:
+                                message = str(exc)
+                            return {
+                                "status": "not_created",
+                                "execution_permitted": False,
+                                "next_action": "revise_proposal",
+                                "message": message[:4000],
+                            }
                         raise AgentRunPreconditionError(
                             f"Agent change proposal is invalid: {exc}"
                         ) from exc
-                    operation_id = f"agent-change:{run_id}"
-                    existing_transaction = next(
-                        (
-                            item
-                            for item in store.list_change_transactions(
-                                conversation_id=conversation_id,
-                                limit=100,
-                            )
-                            if item.operation_id == operation_id
-                        ),
-                        None,
-                    )
                     if existing_transaction is not None:
                         try:
                             requested_risk = ChangeRiskLevel(
@@ -10388,9 +9344,7 @@ def create_app(
                             ) from exc
                         proposed_plan_data = plan.model_dump(mode="json")
                         stored_plan_data = stored_plan.model_dump(mode="json")
-                        if getattr(plan, "plan_kind", None) in MNE_STRUCTURAL_PLAN_KINDS:
-                            proposed_plan_data.pop("baseline_binding", None)
-                            stored_plan_data.pop("baseline_binding", None)
+                        pass
                         if (
                             existing_transaction.run_id != run_id
                             or existing_transaction.requested_by_actor_id
@@ -10436,13 +9390,20 @@ def create_app(
                         or transaction.plan.get("request_scope")
                         != proposal_change_request_scope
                         or transaction.plan.get("verification_scope")
-                        != proposal_verification_scope
+                        != selected_proposal_verification_scope
                         or transaction.requested_by_actor_id != request_actor_id
                     ):
                         raise AgentRunPreconditionError(
                             "저장된 변경 계약의 actor, run, 대상 또는 선택 범위가 현재 "
                             "요청과 일치하지 않습니다."
                         )
+                    if proposal_step_id is not None:
+                        try:
+                            record_proposal_step_binding(store, transaction, proposal_step_id)
+                        except ValueError as exc:
+                            raise AgentRunPreconditionError(
+                                "변경 제안과 실행 단계의 저장된 연결이 일치하지 않습니다."
+                            ) from exc
                     returned_authority = (transaction.id, transaction.plan_digest)
                     if (
                         proposed_change_authority is not None
@@ -10631,33 +9592,19 @@ def create_app(
                                 "change_outcome": current_change_outcome,
                             }
                         )
-                    if isinstance(plan, ChangePlanV2):
-                        response.update(
-                            {
-                                "plan_kind": plan.plan_kind,
-                                "instruction_count": (
-                                    plan.target_program.instruction_count
-                                ),
-                                "design_digest": plan.target_program.design_digest,
-                                "target_program_digest": (
-                                    plan.target_program.target_program_digest
-                                ),
-                            }
-                        )
-                    elif isinstance(
-                        plan,
-                        (ChangePlanV3, ChangePlanV4, ChangePlanV5, ChangePlanV6),
-                    ):
-                        response.update(
-                            {
-                                "plan_kind": plan.plan_kind,
-                                "instruction_count": plan.candidate.target_instruction_count,
-                                "design_digest": plan.candidate.design_digest,
-                                "target_program_digest": plan.candidate.target_program_digest,
-                                "candidate_digest": plan.candidate.candidate_digest,
-                            }
-                        )
+                    pass
                     return response
+
+                async def propose_change(**values: Any) -> dict[str, Any]:
+                    return await _proposal_precondition_result(
+                        lambda: propose_change_impl(**values),
+                        lambda: any(
+                            item.operation_id == f"agent-change:{run_id}"
+                            for item in store.list_change_transactions(
+                                conversation_id=conversation_id, limit=100,
+                            )
+                        ),
+                    )
 
                 bind_change_planner(propose_change)
             output = await runtime.run(
@@ -10675,13 +9622,18 @@ def create_app(
                         if request_message is not None
                         else False,
                         **(
-                            {"native_failure_observation": planning_native_failure}
-                            if planning_native_failure is not None
-                            else {}
+                            {}
                         ),
                         **(
-                            {"retained_design_narrative": planning_retained_narrative}
-                            if planning_retained_narrative is not None
+                            {}
+                        ),
+                        **(
+                            {
+                                "prior_design_failure_observation": (
+                                    planning_prior_design_failure
+                                )
+                            }
+                            if planning_prior_design_failure is not None
                             else {}
                         ),
                     }
@@ -10689,9 +9641,16 @@ def create_app(
                     else {
                         "workflow": "engineering",
                         **(
+                            {}
+                        ),
+                        **(
                             {"targetless_analysis": True}
                             if targetless_analysis_run
                             else {}
+                        ),
+                        **(
+                            {"quarantine_diagnostic_only": True, "quarantine_failure": quarantine_failure}
+                            if quarantine_diagnostic_only else {}
                         ),
                         **(
                             engineering_session_snapshot
@@ -10701,14 +9660,17 @@ def create_app(
                             else {}
                         ),
                         "change_request_scope": proposal_change_request_scope,
-                        "mne_change_planner_available": mne_change_planner_available,
+                        
+                        "fresh_user_proposal_requested": fresh_user_proposal_requested,
                         "verification_scope": proposal_verification_scope,
+                        "allowed_verification_scopes": list(
+                            allowed_verification_scopes
+                        ),
                         **(
-                            {
-                                "internal_mne_rung_reproposal_permitted": True
-                            }
-                            if internal_mne_rung_reproposal_permitted
-                            else {}
+                            {}
+                        ),
+                        **(
+                            {}
                         ),
                         **(
                             {"offline_operand_mission": offline_operand_mission}
@@ -10747,16 +9709,53 @@ def create_app(
                     }
                 ),
                 agent_checkpoint=engineering_agent_checkpoint,
+                transcript_checkpoint=transcript_checkpoint,
+                on_transcript_checkpoint=persist_transcript_checkpoint,
                 on_token=publish_token,
                 on_tool_event=publish_tool_event,
                 on_progress=publish_progress,
                 on_mission_checkpoint=(
-                    None if targetless_analysis_run else persist_mission_checkpoint
+                    None if analysis_completion_run else persist_mission_checkpoint
                 ),
             )
+            if getattr(output, "approval_handoff", None) is not None:
+                transaction = (
+                    store.get_change_transaction(proposed_change_authority[0])
+                    if proposed_change_authority is not None else None
+                )
+                handoff = _validate_agent_approval_handoff(
+                    output, transaction=transaction,
+                    proposed_authority=proposed_change_authority,
+                    transcript=store.get_latest_engineering_transcript(
+                        conversation_id, workspace_id=detail.workspace_id,
+                        revision_id=detail.revision_id,
+                    ),
+                    conversation_id=conversation_id, run_id=run_id,
+                    actor_id=request_actor_id, workspace_id=detail.workspace_id,
+                    revision_id=detail.revision_id,
+                )
+                assistant_message = store.append_message(
+                    conversation_id=conversation_id, role=MessageRole.ASSISTANT,
+                    content="변경안을 승인 대기 상태로 저장했습니다. 실제 프로젝트 변경은 아직 실행하지 않았습니다.",
+                    metadata={
+                        "run_id": run_id, "status": "complete", "workflow": workflow,
+                        "model": output.model, "input_tokens": output.input_tokens,
+                        "output_tokens": output.output_tokens,
+                        "approval_handoff": handoff,
+                    },
+                )
+                store.append_event(
+                    event_type="agent.message", conversation_id=conversation_id, run_id=run_id,
+                    payload={"message_id": assistant_message.id, "content": assistant_message.content},
+                )
+                store.update_run_state(run_id=run_id, state=RunState.COMPLETED)
+                return
             final_mission: dict[str, Any] | None = None
             if workflow == "engineering":
-                if targetless_analysis_run:
+                if quarantine_diagnostic_only:
+                    # Diagnostic output cannot complete or overwrite the PLC mission.
+                    final_mission = None
+                elif targetless_analysis_run:
                     mission_fields = (
                         output.engineering_mission,
                         output.digest,
@@ -10892,7 +9891,7 @@ def create_app(
                     ProjectPlanRevisionDeltaV1.model_validate(plan_revision)
             engineering_analysis, engineering_analysis_digest = (
                 (None, None)
-                if targetless_analysis_run
+                if analysis_completion_run
                 else validate_engineering_analysis_artifact(
                     output.engineering_analysis,
                     output.engineering_analysis_digest,
@@ -10991,12 +9990,12 @@ def create_app(
                     **(
                         {"engineering_mission_digest": output.digest}
                         if workflow == "engineering"
-                        and not targetless_analysis_run
+                        and not analysis_completion_run
                         and output.digest is not None
                         else {}
                     ),
                 }
-            if workflow == "engineering" and not targetless_analysis_run:
+            if workflow == "engineering" and not analysis_completion_run:
                 assert final_mission is not None
                 assert output.digest is not None
                 assert latest_mission_checkpoint is not None
@@ -11287,6 +10286,16 @@ def create_app(
                 error_detail=error_detail,
             )
 
+    def validate_message_idempotent_replay_authority(
+        existing_run: Any,
+        *,
+        conversation_id: str,
+        body: SendMessageRequestV1,
+        request: Request,
+    ) -> None:
+        if existing_run.conversation_id != conversation_id:
+            raise HTTPException(status_code=409, detail="operationId belongs to another conversation")
+
     @app.post(
         "/api/v1/conversations/{conversation_id}/messages",
         response_model=SendMessageResponseV1,
@@ -11317,6 +10326,12 @@ def create_app(
                         status_code=409,
                         detail="operationId belongs to another conversation",
                     )
+                validate_message_idempotent_replay_authority(
+                    existing_run,
+                    conversation_id=conversation_id,
+                    body=body,
+                    request=request,
+                )
                 return SendMessageResponseV1(
                     run_id=existing_run.id,
                     operation_id=body.operation_id,
@@ -11423,36 +10438,37 @@ def create_app(
             ):
                 current_target = current_engineering_conversation_target()
                 mission = store.get_engineering_mission(conversation_id)
-                mission_target_matches = bool(
+                durable_target_matches = bool(
                     body.workflow == "engineering"
                     and current_target is not None
-                    and mission is not None
                     and current_target[:2]
-                    == (mission.workspace_id, mission.revision_id)
+                    == (detail.workspace_id, detail.revision_id)
+                    and not current_target[0].startswith("controller-ls:")
                 )
-                if mission_target_matches:
-                    assert current_target is not None and mission is not None
-                    try:
-                        _mission_snapshot, mission_digest = (
-                            _canonical_engineering_mission(
-                                mission.engineering_mission
+                if durable_target_matches:
+                    assert current_target is not None
+                    if mission is not None:
+                        try:
+                            _mission_snapshot, mission_digest = (
+                                _canonical_engineering_mission(
+                                    mission.engineering_mission
+                                )
                             )
-                        )
-                    except (TypeError, ValueError) as exc:
-                        raise HTTPException(
-                            status_code=status.HTTP_409_CONFLICT,
-                            detail="stored engineering mission is invalid",
-                        ) from exc
-                    if mission_digest != mission.digest:
-                        raise HTTPException(
-                            status_code=status.HTTP_409_CONFLICT,
-                            detail="stored engineering mission digest does not match",
-                        )
+                        except (TypeError, ValueError) as exc:
+                            raise HTTPException(
+                                status_code=status.HTTP_409_CONFLICT,
+                                detail="stored engineering mission is invalid",
+                            ) from exc
+                        if mission_digest != mission.digest:
+                            raise HTTPException(
+                                status_code=status.HTTP_409_CONFLICT,
+                                detail="stored engineering mission digest does not match",
+                            )
                     try:
                         detail = store.rebind_engineering_conversation_session(
                             conversation_id=conversation_id,
-                            workspace_id=mission.workspace_id,
-                            revision_id=mission.revision_id,
+                            workspace_id=current_target[0],
+                            revision_id=current_target[1],
                             engineering_session_id=current_target[2],
                             reason="engineering_message_submission",
                         )
@@ -11461,10 +10477,10 @@ def create_app(
                             status_code=status.HTTP_409_CONFLICT,
                             detail=str(exc),
                         ) from exc
-                    mission_target_matches = (
+                    durable_target_matches = (
                         engineering_conversation_matches_current_target(detail)
                     )
-                if not mission_target_matches:
+                if not durable_target_matches:
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,
                         detail=(
@@ -11483,8 +10499,14 @@ def create_app(
                         "offline change work requires an exact source-preserving "
                         "workspace and strong selected-PID XG5000 binding"
                     ),
-                )
+            )
             try:
+                pass
+                pass
+                pass
+                pass
+                pass
+                pass
                 request_message, run, created = store.create_user_message_and_run(
                     conversation_id=conversation_id,
                     content=authoritative_content,
@@ -11509,6 +10531,8 @@ def create_app(
                         "actor_id": _request_actor_id(request),
                         "workflow": body.workflow,
                         "structured_project_brief": body.project_brief is not None,
+                        **({}),
+                        **({}),
                         **({"project_brief": project_brief} if project_brief is not None else {}),
                         **(
                             {"change_request_scope": (effective_change_request_scope)}
@@ -11529,6 +10553,30 @@ def create_app(
                 )
             except ConversationWorkflowConflict as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except ProjectPlanReviewConflict as exc:
+                # A second Host process may have created the same operation
+                # after the initial lookup.  Preserve idempotent replay even
+                # when the source changed in the meantime; compare only the
+                # stored typed authority and actor, never a fresh source digest.
+                raced_run = store.get_run_by_operation_id(body.operation_id)
+                if raced_run is not None:
+                    if raced_run.conversation_id != conversation_id:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="operationId belongs to another conversation",
+                        ) from exc
+                    validate_message_idempotent_replay_authority(
+                        raced_run,
+                        conversation_id=conversation_id,
+                        body=body,
+                        request=request,
+                    )
+                    return SendMessageResponseV1(
+                        run_id=raced_run.id,
+                        operation_id=body.operation_id,
+                        state=raced_run.state.value.casefold(),
+                    )
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             except ConversationActiveRunConflict as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             if run is not None and run.conversation_id != conversation_id:
@@ -11539,6 +10587,12 @@ def create_app(
             if run is None:
                 raise HTTPException(status_code=404, detail="conversation not found")
             if not created:
+                validate_message_idempotent_replay_authority(
+                    run,
+                    conversation_id=conversation_id,
+                    body=body,
+                    request=request,
+                )
                 return SendMessageResponseV1(
                     run_id=run.id,
                     operation_id=body.operation_id,
@@ -11559,6 +10613,7 @@ def create_app(
 
             def finish_run_task(completed_task: asyncio.Task[None]) -> None:
                 run_tasks.pop(run.id, None)
+                None
                 if not completed_task.cancelled():
                     completed_task.exception()
 
@@ -11703,6 +10758,7 @@ def create_app(
                         status_code=status.HTTP_409_CONFLICT,
                         detail="the bound LS controller could not be revalidated",
                     ) from exc
+            store.expire_change_approvals(conversation_id=conversation_id)
             mission = store.get_engineering_mission(conversation_id)
             if mission is None:
                 raise HTTPException(
@@ -11804,7 +10860,7 @@ def create_app(
                 in {
                     "offline_native_check_only",
                     "offline_native_reopen",
-                    "offline_native_reopen_xgsim",
+                    
                 }
                 else "offline_native_reopen"
             )
@@ -11813,14 +10869,13 @@ def create_app(
             # Preserve those values only while validating a narrow terminal
             # recovery/reproposal. A SYSTEM continuation never inherits the
             # original user message's general mutation authority.
-            if (
-                mission_verification_scope == "offline_native_reopen_xgsim"
-                and mission_scope != "offline_candidate_revision"
-            ):
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="stored XG-SIM mission request scope is invalid",
-                )
+            stored_candidate_scope = _stored_candidate_continuation_scope(
+                mission_run.metadata if mission_run is not None else {},
+                mission_request_message.role if mission_request_message is not None else None,
+            )
+            if stored_candidate_scope is not None:
+                mission_scope, mission_verification_scope = stored_candidate_scope
+            pass
 
             current_target = current_engineering_conversation_target()
             if current_target is None:
@@ -11846,14 +10901,7 @@ def create_app(
                     detail=str(exc),
                 ) from exc
 
-            internal_mne_rung_reproposal_permitted = (
-                change_outcome_transaction_id is not None
-                and _internal_mne_rung_reproposal_callback_permitted(
-                    mission_snapshot,
-                    change_outcome_projection(linked_change),
-                    linked_change,
-                )
-            )
+            pass
             exact_operand_reproposal_permitted = bool(
                 change_outcome_transaction_id is not None
                 and _expired_exact_operand_reproposal_callback_permitted(
@@ -11861,29 +10909,19 @@ def create_app(
                     change_outcome_projection(linked_change),
                 )
             )
+            native_failure_step_id = (
+                bound_proposal_step_id(store, linked_change, mission_snapshot)
+                if linked_change is not None
+                else None
+            )
+            pass
             terminal_candidate_reproposal_permitted = bool(
-                _terminal_candidate_reproposal_matches_authority(
-                    linked_change=linked_change,
-                    request_scope=mission_scope,
-                    verification_scope=mission_verification_scope,
-                    exact_operand_reproposal_permitted=(
-                        exact_operand_reproposal_permitted
-                    ),
-                    internal_mne_rung_reproposal_permitted=(
-                        internal_mne_rung_reproposal_permitted
-                    ),
-                )
+                False
             )
             continuation_scope = "analysis_only"
             continuation_verification_scope = "offline_native_reopen"
             continuation_prompt = (
                 "Continue the current durable engineering mission from its saved "
-                "checkpoint. The Host authorized only the internal-M MNE rung path "
-                "to compile the current baseline and request one newly bound "
-                "proposal; do not revive the terminal approval."
-                if internal_mne_rung_reproposal_permitted
-                else (
-                    "Continue the current durable engineering mission from its saved "
                     "checkpoint. Inspect the Host-bound terminal change outcome, bind "
                     "it to the affected mission step, and continue verification or "
                     "close the objective without proposing the same change again."
@@ -11894,7 +10932,6 @@ def create_app(
                         "investigation steps, retain evidence, and stop only at an "
                         "explicit mission condition."
                     )
-                )
             )
             try:
                 request_message, run, created = store.create_user_message_and_run(
@@ -12046,6 +11083,7 @@ def create_app(
             # boundary as well, even though the durable transaction is already
             # COMPLETED/ROLLED_BACK/FAILED for a short interval.
             or active_change_execution is not None
+            or run_id in ()
         ):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -12146,7 +11184,7 @@ def create_app(
         transaction = store.get_change_transaction(transaction_id)
         if transaction is None:
             raise HTTPException(status_code=404, detail="change transaction not found")
-        if current_change_target() != transaction.target:
+        if not transaction.target.same_artifact(current_change_target()):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="change target is not the current verified XG5000 target",
@@ -12260,114 +11298,7 @@ def create_app(
                 payload_sha256=focused.payload_sha256,
             )
 
-        if isinstance(plan, (ChangePlanV3, ChangePlanV4, ChangePlanV5, ChangePlanV6)):
-            candidate = plan.candidate
-            if isinstance(plan, ChangePlanV3):
-                instruction_index = candidate.patch.output_instruction_index
-                command = "OUT"
-                operand = candidate.patch.output_operand
-                instruction_digest = hashlib.sha256(
-                    json.dumps(
-                        {
-                            "index": instruction_index,
-                            "command": command,
-                            "operand": operand,
-                        },
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    ).encode("utf-8")
-                ).hexdigest()
-            else:
-                anchor = (
-                    candidate.patches[0].anchor
-                    if isinstance(plan, ChangePlanV5)
-                    else candidate.patch.anchor
-                )
-                instruction_index = anchor.index
-                command = anchor.command
-                operand = anchor.operand
-                instruction_digest = anchor.instruction_digest
-            try:
-                raw_focus = await mcp.call_read_tool(
-                    "program.focus_mne_anchor",
-                    {
-                        "program_id": candidate.program_id,
-                        "program_name": candidate.program_name,
-                        "instruction_index": instruction_index,
-                        "expected_command": command,
-                        "expected_operand": operand,
-                        "expected_instruction_digest": instruction_digest,
-                        "expected_mne_sha256": candidate.baseline_mne_sha256,
-                        "expected_ld_sha256": candidate.baseline_ld_sha256,
-                        "expected_ld_canonical_sha256": candidate.baseline_ld_canonical_sha256,
-                        "expected_instruction_count": candidate.baseline_instruction_count,
-                    },
-                )
-            except MCPToolError as exc:
-                raise engineering_gateway_error(exc) from exc
-            if not isinstance(raw_focus, dict):
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="MCP returned an invalid mnemonic focus receipt",
-                )
-            try:
-                focused_program = engineering_program_from_mcp(raw_focus.get("program"))
-                focused_anchor = MneAnchorFocusV1.model_validate(
-                    {
-                        "instruction_index": raw_focus.get("instruction_index"),
-                        "command": raw_focus.get("command"),
-                        "operand": raw_focus.get("operand"),
-                        "instruction_digest": raw_focus.get("instruction_digest"),
-                        "baseline_mne_sha256": raw_focus.get("baseline_mne_sha256"),
-                        "baseline_ld_sha256": raw_focus.get("baseline_ld_sha256"),
-                        "baseline_ld_canonical_sha256": raw_focus.get(
-                            "baseline_ld_canonical_sha256"
-                        ),
-                        "baseline_instruction_count": candidate.baseline_instruction_count,
-                    }
-                )
-            except (TypeError, ValueError) as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="MCP returned an invalid mnemonic anchor receipt",
-                ) from exc
-            if (
-                raw_focus.get("verified") is not True
-                or raw_focus.get("read_only") is not True
-                or raw_focus.get("project_unchanged") is not True
-                or focused_program.program_id != candidate.program_id
-                or focused_program.name != candidate.program_name
-                or focused_anchor.instruction_index != instruction_index
-                or focused_anchor.command != command
-                or focused_anchor.operand != operand
-                or not hmac.compare_digest(
-                    focused_anchor.instruction_digest,
-                    instruction_digest,
-                )
-                or not hmac.compare_digest(
-                    focused_anchor.baseline_mne_sha256,
-                    candidate.baseline_mne_sha256,
-                )
-                or not hmac.compare_digest(
-                    str(focused_anchor.baseline_ld_canonical_sha256 or ""),
-                    str(candidate.baseline_ld_canonical_sha256 or ""),
-                )
-            ):
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="MCP did not verify the approved mnemonic anchor",
-                )
-            return ChangeTargetFocusV1(
-                verified=True,
-                read_only=True,
-                project_unchanged=True,
-                transaction_id=transaction.id,
-                plan_digest=transaction.plan_digest,
-                focus_kind="mne_anchor",
-                program=focused_program,
-                mne_anchor=focused_anchor,
-            )
+        pass
 
         program_id = plan.target_program.program_id
         focused_program = await focus_engineering_program_v1(program_id, None)
@@ -12393,22 +11324,6 @@ def create_app(
         current = store.get_change_transaction(transaction_id)
         if current is None:
             raise HTTPException(status_code=404, detail="change transaction not found")
-        if (
-            current.state
-            in {
-                ChangeTransactionState.COMPLETED,
-                ChangeTransactionState.ROLLED_BACK,
-            }
-            and not _is_exact_terminal_mne_no_mutation_abort(current)
-            and not _has_valid_terminal_change_receipt(current)
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "terminal change receipt is incomplete or does not match "
-                    "the recorded verification contract"
-                ),
-            )
         try:
             transaction, recorded = store.acknowledge_change_receipt(
                 transaction_id=transaction_id,
@@ -12492,6 +11407,41 @@ def create_app(
         *,
         terminalize_preflight_failure: bool = False,
     ) -> ChangeExecutionResponseV1:
+        def trusted_workspace_open_failure(
+            error: Exception,
+        ) -> tuple[str, str] | None:
+            """Extract only a typed MCP reason code from the failed open cause."""
+
+            if not isinstance(error, HTTPException) or error.status_code != 409:
+                return None
+            current: BaseException | None = error
+            seen: set[int] = set()
+            for _ in range(8):
+                if current is None or id(current) in seen:
+                    break
+                seen.add(id(current))
+                if isinstance(current, MCPToolRejectedError):
+                    payload = current.mcp_error_payload
+                    error_payload = payload.get("error") if isinstance(payload, dict) else None
+                    reason_code = (
+                        error_payload.get("code")
+                        if isinstance(error_payload, dict)
+                        else None
+                    )
+                    if (
+                        isinstance(payload, dict)
+                        and payload.get("schema_version") == "1.0"
+                        and payload.get("status") == "error"
+                        and isinstance(reason_code, str)
+                        and re.fullmatch(r"[A-Z][A-Z0-9_]{2,79}", reason_code)
+                    ):
+                        # The Host only knows that its verified-workspace open
+                        # step failed; do not infer a lower-level native phase.
+                        return reason_code, "workspace_open"
+                    return None
+                current = current.__cause__ or current.__context__
+            return None
+
         def terminal_preflight_response() -> ChangeExecutionResponseV1:
             try:
                 failed, recorded = store.fail_approved_change_preflight(
@@ -12551,11 +11501,22 @@ def create_app(
                 return terminal_preflight_response()
             raise
         try:
-            if current_change_target() != transaction.target:
+            execution_target = current_change_target()
+            if not transaction.target.same_artifact(execution_target):
                 raise ChangeExecutionPreconditionError(
-                    "active workspace or engineering-session identity changed"
+                    "active workspace artifact differs from the approved artifact"
                 )
-            await change_executor.preflight(transaction)
+            pass
+            pass
+            if (
+                execution_target.engineering_session_id is None
+                or execution_target.engineering_process_id is None
+                or execution_target.engineering_window_handle is None
+            ):
+                raise ChangeExecutionPreconditionError("execution requires a verified current session")
+            await change_executor.preflight(
+                transaction.model_copy(update={"execution_target": execution_target})
+            )
         except ChangeExecutionPreconditionError as exc:
             store.release_target_operation_lease(
                 operation_id=transaction_id,
@@ -12580,6 +11541,37 @@ def create_app(
                 holder_token=holder_token,
                 reason="change_preflight_interrupted",
             )
+            preflight_diagnostic = trusted_workspace_open_failure(exc)
+            if preflight_diagnostic is not None and not terminalize_preflight_failure:
+                reason_code, stage = preflight_diagnostic
+                try:
+                    recorded_transaction, recorded = (
+                        store.record_approved_change_preflight_failure(
+                            transaction_id=transaction_id,
+                            expected_plan_digest=body.expected_plan_digest,
+                            reason_code=reason_code,
+                            stage=stage,
+                        )
+                    )
+                except Exception as record_error:
+                    logger.warning(
+                        "could not persist approved change preflight receipt "
+                        "(exception_type=%s)",
+                        type(record_error).__name__,
+                    )
+                else:
+                    if recorded and recorded_transaction is not None:
+                        try:
+                            publish_change_event(
+                                "change.transaction.updated",
+                                recorded_transaction,
+                            )
+                        except Exception as event_error:
+                            logger.warning(
+                                "could not publish approved change preflight receipt "
+                                "(exception_type=%s)",
+                                type(event_error).__name__,
+                            )
             if terminalize_preflight_failure:
                 logger.error(
                     "direct change transaction %s failed before native execution "
@@ -12601,6 +11593,7 @@ def create_app(
             executing = store.begin_change_execution(
                 transaction_id=transaction_id,
                 expected_plan_digest=body.expected_plan_digest,
+                execution_target=execution_target,
             )
         except MutationLeaseConflict as exc:
             store.release_target_operation_lease(
@@ -12652,10 +11645,7 @@ def create_app(
                     state=ChangeTransactionState.FAILED,
                     verification_evidence=exc.evidence or None,
                     error_code="native_change_not_applied",
-                    error_detail=(
-                        "Native change execution failed before an application "
-                        "could be proven; private provider detail was suppressed."
-                    ),
+                    error_detail=_native_preparation_failure_detail(exc.evidence),
                 )
                 assert failed is not None
                 publish_change_event("change.transaction.updated", failed)
@@ -12753,10 +11743,11 @@ def create_app(
                 error_detail=verification.error_detail,
             )
             assert finished is not None
-            await refresh_terminal_change_identity(
+            identity_refreshed = await refresh_terminal_change_identity(
                 finished,
                 retain_engineering_session=True,
             )
+            pass
             publish_change_event("change.transaction.updated", finished)
             store.append_event(
                 event_type="host.status",
@@ -12772,6 +11763,7 @@ def create_app(
         finally:
             active_change_executions.discard(transaction_id)
 
+
     @app.post(
         "/api/v1/change-transactions/{transaction_id}/execute",
         response_model=ChangeExecutionResponseV1,
@@ -12779,92 +11771,14 @@ def create_app(
     async def execute_change_transaction_v1(
         transaction_id: str,
         body: ExecuteChangeTransactionRequestV1,
-        _run_guard: None = Depends(engineering_target_run_guard),
-    ) -> ChangeExecutionResponseV1:
-        return await _execute_change_transaction_internal(transaction_id, body)
-
-    @app.post(
-        "/api/v1/change-transactions/{transaction_id}/simulation-decision",
-        response_model=ChangeExecutionResponseV1,
-    )
-    async def finalize_simulation_change_v1(
-        transaction_id: str,
-        body: FinalizeSimulationChangeRequestV1,
         request: Request,
-        _csrf: None = Depends(require_browser_csrf),
         _run_guard: None = Depends(engineering_target_run_guard),
     ) -> ChangeExecutionResponseV1:
-        transaction = store.get_change_transaction(transaction_id)
-        if transaction is None:
-            raise HTTPException(status_code=404, detail="change transaction not found")
-        if (
-            transaction.plan_digest != body.expected_plan_digest
-            or transaction.plan.get("verification_scope") != "offline_native_reopen_xgsim"
-        ):
-            raise HTTPException(status_code=409, detail="simulation decision does not match the observing contract")
-        existing_finalization = transaction.result.get("simulation_finalization")
-        if transaction.state in {ChangeTransactionState.COMPLETED, ChangeTransactionState.ROLLED_BACK}:
-            if (
-                isinstance(existing_finalization, dict)
-                and existing_finalization.get("decision") == body.decision
-                and existing_finalization.get("expected_plan_digest") == body.expected_plan_digest
-                and existing_finalization.get("expected_simulation_receipt_digest")
-                == body.expected_simulation_receipt_digest
-            ):
-                return ChangeExecutionResponseV1(
-                    transaction=_change_transaction_v1(transaction), execution_started=False
-                )
-            raise HTTPException(status_code=409, detail="simulation decision was already resolved differently")
-        if transaction.state is not ChangeTransactionState.OBSERVING:
-            raise HTTPException(status_code=409, detail="change is not awaiting a simulation decision")
-        if transaction_id in active_change_executions:
-            raise HTTPException(status_code=409, detail="simulation decision is already in progress")
-        current_target = current_change_target()
-        for field_name in (
-            "workspace_id", "revision_id", "source_artifact_hash", "project_path",
-            "vendor", "engineering_system", "engineering_session_id",
-            "engineering_process_id", "engineering_window_handle",
-        ):
-            if getattr(current_target, field_name) != getattr(transaction.target, field_name):
-                raise HTTPException(status_code=409, detail="active workspace or engineering session changed")
-        active_change_executions.add(transaction_id)
-        try:
-            try:
-                outcome = await change_executor.finalize_observing(
-                    transaction,
-                    decision=body.decision,
-                    expected_plan_digest=body.expected_plan_digest,
-                    expected_simulation_receipt_digest=body.expected_simulation_receipt_digest,
-                )
-            except (MCPToolError, ChangeExecutionPreconditionError, ValueError, TypeError) as exc:
-                # No blind retry after a native response loss or uncertain boundary.
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
-            finalized = store.finalize_observing_change(
-                transaction_id=transaction_id,
-                expected_plan_digest=body.expected_plan_digest,
-                expected_simulation_receipt_digest=body.expected_simulation_receipt_digest,
-                state=outcome.state,
-                evidence=outcome.evidence,
-                actor_id=_request_actor_id(request),
-                decision=body.decision,
-            )
-            assert finalized is not None
-            await refresh_terminal_change_identity(
-                finalized,
-                retain_engineering_session=True,
-            )
-            publish_change_event("change.transaction.updated", finalized)
-            store.append_event(
-                event_type="host.status",
-                payload=current_status_v1().model_dump(mode="json", by_alias=True),
-            )
-            return ChangeExecutionResponseV1(
-                transaction=_change_transaction_v1(finalized), execution_started=False
-            )
-        except ChangeStoreConflict as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        finally:
-            active_change_executions.discard(transaction_id)
+        response = await _execute_change_transaction_internal(transaction_id, body)
+        if response.transaction.state == ChangeTransactionState.ROLLED_BACK.value:
+            pass
+        return response
+
 
     @app.post(
         "/api/v1/change-transactions/{transaction_id}/close-idle-instance",
@@ -13046,6 +11960,12 @@ def create_app(
         except TargetOperationLeaseConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         restoration_receipt: dict[str, Any] | None = None
+        pass
+        prior_reconciliation = transaction.result.get("reconciliation")
+        relaunch_evidence = (
+            prior_reconciliation.get("recovery_target_relaunch")
+            if isinstance(prior_reconciliation, dict) else None
+        )
         try:
             current_target = current_change_target()
             stable_workspace_fields = (
@@ -13065,7 +11985,7 @@ def create_app(
                     "active recovery workspace path is invalid"
                 ) from exc
             if not same_project_path or any(
-                getattr(current_target, field_name) != getattr(transaction.target, field_name)
+                getattr(current_target, field_name) != getattr(transaction.runtime_target, field_name)
                 for field_name in stable_workspace_fields
             ):
                 raise ChangeExecutionPreconditionError("active recovery workspace identity changed")
@@ -13171,7 +12091,7 @@ def create_app(
                     raise ChangeExecutionPreconditionError(
                         "active recovery workspace is invalid"
                     ) from exc
-                recovery_target, recovery_working_hash = await _relaunch_unavailable_change_recovery_target(
+                recovery_target, recovery_working_hash, relaunch_evidence = await _relaunch_unavailable_change_recovery_target(
                     mcp,
                     transaction,
                     recovery_workspace,
@@ -13202,6 +12122,24 @@ def create_app(
                 active_workspace = refreshed_workspace
                 store.set_host_state("active_workspace", active_workspace)
                 bind_agent_workspace_target(active_workspace)
+                # Persist the validated launch before any further native await.
+                # Cancellation or a Host restart must not orphan this window.
+                retained_evidence = dict(prior_reconciliation or {})
+                retained_evidence["recovery_target_relaunch"] = relaunch_evidence
+                if restoration_receipt is not None:
+                    retained_evidence["working_copy_restore"] = restoration_receipt
+                persisted = store.resolve_quarantined_change(
+                    transaction_id=transaction_id,
+                    state=ChangeTransactionState.QUARANTINED,
+                    evidence=retained_evidence,
+                    actor_id=_request_actor_id(request),
+                    error_code=transaction.error_code,
+                    error_detail=transaction.error_detail,
+                    held_target_lease_token=holder_token,
+                )
+                if persisted is None:
+                    raise ChangeExecutionPreconditionError("recovery transaction disappeared after launch")
+                transaction = persisted
         except (ChangeExecutionPreconditionError, MCPToolError) as exc:
             store.park_target_operation_lease(
                 operation_id=transaction_id,
@@ -13233,6 +12171,8 @@ def create_app(
                 )
             if outcome is not None and restoration_receipt is not None:
                 outcome.evidence["working_copy_restore"] = restoration_receipt
+            if outcome is not None and relaunch_evidence is not None:
+                outcome.evidence["recovery_target_relaunch"] = relaunch_evidence
             resolved = store.resolve_quarantined_change(
                 transaction_id=transaction_id,
                 state=(
@@ -13243,6 +12183,8 @@ def create_app(
                     if outcome is not None
                     else {
                         "error": "reconciliation service failed unexpectedly",
+                        **({"recovery_target_relaunch": relaunch_evidence}
+                           if relaunch_evidence is not None else {}),
                         **(
                             {"working_copy_restore": restoration_receipt}
                             if restoration_receipt is not None
@@ -13274,12 +12216,16 @@ def create_app(
                     by_alias=True,
                 ),
             )
-            return ChangeReconciliationResponseV1(
+            response = ChangeReconciliationResponseV1(
                 transaction=_change_transaction_v1(resolved),
                 reconciled=resolved.state is not ChangeTransactionState.QUARANTINED,
             )
         finally:
             active_change_executions.discard(transaction_id)
+        if resolved is not None and resolved.state is ChangeTransactionState.ROLLED_BACK:
+            pass
+        assert response is not None
+        return response
 
     @app.get("/api/v1/events")
     async def replay_events_v1(
@@ -13359,7 +12305,7 @@ def create_app(
     ) -> ModelSettingsV1:
         nonlocal recent_model_verification
         try:
-            existing = model_repository.get()
+            existing = _existing_model_settings_for_write(model_repository, body)
             candidate = _ephemeral_model_settings(body, existing)
         except ModelSettingsError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -13405,9 +12351,11 @@ def create_app(
                 base_url=candidate.base_url,
                 model=candidate.model,
                 timeout_seconds=candidate.timeout_seconds,
+                reasoning_effort=candidate.reasoning_effort,
                 api_key=candidate.secrets.api_key,
                 custom_headers=candidate.secrets.custom_headers,
                 capability_verified_at=result.tested_at,
+                model_context=result.model_context,
                 inherit_missing_secrets=False,
                 allow_insecure_http=body.insecure_http_consent,
             )
@@ -13464,6 +12412,7 @@ def create_app(
                 structured_output=result.structured_output,
             ),
             message=result.message,
+            model_context=result.model_context,
         )
 
     @app.get(
@@ -13846,6 +12795,16 @@ def create_app(
         )
 
     def engineering_gateway_error(exc: MCPToolError) -> HTTPException:
+        if isinstance(exc, MCPToolRejectedError):
+            error_payload = exc.mcp_error_payload
+            error = error_payload.get("error") if isinstance(error_payload, dict) else None
+            code = error.get("code") if isinstance(error, dict) else None
+            if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_]{1,120}", code):
+                detail = f"XG5000 MCP rejected the native operation ({code})."
+            else:
+                detail = "XG5000 MCP rejected the native operation."
+            return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
         detail = str(exc)
         unavailable = "MCP is not ready" in detail or "disconnected" in detail
         return HTTPException(
@@ -13855,10 +12814,7 @@ def create_app(
             detail=(
                 "XG5000 MCP 연결이 끊겨 프로그램 작업을 완료하지 못했습니다."
                 if unavailable
-                else (
-                    "현재 XG5000 창과 프로젝트를 다시 확인해 주세요. "
-                    "대상이 달라졌거나 더 이상 읽을 수 없습니다."
-                )
+                else "XG5000 MCP에서 engineering 작업을 완료하지 못했습니다."
             ),
         )
 
@@ -13974,12 +12930,98 @@ def create_app(
             )
         return EngineeringProgramsV1(programs=programs)
 
+    @app.post("/api/v1/engineering/symbols/export")
+    async def export_engineering_symbols_v1(
+        _csrf: None = Depends(require_browser_csrf),
+    ) -> dict[str, Any]:
+        target = require_engineering_read_target()
+        try:
+            raw_result = await mcp.call_read_tool(
+                "project.export_symbols",
+                {"timeout_seconds": 60},
+            )
+        except MCPToolContractError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="XG5000 MCP returned an invalid symbols export result.",
+            ) from exc
+        except MCPToolError as exc:
+            raise engineering_gateway_error(exc) from exc
+
+        if not isinstance(raw_result, dict):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="MCP returned an invalid XG5000 symbols export result.",
+            )
+        export_data = raw_result.get("export")
+        csv_data = export_data.get("csv") if isinstance(export_data, dict) else None
+        required_csv_fields = {
+            "sha256",
+            "byte_size",
+            "encoding",
+            "remarks",
+            "columns",
+            "metadata",
+            "row_count",
+            "rows",
+        }
+        if (
+            raw_result.get("ok") is not True
+            or raw_result.get("verified") is not True
+            or raw_result.get("read_only") is not True
+            or raw_result.get("operation") != "project.export_symbols"
+            or raw_result.get("project_unchanged") is not True
+            or type(raw_result.get("pid")) is not int
+            or raw_result.get("pid") != target.get("pid")
+            or type(raw_result.get("hwnd")) is not int
+            or raw_result.get("hwnd") != target.get("hwnd")
+            or not isinstance(export_data, dict)
+            or export_data.get("verified") is not True
+            or not isinstance(csv_data, dict)
+            or not required_csv_fields.issubset(csv_data)
+            or not isinstance(csv_data.get("sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", csv_data["sha256"]) is None
+            or type(csv_data.get("byte_size")) is not int
+            or csv_data["byte_size"] < 0
+            or not isinstance(csv_data.get("encoding"), str)
+            or not isinstance(csv_data.get("columns"), list)
+            or not isinstance(csv_data.get("metadata"), dict)
+            or type(csv_data.get("row_count")) is not int
+            or csv_data["row_count"] < 0
+            or not isinstance(csv_data.get("rows"), list)
+            or len(csv_data["rows"]) != csv_data["row_count"]
+            or any(
+                not isinstance(row, list)
+                or len(row) != len(csv_data["columns"])
+                or any(not isinstance(cell, str) for cell in row)
+                for row in csv_data["rows"]
+            )
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="MCP did not verify the current-target symbols export.",
+            )
+
+        # Preserve the exporter-parsed CSV result, including symbol rows and
+        # vendor metadata, without flattening or interpreting it in Host.
+        return {
+            "ok": True,
+            "verified": True,
+            "read_only": True,
+            "operation": "project.export_symbols",
+            "project_unchanged": True,
+            "pid": target["pid"],
+            "hwnd": target["hwnd"],
+            "export": export_data,
+        }
+
     @app.post(
         "/api/v1/engineering/programs/{program_id}/focus",
         response_model=EngineeringProgramFocusV1,
     )
     async def focus_engineering_program_v1(
         program_id: str,
+        body: EngineeringProgramFocusRequestV1 | None = None,
         _csrf: None = Depends(require_browser_csrf),
     ) -> EngineeringProgramFocusV1:
         require_engineering_read_target()
@@ -13997,9 +13039,12 @@ def create_app(
                 detail="program_id is invalid",
             )
         try:
+            params = {"program_id": normalized_program_id}
+            if body is not None:
+                params["display_intent"] = body.display_intent
             raw_result = await mcp.call_read_tool(
                 "program.focus",
-                {"program_id": normalized_program_id},
+                params,
             )
         except MCPToolError as exc:
             raise engineering_gateway_error(exc) from exc
@@ -14165,7 +13210,9 @@ def create_app(
         *,
         timeout_seconds: float,
         independent_from_pid: int | None = None,
+        require_controlled_launch: bool = False,
     ) -> tuple[XG5000ProjectLaunchV1, dict[str, Any] | None]:
+        nonlocal active_engineering_session
         open_arguments: dict[str, Any] = {
             "workspace_id": workspace.workspace_id,
             "expected_working_hash": workspace.working_copy.current_sha256,
@@ -14183,13 +13230,14 @@ def create_app(
                 "XG5000 could not open the verified workspace working copy: %s",
                 exc,
             )
-            reconciled = await _reconcile_late_workspace_open(
-                mcp,
-                workspace,
-                bind_session=bind_engineering_session,
-            )
-            if reconciled is not None:
-                return reconciled
+            if not require_controlled_launch:
+                reconciled = await _reconcile_late_workspace_open(
+                    mcp,
+                    workspace,
+                    bind_session=bind_engineering_session,
+                )
+                if reconciled is not None:
+                    return reconciled
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -14252,7 +13300,172 @@ def create_app(
                     )
                 else:
                     session = bind_engineering_session(validated)
+        if require_controlled_launch:
+            # A fresh reopen is the only path that may turn a read-only
+            # existing-process observation into the ordinary engineering
+            # target.  Do not accept a late/weak attach here: the MCP launch
+            # receipt must have been consumed by this exact attach and the
+            # resulting session must satisfy the existing mutation identity
+            # contract.
+            launch_instance_pid = (
+                int(launch.instance["pid"])
+                if isinstance(launch.instance, dict)
+                and isinstance(launch.instance.get("pid"), int)
+                and not isinstance(launch.instance.get("pid"), bool)
+                else None
+            )
+            if (
+                launch.verified is not True
+                or not launch.window_detected
+                or not launch.project_identity_read_only_bound_to_selected_pid
+                or launch.identity_assurance
+                not in {
+                    "controlled_launch_read_only",
+                    "controlled_launch_native_file_read_only",
+                    "controlled_launch_official_open_read_only",
+                }
+                or launch_instance_pid is None
+                or launch.launch_pid != launch_instance_pid
+                or _normalized_workspace_path(launch.working_path)
+                != _normalized_workspace_path(workspace.working_copy.path)
+                or launch.working_hash.casefold()
+                != workspace.working_copy.current_sha256.casefold()
+                or (
+                    independent_from_pid is not None
+                    and launch_instance_pid == independent_from_pid
+                )
+                or session is None
+                or not _engineering_session_identity_verified(session)
+            ):
+                if session is not None:
+                    active_engineering_session = None
+                    execution_broker.clear_agent_session()
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "XG5000 fresh reopen did not return the controlled launch "
+                        "identity required for editing the working copy."
+                    ),
+                )
         return launch, session
+
+    async def _close_existing_workspace_for_fresh_reopen(
+        workspace: LocalWorkspaceV1,
+        session: dict[str, Any],
+        *,
+        timeout_seconds: float,
+    ) -> None:
+        """Close one weak existing-process observation without discarding edits."""
+
+        working_path = workspace.working_copy.path
+        working_hash = workspace.working_copy.current_sha256
+        try:
+            pid = int(session["pid"])
+            hwnd = int(session["hwnd"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="기존 XG5000 세션 identity가 완전하지 않아 새로 열 수 없습니다.",
+            ) from exc
+        if pid <= 0 or hwnd <= 0:
+            raise HTTPException(
+                status_code=409,
+                detail="기존 XG5000 세션 identity가 유효하지 않아 새로 열 수 없습니다.",
+            )
+        if (
+            _normalized_workspace_path(str(session.get("project_path") or ""))
+            != _normalized_workspace_path(working_path)
+            or str(session.get("project_hash") or "").casefold()
+            != working_hash.casefold()
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="기존 XG5000 세션이 현재 working copy와 일치하지 않습니다.",
+            )
+        process_create_time = _engineering_session_process_create_time(session)
+        if process_create_time is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "기존 XG5000 프로세스 lifetime proof가 없어 저장 없이 닫기를 "
+                    "확인할 수 없습니다."
+                ),
+            )
+
+        close_arguments: dict[str, Any] = {
+            "pid": pid,
+            "hwnd": hwnd,
+            "process_create_time": process_create_time,
+            "confirm_no_save": True,
+            # Safe mode cancels an editor save prompt.  It never clicks IDNO,
+            # so a dirty in-memory editor remains available to the user.
+            "discard_unsaved_changes": False,
+            "timeout_seconds": min(max(float(timeout_seconds), 0.1), 60.0),
+            "project_path": working_path,
+            "project_hash": working_hash,
+        }
+        if isinstance(session.get("session_id"), str) and session["session_id"]:
+            close_arguments["session_id"] = session["session_id"]
+        try:
+            raw_close = await mcp.call_workspace_tool(
+                "xg5000.reviewed_no_save_close",
+                close_arguments,
+            )
+        except MCPToolError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_reviewed_no_save_close_failure_detail(exc),
+            ) from exc
+        if not isinstance(raw_close, dict):
+            raise HTTPException(
+                status_code=502,
+                detail="MCP returned an invalid reviewed close result",
+            )
+        if raw_close.get("source_closed") is not True:
+            # This is the expected safe-mode dirty boundary.  Do not clear or
+            # replace the existing Host session in this branch.
+            if (
+                raw_close.get("discardUnsavedChanges") is False
+                and raw_close.get("unsavedChangesDiscarded") is False
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "기존 XG5000 편집기에 저장되지 않은 변경이 있어 새 작업 복사본 "
+                        "프로세스를 열지 않았습니다."
+                    ),
+                )
+            raise HTTPException(
+                status_code=502,
+                detail="MCP reviewed close result did not prove source closure",
+            )
+        _validate_reviewed_no_save_close_binding(
+            raw_close,
+            pid=pid,
+            hwnd=hwnd,
+            process_create_time=process_create_time,
+            context={
+                field: close_arguments[field]
+                for field in ("session_id", "project_path", "project_hash")
+                if field in close_arguments
+            },
+            require_no_discard=True,
+        )
+        try:
+            observed = await mcp.call_read_tool("xg5000.instances", {})
+        except MCPToolError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="기존 XG5000 창이 닫혔는지 확인하지 못했습니다.",
+            ) from exc
+        instances = observed.get("instances") if isinstance(observed, dict) else None
+        if not isinstance(instances, list) or any(
+            isinstance(item, dict) and item.get("pid") == pid for item in instances
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="기존 XG5000 프로세스가 아직 닫히지 않아 새로 열지 않았습니다.",
+            )
 
     @app.post(
         "/api/v1/files/select-xg5000-project",
@@ -14294,7 +13507,6 @@ def create_app(
         body: OpenLocalWorkspaceRequestV1,
         _target_lease: None = Depends(target_switch_lease),
     ) -> OpenLocalWorkspaceResponseV1:
-        nonlocal active_engineering_session, active_workspace
         arguments: dict[str, Any] = {"source_path": body.source_path}
         if body.expected_source_hash is not None:
             arguments["expected_source_hash"] = body.expected_source_hash
@@ -14312,6 +13524,19 @@ def create_app(
                 status_code=502,
                 detail="MCP returned an invalid workspace identity",
             ) from exc
+        return await activate_local_workspace(
+            workspace,
+            open_in_xg5000=body.open_in_xg5000,
+            timeout_seconds=body.timeout_seconds,
+        )
+
+    async def activate_local_workspace(
+        workspace: LocalWorkspaceV1,
+        *,
+        open_in_xg5000: bool,
+        timeout_seconds: float,
+    ) -> OpenLocalWorkspaceResponseV1:
+        nonlocal active_engineering_session, active_workspace
         # The new workspace is now the selected target. Drop any session bound
         # to the previous workspace before exposing the new identity, including
         # when the following XG5000 launch or attach fails.
@@ -14324,10 +13549,10 @@ def create_app(
 
         launch: XG5000ProjectLaunchV1 | None = None
         session: dict[str, Any] | None = None
-        if body.open_in_xg5000:
+        if open_in_xg5000:
             launch, session = await open_workspace_in_xg5000(
                 workspace,
-                timeout_seconds=body.timeout_seconds,
+                timeout_seconds=timeout_seconds,
             )
 
         store.append_event(
@@ -14353,6 +13578,111 @@ def create_app(
             launch=launch,
             session=session,
         )
+
+
+    async def resume_workspace_editor(
+        workspace: LocalWorkspaceV1,
+        cached_session: dict[str, Any] | None,
+        *,
+        timeout_seconds: float,
+        force_fresh: bool = False,
+    ) -> tuple[XG5000ProjectLaunchV1 | None, dict[str, Any]]:
+        nonlocal active_engineering_session
+        reused_session: dict[str, Any] | None = None
+        if isinstance(cached_session, dict):
+            raw_session_id = cached_session.get("session_id")
+            raw_pid = cached_session.get("pid")
+            raw_hwnd = cached_session.get("hwnd")
+            if (
+                isinstance(raw_session_id, str)
+                and isinstance(raw_pid, int)
+                and not isinstance(raw_pid, bool)
+                and isinstance(raw_hwnd, int)
+                and not isinstance(raw_hwnd, bool)
+            ):
+                reused_session = await _revalidate_exact_engineering_session(
+                    mcp,
+                    session_id=raw_session_id,
+                    pid=raw_pid,
+                    hwnd=raw_hwnd,
+                    project_path=workspace.working_copy.path,
+                    project_hash=workspace.working_copy.current_sha256,
+                )
+        if reused_session is None:
+            if isinstance(cached_session, dict):
+                # A failed fresh read is unverified, not proof of process death.
+                # Do not retain cached readiness if candidate lookup then fails.
+                active_engineering_session = None
+                execution_broker.clear_agent_session()
+            # Restart clears the in-memory session, not the user's XG5000
+            # windows. Prove the existing file binding before opening another
+            # copy; a stale caption or cached PID cannot authorize this reuse.
+            try:
+                reused_session = await _find_existing_workspace_session(mcp, workspace)
+            except MCPToolError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail="열려 있는 프로젝트를 확인하지 못했습니다. 기존 창을 보존했습니다.",
+                ) from exc
+        if reused_session is not None and (
+            force_fresh or not _engineering_session_identity_verified(reused_session)
+        ):
+            # An existing process can be exactly bound for read-only analysis
+            # without carrying the one-shot controlled-launch proof required
+            # for ordinary engineering changes.  Preserve a dirty editor and
+            # only continue after the reviewed safe-close boundary proves that
+            # this exact PID is gone.
+            previous_pid = int(reused_session["pid"])
+            await _close_existing_workspace_for_fresh_reopen(
+                workspace,
+                reused_session,
+                timeout_seconds=timeout_seconds,
+            )
+            active_engineering_session = None
+            execution_broker.clear_agent_session()
+            launch, session = await open_workspace_in_xg5000(
+                workspace,
+                timeout_seconds=timeout_seconds,
+                require_controlled_launch=True,
+            )
+            # The old process has already been closed, so it cannot be passed
+            # as the launcher's ``independent_from_pid`` source (that CLI
+            # option intentionally requires a live source window).  Keep the
+            # old PID only as a Host-side identity comparison to reject an
+            # unexpected PID reuse after the normal fresh launch proof.
+            if (
+                launch.launch_pid == previous_pid
+                or (session is not None and session.get("pid") == previous_pid)
+            ):
+                active_engineering_session = None
+                execution_broker.clear_agent_session()
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "XG5000 fresh reopen returned the previously closed PID; "
+                        "the working copy was not rebound for editing."
+                    ),
+                )
+        elif reused_session is not None:
+            session = bind_engineering_session(reused_session)
+            launch = None
+        else:
+            active_engineering_session = None
+            execution_broker.clear_agent_session()
+            launch, session = await open_workspace_in_xg5000(
+                workspace,
+                timeout_seconds=timeout_seconds,
+                require_controlled_launch=force_fresh,
+            )
+        if session is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "working copy는 XG5000에서 열었지만 정확한 읽기 전용 분석 "
+                    "세션을 다시 검증하지 못했습니다."
+                ),
+            )
+        return launch, session
 
     @app.post(
         "/api/v1/workspaces/{workspace_id}/resume",
@@ -14436,55 +13766,9 @@ def create_app(
         store.set_host_state("active_workspace", active_workspace)
         clear_ls_controller_target()
         bind_agent_workspace_target(workspace)
-        reused_session: dict[str, Any] | None = None
-        if isinstance(cached_session, dict):
-            raw_session_id = cached_session.get("session_id")
-            raw_pid = cached_session.get("pid")
-            raw_hwnd = cached_session.get("hwnd")
-            if (
-                isinstance(raw_session_id, str)
-                and isinstance(raw_pid, int)
-                and not isinstance(raw_pid, bool)
-                and isinstance(raw_hwnd, int)
-                and not isinstance(raw_hwnd, bool)
-            ):
-                reused_session = await _revalidate_exact_engineering_session(
-                    mcp,
-                    session_id=raw_session_id,
-                    pid=raw_pid,
-                    hwnd=raw_hwnd,
-                    project_path=workspace.working_copy.path,
-                    project_hash=workspace.working_copy.current_sha256,
-                )
-        if reused_session is None:
-            # Restart clears the in-memory session, not the user's XG5000
-            # windows. Prove the existing file binding before opening another
-            # copy; a stale caption or cached PID cannot authorize this reuse.
-            try:
-                reused_session = await _find_existing_workspace_session(mcp, workspace)
-            except MCPToolError as exc:
-                raise HTTPException(
-                    status_code=409,
-                    detail="열려 있는 프로젝트를 확인하지 못했습니다. 기존 창을 보존했습니다.",
-                ) from exc
-        if reused_session is not None:
-            session = bind_engineering_session(reused_session)
-            launch = None
-        else:
-            active_engineering_session = None
-            execution_broker.clear_agent_session()
-            launch, session = await open_workspace_in_xg5000(
-                workspace,
-                timeout_seconds=body.timeout_seconds,
-            )
-        if session is None:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "working copy는 XG5000에서 열었지만 정확한 읽기 전용 분석 "
-                    "세션을 다시 검증하지 못했습니다."
-                ),
-            )
+        launch, session = await resume_workspace_editor(
+            workspace, cached_session, timeout_seconds=body.timeout_seconds,
+        )
         store.append_event(
             event_type="workspace.resumed",
             payload={
@@ -14570,6 +13854,11 @@ def create_app(
     async def xg5000_instances_v1() -> XG5000InstancesV1:
         try:
             result = await mcp.call_read_tool("xg5000.instances", {})
+        except MCPToolRejectedError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="XG5000 창 목록 조회가 실패했습니다. 연결 서비스는 응답했습니다.",
+            ) from exc
         except MCPToolError as exc:
             raise HTTPException(
                 status_code=503,
@@ -14931,1328 +14220,17 @@ def create_app(
         )
         return completed
 
-    @app.post(
-        "/api/v1/native-projects",
-        response_model=NativeProjectCreatedV1,
-        status_code=status.HTTP_201_CREATED,
-    )
-    async def create_native_project_v1(
-        body: CreateNativeProjectRequestV1,
-        request: Request,
-        response: Response,
-    ) -> NativeProjectCreatedV1:
-        nonlocal active_engineering_session, active_workspace
-        idempotency_key = request.headers.get("idempotency-key")
-        if idempotency_key != body.operation_id:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Idempotency-Key must exactly match operationId",
-            )
-        actor_id = _request_actor_id(request)
-        holder_token: str | None = None
-        try:
-            current_brief_digest, current_attachment_digest = (
-                current_project_plan_authority_digests(
-                    body.reviewed_plan.conversation_id
-                )
-            )
-            if (
-                body.reviewed_plan.project_brief_digest != current_brief_digest
-                or body.reviewed_plan.attachment_revision_digest
-                != current_attachment_digest
-            ):
-                raise ProjectPlanReviewConflict(
-                    "project brief or attachment source revisions changed after review"
-                )
-            _review, reviewed_artifact = store.require_reviewed_project_plan(
-                conversation_id=body.reviewed_plan.conversation_id,
-                message_id=body.reviewed_plan.message_id,
-                plan_digest=body.reviewed_plan.plan_digest,
-                reviewed_section_ids=body.reviewed_plan.reviewed_section_ids,
-                reviewed_item_ids=body.reviewed_plan.reviewed_item_ids,
-                project_brief_digest=body.reviewed_plan.project_brief_digest,
-                attachment_revision_digest=(
-                    body.reviewed_plan.attachment_revision_digest
-                ),
-                expected_handoff_native_project_id=body.operation_id,
-            )
-            if reviewed_artifact.get("projectName") != body.project_name:
-                raise ProjectPlanReviewConflict(
-                    "native project name does not match the reviewed plan"
-                )
-            reviewed_technical = reviewed_artifact.get("technicalConfiguration")
-            if reviewed_technical != {
-                "plcSeries": body.plc_series,
-                "cpuModel": body.cpu_model,
-                "programName": body.program_name,
-                "language": body.language,
-                "description": body.description,
-            }:
-                raise ProjectPlanReviewConflict(
-                    "native project technical configuration does not match the reviewed plan"
-                )
-            spec = NativeProjectSpec(
-                operation_id=body.operation_id,
-                project_name=body.project_name,
-                workspace_parent=Path(body.workspace_parent),
-                plc_series=body.plc_series,
-                cpu_model=body.cpu_model,
-                program_name=body.program_name,
-                language=body.language,
-                description=body.description,
-                xg5000_pid=body.xg5000_pid,
-                xg5000_hwnd=body.xg5000_hwnd,
-                planning_conversation_id=body.reviewed_plan.conversation_id,
-                planning_message_id=body.reviewed_plan.message_id,
-                planning_plan_digest=body.reviewed_plan.plan_digest,
-                reviewed_section_ids=tuple(body.reviewed_plan.reviewed_section_ids),
-                reviewed_item_ids=tuple(body.reviewed_plan.reviewed_item_ids),
-                project_brief_digest=body.reviewed_plan.project_brief_digest,
-                attachment_revision_digest=(
-                    body.reviewed_plan.attachment_revision_digest
-                ),
-                planning_artifact=reviewed_artifact,
-            )
-            build_bundle = native_project_service.build_bundle(spec)
-            existing = native_project_service.replay_if_exists(
-                spec,
-                actor_id=actor_id,
-            )
-            if existing is not None:
-                response.status_code = status.HTTP_200_OK
-                return NativeProjectCreatedV1(
-                    operation=_native_project_operation_v1(existing),
-                    created=False,
-                )
-            holder_token = str(uuid.uuid4())
-            store.acquire_target_operation_lease(
-                operation_id=body.operation_id,
-                owner_kind="native_project_create",
-                holder_token=holder_token,
-                target_identity={
-                    "operationId": body.operation_id,
-                    "workspaceParent": str(Path(body.workspace_parent).expanduser().resolve()),
-                    "projectName": body.project_name,
-                    "plcSeries": body.plc_series,
-                    "cpuModel": body.cpu_model,
-                    "programName": body.program_name,
-                    "language": body.language,
-                    "xg5000Pid": body.xg5000_pid,
-                    "xg5000Hwnd": body.xg5000_hwnd,
-                    "reviewedPlan": body.reviewed_plan.model_dump(
-                        mode="json",
-                        by_alias=True,
-                    ),
-                    "buildBundleId": build_bundle["bundleId"],
-                },
-            )
-            current_brief_digest, current_attachment_digest = (
-                current_project_plan_authority_digests(
-                    body.reviewed_plan.conversation_id
-                )
-            )
-            if (
-                body.reviewed_plan.project_brief_digest != current_brief_digest
-                or body.reviewed_plan.attachment_revision_digest
-                != current_attachment_digest
-            ):
-                raise ProjectPlanReviewConflict(
-                    "project brief or attachment source revisions changed before execution"
-                )
-            store.require_reviewed_project_plan(
-                conversation_id=body.reviewed_plan.conversation_id,
-                message_id=body.reviewed_plan.message_id,
-                plan_digest=body.reviewed_plan.plan_digest,
-                reviewed_section_ids=body.reviewed_plan.reviewed_section_ids,
-                reviewed_item_ids=body.reviewed_plan.reviewed_item_ids,
-                project_brief_digest=body.reviewed_plan.project_brief_digest,
-                attachment_revision_digest=(
-                    body.reviewed_plan.attachment_revision_digest
-                ),
-                expected_handoff_native_project_id=body.operation_id,
-            )
-            operation, created = await native_project_service.create(
-                spec,
-                actor_id=actor_id,
-            )
-        except ProjectPlanReviewConflict as exc:
-            if holder_token is not None:
-                store.release_target_operation_lease(
-                    operation_id=body.operation_id,
-                    holder_token=holder_token,
-                    reason="reviewed_project_plan_changed_before_execution",
-                )
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(exc),
-            ) from exc
-        except TargetOperationLeaseConflict as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(exc),
-            ) from exc
-        except NativeProjectConflict as exc:
-            if holder_token is not None:
-                store.release_target_operation_lease(
-                    operation_id=body.operation_id,
-                    holder_token=holder_token,
-                    reason="native_project_conflict_before_execution",
-                )
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(exc),
-            ) from exc
-        except NativeProjectPreconditionError as exc:
-            if holder_token is not None:
-                current = native_project_repository.get(body.operation_id)
-                if current is not None and current.state in {
-                    "EXECUTING",
-                    "QUARANTINED",
-                }:
-                    store.park_target_operation_lease(
-                        operation_id=body.operation_id,
-                        holder_token=holder_token,
-                        reason="native_project_outcome_requires_recovery",
-                    )
-                else:
-                    store.release_target_operation_lease(
-                        operation_id=body.operation_id,
-                        holder_token=holder_token,
-                        reason="native_project_precondition_failed",
-                    )
-            detail = str(exc)
-            raise HTTPException(
-                status_code=(
-                    status.HTTP_503_SERVICE_UNAVAILABLE
-                    if "MCP is not ready" in detail
-                    else status.HTTP_409_CONFLICT
-                ),
-                detail=detail,
-            ) from exc
-        except BaseException:
-            if holder_token is not None:
-                current = native_project_repository.get(body.operation_id)
-                if current is not None and _native_project_target_lease_must_remain(
-                    current
-                ):
-                    store.park_target_operation_lease(
-                        operation_id=body.operation_id,
-                        holder_token=holder_token,
-                        reason="native_project_request_interrupted",
-                    )
-                else:
-                    store.release_target_operation_lease(
-                        operation_id=body.operation_id,
-                        holder_token=holder_token,
-                        reason="native_project_interrupted_before_uncertain_mutation",
-                    )
-            raise
 
-        assert holder_token is not None
-        if not _native_project_target_lease_must_remain(operation):
-            store.release_target_operation_lease(
-                operation_id=body.operation_id,
-                holder_token=holder_token,
-                reason=f"native_project_{operation.state.casefold()}",
-            )
-        else:
-            store.park_target_operation_lease(
-                operation_id=body.operation_id,
-                holder_token=holder_token,
-                reason="native_project_outcome_requires_recovery",
-            )
+    pass
 
-        if not created:
-            response.status_code = status.HTTP_200_OK
-        if operation.state == "COMPLETED":
-            reopen = operation.result.get("reopenVerification")
-            reopen_bound = False
-            if (
-                isinstance(reopen, dict)
-                and reopen.get("state") == "verified"
-                and isinstance(reopen.get("workspace"), dict)
-                and isinstance(reopen.get("session"), dict)
-            ):
-                reopened_workspace = _local_workspace_v1(reopen["workspace"])
-                reopened_session = reopen["session"]
-                if (
-                    Path(str(reopened_session["project_path"])).resolve()
-                    == Path(reopened_workspace.working_copy.path).resolve()
-                    and str(reopened_session["project_hash"]).casefold()
-                    == reopened_workspace.working_copy.current_sha256.casefold()
-                ):
-                    bind_engineering_session(reopened_session)
-                    active_workspace = reopened_workspace.model_dump(mode="json")
-                    store.set_host_state("active_workspace", active_workspace)
-                    reopen_bound = True
-            if not reopen_bound:
-                # Same-process creation remains valid, but it is not an active
-                # engineering target until the captured copy is independently
-                # reopened and read back against the reviewed saved build.
-                active_engineering_session = None
-                active_workspace = None
-                execution_broker.clear_agent_session()
-                store.set_host_state("active_workspace", None)
-        store.append_event(
-            event_type="native_project.operation",
-            payload={
-                "nativeProjectId": operation.id,
-                "operationId": operation.operation_id,
-                "state": operation.state.casefold(),
-                "created": created,
-                "identityVerified": operation.result.get("identityVerified"),
-                "controllerConnected": operation.result.get("controllerConnected"),
-                "plcWritePerformed": operation.result.get("plcWritePerformed"),
-                "freshProcessReopenVerified": (
-                    isinstance(operation.result.get("reopenVerification"), dict)
-                    and operation.result["reopenVerification"].get("state") == "verified"
-                ),
-                "nativeSimulationVerified": (
-                    isinstance(operation.result.get("simulationVerification"), dict)
-                    and operation.result["simulationVerification"].get("state") == "verified"
-                ),
-                "nativeSimulationTrialState": (
-                    operation.result.get("simulationVerification", {}).get("trial", {}).get("state")
-                    if isinstance(operation.result.get("simulationVerification"), dict)
-                    and isinstance(operation.result["simulationVerification"].get("trial"), dict)
-                    else None
-                ),
-                "engineeredProgramReady": operation.result.get("engineeredProgramReady"),
-            },
-        )
-        store.append_event(
-            event_type="host.status",
-            payload=current_status_v1().model_dump(
-                mode="json",
-                by_alias=True,
-            ),
-        )
-        return NativeProjectCreatedV1(
-            operation=_native_project_operation_v1(operation),
-            created=created,
-        )
 
-    @app.get(
-        "/api/v1/native-projects/recovery",
-        response_model=NativeProjectOperationV1,
-    )
-    async def completed_unbound_native_project_v1(
-        conversation_id: str = Query(
-            alias="conversationId", min_length=1, max_length=256
-        ),
-        message_id: str = Query(alias="messageId", min_length=1, max_length=256),
-        plan_digest: str = Query(
-            alias="planDigest", pattern=r"^[0-9a-f]{64}$"
-        ),
-    ) -> NativeProjectOperationV1:
-        try:
-            operation = native_project_repository.completed_unbound_for_reviewed_plan(
-                conversation_id=conversation_id,
-                message_id=message_id,
-                plan_digest=plan_digest,
-            )
-        except NativeProjectConflict as exc:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-        if operation is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="completed unbound native project not found for reviewed plan",
-            )
-        return _native_project_operation_v1(operation)
 
-    @app.get(
-        "/api/v1/native-projects/{native_project_id}",
-        response_model=NativeProjectOperationV1,
-    )
-    async def native_project_status_v1(
-        native_project_id: str,
-    ) -> NativeProjectOperationV1:
-        try:
-            normalized_id = str(uuid.UUID(native_project_id))
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="native project operation not found",
-            ) from exc
-        if normalized_id != native_project_id:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="native project operation not found",
-            )
-        operation = native_project_repository.get(native_project_id)
-        if operation is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="native project operation not found",
-            )
-        return _native_project_operation_v1(operation)
 
-    @app.post(
-        "/api/v1/native-projects/{native_project_id}/simulation-trial/decision",
-        response_model=NativeSimulationTrialDecisionV1,
-    )
-    async def decide_native_simulation_trial_v1(
-        native_project_id: str,
-        body: NativeSimulationTrialDecisionRequestV1,
-        request: Request,
-        _target_lease: None = Depends(target_switch_lease),
-    ) -> NativeSimulationTrialDecisionV1:
-        nonlocal active_engineering_session, active_workspace
-        try:
-            normalized_id = str(uuid.UUID(native_project_id))
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="native project operation not found",
-            ) from exc
-        if normalized_id != native_project_id:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="native project operation not found",
-            )
-        candidate = native_project_repository.get(native_project_id)
-        if candidate is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="native project operation not found",
-            )
 
-        refreshed_session: dict[str, Any] | None = None
-        reopened_workspace: LocalWorkspaceV1 | None = None
-        simulation = candidate.result.get("simulationVerification")
-        candidate_trial = simulation.get("trial") if isinstance(simulation, dict) else None
-        candidate_receipt = (
-            simulation.get("receipt") if isinstance(simulation, dict) else None
-        )
-        candidate_build_bundle = candidate.request.get("buildBundle")
-        candidate_bundle_id = (
-            candidate_build_bundle.get("bundleId")
-            if isinstance(candidate_build_bundle, dict)
-            else None
-        )
-        try:
-            expected_candidate_trial_id = (
-                _native_simulation_trial_id(
-                    candidate.operation_id,
-                    candidate_bundle_id,
-                )
-                if isinstance(candidate_bundle_id, str) and candidate_bundle_id
-                else None
-            )
-        except ValueError:
-            expected_candidate_trial_id = None
-        if (
-            not isinstance(candidate_trial, dict)
-            or candidate_trial.get("trialId") != expected_candidate_trial_id
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="XG-SIM trial identity does not match the native build bundle",
-            )
-        if (
-            body.decision == "accept"
-            and isinstance(candidate_trial, dict)
-            and candidate_trial.get("state") == "OBSERVING"
-            and isinstance(candidate_receipt, dict)
-            and candidate_receipt.get("schemaVersion")
-            == "controlstudio-native-simulation-receipt/v3"
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    "legacy v3 XG-SIM observations cannot be accepted; "
-                    "verify the exact receipt and explicitly revert the trial"
-                ),
-            )
-        candidate_reopen = candidate.result.get("reopenVerification")
-        candidate_workspace = (
-            candidate_reopen.get("workspace")
-            if isinstance(candidate_reopen, dict)
-            else None
-        )
 
-        def accepted_trial_binding_is_current() -> bool:
-            if (
-                not isinstance(candidate_trial, dict)
-                or candidate_trial.get("state") != "ACCEPTED"
-                or candidate.result.get("engineeredProgramReady") is not True
-                or candidate.result.get("workspaceBound") is not True
-                or not isinstance(candidate_workspace, dict)
-                or not isinstance(active_engineering_session, dict)
-                or not isinstance(active_workspace, dict)
-                or not _engineering_session_read_ready(active_engineering_session)
-            ):
-                return False
-            expected_working = candidate_workspace.get("working_copy")
-            active_working = active_workspace.get("working_copy")
-            expected_provenance = validated_new_build_workspace_provenance(
-                candidate,
-                candidate_workspace,
-                require_capture_verification=True,
-            )
-            active_provenance = validated_new_build_workspace_provenance(
-                candidate,
-                active_workspace,
-            )
-            active_metadata = active_engineering_session.get("metadata")
-            active_trial_resume = (
-                active_metadata.get("native_trial_resume")
-                if isinstance(active_metadata, dict)
-                else None
-            )
-            if (
-                not isinstance(expected_working, dict)
-                or not isinstance(active_working, dict)
-                or expected_provenance is None
-                or active_provenance != expected_provenance
-                or not isinstance(active_trial_resume, dict)
-            ):
-                return False
-            try:
-                parsed_active_workspace = _local_workspace_v1(active_workspace)
-                parsed_provenance = parsed_active_workspace.provenance
-                return (
-                    active_workspace.get("workspace_id")
-                    == candidate_workspace.get("workspace_id")
-                    and active_workspace.get("revision_id")
-                    == candidate_workspace.get("revision_id")
-                    and expected_provenance["receipt_digest"]
-                    == active_trial_resume.get("provenance_receipt_digest")
-                    and Path(str(active_working["path"])).resolve()
-                    == Path(str(expected_working["path"])).resolve()
-                    and str(active_working["current_sha256"]).casefold()
-                    == str(expected_working["current_sha256"]).casefold()
-                    and Path(str(active_engineering_session["project_path"])).resolve()
-                    == Path(str(expected_working["path"])).resolve()
-                    and str(active_engineering_session["project_hash"]).casefold()
-                    == str(expected_working["current_sha256"]).casefold()
-                    and active_trial_resume.get("native_project_id") == candidate.id
-                    and active_trial_resume.get("trial_id")
-                    == candidate_trial.get("trialId")
-                    and active_trial_resume.get("receipt_digest")
-                    == candidate_trial.get("receiptDigest")
-                    and active_trial_resume.get("source_kind") == "new_build"
-                    and active_trial_resume.get("workspace_id")
-                    == candidate_workspace.get("workspace_id")
-                    and active_trial_resume.get("revision_id")
-                    == candidate_workspace.get("revision_id")
-                    and isinstance(parsed_provenance, NewBuildWorkspaceProvenanceV1)
-                    and native_trial_session_identity(
-                        active_engineering_session,
-                        parsed_active_workspace,
-                    )
-                    is not None
-                )
-            except (KeyError, TypeError, ValueError, OSError):
-                return False
 
-        accepted_trial_already_bound = accepted_trial_binding_is_current()
-        if body.decision == "accept" and accepted_trial_already_bound:
-            engineering_target = current_engineering_conversation_target()
-            if engineering_target is None:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="accepted XG-SIM target is no longer current",
-                )
-            try:
-                reopened_workspace, refreshed_session = (
-                    await revalidate_native_handoff_freshness(
-                        engineering_target,
-                        native_project_id=candidate.id,
-                        trial_id=str(candidate_trial.get("trialId") or ""),
-                        receipt_digest=str(candidate_trial.get("receiptDigest") or ""),
-                    )
-                )
-            except NativeProjectConflict as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="accepted XG-SIM target identity changed before reuse",
-                ) from exc
-        needs_acceptance_preflight = (
-            body.decision == "accept"
-            and isinstance(candidate_trial, dict)
-            and candidate_trial.get("state") in {"OBSERVING", "ACCEPTED"}
-            and not accepted_trial_already_bound
-        )
-        if needs_acceptance_preflight:
-            reopen = candidate.result.get("reopenVerification")
-            stored_session = simulation.get("session") if isinstance(simulation, dict) else None
-            workspace = reopen.get("workspace") if isinstance(reopen, dict) else None
-            stored_launch = reopen.get("launch") if isinstance(reopen, dict) else None
-            if (
-                not isinstance(stored_session, dict)
-                or not isinstance(workspace, dict)
-                or not isinstance(stored_launch, dict)
-                or reopen.get("state") != "verified"
-                or simulation.get("state") != "verified"
-                or candidate_trial.get("safeRestorationVerified") is not True
-                or (
-                    candidate_trial.get("state") == "ACCEPTED"
-                    and (
-                        candidate.result.get("engineeredProgramReady") is not True
-                        or candidate.result.get("workspaceBound") is not True
-                    )
-                )
-            ):
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="verified reopened workspace is unavailable for acceptance",
-                )
-            stored_receipt_digest = str(candidate_trial.get("receiptDigest") or "")
-            if body.expected_receipt_digest != stored_receipt_digest:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="simulation trial receipt digest changed before acceptance",
-                )
-            try:
-                raw_workspace = await mcp.call_workspace_tool(
-                    "workspace.status",
-                    {"workspace_id": str(workspace.get("workspace_id") or "")},
-                )
-            except MCPToolError as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="protected workspace could not be revalidated before acceptance",
-                ) from exc
-            try:
-                stored_build_provenance = validated_new_build_workspace_provenance(
-                    candidate,
-                    workspace,
-                    require_capture_verification=True,
-                )
-                reopened_build_provenance = validated_new_build_workspace_provenance(
-                    candidate,
-                    raw_workspace,
-                    require_capture_verification=True,
-                )
-                stored_workspace = _local_workspace_v1(workspace)
-                reopened_workspace = _local_workspace_v1(raw_workspace)
-            except (TypeError, ValueError) as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="protected workspace identity is invalid before acceptance",
-                ) from exc
-            simulation_receipt = (
-                simulation.get("receipt") if isinstance(simulation, dict) else None
-            )
-            receipt_project = (
-                simulation_receipt.get("projectReadback")
-                if isinstance(simulation_receipt, dict)
-                else None
-            )
-            reopened_provenance = reopened_workspace.provenance
-            stored_provenance = stored_workspace.provenance
-            workspace_matches = (
-                stored_build_provenance is not None
-                and reopened_build_provenance == stored_build_provenance
-                and reopened_workspace.source_kind == "new_build"
-                and stored_workspace.source_kind == "new_build"
-                and isinstance(reopened_provenance, NewBuildWorkspaceProvenanceV1)
-                and isinstance(stored_provenance, NewBuildWorkspaceProvenanceV1)
-                and reopened_provenance == stored_provenance
-                and reopened_provenance.saved_project_sha256 == reopened_workspace.source.sha256
-                and reopened_workspace.workspace_id == stored_workspace.workspace_id
-                and reopened_workspace.revision_id == stored_workspace.revision_id
-                and reopened_workspace.source.sha256 == stored_workspace.source.sha256
-                and reopened_workspace.source.original_state == "unchanged"
-                and reopened_workspace.source.original_current_sha256
-                == stored_workspace.source.sha256
-                and reopened_workspace.working_copy.path
-                == stored_workspace.working_copy.path
-                and reopened_workspace.working_copy.baseline_sha256
-                == stored_workspace.working_copy.baseline_sha256
-                and reopened_workspace.working_copy.current_sha256
-                == stored_workspace.working_copy.current_sha256
-                and isinstance(receipt_project, dict)
-                and receipt_project.get("projectSha256")
-                == reopened_workspace.working_copy.current_sha256
-                and receipt_project.get("reopenedProjectSha256")
-                == reopened_workspace.working_copy.baseline_sha256
-                and receipt_project.get("projectUnchangedDuringRuntime") is True
-            )
-            if not workspace_matches:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="protected workspace changed before trial acceptance",
-                )
+    pass
 
-            launch_instance = stored_launch.get("instance")
-            stored_metadata = stored_session.get("metadata")
-            try:
-                process_create_time = float(stored_launch["process_create_time"])
-                launch_title = str(launch_instance["title"])
-                launch_matches = (
-                    isinstance(launch_instance, dict)
-                    and stored_launch.get("verified") is True
-                    and stored_launch.get("window_detected") is True
-                    and stored_launch.get("process_is_independent") is True
-                    and process_create_time > 0
-                    and launch_title != ""
-                    and int(stored_launch["launch_pid"]) == int(stored_session["pid"])
-                    and int(launch_instance["pid"]) == int(stored_session["pid"])
-                    and int(launch_instance["hwnd"]) == int(stored_session["hwnd"])
-                    and stored_launch.get("workspace_id") == reopened_workspace.workspace_id
-                    and stored_launch.get("revision_id") == reopened_workspace.revision_id
-                    and Path(str(stored_launch["working_path"])).resolve()
-                    == Path(reopened_workspace.working_copy.path).resolve()
-                    and str(stored_launch["working_hash"]).casefold()
-                    == reopened_workspace.working_copy.baseline_sha256.casefold()
-                    and isinstance(stored_metadata, dict)
-                    and stored_metadata.get("title") == launch_title
-                    and _engineering_session_read_ready(stored_session)
-                )
-            except (KeyError, TypeError, ValueError, OSError):
-                launch_matches = False
-                process_create_time = 0.0
-                launch_title = ""
-            if not launch_matches:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="verified XG5000 process lifetime is invalid before acceptance",
-                )
-
-            def sign_resume_authorization(
-                *,
-                pid: int,
-                hwnd: int,
-                target_process_create_time: float,
-                title: str,
-            ) -> dict[str, Any]:
-                issued_at = datetime.now(timezone.utc)
-                return mcp.sign_mutation_authorization(
-                    {
-                        "schema": "controlstudio-native-session-resume-authorization/v2",
-                        "authorization_id": str(uuid.uuid4()),
-                        "actor_id": _request_actor_id(request),
-                        "native_project_id": candidate.id,
-                        "trial_id": str(candidate_trial.get("trialId") or ""),
-                        "receipt_digest": stored_receipt_digest,
-                        "workspace_provenance_receipt_digest": (reopened_provenance.receipt_digest),
-                        "workspace_id": reopened_workspace.workspace_id,
-                        "revision_id": reopened_workspace.revision_id,
-                        "pid": pid,
-                        "hwnd": hwnd,
-                        "project_path": reopened_workspace.working_copy.path,
-                        "project_hash": reopened_workspace.working_copy.current_sha256,
-                        "process_create_time": target_process_create_time,
-                        "title": title,
-                        "capability": "analysis_session_resume",
-                        "allowed_operation": "xg5000.attach",
-                        "issued_at": issued_at.isoformat(timespec="milliseconds"),
-                        "expires_at": (issued_at + timedelta(minutes=2)).isoformat(
-                            timespec="milliseconds"
-                        ),
-                        "nonce": str(uuid.uuid4()),
-                    }
-                )
-
-            try:
-                expected_pid = int(stored_session["pid"])
-                expected_hwnd = int(stored_session["hwnd"])
-            except (KeyError, TypeError, ValueError) as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="stored XG5000 session identity is invalid before acceptance",
-                ) from exc
-            expected_process_create_time = process_create_time
-            expected_title = launch_title
-
-            # Native creation deliberately leaves the independently reopened
-            # target unbound while its simulation trial is OBSERVING.  The
-            # Host process may also have been restarted since verification,
-            # which cleanly closes an MCP-owned reopened XG5000 child.  First
-            # inspect the live windows without binding anything.  Reuse only
-            # the exact stored PID/HWND/title; otherwise open the already
-            # revalidated working copy in a fresh controlled process.
-            try:
-                raw_instances = await mcp.call_read_tool("xg5000.instances", {})
-            except MCPToolError as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="XG5000 instances could not be revalidated before acceptance",
-                ) from exc
-            live_instances = (
-                raw_instances.get("instances") if isinstance(raw_instances, dict) else None
-            )
-            if not isinstance(live_instances, list) or any(
-                not isinstance(item, dict) for item in live_instances
-            ):
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="XG5000 instance inventory is invalid before acceptance",
-                )
-            stored_target_matches = [
-                item
-                for item in live_instances
-                if item.get("pid") == expected_pid
-                and item.get("hwnd") == expected_hwnd
-                and item.get("title") == expected_title
-            ]
-            if len(stored_target_matches) > 1:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="stored XG5000 target identity is ambiguous before acceptance",
-                )
-            if not stored_target_matches:
-                reopen_receipt = reopen.get("receipt")
-                receipt_source_process = (
-                    reopen_receipt.get("sourceProcess")
-                    if isinstance(reopen_receipt, dict)
-                    else None
-                )
-                try:
-                    source_pid = int(stored_launch.get("independent_from_pid") or 0)
-                    source_request_pid = int(candidate.request["xg5000Pid"])
-                    source_hwnd = int(candidate.request["xg5000Hwnd"])
-                    receipt_source_pid = int(receipt_source_process["pid"])
-                    source_evidence_matches = (
-                        source_pid > 0
-                        and source_pid == source_request_pid == receipt_source_pid
-                        and source_hwnd > 0
-                    )
-                except (KeyError, TypeError, ValueError):
-                    source_evidence_matches = False
-                    source_pid = 0
-                    source_hwnd = 0
-                if not source_evidence_matches:
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail="source XG5000 identity is invalid before workspace recovery",
-                    )
-                live_source_matches = [
-                    item
-                    for item in live_instances
-                    if item.get("pid") == source_pid
-                    and item.get("hwnd") == source_hwnd
-                ]
-                if live_instances and (
-                    len(live_instances) != 1 or len(live_source_matches) != 1
-                ):
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail=(
-                            "a different XG5000 target is open; the verified workspace "
-                            "cannot be recovered automatically"
-                        ),
-                    )
-                launch_arguments: dict[str, Any] = {
-                    "workspace_id": reopened_workspace.workspace_id,
-                    "expected_working_hash": (
-                        reopened_workspace.working_copy.current_sha256
-                    ),
-                    "timeout_seconds": 60.0,
-                }
-                if live_source_matches:
-                    launch_arguments["independent_from_pid"] = source_pid
-                try:
-                    raw_launch = await mcp.call_workspace_tool(
-                        "xg5000.open_project",
-                        launch_arguments,
-                    )
-                except MCPToolError as exc:
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail=_workspace_cli_failure_detail(exc),
-                    ) from exc
-                fresh_instance = (
-                    raw_launch.get("instance") if isinstance(raw_launch, dict) else None
-                )
-                try:
-                    fresh_pid = int(fresh_instance["pid"])
-                    fresh_hwnd = int(fresh_instance["hwnd"])
-                    fresh_title = str(fresh_instance["title"])
-                    fresh_process_create_time = float(raw_launch["process_create_time"])
-                    existing_pids = {int(item["pid"]) for item in live_instances}
-                    fresh_launch_matches = (
-                        not isinstance(fresh_instance.get("pid"), bool)
-                        and not isinstance(fresh_instance.get("hwnd"), bool)
-                        and not isinstance(raw_launch.get("process_create_time"), bool)
-                        and raw_launch.get("ok") is True
-                        and raw_launch.get("operation") == "xg5000.open_project"
-                        and raw_launch.get("verified") is True
-                        and raw_launch.get("workspace_id")
-                        == reopened_workspace.workspace_id
-                        and raw_launch.get("revision_id")
-                        == reopened_workspace.revision_id
-                        and Path(str(raw_launch.get("working_path"))).resolve()
-                        == Path(reopened_workspace.working_copy.path).resolve()
-                        and str(raw_launch.get("working_hash") or "").casefold()
-                        == reopened_workspace.working_copy.current_sha256.casefold()
-                        and raw_launch.get("launch_pid") == fresh_pid
-                        and raw_launch.get("window_detected") is True
-                        and raw_launch.get("process_is_independent") is True
-                        and raw_launch.get(
-                            "project_identity_read_only_bound_to_selected_pid"
-                        )
-                        is True
-                        and _workspace_launch_binding_matches(
-                            raw_launch, reopened_workspace.working_copy.path
-                        )
-                        and fresh_pid > 0
-                        and fresh_pid not in existing_pids
-                        and fresh_pid != expected_pid
-                        and fresh_hwnd > 0
-                        and fresh_title != ""
-                        and fresh_process_create_time > 0
-                        and (
-                            (
-                                raw_launch.get("independent_from_pid") == source_pid
-                                and fresh_pid != source_pid
-                            )
-                            if live_source_matches
-                            else raw_launch.get("independent_from_pid") is None
-                        )
-                    )
-                except (KeyError, TypeError, ValueError, OSError):
-                    fresh_launch_matches = False
-                    fresh_pid = 0
-                    fresh_hwnd = 0
-                    fresh_title = ""
-                    fresh_process_create_time = 0.0
-                if not fresh_launch_matches:
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail=(
-                            "fresh XG5000 launch did not preserve the verified "
-                            "workspace identity"
-                        ),
-                    )
-                expected_pid = fresh_pid
-                expected_hwnd = fresh_hwnd
-                expected_process_create_time = fresh_process_create_time
-                expected_title = fresh_title
-
-            resume_authorization = sign_resume_authorization(
-                pid=expected_pid,
-                hwnd=expected_hwnd,
-                target_process_create_time=expected_process_create_time,
-                title=expected_title,
-            )
-            try:
-                raw_status = await mcp.call_read_tool(
-                    "xg5000.attach",
-                    {
-                        "pid": expected_pid,
-                        "hwnd": expected_hwnd,
-                        "project_path": reopened_workspace.working_copy.path,
-                        "project_hash": reopened_workspace.working_copy.current_sha256,
-                        "workspace_id": reopened_workspace.workspace_id,
-                        "resume_authorization": resume_authorization,
-                    },
-                )
-            except MCPToolError as exc:
-                store.append_event(
-                    event_type="native_simulation.acceptance_attach_failed",
-                    payload={
-                        "nativeProjectId": candidate.id,
-                        "reason": str(exc)[:600],
-                        "pid": expected_pid,
-                        "hwnd": expected_hwnd,
-                    },
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="independently reopened XG5000 target is unavailable before acceptance",
-                ) from exc
-            refreshed = (
-                raw_status.get("session")
-                if isinstance(raw_status, dict) and isinstance(raw_status.get("session"), dict)
-                else raw_status
-            )
-            if not isinstance(refreshed, dict):
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="XG5000 session identity is unavailable before acceptance",
-                )
-            refreshed_identity = native_trial_session_identity(
-                refreshed,
-                reopened_workspace,
-            )
-            expected_resume = {
-                "purpose": "native_trial",
-                "native_project_id": candidate.id,
-                "trial_id": candidate_trial.get("trialId"),
-                "receipt_digest": stored_receipt_digest,
-                "source_kind": "new_build",
-                "provenance_receipt_digest": reopened_provenance.receipt_digest,
-                "workspace_id": reopened_workspace.workspace_id,
-                "revision_id": reopened_workspace.revision_id,
-                "pid": expected_pid,
-                "main_hwnd": expected_hwnd,
-                "project_path": str(Path(reopened_workspace.working_copy.path).resolve()),
-                "project_hash": reopened_workspace.working_copy.current_sha256.casefold(),
-                "process_create_time": expected_process_create_time,
-                "authorization_id": resume_authorization["authorization_id"],
-            }
-            identity_matches = bool(
-                refreshed_identity is not None
-                and refreshed_identity["title"] == expected_title
-                and native_trial_resume_matches_expected(
-                    refreshed_identity["native_trial_resume"], expected_resume
-                )
-            )
-            try:
-                stored_hash_matches = (
-                    str(stored_session["project_hash"]).casefold()
-                    == reopened_workspace.working_copy.current_sha256.casefold()
-                )
-            except (KeyError, TypeError, ValueError):
-                stored_hash_matches = False
-            identity_check = {
-                "nativeProjectId": candidate.id,
-                "identityPresent": refreshed_identity is not None,
-                "titleMatches": bool(
-                    refreshed_identity is not None
-                    and refreshed_identity["title"] == expected_title
-                ),
-                "resumeMatches": bool(
-                    refreshed_identity is not None
-                    and native_trial_resume_matches_expected(
-                        refreshed_identity["native_trial_resume"], expected_resume
-                    )
-                ),
-                "storedHashMatches": stored_hash_matches,
-                "sessionReadReady": _engineering_session_read_ready(refreshed),
-                "proofMethod": (
-                    refreshed_identity["project_identity_proof"].get("method")
-                    if refreshed_identity is not None
-                    else None
-                ),
-            }
-            store.append_event(
-                event_type="native_simulation.acceptance_identity_check",
-                payload=identity_check,
-            )
-            if (
-                not identity_matches
-                or not stored_hash_matches
-                or not _engineering_session_read_ready(refreshed)
-            ):
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=("independently reopened XG5000 target changed before trial acceptance"),
-                )
-            refreshed_session = refreshed
-
-        try:
-            operation, recorded = native_project_repository.decide_simulation_trial(
-                native_project_id,
-                decision=body.decision,
-                expected_receipt_digest=body.expected_receipt_digest,
-                actor_id=_request_actor_id(request),
-            )
-        except NativeProjectConflict as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(exc),
-            ) from exc
-
-        if body.decision == "accept" and refreshed_session is not None:
-            assert reopened_workspace is not None
-            active_workspace = reopened_workspace.model_dump(mode="json")
-            store.set_host_state("active_workspace", active_workspace)
-            bind_engineering_session(refreshed_session)
-        elif body.decision == "revert":
-            project_path = str(operation.result.get("projectPath") or "")
-            active_path = (
-                str(active_engineering_session.get("project_path") or "")
-                if isinstance(active_engineering_session, dict)
-                else ""
-            )
-            if (
-                project_path
-                and active_path
-                and (Path(project_path).resolve() == Path(active_path).resolve())
-            ):
-                active_engineering_session = None
-                active_workspace = None
-                execution_broker.clear_agent_session()
-                store.set_host_state("active_workspace", None)
-
-        trial = operation.result.get("simulationVerification", {}).get("trial", {})
-        store.append_event(
-            event_type="native_simulation.trial_decision",
-            payload={
-                "nativeProjectId": operation.id,
-                "operationId": operation.operation_id,
-                "trialId": trial.get("trialId") if isinstance(trial, dict) else None,
-                "state": trial.get("state") if isinstance(trial, dict) else None,
-                "receiptDigest": (trial.get("receiptDigest") if isinstance(trial, dict) else None),
-                "decisionRecorded": recorded,
-                "sessionRebound": refreshed_session is not None,
-                "workspaceBound": operation.result.get("workspaceBound"),
-            },
-        )
-        store.append_event(
-            event_type="host.status",
-            payload=current_status_v1().model_dump(mode="json", by_alias=True),
-        )
-        return NativeSimulationTrialDecisionV1(
-            operation=_native_project_operation_v1(operation),
-            decision_recorded=recorded,
-        )
-
-    @app.post(
-        "/api/v1/native-projects/{native_project_id}/reconcile",
-        response_model=NativeProjectReconciliationV1,
-    )
-    async def reconcile_native_project_v1(
-        native_project_id: str,
-        body: ReconcileNativeProjectRequestV1,
-    ) -> NativeProjectReconciliationV1:
-        operation = native_project_repository.get(native_project_id)
-        if operation is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="native project operation not found",
-            )
-        if operation.state != "QUARANTINED":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="only a quarantined native project can be reconciled",
-            )
-        holder_token = str(uuid.uuid4())
-        try:
-            store.acquire_target_operation_lease(
-                operation_id=operation.operation_id,
-                owner_kind="native_project_create",
-                holder_token=holder_token,
-                target_identity=_native_project_target_lease_identity(operation),
-            )
-        except TargetOperationLeaseConflict as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        try:
-            resolved = await native_project_service.reconcile(
-                operation.operation_id,
-                NativeProjectRecoveryEvidence(
-                    pid=body.pid,
-                    hwnd=body.hwnd,
-                    expected_project_path=Path(body.expected_project_path),
-                    expected_project_sha256=body.expected_project_sha256,
-                    observed_project_path=(
-                        Path(body.observed_project_path)
-                        if body.observed_project_path is not None
-                        else None
-                    ),
-                ),
-            )
-        except NativeProjectConflict as exc:
-            store.park_target_operation_lease(
-                operation_id=operation.operation_id,
-                holder_token=holder_token,
-                reason="native_project_recovery_conflict",
-            )
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except BaseException:
-            store.park_target_operation_lease(
-                operation_id=operation.operation_id,
-                holder_token=holder_token,
-                reason="native_project_recovery_interrupted",
-            )
-            raise
-
-        if not _native_project_target_lease_must_remain(resolved):
-            store.release_target_operation_lease(
-                operation_id=operation.operation_id,
-                holder_token=holder_token,
-                reason=f"native_project_reconciled_{resolved.state.casefold()}",
-            )
-        else:
-            store.park_target_operation_lease(
-                operation_id=operation.operation_id,
-                holder_token=holder_token,
-                reason="native_project_recovery_still_uncertain",
-            )
-        store.append_event(
-            event_type="native_project.reconciled",
-            payload={
-                "nativeProjectId": resolved.id,
-                "operationId": resolved.operation_id,
-                "state": resolved.state.casefold(),
-                "identityVerified": resolved.result.get("identityVerified"),
-            },
-        )
-        return NativeProjectReconciliationV1(
-            operation=_native_project_operation_v1(resolved),
-            reconciled=resolved.state != "QUARANTINED",
-        )
-
-    @app.post(
-        "/api/v1/native-projects/{native_project_id}/resume",
-        response_model=NativeProjectResumedV1,
-    )
-    async def resume_native_project_v1(
-        native_project_id: str,
-        body: ResumeNativeProjectRequestV1,
-        request: Request,
-        _csrf: None = Depends(require_browser_csrf),
-        _run_guard: None = Depends(engineering_target_run_guard),
-    ) -> NativeProjectResumedV1:
-        nonlocal active_engineering_session, active_workspace
-        operation = native_project_repository.get(native_project_id)
-        if operation is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="native project operation not found")
-        if operation.state not in {"QUARANTINED", "COMPLETED"}:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="only a quarantined or unbound completed native project can be resumed")
-        holder_token = str(uuid.uuid4())
-        try:
-            simulation_plan_revision = None
-            if body.simulation_reviewed_plan is not None:
-                binding = body.simulation_reviewed_plan
-                current_brief_digest, current_attachment_digest = (
-                    current_project_plan_authority_digests(binding.conversation_id)
-                )
-                if (
-                    binding.project_brief_digest != current_brief_digest
-                    or binding.attachment_revision_digest != current_attachment_digest
-                ):
-                    raise ProjectPlanReviewConflict(
-                        "simulation plan brief or attachment revisions changed after review"
-                    )
-                _review, simulation_artifact = store.require_reviewed_project_plan(
-                    conversation_id=binding.conversation_id,
-                    message_id=binding.message_id,
-                    plan_digest=binding.plan_digest,
-                    reviewed_section_ids=binding.reviewed_section_ids,
-                    reviewed_item_ids=binding.reviewed_item_ids,
-                    project_brief_digest=binding.project_brief_digest,
-                    attachment_revision_digest=binding.attachment_revision_digest,
-                    expected_handoff_native_project_id=operation.operation_id,
-                )
-                stored = operation.request
-                candidate_spec = NativeProjectSpec(
-                    operation_id=operation.operation_id,
-                    project_name=str(stored["projectName"]),
-                    workspace_parent=Path(str(stored["workspaceParent"])),
-                    plc_series=str(stored["plcSeries"]),
-                    cpu_model=str(stored["cpuModel"]),
-                    program_name=str(stored["programName"]),
-                    language=str(stored["language"]),
-                    description=str(stored["description"]),
-                    xg5000_pid=int(stored["xg5000Pid"]),
-                    xg5000_hwnd=int(stored["xg5000Hwnd"]),
-                    planning_conversation_id=binding.conversation_id,
-                    planning_message_id=binding.message_id,
-                    planning_plan_digest=binding.plan_digest,
-                    reviewed_section_ids=tuple(binding.reviewed_section_ids),
-                    reviewed_item_ids=tuple(binding.reviewed_item_ids),
-                    project_brief_digest=binding.project_brief_digest,
-                    attachment_revision_digest=binding.attachment_revision_digest,
-                    planning_artifact=simulation_artifact,
-                )
-                candidate_bundle = native_project_service.build_bundle(candidate_spec)
-                simulation_plan_revision = (
-                    native_project_service.prepare_simulation_plan_revision(
-                        operation,
-                        candidate_bundle,
-                        actor_id=_request_actor_id(request),
-                    )
-                )
-            store.acquire_target_operation_lease(
-                operation_id=operation.operation_id,
-                # Resume continues the original native-project lifecycle.  Keeping
-                # this owner kind lets this exact quarantined operation reclaim its
-                # own parked create lease, while other operations remain blocked.
-                owner_kind="native_project_create",
-                holder_token=holder_token,
-                target_identity=_native_project_target_lease_identity(operation),
-            )
-            resumed = await native_project_service.resume(
-                operation.operation_id,
-                actor_id=_request_actor_id(request),
-                pid=body.pid,
-                hwnd=body.hwnd,
-                expected_request_digest=body.expected_request_digest,
-                reopened_pid=body.reopened_pid,
-                reopened_hwnd=body.reopened_hwnd,
-                run_simulation=body.run_simulation,
-                simulation_plan_revision=simulation_plan_revision,
-            )
-        except (
-            NativeProjectConflict,
-            NativeProjectPreconditionError,
-            ProjectPlanReviewConflict,
-        ) as exc:
-            store.park_target_operation_lease(
-                operation_id=operation.operation_id,
-                holder_token=holder_token,
-                reason="native_project_resume_rejected",
-            )
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-        except TargetOperationLeaseConflict as exc:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-        except BaseException:
-            store.park_target_operation_lease(
-                operation_id=operation.operation_id,
-                holder_token=holder_token,
-                reason="native_project_resume_interrupted",
-            )
-            raise
-        if _native_project_target_lease_must_remain(resumed):
-            store.park_target_operation_lease(
-                operation_id=operation.operation_id,
-                holder_token=holder_token,
-                reason="native_project_resume_requires_recovery",
-            )
-        else:
-            store.release_target_operation_lease(
-                operation_id=operation.operation_id,
-                holder_token=holder_token,
-                reason=f"native_project_resume_{resumed.state.casefold()}",
-            )
-        if resumed.state == "COMPLETED":
-            reopen = resumed.result.get("reopenVerification")
-            accepted_session = (
-                reopen.get("session")
-                if isinstance(reopen, dict)
-                else None
-            )
-            reopened_workspace = (
-                reopen.get("workspace")
-                if isinstance(reopen, dict)
-                else None
-            )
-            if (
-                isinstance(reopen, dict)
-                and reopen.get("state") == "verified"
-                and isinstance(accepted_session, dict)
-                and isinstance(reopened_workspace, dict)
-            ):
-                workspace = _local_workspace_v1(reopened_workspace)
-                if (
-                    Path(str(accepted_session.get("project_path") or "")).resolve()
-                    == Path(workspace.working_copy.path).resolve()
-                    and str(accepted_session.get("project_hash") or "").casefold()
-                    == workspace.working_copy.current_sha256.casefold()
-                ):
-                    bind_engineering_session(accepted_session)
-                    active_workspace = workspace.model_dump(mode="json")
-                    store.set_host_state("active_workspace", active_workspace)
-                else:
-                    active_engineering_session = None
-                    execution_broker.clear_agent_session()
-            else:
-                active_engineering_session = None
-                execution_broker.clear_agent_session()
-        store.append_event(
-            event_type="native_project.resumed",
-            payload={
-                "nativeProjectId": resumed.id,
-                "operationId": resumed.operation_id,
-                "state": resumed.state.casefold(),
-                "lifecycleMode": resumed.result.get("resumeProvenance", {}).get("lifecycleMode")
-                if isinstance(resumed.result.get("resumeProvenance"), dict)
-                else None,
-            },
-        )
-        store.append_event(
-            event_type="host.status",
-            payload=current_status_v1().model_dump(mode="json", by_alias=True),
-        )
-        return NativeProjectResumedV1(
-            operation=_native_project_operation_v1(resumed),
-            resumed=resumed.state != "QUARANTINED",
-        )
 
     @app.post(
         "/api/v1/xg5000/launch-idle",
@@ -16272,6 +14250,7 @@ def create_app(
                 {
                     "confirm_idle_launch": True,
                     "timeout_seconds": body.timeout_seconds,
+                    "launch_mode": body.launch_mode,
                 },
             )
             if not isinstance(raw, dict):
@@ -16282,16 +14261,23 @@ def create_app(
                     _launch_idle_xg5000_attention(
                         raw,
                         receipt_digest=receipt_digest,
+                        launch_mode=body.launch_mode,
                     )
                 )
             else:
                 outcome = _launch_idle_xg5000_response(
                     raw,
                     receipt_digest=receipt_digest,
+                    launch_mode=body.launch_mode,
                 )
             _validate_launched_xg5000_identity(outcome.launched_identity)
             if outcome.idle_binding is not None:
                 _validate_idle_xg5000_binding(outcome.idle_binding)
+                if any(
+                    outcome.idle_binding[field] != outcome.launched_identity[field]
+                    for field in ("pid", "process_create_time", "executable")
+                ):
+                    raise ValueError("MCP idle binding does not match its launched child")
             if isinstance(outcome, LaunchIdleXG5000AttentionV1):
                 store.append_event(
                     event_type="xg5000.idle_launch_needs_attention",
@@ -16302,6 +14288,8 @@ def create_app(
                         "launchedIdentity": outcome.launched_identity,
                         "idleBinding": outcome.idle_binding,
                         "launchAction": outcome.launch_action,
+                        "launchMode": outcome.launch_mode,
+                        "noExistingInstances": outcome.no_existing_instances,
                         "processExited": outcome.process_exited,
                         "processTerminated": False,
                     },
@@ -16314,6 +14302,8 @@ def create_app(
                         "launchedIdentity": outcome.launched_identity,
                         "idleBinding": outcome.idle_binding,
                         "launchAction": outcome.launch_action,
+                        "launchMode": outcome.launch_mode,
+                        "noExistingInstances": outcome.no_existing_instances,
                         "processExited": outcome.process_exited,
                         "processTerminated": False,
                     },
@@ -16326,6 +14316,8 @@ def create_app(
                     "launchedIdentity": outcome.launched_identity,
                     "idleBinding": dict(outcome.idle_binding),
                     "launchAction": outcome.launch_action,
+                    "launchMode": outcome.launch_mode,
+                    "noExistingInstances": outcome.no_existing_instances,
                     "workspaceBound": False,
                     "processTerminated": False,
                 },
@@ -16334,7 +14326,7 @@ def create_app(
         except MCPToolError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="the blank XG5000 launch could not be verified",
+                detail=_idle_launch_failure_detail(exc),
             ) from exc
         except (TypeError, ValueError) as exc:
             raise HTTPException(
@@ -16357,34 +14349,14 @@ def create_app(
             and isinstance(active_workspace.get("working_copy"), dict)
             else None
         )
-        saved_build_rebind_operation_id = (
-            str(active_workspace["provenance"]["native_project_id"])
-            if (
-                not body.allow_unbound_existing_target
-                and body.project_path is None
-                and body.project_hash is None
-                and isinstance(active_workspace, dict)
-                and isinstance(active_workspace.get("provenance"), dict)
-                and isinstance(
-                    active_workspace["provenance"].get("native_project_id"), str
-                )
-                and active_workspace["provenance"]["native_project_id"]
-            )
-            else None
-        )
+        pass
 
         def parked_native_reopen_expectation() -> dict[str, str] | None:
             """Return only the durable fresh-reopen identity for a read attach."""
 
             parked_lease = store.active_target_operation_lease()
-            if not (
-                isinstance(parked_lease, dict)
-                and parked_lease.get("owner_kind") == "native_project_create"
-                and parked_lease.get("state") == "STALE_BLOCKED"
-                and isinstance(parked_lease.get("operation_id"), str)
-            ):
-                return None
-            operation = native_project_repository.get(parked_lease["operation_id"])
+            return None
+            operation = None
             if operation is None or not isinstance(operation.result, dict):
                 return None
             reopen = operation.result.get("reopenVerification")
@@ -16470,17 +14442,9 @@ def create_app(
             arguments["workspace_id"] = active_workspace["workspace_id"]
         try:
             result = (
-                await native_project_service.rebind_completed_bound_analysis_session(
-                    saved_build_rebind_operation_id,
-                    actor_id=_request_actor_id(request),
-                    pid=body.pid,
-                    hwnd=body.hwnd,
-                    active_workspace=active_workspace,
-                )
-                if saved_build_rebind_operation_id is not None
-                else await mcp.call_read_tool("xg5000.attach", arguments)
+                await mcp.call_read_tool("xg5000.attach", arguments)
             )
-        except (MCPToolError, NativeProjectConflict) as exc:
+        except MCPToolError as exc:
             logger.warning(
                 "XG5000 analysis rebind failed: %s",
                 exc,
@@ -16526,58 +14490,7 @@ def create_app(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=detail,
             )
-        if saved_build_rebind_operation_id is not None:
-            handoff_conversation = store.get_engineering_handoff_conversation(
-                saved_build_rebind_operation_id
-            )
-            if handoff_conversation is not None:
-                try:
-                    if not (
-                        isinstance(active_workspace, dict)
-                        and isinstance(active_workspace.get("workspace_id"), str)
-                        and isinstance(active_workspace.get("revision_id"), str)
-                        and isinstance(validated.get("session_id"), str)
-                    ):
-                        raise NativeProjectConflict(
-                            "saved-build analysis rebind has no exact conversation target"
-                        )
-                    rebound_target = (
-                        str(active_workspace["workspace_id"]),
-                        str(active_workspace["revision_id"]),
-                        str(validated["session_id"]),
-                    )
-                    planning_conversation_id, raw_provenance = (
-                        accepted_native_project_handoff(
-                            saved_build_rebind_operation_id,
-                            rebound_target,
-                            engineering_session=validated,
-                        )
-                    )
-                    provenance = EngineeringConversationHandoffV1.model_validate(
-                        raw_provenance
-                    ).model_dump(mode="json", by_alias=True)
-                    store.create_engineering_handoff_conversation(
-                        title=handoff_conversation.title,
-                        native_project_id=saved_build_rebind_operation_id,
-                        planning_conversation_id=planning_conversation_id,
-                        workspace_id=rebound_target[0],
-                        revision_id=rebound_target[1],
-                        engineering_session_id=rebound_target[2],
-                        provenance=provenance,
-                    )
-                except (NativeProjectConflict, TypeError, ValueError) as exc:
-                    logger.warning(
-                        "saved-build engineering conversation rebind failed: %s",
-                        exc,
-                        exc_info=True,
-                    )
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail=(
-                            "완료된 프로젝트의 에이전트 대화를 현재 XG5000 "
-                            "읽기 세션에 다시 연결하지 못했습니다."
-                        ),
-                    ) from exc
+        pass
         clear_ls_controller_target()
         session = bind_engineering_session(validated)
         store.append_event(
@@ -16589,133 +14502,6 @@ def create_app(
         )
         return AttachXG5000ResponseV1(session=session)
 
-    @app.post(
-        "/api/v1/engineering/offline-candidate-session",
-        response_model=PrepareOfflineCandidateSessionResponseV1,
-    )
-    async def prepare_offline_candidate_session_v1(
-        request: Request,
-        body: PrepareOfflineCandidateSessionRequestV1,
-        _csrf: None = Depends(require_browser_csrf),
-        _target_lease: None = Depends(target_switch_lease),
-    ) -> PrepareOfflineCandidateSessionResponseV1:
-        """Bind the displayed saved-build copy for a user-requested candidate.
-
-        This performs no edit and grants no direct mutation capability.  It
-        replaces the analysis-only rebind with one Host-signed binding that the
-        existing offline approval broker can later use for this exact target.
-        """
-
-        session_before_bind = active_engineering_session
-        if not _engineering_session_read_ready(session_before_bind):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="현재 XG5000 읽기 세션을 먼저 확인해 주세요.",
-            )
-        if not isinstance(active_workspace, dict):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="오프라인 후보에는 현재 보호 작업공간이 필요합니다.",
-            )
-        conversation_before_bind = store.get_conversation(body.conversation_id)
-        if conversation_before_bind is None:
-            raise HTTPException(status_code=404, detail="현재 대화를 찾지 못했습니다.")
-        if (
-            conversation_before_bind.workflow != "engineering"
-            or conversation_before_bind.workspace_id != active_workspace.get("workspace_id")
-            or conversation_before_bind.revision_id != active_workspace.get("revision_id")
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="선택한 대화와 현재 작업 복사본이 다릅니다.",
-            )
-        provenance = active_workspace.get("provenance")
-        operation_id = (
-            str(provenance.get("native_project_id") or "")
-            if isinstance(provenance, dict)
-            else ""
-        )
-        try:
-            pid = int(session_before_bind["pid"])
-            hwnd = int(session_before_bind["hwnd"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="현재 분석 세션의 PID/HWND 정체성이 없습니다.",
-            ) from exc
-        if not _is_canonical_uuid(operation_id) or pid <= 0 or hwnd <= 0:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="현재 분석 대상은 오프라인 후보로 준비할 수 없습니다.",
-            )
-        try:
-            result = await native_project_service.rebind_completed_bound_analysis_session(
-                operation_id,
-                actor_id=_request_actor_id(request),
-                pid=pid,
-                hwnd=hwnd,
-                active_workspace=active_workspace,
-                offline_candidate_revision=True,
-            )
-        except (MCPToolError, NativeProjectConflict) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    "현재 XG5000 창을 보호 작업 복사본의 오프라인 후보 대상으로 "
-                    "다시 검증하지 못했습니다. 창이나 작업공간은 변경하지 않았습니다."
-                ),
-            ) from exc
-        working_copy = active_workspace.get("working_copy")
-        validated = _validated_engineering_session_result(
-            result,
-            pid=pid,
-            hwnd=hwnd,
-            project_path=(
-                str(working_copy["path"])
-                if isinstance(working_copy, dict) and isinstance(working_copy.get("path"), str)
-                else None
-            ),
-            project_hash=(
-                str(working_copy["current_sha256"])
-                if isinstance(working_copy, dict)
-                and isinstance(working_copy.get("current_sha256"), str)
-                else None
-            ),
-        )
-        if validated is None or not _engineering_session_identity_verified(validated):
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="MCP가 오프라인 후보 PID/작업 복사본 결합을 완전히 확인하지 못했습니다.",
-            )
-        try:
-            store.rebind_engineering_conversation_session(
-                conversation_id=body.conversation_id,
-                workspace_id=str(active_workspace["workspace_id"]),
-                revision_id=str(active_workspace["revision_id"]),
-                engineering_session_id=str(validated["session_id"]),
-                reason="offline_candidate_preparation",
-            )
-        except EngineeringMissionConflict as exc:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-        clear_ls_controller_target()
-        bound_session = bind_engineering_session(validated)
-        store.append_event(
-            event_type="engineering.offline_candidate_bound",
-            payload={
-                "actorId": _request_actor_id(request),
-                "conversationId": body.conversation_id,
-                "workspaceId": active_workspace.get("workspace_id"),
-                "revisionId": active_workspace.get("revision_id"),
-                "nativeProjectId": operation_id,
-                "pid": pid,
-                "hwnd": hwnd,
-            },
-        )
-        store.append_event(
-            event_type="host.status",
-            payload=current_status_v1().model_dump(mode="json", by_alias=True),
-        )
-        return PrepareOfflineCandidateSessionResponseV1(session=bound_session)
 
     @app.post(
         "/api/v1/xg5000/reviewed-no-save-close",
@@ -16738,6 +14524,14 @@ def create_app(
             "confirm_no_save": True,
             "timeout_seconds": body.timeout_seconds,
         }
+        prior_terminal_cleanup = bool(
+            getattr(request.state, "prior_terminal_reviewed_close", False)
+        )
+        require_no_discard = prior_terminal_cleanup or bool(
+            getattr(request.state, "explicit_clean_reviewed_close", False)
+        )
+        if require_no_discard:
+            arguments["discard_unsaved_changes"] = False
         for field in ("session_id", "project_path", "project_hash"):
             value = getattr(body, field)
             if value is not None:
@@ -16753,6 +14547,19 @@ def create_app(
                     arguments[field] = value.strip()
         try:
             raw = await mcp.call_workspace_tool("xg5000.reviewed_no_save_close", arguments)
+            if (
+                require_no_discard
+                and isinstance(raw, dict)
+                and raw.get("source_closed") is False
+                and raw.get("discardUnsavedChanges") is False
+                and raw.get("unsavedChangesDiscarded") is False
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "The reviewed editor has unsaved changes; safe cleanup was canceled."
+                    ),
+                )
             receipt_digest = _canonical_json_digest(raw)
             completed = _reviewed_no_save_close_response(
                 raw,
@@ -16768,67 +14575,20 @@ def create_app(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="MCP returned an invalid reviewed no-save close receipt",
             ) from exc
-        binding = completed.reviewed_binding
-        if (
-            binding.get("pid") != body.pid
-            or binding.get("hwnd") != body.hwnd
-            or not isinstance(binding.get("process_create_time"), (int, float))
-            or abs(float(binding["process_create_time"]) - body.process_create_time) >= 0.001
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="MCP reviewed close receipt binding does not match the confirmed target",
-            )
-        if any(binding.get(field) != arguments[field] for field in ("session_id", "project_path", "project_hash") if field in arguments):
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="MCP reviewed close receipt context does not match the confirmed target",
-            )
+        binding = _validate_reviewed_no_save_close_binding(
+            raw,
+            pid=body.pid,
+            hwnd=body.hwnd,
+            process_create_time=body.process_create_time,
+            context={
+                field: arguments[field]
+                for field in ("session_id", "project_path", "project_hash")
+                if field in arguments
+            },
+            require_no_discard=require_no_discard,
+        )
         recovery_authority = store.selected_target_recovery_authority()
-        if (
-            recovery_authority is not None
-            and recovery_authority.get("owner_kind") == "native_project_create"
-            and recovery_authority.get("state") == "QUARANTINED"
-        ):
-            quarantined_operation = native_project_repository.get(
-                str(recovery_authority.get("operation_id") or "")
-            )
-            if (
-                quarantined_operation is not None
-                and quarantined_operation.state == "QUARANTINED"
-                and quarantined_operation.request.get("xg5000Pid") == body.pid
-                and quarantined_operation.request.get("xg5000Hwnd") == body.hwnd
-            ):
-                abandoned_result = dict(quarantined_operation.result)
-                recovery = (
-                    dict(abandoned_result.get("recovery"))
-                    if isinstance(abandoned_result.get("recovery"), dict)
-                    else {}
-                )
-                recovery["reviewedNoSaveClose"] = {
-                    "binding": dict(binding),
-                    "receiptDigest": receipt_digest,
-                }
-                abandoned_result["recovery"] = recovery
-                native_project_repository.resolve_quarantine(
-                    quarantined_operation.operation_id,
-                    state="FAILED",
-                    result=abandoned_result,
-                    error_code="NATIVE_PROJECT_REVIEWED_NO_SAVE_CLOSED",
-                    error_detail=(
-                        "The exact quarantined XG5000 target was explicitly closed "
-                        "without saving; the incomplete native build was abandoned."
-                    ),
-                )
-                store.append_event(
-                    event_type="native_project.reviewed_no_save_abandoned",
-                    payload={
-                        "nativeProjectId": quarantined_operation.id,
-                        "operationId": quarantined_operation.operation_id,
-                        "binding": dict(binding),
-                        "receiptDigest": receipt_digest,
-                    },
-                )
+        pass
         store.append_event(
             event_type="xg5000.reviewed_no_save_closed",
             payload={
@@ -16841,7 +14601,8 @@ def create_app(
         )
         active_session_lifetime = _engineering_session_process_create_time(session)
         if (
-            isinstance(session, dict)
+            not prior_terminal_cleanup
+            and isinstance(session, dict)
             and session.get("pid") == body.pid
             and session.get("hwnd") == body.hwnd
             and (

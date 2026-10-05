@@ -9,13 +9,14 @@ import json
 import logging
 import math
 import os
+import re
 import secrets
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from controlstudio_contracts import MCPProductManifestV1
+from controlstudio_contracts import MCPProductManifestV1, ProgramCheckFailureObservationV1
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 from fastmcp.exceptions import ToolError
@@ -54,24 +55,27 @@ AGENT_TOOL_NAMES: dict[str, str] = {
     "get_xg5000_session_status": "xg5000.session_status",
     "get_simulator_target_status": "sim.target_status",
     "list_project_programs": "project.list_programs",
+    "inspect_project_symbols": "project.inspect_symbols_ui",
+    "open_project_symbols": "project.open_symbols_ui",
+    "export_project_symbols": "project.export_symbols",
     "focus_xg5000_program": "program.focus",
     "read_ladder_program": "program.read_ld",
     "inspect_project_hardware_context": "project.hardware_context",
     "inspect_project_structure": "project.structure_index",
     "search_project_evidence": "project.search",
     "analyze_change_target": "program.change_target_analysis",
-    "compile_instruction_batch_patch_candidate": (
-        "program.compile_mne_instruction_batch_patch_candidate"
-    ),
-    "compile_instruction_patch_candidate": "program.compile_mne_instruction_patch_candidate",
-    "compile_rung_patch_candidate": "program.compile_mne_rung_patch_candidate",
-    "compile_series_guard_candidate": "program.compile_mne_series_guard_candidate",
+    
+    
+    
+    
     "build_program_logic_graph": "program.logic_graph",
     "build_program_state_model": "program.state_model",
     "trace_device_causal_impact": "device.causal_impact",
     "find_device_references": "device.references",
     "build_project_behavior_report": "project.behavior_report",
     "capture_project_snapshot": "project.snapshot",
+    "inspect_xg5000_modal": "xg5000.inspect_owned_modal",
+    "cancel_xg5000_modal": "xg5000.cancel_owned_modal",
     "get_ls_controller_status": "controller.ls.status",
     "read_ls_controller_devices": "controller.ls.read",
     "trace_ls_controller_devices": "controller.ls.trace",
@@ -87,17 +91,18 @@ AGENT_CONTROLLER_MCP_TOOLS = frozenset(
         "controller.ls.trace",
     }
 )
-AGENT_READ_ANALYZE_MCP_TOOLS = frozenset(AGENT_TOOL_NAMES.values())
+AGENT_MODAL_MUTATION_MCP_TOOLS = frozenset({"xg5000.cancel_owned_modal"})
+AGENT_READ_ANALYZE_MCP_TOOLS = frozenset(AGENT_TOOL_NAMES.values()) - AGENT_MODAL_MUTATION_MCP_TOOLS
 HOST_SESSION_MCP_TOOLS = frozenset({"xg5000.instances", "xg5000.attach"})
 HOST_NAVIGATION_MCP_TOOLS = frozenset(
-    {"program.focus_location", "program.focus_mne_anchor"}
+    {"program.focus_location", }
 )
 HOST_WORKSPACE_MCP_TOOLS = frozenset(
     {
-        "project.create_native",
-        "project.resume_native",
-        "project.verify_native_reopen",
-        "project.verify_native_simulation",
+        
+        
+        
+        
         "workspace.open_native",
         "workspace.status",
         "workspace.compare",
@@ -115,14 +120,14 @@ HOST_CHANGE_MCP_TOOLS = frozenset(
         "project.backup",
         "program.plan_change",
         "program.apply_ld_patch",
-        "program.plan_mne_replacement",
-        "program.plan_mne_instruction_batch_patch",
-        "program.plan_mne_instruction_patch",
-        "program.plan_mne_rung_patch",
-        "program.plan_mne_series_guard_patch",
-        "program.apply_mne_replacement",
-        "program.verify_mne_replacement",
-        "program.rollback_mne_replacement",
+        
+        
+        
+        
+        
+        
+        
+        
         "project.diff",
         "project.validate_change",
         "project.verify_ld_operand_reopen",
@@ -137,6 +142,7 @@ HOST_RECOVERY_MCP_TOOLS = frozenset(
     {
         "change.release_terminal_lease",
         "change.transaction_lookup",
+        "change.observe_quarantined_target",
         "change.restore_verified_quarantined_backup",
         "xg5000.attach",
         "xg5000.session_status",
@@ -157,6 +163,7 @@ READ_ANALYZE_MCP_TOOLS = (
 )
 REQUIRED_PRODUCT_MCP_TOOLS = (
     READ_ANALYZE_MCP_TOOLS
+    | AGENT_MODAL_MUTATION_MCP_TOOLS
     | HOST_WORKSPACE_MCP_TOOLS
     | HOST_CHANGE_MCP_TOOLS
     | HOST_RECOVERY_MCP_TOOLS
@@ -181,49 +188,52 @@ AGENT_TOOL_REQUIRED_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
     "xg5000.session_status": ("session_id",),
     "sim.target_status": SESSION_IDENTITY_FIELDS,
     "project.list_programs": SESSION_IDENTITY_FIELDS,
+    "project.inspect_symbols_ui": SESSION_IDENTITY_FIELDS,
+    "project.open_symbols_ui": SESSION_IDENTITY_FIELDS,
+    "project.export_symbols": SESSION_IDENTITY_FIELDS,
     "program.focus": SESSION_IDENTITY_FIELDS,
     "program.focus_location": SESSION_IDENTITY_FIELDS,
-    "program.focus_mne_anchor": SESSION_IDENTITY_FIELDS,
+    
     "program.read_ld": SESSION_IDENTITY_FIELDS,
     "project.hardware_context": SESSION_IDENTITY_FIELDS,
     "project.structure_index": SESSION_IDENTITY_FIELDS,
     "project.search": SESSION_IDENTITY_FIELDS,
     "program.change_target_analysis": SESSION_IDENTITY_FIELDS,
-    "program.compile_mne_instruction_batch_patch_candidate": SESSION_IDENTITY_FIELDS,
-    "program.compile_mne_instruction_patch_candidate": SESSION_IDENTITY_FIELDS,
-    "program.compile_mne_rung_patch_candidate": SESSION_IDENTITY_FIELDS,
-    "program.compile_mne_series_guard_candidate": SESSION_IDENTITY_FIELDS,
+    
+    
+    
+    
     "program.logic_graph": SESSION_IDENTITY_FIELDS,
     "program.state_model": SESSION_IDENTITY_FIELDS,
     "device.causal_impact": SESSION_IDENTITY_FIELDS,
     "device.references": SESSION_IDENTITY_FIELDS,
     "project.behavior_report": SESSION_IDENTITY_FIELDS,
     "project.snapshot": SESSION_IDENTITY_FIELDS,
+    "xg5000.inspect_owned_modal": SESSION_IDENTITY_FIELDS,
+    "xg5000.cancel_owned_modal": SESSION_IDENTITY_FIELDS,
 }
 CONTROLLER_ENDPOINT_FIELDS = ("host", "port", "timeout_seconds")
 
 MUTATING_MCP_TOOLS = frozenset(
     {
-        "project.create_native",
-        "project.resume_native",
+        
+        
         "controller.begin_restore_handoff",
         "controller.complete_restore_handoff",
-        "project.verify_native_reopen",
-        "project.verify_native_simulation",
+        
+        
         "workspace.open_native",
         "xg5000.open_project",
         "xg5000.cleanup_abandoned_workspace_launches",
         "project.backup",
         "program.apply_ld_patch",
-        "program.apply_mne_replacement",
-        "program.verify_mne_replacement",
-        "program.rollback_mne_replacement",
-        "program.probe_mne_replacement_capability",
+        
+        
+        
+        
         "project.validate_change",
         "project.rollback_change",
         "project.diff",
-        "program.insert_blank",
-        "program.to_ld",
         "program.check",
         "project.commit_save",
         "change.commit",
@@ -236,6 +246,7 @@ MUTATING_MCP_TOOLS = frozenset(
         "sim.stop",
         "xg5000.close_idle_instance",
         "xg5000.launch_idle",
+        "xg5000.cancel_owned_modal",
     }
 )
 
@@ -261,7 +272,15 @@ class MCPToolRejectedError(MCPToolError):
         self.mcp_error_payload = mcp_error_payload
 
 
-def _exact_tool_error_payload(value: str) -> dict[str, Any] | None:
+class MCPToolContractError(MCPToolError):
+    """The connected MCP returned content that violates its declared schema."""
+
+
+
+
+def _exact_tool_error_payload(
+    value: str, *, tool_name: str | None = None,
+) -> dict[str, Any] | None:
     """Accept only the complete stdio ToolError envelope, never a substring."""
 
     try:
@@ -274,18 +293,41 @@ def _exact_tool_error_payload(value: str) -> dict[str, Any] | None:
         or payload.get("schema_version") != "1.0"
         or payload.get("status") != "error"
         or not isinstance(payload.get("error"), dict)
-        or set(payload["error"]) != {"type", "message"}
+        or set(payload["error"]) not in (
+            {"type", "message"}, {"type", "message", "code"},
+            {"type", "message", "code", "programCheckFailure"},
+        )
         or not isinstance(payload["error"].get("type"), str)
         or not isinstance(payload["error"].get("message"), str)
+        or (
+            "code" in payload["error"]
+            and (
+                not isinstance(payload["error"].get("code"), str)
+                or re.fullmatch(r"[A-Za-z0-9_]{1,120}", payload["error"]["code"]) is None
+            )
+        )
     ):
         return None
+    error = {
+        "type": payload["error"]["type"],
+        "message": payload["error"]["message"],
+    }
+    if "code" in payload["error"]:
+        error["code"] = payload["error"]["code"]
+    if "programCheckFailure" in payload["error"]:
+        if error.get("code") != "PROGRAM_CHECK_FAILED":
+            return None
+        try:
+            observation = ProgramCheckFailureObservationV1.model_validate(
+                payload["error"]["programCheckFailure"],
+            )
+        except (ValidationError, TypeError, ValueError):
+            return None
+        error["programCheckFailure"] = observation.model_dump(mode="json", by_alias=True)
     return {
         "schema_version": "1.0",
         "status": "error",
-        "error": {
-            "type": payload["error"]["type"],
-            "message": payload["error"]["message"],
-        },
+        "error": error,
     }
 
 
@@ -307,6 +349,34 @@ def _log_bounded_change_rejection(
 
 class MCPTransportError(MCPToolError):
     """The MCP transport is unavailable or failed during a request."""
+
+
+def _is_sdk_output_schema_error(name: str, exc: Exception) -> bool:
+    """Recognize only FastMCP's bounded RuntimeError wrapper for schema checks."""
+
+    if type(exc) is not RuntimeError:
+        return False
+    message = str(exc)
+    if message == (
+        f"Tool {name} has an output schema but did not return structured content"
+    ):
+        return True
+    prefixes = (
+        f"Invalid structured content returned by tool {name}:",
+        f"Invalid schema for tool {name}:",
+    )
+    if not message.startswith(prefixes):
+        return False
+
+    # FastMCP wraps jsonschema's two validation exception types in a plain
+    # RuntimeError. Requiring that cause avoids treating unrelated RuntimeError
+    # messages as a contract fault; neither message nor cause is exposed.
+    cause = exc.__cause__ or exc.__context__
+    return (
+        cause is not None
+        and type(cause).__module__.startswith("jsonschema.")
+        and type(cause).__name__ in {"ValidationError", "SchemaError"}
+    )
 
 
 def _monorepo_mcp_command() -> str | None:
@@ -487,6 +557,9 @@ class MCPGateway:
     def clear_agent_session(self) -> None:
         self._active_session_identity = None
 
+    def diagnostic_session(self, session: dict[str, Any]) -> MCPDiagnosticSession:
+        return MCPDiagnosticSession(self, session)
+
     def bind_controller_endpoint(
         self,
         endpoint: dict[str, Any],
@@ -638,12 +711,19 @@ class MCPGateway:
                 result = await client.call_tool(name, safe_arguments)
         except ToolError as exc:
             self._controller_observation_expires_at = None
-            raise MCPToolError(f"{name} was rejected by MCP: {exc}") from exc
-        except Exception as exc:
+            payload = _exact_tool_error_payload(str(exc))
+            _log_bounded_change_rejection(name, payload)
+            raise MCPToolRejectedError(
+                f"{name} was rejected by MCP: {exc}", mcp_error_payload=payload
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - MCP SDK raises transport-specific errors
             self._controller_observation_expires_at = None
-            self._mark_connection_lost(exc)
-            raise MCPToolError(f"{name} failed because MCP disconnected") from exc
-        return self._decode_tool_result(name, result)
+            self._raise_call_failure(name, exc, error_type=MCPToolError)
+        try:
+            return self._decode_tool_result(name, result)
+        except MCPToolRejectedError as exc:
+            _log_bounded_change_rejection(name, exc.mcp_error_payload)
+            raise
 
     async def call_workspace_tool(
         self,
@@ -673,10 +753,13 @@ class MCPGateway:
                     ),
                 )
         except ToolError as exc:
-            raise MCPToolError(f"{name} was rejected by MCP: {exc}") from exc
-        except Exception as exc:
-            self._mark_connection_lost(exc)
-            raise MCPTransportError(f"{name} failed because MCP disconnected") from exc
+            payload = _exact_tool_error_payload(str(exc))
+            raise MCPToolRejectedError(
+                f"{name} was rejected by MCP: {exc}",
+                mcp_error_payload=payload,
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - MCP SDK raises transport-specific errors
+            self._raise_call_failure(name, exc, error_type=MCPTransportError)
         return self._decode_tool_result(name, result)
 
     async def call_change_tool(
@@ -695,15 +778,14 @@ class MCPGateway:
             async with self._call_lock:
                 result = await client.call_tool(name, dict(arguments or {}))
         except ToolError as exc:
-            payload = _exact_tool_error_payload(str(exc))
+            payload = _exact_tool_error_payload(str(exc), tool_name=name)
             _log_bounded_change_rejection(name, payload)
             raise MCPToolRejectedError(
                 f"{name} was rejected by MCP: {exc}",
                 mcp_error_payload=payload,
             ) from exc
-        except Exception as exc:
-            self._mark_connection_lost(exc)
-            raise MCPToolError(f"{name} failed because MCP disconnected") from exc
+        except Exception as exc:  # noqa: BLE001 - MCP SDK raises transport-specific errors
+            self._raise_call_failure(name, exc, error_type=MCPToolError)
         try:
             return self._decode_tool_result(name, result)
         except MCPToolRejectedError as exc:
@@ -732,9 +814,8 @@ class MCPGateway:
                 f"{name} was rejected by MCP: {exc}",
                 mcp_error_payload=payload,
             ) from exc
-        except Exception as exc:
-            self._mark_connection_lost(exc)
-            raise MCPToolError(f"{name} failed because MCP disconnected") from exc
+        except Exception as exc:  # noqa: BLE001 - MCP SDK raises transport-specific errors
+            self._raise_call_failure(name, exc, error_type=MCPToolError)
         try:
             return self._decode_tool_result(name, result)
         except MCPToolRejectedError as exc:
@@ -765,9 +846,8 @@ class MCPGateway:
                 result = await client.call_tool(name, safe_arguments)
         except ToolError as exc:
             raise MCPToolError(f"{name} was rejected by MCP: {exc}") from exc
-        except Exception as exc:
-            self._mark_connection_lost(exc)
-            raise MCPToolError(f"{name} failed because MCP disconnected") from exc
+        except Exception as exc:  # noqa: BLE001 - MCP SDK raises transport-specific errors
+            self._raise_call_failure(name, exc, error_type=MCPToolError)
         return self._decode_tool_result(name, result)
 
     async def call_restore_tool(
@@ -787,9 +867,8 @@ class MCPGateway:
                 result = await client.call_tool(name, dict(arguments or {}))
         except ToolError as exc:
             raise MCPToolError(f"{name} was rejected by MCP: {exc}") from exc
-        except Exception as exc:
-            self._mark_connection_lost(exc)
-            raise MCPToolError(f"{name} failed because MCP disconnected") from exc
+        except Exception as exc:  # noqa: BLE001 - MCP SDK raises transport-specific errors
+            self._raise_call_failure(name, exc, error_type=MCPToolError)
         return self._decode_tool_result(name, result)
 
     def sign_mutation_authorization(
@@ -819,6 +898,7 @@ class MCPGateway:
         arguments: dict[str, Any],
         *,
         call_tool: Any,
+        session_identity: dict[str, Any] | None = None,
     ) -> Any:
         """Execute one broker-authorized Agent proposal through the MCP wire.
 
@@ -827,10 +907,10 @@ class MCPGateway:
         serialize MCP access, and mark a broken transport unavailable.
         """
 
-        if name not in AGENT_READ_ANALYZE_MCP_TOOLS:
+        if name not in AGENT_READ_ANALYZE_MCP_TOOLS | AGENT_MODAL_MUTATION_MCP_TOOLS:
             raise MCPToolError(f"agent attempted a blocked MCP tool: {name}")
         try:
-            safe_arguments = self._safe_arguments(name, arguments)
+            safe_arguments = self._safe_arguments(name, arguments, session_identity=session_identity)
             async with self._call_lock:
                 result = await call_tool(name, safe_arguments)
         except ToolError:
@@ -843,12 +923,13 @@ class MCPGateway:
             raise
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            self._mark_connection_lost(exc)
-            raise MCPTransportError(f"{name} failed because MCP disconnected") from exc
+        except Exception as exc:  # noqa: BLE001 - MCP SDK raises transport-specific errors
+            self._raise_call_failure(name, exc, error_type=MCPTransportError)
         return result
 
-    async def execute_agent_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+    async def execute_agent_tool(
+        self, name: str, arguments: dict[str, Any], *, session_identity: dict[str, Any] | None = None,
+    ) -> Any:
         """Execute an Agent-approved read through the Host-owned MCP client.
 
         Unlike ``call_agent_tool`` this is used by the sidecar protocol bridge,
@@ -865,6 +946,7 @@ class MCPGateway:
                 name,
                 arguments,
                 call_tool=client.call_tool,
+                session_identity=session_identity,
             )
         except ToolError as exc:
             raise MCPToolRejectedError(
@@ -873,7 +955,27 @@ class MCPGateway:
             ) from exc
         return self._decode_tool_result(name, result)
 
-    def _safe_arguments(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _raise_call_failure(
+        self,
+        name: str,
+        exc: Exception,
+        *,
+        error_type: type[MCPToolError],
+    ) -> None:
+        """Separate SDK output-schema faults from actual transport failures."""
+
+        if _is_sdk_output_schema_error(name, exc):
+            # SDK RuntimeError text can embed rejected content/schema details.
+            # Expose only a bounded classification and keep MCP ready.
+            raise MCPToolContractError(
+                f"{name} returned content that violates its MCP output schema"
+            ) from None
+        self._mark_connection_lost(exc)
+        raise error_type(f"{name} failed because MCP disconnected") from exc
+
+    def _safe_arguments(
+        self, name: str, arguments: dict[str, Any], *, session_identity: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         safe_arguments = dict(arguments)
         if name in AGENT_CONTROLLER_MCP_TOOLS:
             if not self.controller_observation_current:
@@ -893,7 +995,7 @@ class MCPGateway:
             safe_arguments["access_profile"] = "analysis"
         required_identity_fields = AGENT_TOOL_REQUIRED_IDENTITY_FIELDS.get(name)
         if required_identity_fields is not None:
-            identity = self._active_session_identity
+            identity = session_identity if session_identity is not None else self._active_session_identity
             if identity is None:
                 raise MCPToolError("the agent has no Host-bound XG5000 engineering session")
             missing = [
@@ -1006,6 +1108,63 @@ class MCPGateway:
                     f"{name} MCP identity contract changed; expected required fields "
                     + ", ".join(expected_fields)
                 )
+        modal_contracts = {
+            "xg5000.inspect_owned_modal": {
+                "properties": set(SESSION_IDENTITY_FIELDS) | {"schema_version"},
+                "required": set(SESSION_IDENTITY_FIELDS),
+                "read_only": True,
+                "mutation_scope": "none",
+            },
+            "xg5000.cancel_owned_modal": {
+                "properties": set(SESSION_IDENTITY_FIELDS)
+                | {"snapshot_digest", "button_hwnd", "schema_version"},
+                "required": set(SESSION_IDENTITY_FIELDS)
+                | {"snapshot_digest", "button_hwnd"},
+                "read_only": False,
+                "mutation_scope": "owned-modal-cancel-only",
+            },
+        }
+        for name, expected in modal_contracts.items():
+            tool = tools_by_name.get(name)
+            if tool is None:
+                continue
+            schema = tool.inputSchema
+            properties = schema.get("properties")
+            required = schema.get("required")
+            meta = getattr(tool, "meta", None)
+            if (
+                not isinstance(properties, dict)
+                or set(properties) != expected["properties"]
+                or set(required or ()) != expected["required"]
+                or schema.get("additionalProperties") is not False
+                or not isinstance(meta, dict)
+                or meta.get("controlstudio/agentCallable") is not True
+                or meta.get("controlstudio/readOnly") is not expected["read_only"]
+                or meta.get("controlstudio/mutationScope") != expected["mutation_scope"]
+                or meta.get("controlstudio/controllerWrite") is not False
+            ):
+                raise MCPStartupError(f"{name} owned-modal contract changed")
+            version_schema = properties.get("schema_version")
+            if (
+                not isinstance(version_schema, dict)
+                or version_schema.get("type") != "string"
+                or "schema_version" in expected["required"]
+            ):
+                raise MCPStartupError(f"{name} schema-version contract changed")
+            if name == "xg5000.cancel_owned_modal":
+                digest_schema = properties.get("snapshot_digest")
+                button_schema = properties.get("button_hwnd")
+                if (
+                    not isinstance(digest_schema, dict)
+                    or digest_schema.get("type") != "string"
+                    or digest_schema.get("pattern") != "^[0-9a-f]{64}$"
+                    or not isinstance(button_schema, dict)
+                    or button_schema.get("type") != "integer"
+                    or button_schema.get("minimum") != 1
+                ):
+                    raise MCPStartupError(
+                        "xg5000.cancel_owned_modal selection contract changed"
+                    )
         for name in AGENT_CONTROLLER_MCP_TOOLS:
             tool = tools_by_name.get(name)
             if tool is None:
@@ -1185,7 +1344,7 @@ class MCPGateway:
                 )
         for apply_tool in (
             "program.apply_ld_patch",
-            "program.apply_mne_replacement",
+            
         ):
             apply_contract = contracts.get(apply_tool)
             if (
@@ -1214,7 +1373,7 @@ class MCPGateway:
             rendered = self._result_text(result)
             raise MCPToolRejectedError(
                 f"{name} failed: {rendered}",
-                mcp_error_payload=_exact_tool_error_payload(rendered),
+                mcp_error_payload=_exact_tool_error_payload(rendered, tool_name=name),
             )
         if result.structured_content is not None:
             return self._unwrap_success_envelope(result.structured_content)
@@ -1289,7 +1448,7 @@ class MCPGateway:
                 if client is not None:
                     try:
                         await client.__aexit__(None, None, None)
-                    except BaseException:  # noqa: BLE001 - broken transports may not close cleanly
+                    except BaseException:
                         logger.warning("Broken MCP client cleanup failed during reconnect", exc_info=True)
             if self._stopping:
                 return
@@ -1313,6 +1472,34 @@ def _mcp_environment(*, authorization_secret: str) -> dict[str, str]:
     environment = dict(os.environ)
     environment["CONTROLSTUDIO_MCP_AUTHORIZATION_SECRET"] = authorization_secret
     return environment
+
+
+class MCPDiagnosticSession:
+    """One run's journaled target, sharing transport but never global selection."""
+
+    def __init__(self, gateway: MCPGateway, session: dict[str, Any]) -> None:
+        missing = [field for field in SESSION_IDENTITY_FIELDS if not session.get(field)]
+        if missing:
+            raise MCPToolError("incomplete diagnostic session")
+        self._gateway = gateway
+        self._identity = {field: session[field] for field in SESSION_IDENTITY_FIELDS}
+
+    @property
+    def agent_mcp_client(self) -> Client[Any]:
+        return self._gateway.agent_mcp_client
+
+    @property
+    def agent_session_identity_snapshot(self) -> dict[str, Any]:
+        return dict(self._identity)
+
+    @property
+    def controller_endpoint_snapshot(self) -> None:
+        return None
+
+    async def execute_agent_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        if name not in {"xg5000.session_status", "xg5000.inspect_owned_modal", "xg5000.cancel_owned_modal"}:
+            raise MCPToolError("tool is not allowed in quarantine diagnostics")
+        return await self._gateway.execute_agent_tool(name, arguments, session_identity=self._identity)
 
 
 def _mcp_stdio_transport(
