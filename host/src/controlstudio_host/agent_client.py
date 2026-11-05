@@ -11,6 +11,8 @@ import math
 import os
 import re
 import shlex
+import subprocess
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
@@ -18,11 +20,15 @@ from pathlib import Path
 from typing import Any, get_args
 
 from controlstudio_contracts import (
+    AGENT_PROTOCOL_VERSION_V1,
     ExternalToolRequestV1,
     ProgramCheckFailureObservationV1,
 )
 from controlstudio_contracts.checkpoint_transfer import CheckpointTransfer, checkpoint_chunks
-from controlstudio_contracts.native_preflight import validate_native_preflight_diagnostic
+from controlstudio_contracts.native_failure import (
+    NativeFailureProtocolError,
+    validate_native_failure,
+)
 from pydantic import ValidationError
 
 from .planning_work_memory import WorkItem
@@ -977,14 +983,25 @@ from .agent_protocol import (
     MAX_PROTOCOL_LINE_BYTES,
     AgentProtocolError,
     AgentProtocolMessage,
+    ValidatedNativeCheckpoint,
     assert_agent_safe_payload,
+    assert_native_public_payload,
     decode_message,
     encode_message,
+    native_checkpoint_boundary,
+    native_checkpoint_history_extends,
     parse_manifest,
     scrub_agent_tool_result,
+    scrub_native_tool_result,
+    validated_native_checkpoint_append,
+    validated_native_checkpoint_snapshot,
+    validated_native_checkpoint_transfer,
     validated_transcript_checkpoint,
 )
 from .agent_runtime import (
+    _PROVIDER_RUNTIME_ERROR_CODES,
+    _PROVIDER_RUNTIME_ERROR_TYPES,
+    _PROVIDER_RUNTIME_EXCEPTION_CLASSES,
     AgentOutputContractDiagnostic,
     AgentOutputContractError,
     AgentOutputValidationIssue,
@@ -998,9 +1015,10 @@ from .agent_runtime import (
     TokenCallback,
     ToolEventCallback,
     TranscriptCheckpointCallback,
+    validated_native_project_start,
 )
 from .api_models import ModelContextV1, OfflineOperandMissionV1
-from .execution_broker import ExecutionBroker
+from .execution_broker import ExecutionBroker, mcp_rejection_context
 from .mcp_client import (
     AGENT_TOOL_NAMES,
     MCPToolError,
@@ -1009,6 +1027,7 @@ from .mcp_client import (
 )
 from .model_connection import StoredModelConnection
 from .models import Message, MessageRole
+
 pass
 from .structural_evidence import (
     STRUCTURAL_ANALYSIS_EVIDENCE_SCHEMA,
@@ -1538,6 +1557,32 @@ def _safe_mcp_rejection_code(
     return code
 
 
+def _verified_mcp_native_failure(error: MCPToolRejectedError) -> dict[str, Any] | None:
+    """Copy only the validated public nativeFailure from this MCP rejection."""
+
+    payload = error.mcp_error_payload
+    if (
+        not isinstance(payload, Mapping)
+        or set(payload) != {"schema_version", "status", "error"}
+        or payload.get("schema_version") != "1.0"
+        or payload.get("status") != "error"
+    ):
+        return None
+    envelope = payload.get("error")
+    if (
+        not isinstance(envelope, Mapping)
+        or not {"type", "message", "nativeFailure"} <= set(envelope)
+        or set(envelope) - {"type", "message", "code", "nativeFailure", "programCheckFailure"}
+        or not isinstance(envelope.get("type"), str)
+        or not isinstance(envelope.get("message"), str)
+    ):
+        return None
+    try:
+        return validate_native_failure(envelope["nativeFailure"])
+    except (NativeFailureProtocolError, TypeError, ValueError):
+        return None
+
+
 _STRUCTURAL_TOOL_RESULT_PROJECTION_SCHEMA = (
     "controlstudio-structural-analysis-tool-result-projection/v1"
 )
@@ -1558,6 +1603,7 @@ _STRUCTURAL_TOOL_RESULT_GUIDANCE = (
 _OUTPUT_CONTRACT_STAGES = frozenset(
     {
         "starting",
+        "native_ld_execution",
         "engineering_analysis",
         "planning_narrative",
         "planning_native_design",
@@ -1637,6 +1683,7 @@ _WORKSPACE_EDIT_REJECTION_REASON_CODES = frozenset(
         "repeated_create_identity",
     }
 )
+_MEMORY_VALIDATION_REASON_CODES = frozenset(('memory_json_invalid', 'memory_delta_schema', 'memory_update_object', 'memory_update_fields', 'memory_entry_ref_invalid', 'memory_entry_ref_section', 'memory_entry_ref_removed', 'memory_summary_schema', 'memory_summary_entries', 'memory_claim_invalid', 'memory_reference_invalid', 'memory_summary_budget', 'memory_context_budget'))
 _RUNTIME_EXCEPTION_KINDS = frozenset(
     {
         "usage_limit_exceeded",
@@ -1652,6 +1699,7 @@ _RUNTIME_REASON_CODES = frozenset(
         "request_budget",
         "token_budget",
         "runtime_budget",
+        "context_capacity",
         "provider_timeout",
         "provider_connection",
         "provider_rejected",
@@ -1752,12 +1800,83 @@ _VALIDATION_LOCATION_CHARACTERS = frozenset(
 )
 
 
+def _finish_native_checkpoint(transfer: CheckpointTransfer, digest: str, previous=None, *, allow_append=False) -> tuple[dict[str, Any], str]:
+    payload = transfer.finish_encoded(digest)
+    if payload.text.startswith('{"append":'):
+        if allow_append is not True:
+            raise AgentProtocolError("Native checkpoint append was not negotiated")
+        body = validated_native_checkpoint_append(payload, previous)
+    else:
+        body = validated_native_checkpoint_transfer(payload)
+        if previous is not None and not native_checkpoint_history_extends(body, previous):
+            raise AgentProtocolError("Native full checkpoint history regressed or changed")
+    return body, body.digest
+
+
 class AgentSidecarError(RuntimeError):
     """A sanitized failure reported by the supervised Agent process."""
 
 
+_SIDECAR_FAILURE_REASONS = frozenset({'unclassified','process_start_failed','not_running',
+    'pipe_closed','pipe_drain_timeout','stdout_eof','response_timeout',
+    'handshake_failed','handshake_timeout','handshake_protocol'})
+_SIDECAR_FAILURE_OPERATIONS = frozenset({'unknown','process_start','handshake','protocol_send','protocol_receive',
+    'initialize','health','run_start','run_response','knowledge_search','capability','shutdown',
+    'native_checkpoint_chunk','native_checkpoint_sync','knowledge_chunk','knowledge_sync',
+    'agent_checkpoint_chunk','agent_checkpoint_sync','transcript_checkpoint_chunk','transcript_checkpoint_sync'})
+
+
+def _sidecar_failure_operation(value: str) -> str:
+    if value in _SIDECAR_FAILURE_OPERATIONS:
+        return value
+    mapping={'initialize':'initialize','health':'health','run.start':'run_start','run response':'run_response',
+        'knowledge search':'knowledge_search','capability response':'capability','shutdown response':'shutdown',
+        'native_checkpoint.reuse':'native_checkpoint_sync',
+        'native_checkpoint.chunk':'native_checkpoint_chunk','native_checkpoint.sync':'native_checkpoint_sync',
+        'knowledge.chunk':'knowledge_chunk','knowledge.sync':'knowledge_sync',
+        'agent_checkpoint.chunk':'agent_checkpoint_chunk','agent_checkpoint.sync':'agent_checkpoint_sync',
+        'transcript_checkpoint.chunk':'transcript_checkpoint_chunk','transcript_checkpoint.sync':'transcript_checkpoint_sync'}
+    return mapping.get(value,mapping.get(value.removesuffix(' response'),'unknown'))
+
+
 class AgentSidecarCrashed(AgentSidecarError):
     """The sidecar exited or violated the protocol while a Host operation ran."""
+    def __init__(self,message: str, *, reason='unclassified', operation='unknown', exit_code=None):
+        super().__init__(message)
+        self.safe_sidecar_diagnostic={'reason':reason if reason in _SIDECAR_FAILURE_REASONS else 'unclassified',
+            'operation':_sidecar_failure_operation(operation),
+            'exit_code':exit_code if type(exit_code) is int and -(2**31)<=exit_code<=2**32-1 else None}
+
+
+def sidecar_failure_diagnostic(error: BaseException) -> dict | None:
+    """Closed scalar observations only; no exception text, command or stderr."""
+    value=getattr(error,'safe_sidecar_diagnostic',None) if isinstance(error,AgentSidecarCrashed) else None
+    if (not isinstance(value,dict) or set(value)!={'reason','operation','exit_code'}
+            or not isinstance(value.get('reason'),str) or value['reason'] not in _SIDECAR_FAILURE_REASONS
+            or not isinstance(value.get('operation'),str) or value['operation'] not in _SIDECAR_FAILURE_OPERATIONS
+            or value['exit_code'] is not None and (type(value['exit_code']) is not int or not -(2**31)<=value['exit_code']<=2**32-1)):
+        return None
+    return dict(value)
+
+
+def sidecar_failure_detail(value: dict) -> str:
+    # Called only with the validated closed projection above.
+    return f"reason={value['reason']}; operation={value['operation']}; exitCode={value['exit_code']}"
+
+
+def _log_agent_startup_observation(command: Sequence[str], stage: str, started_at: float, operation: str) -> None:
+    """Host-observed boundaries only; never log argv, paths or environment."""
+    executable = str(command[0]).replace('\\', '/').rsplit('/', 1)[-1] if command else 'unknown'
+    if re.fullmatch(r'[A-Za-z0-9_.-]{1,80}', executable) is None:
+        executable = 'unknown'
+    module = 'none'
+    if '-m' in command:
+        index = command.index('-m') + 1
+        module = ('controlstudio_agent.sidecar'
+                  if index < len(command) and command[index] == 'controlstudio_agent.sidecar' else 'other')
+    logging.getLogger('uvicorn.error.controlstudio_agent_startup').info(
+        'Agent startup observation: stage=%s operation=%s elapsed_ms=%s executable=%s module=%s',
+                stage, operation, max(0, round((time.monotonic() - started_at) * 1000)), executable, module)
 
 
 class AgentSupervisor:
@@ -1793,6 +1912,9 @@ class AgentSupervisor:
         self._message_timeout_seconds = message_timeout_seconds
         self._pipe_drain_timeout_seconds = pipe_drain_timeout_seconds
         self._process: asyncio.subprocess.Process | None = None
+        self._process_job: Any | None = None
+        self._process_job_api: Any | None = None
+        self._process_job_assigned = False
         self._messages: asyncio.Queue[AgentProtocolMessage | None] = asyncio.Queue()
         self._lifecycle_lock = asyncio.Lock()
         self._run_lock = asyncio.Lock()
@@ -1801,6 +1923,7 @@ class AgentSupervisor:
         self._stderr_task: asyncio.Task[None] | None = None
         self._manifest_agent_id: str | None = None
         self._manifest_capabilities: frozenset[str] = frozenset()
+        self._knowledge_snapshot: tuple[str, int] | None = None
         self._active_run_id: str | None = None
         self._stderr_output_contract_diagnostic: AgentOutputContractDiagnostic | None = None
 
@@ -1812,19 +1935,44 @@ class AgentSupervisor:
         async with self._lifecycle_lock:
             if self._process is not None and self._process.returncode is None:
                 return
+            self._knowledge_snapshot = None
             await self._discard_dead_process()
+            started_at = time.monotonic()
             try:
-                process = await asyncio.create_subprocess_exec(
-                    *self._command,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=_sidecar_environment(),
-                    limit=MAX_PROTOCOL_LINE_BYTES + 1,
-                )
-            except OSError as exc:
-                raise AgentSidecarCrashed("Agent sidecar could not be started") from exc
-            self._process = process
+                creationflags = 0
+                if os.name == 'nt':
+                    from .windows_mcp_transport import (
+                        _assign_process_to_cleanup_job,
+                        _open_process_cleanup_job,
+                        _resume_suspended_cleanup_process,
+                    )
+                    self._process_job, self._process_job_api = _open_process_cleanup_job()
+                    # CREATE_SUSPENDED is the Win32 creation flag 0x4; Python
+                    # does not export it on all supported Windows runtimes.
+                    creationflags = 0x00000004 | subprocess.CREATE_NO_WINDOW
+                async def create_owned_process():
+                    process = await asyncio.create_subprocess_exec(
+                        *self._command,
+                        stdin=asyncio.subprocess.PIPE,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        env=_sidecar_environment(),
+                        limit=MAX_PROTOCOL_LINE_BYTES + 1,
+                        creationflags=creationflags,
+                    )
+                    self._process = process
+                    if self._process_job is not None:
+                        _assign_process_to_cleanup_job(process, self._process_job, self._process_job_api)
+                        self._process_job_assigned = True
+                        _resume_suspended_cleanup_process(process)
+                    return process
+                process = await native_checkpoint_boundary(create_owned_process())
+            except BaseException as exc:
+                await self._terminate_process()
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                raise AgentSidecarCrashed("Agent sidecar could not be started", reason="process_start_failed", operation="process_start") from exc
+            _log_agent_startup_observation(self._command, "process_started", started_at, "process_start")
             self._stderr_output_contract_diagnostic = None
             messages: asyncio.Queue[AgentProtocolMessage | None] = asyncio.Queue()
             self._messages = messages
@@ -1835,28 +1983,37 @@ class AgentSupervisor:
             self._stderr_task = asyncio.create_task(
                 self._drain_stderr(process), name="controlstudio-agent-sidecar-stderr"
             )
+            operation = "initialize"
             try:
                 initialized = await asyncio.wait_for(
                     self._request({"type": "initialize"}, expected="initialized"),
                     timeout=self._startup_timeout_seconds,
                 )
+                _log_agent_startup_observation(self._command, "initialize_response", started_at, operation)
                 manifest_payload = initialized.payload.get("manifest")
                 if not isinstance(manifest_payload, Mapping):
                     raise AgentProtocolError("Agent initialization omitted a manifest")
                 manifest = parse_manifest(manifest_payload)
                 self._manifest_agent_id = manifest.agent_id
                 self._manifest_capabilities = frozenset(manifest.capabilities)
+                operation = "health"
                 health = await asyncio.wait_for(
                     self._request({"type": "health"}, expected="health.result"),
                     timeout=self._startup_timeout_seconds,
                 )
+                _log_agent_startup_observation(self._command, "health_response", started_at, operation)
                 if health.payload.get("status") != "ready":
                     raise AgentProtocolError("Agent sidecar health check failed")
             except BaseException as exc:
+                _log_agent_startup_observation(self._command, "failed", started_at, operation)
+                exit_code=process.returncode
                 await self._terminate_process()
                 if isinstance(exc, AgentSidecarError):
                     raise
-                raise AgentSidecarCrashed("Agent sidecar handshake failed") from exc
+                reason=('handshake_timeout' if isinstance(exc,asyncio.TimeoutError) else
+                        'handshake_protocol' if isinstance(exc,AgentProtocolError) else 'handshake_failed')
+                raise AgentSidecarCrashed("Agent sidecar handshake failed", reason=reason,
+                    operation=operation, exit_code=exit_code) from exc
 
     async def run(
         self,
@@ -1866,6 +2023,9 @@ class AgentSupervisor:
         historical_evidence: Mapping[str, Any] | None = None,
         agent_checkpoint: Mapping[str, Any] | None = None,
         transcript_checkpoint: Mapping[str, Any] | None = None,
+        native_checkpoint: Mapping[str, Any] | None = None,
+        request_native_checkpoint_append: bool = False,
+        on_native_checkpoint_negotiated: Callable[[bool], None] | None = None,
     ) -> None:
         """Run one supervised Agent operation until its terminal sidecar frame."""
 
@@ -1874,6 +2034,7 @@ class AgentSupervisor:
             if not isinstance(run_id, str) or not run_id:
                 raise AgentProtocolError("Agent run id is invalid")
             cancelled_terminal_received = False
+            deferred_messages: list[AgentProtocolMessage] = []
             try:
                 await self.ensure_started()
                 # A sidecar process is intentionally reusable across runs;
@@ -1900,14 +2061,73 @@ class AgentSupervisor:
                     if "durable-transcript-resume-v1" not in self._manifest_capabilities:
                         raise AgentProtocolError("Agent sidecar does not support transcript resume sync")
                     await self._sync_transcript_checkpoint_locked(transcript_checkpoint)
-                await self._send("run.start", payload)
+                if native_checkpoint is not None:
+                    native_descriptor = payload.get('trusted_context', {}).get('native_ld_execution', {})
+                    await self._sync_native_checkpoint_locked(native_checkpoint,
+                        conversation_id=payload.get('conversation_id'), restore_scope=native_descriptor.get('restore_scope'))
+                # Only this supervisor owns the current successful handshake.
+                # Select the wire mode inside the same serialized run boundary;
+                # cold/restarted processes cannot inherit a stale capability.
+                native_append_negotiated = (request_native_checkpoint_append is True
+                    and "durable-native-append-v1" in self._manifest_capabilities)
+                run_payload = dict(payload)
+                run_payload.pop("native_memory_ack", None)
+                if "durable-native-memory-ack-v1" in self._manifest_capabilities:
+                    run_payload["native_memory_ack"] = True
+                run_payload.pop("native_checkpoint_append", None)
+                if native_append_negotiated:
+                    run_payload["native_checkpoint_append"] = True
+                # Notify the receiver synchronously before run.start can emit
+                # any frame. Send and receive consume one exact negotiation.
+                if on_native_checkpoint_negotiated is not None:
+                    on_native_checkpoint_negotiated(native_append_negotiated)
+                await self._send("run.start", run_payload)
                 while True:
-                    message = await self._next_message_with_timeout("run response")
+                    message = (deferred_messages.pop(0) if deferred_messages else
+                        await self._next_message_with_timeout("run response"))
                     if message.type == "run.started":
                         continue
                     if message.type == "run.cancelled":
                         cancelled_terminal_received = True
-                    await on_message(message)
+                    if message.type == "tool.request":
+                        # The tool can take minutes. Keep receiving progress while
+                        # preserving the order of every other protocol frame.
+                        dispatch = asyncio.create_task(on_message(message))
+                        receive = None
+                        try:
+                            while not dispatch.done():
+                                receive = asyncio.create_task(self._next_message())
+                                done, _ = await asyncio.wait(
+                                    {dispatch, receive}, return_when=asyncio.FIRST_COMPLETED)
+                                if receive in done:
+                                    incoming = receive.result()
+                                    receive = None
+                                    if incoming.type == "run.progress":
+                                        await on_message(incoming)
+                                    else:
+                                        deferred_messages.append(incoming)
+                            if receive is not None:
+                                if not receive.done():
+                                    receive.cancel()
+                                outcome = (await asyncio.gather(receive, return_exceptions=True))[0]
+                                receive = None
+                                if isinstance(outcome, AgentProtocolMessage):
+                                    deferred_messages.append(outcome)
+                                elif isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError):
+                                    raise outcome
+                            await dispatch
+                        finally:
+                            if receive is not None:
+                                if not receive.done():
+                                    receive.cancel()
+                                outcome = await asyncio.gather(receive, return_exceptions=True)
+                                if isinstance(outcome[0], AgentProtocolMessage):
+                                    deferred_messages.append(outcome[0])
+                            if not dispatch.done():
+                                dispatch.cancel()
+                            await asyncio.gather(dispatch, return_exceptions=True)
+                    else:
+                        await on_message(message)
                     if message.type in {"run.final", "run.error", "run.cancelled"}:
                         return
             except asyncio.CancelledError:
@@ -1919,7 +2139,8 @@ class AgentSupervisor:
                         async def drain_cancelled_prefix() -> None:
                             await self.cancel_run(run_id)
                             while True:
-                                message = await self._next_message()
+                                message = (deferred_messages.pop(0) if deferred_messages else
+                                    await self._next_message())
                                 if message.type == "tool.request":
                                     # Cancellation never dispatches queued work.
                                     continue
@@ -1930,10 +2151,11 @@ class AgentSupervisor:
                                 if message.type in {
                                     "run.transcript_checkpoint.chunk", "run.transcript_checkpoint",
                                     "run.mission_checkpoint.chunk", "run.mission_checkpoint",
+                                    "run.native_checkpoint.chunk", "run.native_checkpoint",
                                 }:
                                     await on_message(message)
                                 elif message.type not in {
-                                    "run.cancel.accepted", "run.started", "run.progress", "run.token",
+                                    "run.cancel.accepted", "run.started", "run.progress", "run.token", "run.knowledge_event",
                                 }:
                                     raise AgentProtocolError("Agent cancellation frame is invalid")
 
@@ -2074,8 +2296,43 @@ class AgentSupervisor:
         if synced.payload != {"checkpointDigest": digest}:
             raise AgentProtocolError("Agent transcript sync acknowledgement differs")
 
-    async def send_tool_result(self, payload: Mapping[str, Any]) -> None:
-        await self._send("tool.result", payload)
+    async def send_tool_result(
+        self, payload: Mapping[str, Any], *,
+        transport_plan: list[tuple[str, dict[str, Any]]] | None = None,
+    ) -> None:
+        for message_type, part in transport_plan or [("tool.result", dict(payload))]:
+            await self._send(message_type, part)
+
+    async def _sync_native_checkpoint_locked(self, checkpoint: Mapping[str, Any], *,
+                                              conversation_id=None, restore_scope=None) -> None:
+        snapshot = (checkpoint if type(checkpoint) is ValidatedNativeCheckpoint else
+                    await native_checkpoint_boundary(asyncio.to_thread(
+                        validated_native_checkpoint_snapshot, checkpoint, decoded_json=False)))
+        digest = snapshot.digest
+        if ('durable-native-restore-ref-v1' in self._manifest_capabilities
+                and isinstance(conversation_id, str) and isinstance(restore_scope, str)):
+            reused = await self._request({'type': 'native_checkpoint.reuse', 'payload': {
+                'conversation_id': conversation_id, 'restore_scope': restore_scope,
+                'reference': snapshot.restore_reference}}, expected='native_checkpoint.reused')
+            if (set(reused.payload) != {'checkpointDigest', 'hit'}
+                    or reused.payload.get('checkpointDigest') != digest
+                    or type(reused.payload.get('hit')) is not bool):
+                raise AgentProtocolError('Native restore reference acknowledgement differs')
+            if reused.payload['hit']:
+                return
+        for chunk in snapshot.encoded.chunks():
+            accepted = await self._request(
+                {"type": "native_checkpoint.chunk", "payload": chunk},
+                expected="native_checkpoint.chunk.accepted",
+            )
+            if accepted.payload != {"checkpointDigest": digest, "index": chunk["index"]}:
+                raise AgentProtocolError("Native checkpoint chunk acknowledgement differs")
+        synced = await self._request(
+            {"type": "native_checkpoint.sync", "payload": {"checkpointDigest": digest}},
+            expected="native_checkpoint.synced",
+        )
+        if synced.payload != {"checkpointDigest": digest}:
+            raise AgentProtocolError("Native checkpoint sync acknowledgement differs")
 
     async def sync_knowledge(self, documents: Sequence[Mapping[str, Any]]) -> int:
         """Replace the Agent's disposable derived source/index snapshot."""
@@ -2083,17 +2340,29 @@ class AgentSupervisor:
         async with self._run_lock:
             try:
                 await self.ensure_started()
-                await self._send("knowledge.sync", {"documents": list(documents)})
-                response = await self._next_message_with_timeout("knowledge sync")
-                if response.type != "knowledge.synced":
-                    raise AgentProtocolError(
-                        "Agent sidecar rejected knowledge synchronization"
+                snapshot = {"documents": [dict(item) for item in documents]}
+                digest = hashlib.sha256(_canonical_json(snapshot).encode("utf-8")).hexdigest()
+                if (self._knowledge_snapshot is not None and self._knowledge_snapshot[0] == digest
+                        and self._process is not None and self._process.returncode is None):
+                    return self._knowledge_snapshot[1]
+                self._knowledge_snapshot = None
+                for chunk in checkpoint_chunks(snapshot):
+                    accepted = await self._request(
+                        {"type": "knowledge.chunk", "payload": chunk},
+                        expected="knowledge.chunk.accepted",
                     )
+                    if accepted.payload != {"checkpointDigest": digest, "index": chunk["index"]}:
+                        raise AgentProtocolError("Agent knowledge chunk acknowledgement differs")
+                response = await self._request(
+                    {"type": "knowledge.sync", "payload": {"checkpointDigest": digest}},
+                    expected="knowledge.synced",
+                )
                 count = response.payload.get("count")
-                if not isinstance(count, int) or count < 0:
+                if type(count) is not int or count < 0:
                     raise AgentProtocolError(
                         "Agent knowledge synchronization result is invalid"
                     )
+                self._knowledge_snapshot = (digest, count)
                 return count
             except BaseException:
                 async with self._lifecycle_lock:
@@ -2158,6 +2427,7 @@ class AgentSupervisor:
         async with self._lifecycle_lock:
             process = self._process
             if process is None:
+                await self._terminate_process()
                 return
             if process.returncode is None:
                 try:
@@ -2195,7 +2465,7 @@ class AgentSupervisor:
     async def _send(self, message_type: str, payload: Mapping[str, Any]) -> None:
         process = self._process
         if process is None or process.returncode is not None or process.stdin is None:
-            raise AgentSidecarCrashed("Agent sidecar is not running")
+            raise AgentSidecarCrashed("Agent sidecar is not running", reason="not_running", operation=_sidecar_failure_operation(message_type), exit_code=getattr(process,"returncode",None))
         try:
             encoded = encode_message(message_type, payload)
             async with self._write_lock:
@@ -2204,8 +2474,11 @@ class AgentSupervisor:
                     process.stdin.drain(), timeout=self._pipe_drain_timeout_seconds
                 )
         except (BrokenPipeError, ConnectionError, OSError, asyncio.TimeoutError) as exc:
+            exit_code=process.returncode
             await self._terminate_process()
-            raise AgentSidecarCrashed("Agent sidecar pipe closed") from exc
+            raise AgentSidecarCrashed("Agent sidecar pipe closed",
+                reason="pipe_drain_timeout" if isinstance(exc,asyncio.TimeoutError) else "pipe_closed",
+                operation=_sidecar_failure_operation(message_type), exit_code=exit_code) from exc
 
     async def _next_message(self) -> AgentProtocolMessage:
         message = await self._messages.get()
@@ -2224,14 +2497,22 @@ class AgentSupervisor:
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     pass
             diagnostic = self._stderr_output_contract_diagnostic
+            exit_code=getattr(self._process,"returncode",None)
             await self._terminate_process()
             if diagnostic is not None:
                 raise AgentOutputContractError(
                     "Agent output failed its structured contract",
                     diagnostic=diagnostic,
                 )
-            raise AgentSidecarCrashed("Agent sidecar exited unexpectedly")
+            raise AgentSidecarCrashed("Agent sidecar exited unexpectedly", reason="stdout_eof", operation="protocol_receive", exit_code=exit_code)
         if message.type == "protocol.error":
+            code = message.payload.get("code")
+            diagnostic = _runtime_diagnostic_from_payload(message.payload.get("diagnostic"))
+            if code in ("invalid_message", "command_failed") and diagnostic is not None:
+                error = AgentRuntimeError(
+                    f"Agent sidecar reported a protocol error ({code})", diagnostic=diagnostic)
+                error.protocol_code = code
+                raise error
             raise AgentSidecarError("Agent sidecar reported a protocol error")
         return message
 
@@ -2250,9 +2531,27 @@ class AgentSupervisor:
                     else timeout_seconds
                 ),
             )
+        except AgentRuntimeError as exc:
+            # Only _next_message's accepted producer code and the existing
+            # operation mapper cross this command boundary, never raw payloads.
+            if getattr(exc, 'protocol_code', None) in ('invalid_message', 'command_failed'):
+                exc.protocol_operation = _sidecar_failure_operation(operation)
+                diagnostic = exc.diagnostic
+                logger.warning(
+                    'Agent sidecar protocol error code=%s operation=%s stage=%s exception_kind=%s reason_code=%s',
+                    exc.protocol_code, exc.protocol_operation, diagnostic.stage,
+                    diagnostic.exception_kind, diagnostic.reason_code)
+            raise
+        except AgentSidecarCrashed as exc:
+            diagnostic=sidecar_failure_diagnostic(exc)
+            if diagnostic is not None and diagnostic['operation']=='protocol_receive':
+                exc.safe_sidecar_diagnostic={**diagnostic,'operation':_sidecar_failure_operation(operation)}
+            raise
         except asyncio.TimeoutError as exc:
+            exit_code=getattr(self._process,"returncode",None)
             await self._terminate_process()
-            raise AgentSidecarCrashed(f"Agent sidecar timed out waiting for {operation}") from exc
+            raise AgentSidecarCrashed(f"Agent sidecar timed out waiting for {operation}",
+                reason="response_timeout", operation=_sidecar_failure_operation(operation), exit_code=exit_code) from exc
 
     async def _read_stdout(
         self,
@@ -2376,7 +2675,7 @@ class AgentSupervisor:
             logger.warning("Agent sidecar emitted diagnostics on stderr")
 
     async def _discard_dead_process(self) -> None:
-        if self._process is not None:
+        if self._process is not None or self._process_job is not None:
             await self._terminate_process()
 
     async def _terminate_process(self) -> None:
@@ -2388,37 +2687,59 @@ class AgentSupervisor:
         self._stderr_task = None
         self._manifest_agent_id = None
         self._manifest_capabilities = frozenset()
+        self._knowledge_snapshot = None
         self._active_run_id = None
-        if process is not None and process.returncode is None:
-            try:
-                await asyncio.wait_for(process.wait(), timeout=self._shutdown_timeout_seconds)
-            except asyncio.TimeoutError:
+        try:
+            # Cancellation drains the checkpoint prefix before this boundary.
+            # Closing stdin lets the existing sidecar EOF shutdown finish normally.
+            if process is not None and process.stdin is not None:
                 try:
-                    process.terminate()
-                except ProcessLookupError:
-                    # Windows can report the timeout just as the child exits.
+                    process.stdin.close()
+                except (BrokenPipeError, ConnectionResetError, RuntimeError):
                     pass
+            if process is not None and process.returncode is None:
                 try:
                     await asyncio.wait_for(process.wait(), timeout=self._shutdown_timeout_seconds)
                 except asyncio.TimeoutError:
-                    try:
-                        process.kill()
-                    except ProcessLookupError:
-                        # The transport already observed the child exit.
-                        pass
-                    await process.wait()
-        tasks = [task for task in (stdout_task, stderr_task) if task is not None]
-        if tasks:
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*tasks, return_exceptions=True),
-                    timeout=self._shutdown_timeout_seconds,
-                )
-            except asyncio.TimeoutError:
-                for task in tasks:
-                    task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
-        self._stderr_output_contract_diagnostic = None
+                    if not self._process_job_assigned:
+                        # Non-Windows, or startup failed before a suspended root
+                        # entered its Job. This is the exact created Popen handle.
+                        try:
+                            process.terminate()
+                        except ProcessLookupError:
+                            pass
+                        try:
+                            await asyncio.wait_for(process.wait(), timeout=self._shutdown_timeout_seconds)
+                        except asyncio.TimeoutError:
+                            try:
+                                process.kill()
+                            except ProcessLookupError:
+                                pass
+                    # Assigned Windows roots/children retire together below,
+                    # before another bounded wait for process/pipe completion.
+            if self._process_job is not None:
+                from .windows_mcp_transport import _retire_process_cleanup_job
+                # Keep ownership if retirement cannot be verified; a later startup
+                # must finish this cleanup before acquiring a new process tree.
+                await _retire_process_cleanup_job(self._process_job, self._process_job_api,
+                    timeout=self._shutdown_timeout_seconds)
+                self._process_job = self._process_job_api = None
+                self._process_job_assigned = False
+            if process is not None and process.returncode is None:
+                await asyncio.wait_for(process.wait(), timeout=self._shutdown_timeout_seconds)
+        finally:
+            tasks = [task for task in (stdout_task, stderr_task) if task is not None]
+            if tasks:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*tasks, return_exceptions=True),
+                        timeout=self._shutdown_timeout_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+            self._stderr_output_contract_diagnostic = None
 
 
 class SubprocessAgentClient:
@@ -2455,13 +2776,19 @@ class SubprocessAgentClient:
         trusted_context: dict[str, Any] | None = None,
         agent_checkpoint: dict[str, Any] | None = None,
         transcript_checkpoint: dict[str, Any] | None = None,
+        native_checkpoint: dict[str, Any] | None = None,
         model_context: ModelContextV1 | Mapping[str, Any] | None = None,
         on_token: TokenCallback | None = None,
         on_tool_event: ToolEventCallback | None = None,
         on_progress: ProgressCallback | None = None,
         on_mission_checkpoint: MissionCheckpointCallback | None = None,
         on_transcript_checkpoint: TranscriptCheckpointCallback | None = None,
+        on_native_checkpoint: TranscriptCheckpointCallback | None = None,
     ) -> AgentRunOutput:
+        native_run = bool(isinstance(trusted_context, dict)
+                          and isinstance(trusted_context.get("native_ld_execution"), dict))
+        if native_run and native_checkpoint is not None and on_progress is not None:
+            await on_progress("native_restore_loading", 0)
         quarantine_diagnostic_only = _quarantine_diagnostic_only_context(
             trusted_context
         )
@@ -2485,7 +2812,7 @@ class SubprocessAgentClient:
         )
         broker_tools = (
             []
-            if targetless_analysis or planning_workflow
+            if targetless_analysis or (planning_workflow and not native_run)
             else await self._broker.agent_tool_catalog(
                 conversation_id=conversation_id,
                 run_id=run_id,
@@ -2546,7 +2873,8 @@ class SubprocessAgentClient:
         context_payload = _model_context_payload(
             model_context
             if model_context is not None
-            else getattr(self._settings, "model_context", None)
+            else getattr(self._settings, "model_context", None),
+            client_input_limit_tokens=getattr(self._settings, "client_input_limit_tokens", None),
         )
         payload = {
             "conversation_id": conversation_id,
@@ -2568,6 +2896,14 @@ class SubprocessAgentClient:
             payload["transcript_checkpoint_ref"] = {
                 "schemaVersion": "1", "checkpointDigest": transcript_digest,
             }
+        if native_checkpoint is not None:
+            if not native_run:
+                raise AgentProtocolError("Native checkpoint requires a native run")
+            if type(native_checkpoint) is not ValidatedNativeCheckpoint:
+                native_checkpoint = await native_checkpoint_boundary(asyncio.to_thread(
+                    validated_native_checkpoint_snapshot, native_checkpoint, decoded_json=False))
+            native_digest = native_checkpoint.digest
+            payload["native_checkpoint_ref"] = {"schemaVersion": "1", "checkpointDigest": native_digest}
         assert_agent_safe_payload(payload)
         result: AgentRunOutput | None = None
         last_progress: tuple[str, int] | None = None
@@ -2576,10 +2912,64 @@ class SubprocessAgentClient:
         handled_tool_identities: set[str] = set()
         checkpoint_transfer = CheckpointTransfer()
         transcript_transfer = CheckpointTransfer()
+        native_transfer = CheckpointTransfer()
+        native_append_negotiated = False
+        def native_checkpoint_negotiated(enabled: bool) -> None:
+            nonlocal native_append_negotiated
+            native_append_negotiated = enabled
+        native_previous = native_checkpoint
 
         async def handle(message: AgentProtocolMessage) -> None:
             nonlocal last_mission_cycle, last_mission_disposition
-            nonlocal last_progress, result
+            nonlocal last_progress, result, native_previous
+            if message.type == "run.native_checkpoint.chunk":
+                if not native_run or message.payload.get("run_id") != run_id:
+                    raise AgentProtocolError("Native checkpoint chunk belongs to another run")
+                try:
+                    native_transfer.append({key: value for key, value in message.payload.items() if key != "run_id"})
+                except ValueError as exc:
+                    raise AgentProtocolError("Native checkpoint chunk is invalid") from exc
+                return
+            if message.type == "run.native_checkpoint":
+                if (not native_run or set(message.payload) not in ({"run_id", "checkpoint_digest"}, {"run_id", "checkpoint_digest", "ack_id"})
+                        or message.payload.get("run_id") != run_id or on_native_checkpoint is None):
+                    raise AgentProtocolError("Native checkpoint completion is invalid")
+                ack_id = message.payload.get('ack_id')
+                if ack_id is not None:
+                    try:
+                        if str(uuid.UUID(ack_id)) != ack_id:raise ValueError()
+                    except (ValueError, TypeError, AttributeError):
+                        raise AgentProtocolError('Native memory ACK identity is invalid') from None
+                async def complete_native_checkpoint() -> None:
+                    nonlocal native_previous
+                    checkpoint_started = time.perf_counter()
+                    body, digest = await asyncio.to_thread(
+                        _finish_native_checkpoint, native_transfer, message.payload["checkpoint_digest"], native_previous,
+                        allow_append=native_append_negotiated)
+                    transfer_validated_at = time.perf_counter()
+                    try:
+                        await on_native_checkpoint(body, digest)
+                    except BaseException:
+                        if ack_id is not None:
+                            await self._supervisor._send('native_checkpoint.ack', {'run_id':run_id,
+                                'checkpoint_digest':message.payload['checkpoint_digest'], 'ack_id':ack_id, 'status':'failed'})
+                        raise
+                    if ack_id is not None:
+                        await self._supervisor._send('native_checkpoint.ack', {'run_id':run_id,
+                            'checkpoint_digest':message.payload['checkpoint_digest'], 'ack_id':ack_id, 'status':'persisted'})
+                    native_previous = body
+                    persisted_at = time.perf_counter()
+                    if on_tool_event is not None:
+                        await on_tool_event("native.checkpoint.persisted", {
+                            "elapsed_seconds": persisted_at - checkpoint_started,
+                            "transfer_validate_elapsed_seconds": transfer_validated_at - checkpoint_started,
+                            "callback_persist_elapsed_seconds": persisted_at - transfer_validated_at,
+                            "completed_pairs_count": len(body["public_state"]["completed_pairs"]),
+                        })
+                # Host's sequential message loop cannot consume the next frame
+                # until the same full checkpoint has been persisted (also on cancel).
+                await native_checkpoint_boundary(complete_native_checkpoint())
+                return
             if message.type == "run.transcript_checkpoint.chunk":
                 if message.payload.get("run_id") != run_id:
                     raise AgentProtocolError("Agent transcript chunk belongs to another run")
@@ -2610,18 +3000,44 @@ class SubprocessAgentClient:
                 except ValueError as exc:
                     raise AgentProtocolError(str(exc)) from exc
                 return
+            if message.type == "run.knowledge_event":
+                from .agent_protocol import validated_knowledge_event
+
+                event_type, event = validated_knowledge_event(message.payload, run_id)
+                if on_tool_event is not None:
+                    await on_tool_event(event_type, event)
+                return
             if message.type == "run.progress":
                 if message.payload.get("run_id") != run_id:
                     raise AgentProtocolError("Agent progress belongs to another run")
                 stage = message.payload.get("stage")
+                if native_run and stage == 'native_work_plan':
+                    from .agent_protocol import validated_native_work_plan_progress
+                    event = validated_native_work_plan_progress(message.payload, run_id)
+                    if on_tool_event is not None:
+                        await on_tool_event('agent.progress', event)
+                    return
                 elapsed_seconds = message.payload.get("elapsed_seconds")
-                if stage not in {
+                if (stage not in {
                     "starting",
                     "engineering_analysis",
                     "planning_narrative",
                     "planning_native_design",
                     "planning_finalize",
-                } or (
+                } and not (native_run and stage in {
+                    'native_restore_loading',
+                    'native_restore_verifying',
+                    'native_restore_verified',
+                    'native_restore_state',
+                    'native_restore_state_ready',
+                    'native_restore_context',
+                    'native_restore_context_ready',
+                    'native_restore_records',
+                    'native_restore_records_ready',
+                    'native_restore_dialogue',
+                    'native_restore_dialogue_ready',
+                    'native_ld_execution',
+                })) or (
                     isinstance(elapsed_seconds, bool)
                     or not isinstance(elapsed_seconds, int)
                     or elapsed_seconds < 0
@@ -2716,12 +3132,18 @@ class SubprocessAgentClient:
                     design_catalog=design_catalog,
                     on_tool_event=on_tool_event,
                     quarantine_diagnostic_only=quarantine_diagnostic_only,
+                    native_run=native_run,
                 )
                 return
             if message.type == "run.final":
                 if message.payload.get("run_id") != run_id:
                     raise AgentProtocolError("Agent final result belongs to another run")
                 result = _output_from_payload(message.payload.get("output"))
+                if result.native_project_start is not None and not (
+                        targetless_analysis and safe_trusted_context.get('project_start_available') is True):
+                    raise AgentProtocolError('New-project start is outside its Host-selected unbound route')
+                if native_run != (result.workflow == "native_ld_partial_edit"):
+                    raise AgentProtocolError("Agent final workflow differs from its Host-selected run")
                 return
             if message.type == "run.cancelled":
                 raise asyncio.CancelledError
@@ -2752,6 +3174,9 @@ class SubprocessAgentClient:
                 historical_evidence=historical_evidence,
                 agent_checkpoint=checkpoint_to_send,
                 transcript_checkpoint=transcript_to_send,
+                native_checkpoint=native_checkpoint,
+                request_native_checkpoint_append=native_run,
+                on_native_checkpoint_negotiated=native_checkpoint_negotiated,
             )
         except asyncio.CancelledError:
             await asyncio.shield(self._supervisor.cancel_run(run_id))
@@ -2768,8 +3193,10 @@ class SubprocessAgentClient:
         design_catalog: set[str],
         on_tool_event: ToolEventCallback | None,
         quarantine_diagnostic_only: bool = False,
+        native_run: bool = False,
     ) -> None:
         completed_tool_result: dict[str, Any] | None = None
+        completed_transport_plan: list[tuple[str, dict[str, Any]]] = []
 
         async def capture_event(
             event_type: str,
@@ -2798,6 +3225,7 @@ class SubprocessAgentClient:
             failure_reason: str | None = None,
             reason_code: str | None = None,
             stage: str | None = None,
+            native_failure: dict[str, Any] | None = None,
         ) -> None:
             nonlocal callback_terminal_event_recorded
             diagnostic_by_kind = {
@@ -2834,7 +3262,20 @@ class SubprocessAgentClient:
                 # raw exception text, request arguments, and tool results never
                 # cross into the Agent protocol.
                 tool_result["failure_reason"] = failure_reason
-            await self._supervisor.send_tool_result(tool_result)
+            if native_failure is not None:
+                # Only the MCP client's validated public failure is forwarded.
+                # The source error envelope, transport metadata, and credentials
+                # stay on the Host side.
+                tool_result["nativeFailure"] = native_failure
+                assert_native_public_payload(tool_result)
+            transport_plan = _tool_result_transport_plan(
+                tool_result,
+                native_run=native_run,
+            )
+            await self._supervisor.send_tool_result(
+                tool_result,
+                transport_plan=transport_plan,
+            )
 
         async def validate_tool_completion(
             completed_payload: dict[str, Any],
@@ -2861,6 +3302,8 @@ class SubprocessAgentClient:
                     request_id=request.request_id,
                     raw_result=raw_result,
                     evidence_ref=preview_evidence,
+                    native_run=native_run,
+                    transport_plan=completed_transport_plan,
                 )
 
         try:
@@ -2882,7 +3325,7 @@ class SubprocessAgentClient:
                 return
             if request.tool_name in catalog:
                 sink = capture_event
-                value = await self._broker.execute_external_tool_request(
+                await self._broker.execute_external_tool_request(
                     request,
                     sink=sink,
                     completion_gate=validate_tool_completion,
@@ -2894,12 +3337,13 @@ class SubprocessAgentClient:
             )
             raise
         except MCPToolRejectedError as exc:
-            pass
-            pass
+            context = mcp_rejection_context(exc.mcp_error_payload) if not native_run else {}
             await send_failure(
                 "tool_error",
-                failure_reason="Host가 선택한 도구 요청을 거부했습니다.",
-                reason_code=_safe_mcp_rejection_code(exc),
+                failure_reason=context.get("failure_reason", "Host가 선택한 도구 요청을 거부했습니다."),
+                reason_code=context.get("reason_code", _safe_mcp_rejection_code(exc)),
+                stage=context.get("stage"),
+                native_failure=_verified_mcp_native_failure(exc) if native_run else None,
             )
             return
         except MCPTransportError:
@@ -2921,13 +3365,18 @@ class SubprocessAgentClient:
             )
             await send_failure(
                 "tool_error",
-                reason_code="tool_failed",
-                failure_reason="Host 도구 처리 중 내부 오류가 발생했습니다.",
+                reason_code=("tool_result_protocol_invalid"
+                             if native_run and isinstance(exc, AgentProtocolError) else "tool_failed"),
+                failure_reason=("Host 도구 결과가 Agent 전달 계약을 통과하지 못했습니다."
+                                if native_run and isinstance(exc, AgentProtocolError)
+                                else "Host 도구 처리 중 내부 오류가 발생했습니다."),
             )
             return
         if completed_tool_result is None:
             raise AgentProtocolError("Tool completion was not prevalidated")
-        await self._supervisor.send_tool_result(completed_tool_result)
+        await self._supervisor.send_tool_result(
+            completed_tool_result, transport_plan=completed_transport_plan,
+        )
 
     async def test_capabilities(self) -> ModelCapabilityResult:
         request_id = str(uuid.uuid4())
@@ -3004,6 +3453,7 @@ def _model_payload(settings: StoredModelConnection) -> dict[str, Any]:
 
 def _model_context_payload(
     value: ModelContextV1 | Mapping[str, Any] | None,
+    *, client_input_limit_tokens: int | None = None,
 ) -> dict[str, Any] | None:
     """Validate an explicit provider observation before crossing the sidecar boundary.
 
@@ -3013,8 +3463,14 @@ def _model_context_payload(
     is forwarded without truncating history or claiming support.
     """
 
+    from controlstudio_contracts.model_input_policy import validate_client_input_limit_tokens
+    try:
+        client_input_limit_tokens = validate_client_input_limit_tokens(client_input_limit_tokens)
+    except ValueError as exc:
+        raise AgentProtocolError('client input limit is invalid') from exc
     if value is None:
-        return None
+        return ({'client_input_limit_tokens': client_input_limit_tokens}
+                if client_input_limit_tokens is not None else None)
     try:
         contract = (
             value
@@ -3032,6 +3488,8 @@ def _model_context_payload(
         payload.pop("history_budget_status", None)
         payload.pop("history_budget_tokens", None)
         payload.pop("history_budget_source", None)
+    if client_input_limit_tokens is not None:
+        payload["client_input_limit_tokens"] = client_input_limit_tokens
     return payload
 
 
@@ -3212,6 +3670,8 @@ def _quarantine_diagnostic_only_context(
     return True
 
 
+
+
 def _safe_trusted_context(
     value: dict[str, Any] | None,
     *,
@@ -3220,6 +3680,18 @@ def _safe_trusted_context(
 ) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
+    if "native_ld_execution" in value:
+        from controlstudio_contracts.native_execution_context import (
+            validate_native_execution_descriptor,
+        )
+        try:
+            native = validate_native_execution_descriptor(value["native_ld_execution"],
+                workflow=value.get("workflow"), change_request_scope=value.get("change_request_scope"),
+                verification_scope=value.get("verification_scope"))
+        except ValueError as exc:
+            raise AgentProtocolError("Native execution context is invalid") from exc
+        return {"workflow": value["workflow"], "change_request_scope": "permanent_offline_revision",
+                "verification_scope": "offline_native_check_only", "native_ld_execution": native}
     if (
         value.get("quarantine_diagnostic_only") is True
         and value.get("workflow") != "engineering"
@@ -3322,6 +3794,8 @@ def _safe_trusted_context(
         # This flag grants no tool authority.  It tells the Agent that the Host
         # deliberately supplied an empty external catalog for a general chat.
         context["targetless_analysis"] = True
+        if value.get("project_start_available") is True:
+            context["project_start_available"] = True
     if value.get("change_request_scope") in {
         "analysis_only",
         "offline_candidate_revision",
@@ -3474,7 +3948,7 @@ def _safe_trusted_context(
             and (error_code is None or isinstance(error_code, str))
         ):
             context["change_outcome"] = json.loads(_canonical_json(change_outcome))
-            native_failure_present = any(
+            any(
                 isinstance(change_outcome.get(key), dict)
                 for key in ("programCheckFailure",)
             )
@@ -3740,12 +4214,35 @@ def _structural_tool_result_payload(
     return payload
 
 
+def _tool_result_transport_plan(
+    payload: dict[str, Any], *, native_run: bool,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Keep one logical result; only its native wire envelope may be chunked."""
+    frame_size = len(json.dumps({
+        "protocol_version": AGENT_PROTOCOL_VERSION_V1, "type": "tool.result", "payload": payload,
+    }, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")) + 1
+    if not native_run or frame_size <= MAX_PROTOCOL_LINE_BYTES:
+        plan = [("tool.result", payload)]
+    else:
+        request_id = payload["request_id"]
+        chunks = list(checkpoint_chunks(payload))
+        plan = [("tool.result.chunk", {"request_id": request_id, **part}) for part in chunks]
+        plan.append(("tool.result.sync", {
+            "request_id": request_id, "checkpointDigest": chunks[0]["checkpointDigest"],
+        }))
+    for message_type, part in plan:
+        encode_message(message_type, part)
+    return plan
+
+
 def _completed_tool_result_payload(
     *,
     request_id: str,
     raw_result: Any,
     evidence_ref: Mapping[str, Any] | None,
     tool_name: str | None = None,
+    native_run: bool = False,
+    transport_plan: list[tuple[str, dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Build and wire-validate an Agent-safe result before durable completion."""
 
@@ -3754,7 +4251,7 @@ def _completed_tool_result_payload(
         if tool_name is not None
         else raw_result
     )
-    safe_result = scrub_agent_tool_result(projected_result)
+    safe_result = scrub_native_tool_result(projected_result) if native_run else scrub_agent_tool_result(projected_result)
     if evidence_ref is not None:
         safe_evidence_ref = _nonstructural_evidence_projection(evidence_ref)
         if isinstance(safe_result, dict):
@@ -3773,10 +4270,15 @@ def _completed_tool_result_payload(
         "result": safe_result,
     }
     _assert_strict_tool_result_json(payload)
-    assert_agent_safe_payload(payload)
+    if native_run:
+        assert_native_public_payload(payload)
+    else:
+        assert_agent_safe_payload(payload)
     # JSON serialization and the exact NDJSON frame-size limit must succeed
     # before the Host journals tool.completed and its evidence atomically.
-    encode_message("tool.result", payload)
+    plan = _tool_result_transport_plan(payload, native_run=native_run)
+    if transport_plan is not None:
+        transport_plan[:] = plan
     return payload
 
 
@@ -4046,15 +4548,19 @@ def _valid_output_contract_reason_pair(
 def _runtime_diagnostic_from_payload(value: Any) -> AgentRuntimeDiagnostic | None:
     """Accept only the sidecar's fixed non-sensitive runtime diagnostic codes."""
 
-    if not isinstance(value, Mapping) or set(value) != {
-        "stage",
-        "exceptionKind",
-        "reasonCode",
-    }:
+    required = {"stage", "exceptionKind", "reasonCode"}
+    optional = {"providerHttpStatus", "providerErrorCode", "providerErrorType", "providerExceptionClass"}
+    if not isinstance(value, Mapping) or not required <= set(value) or set(value) - required - optional:
         return None
     stage = value.get("stage")
     exception_kind = value.get("exceptionKind")
     reason_code = value.get("reasonCode")
+    if exception_kind == "working_memory_validation":
+        if (set(value) != required or type(stage) is not str
+                or stage not in _OUTPUT_CONTRACT_STAGES or type(reason_code) is not str
+                or reason_code not in _MEMORY_VALIDATION_REASON_CODES):
+            return None
+        return AgentRuntimeDiagnostic(stage=stage, exception_kind=exception_kind, reason_code=reason_code)
     if (
         not isinstance(stage, str)
         or stage not in _OUTPUT_CONTRACT_STAGES
@@ -4067,10 +4573,34 @@ def _runtime_diagnostic_from_payload(value: Any) -> AgentRuntimeDiagnostic | Non
         )
     ):
         return None
+    provider_status = value.get("providerHttpStatus")
+    provider_code = value.get("providerErrorCode")
+    provider_type = value.get("providerErrorType")
+    provider_class = value.get("providerExceptionClass")
+    if optional.intersection(value):
+        if (exception_kind != "model_api_error" or
+                not (reason_code == "provider_rejected" or re.fullmatch(r"provider_http_[45][0-9]{2}", reason_code))):
+            return None
+        if "providerHttpStatus" in value and (type(provider_status) is not int
+                or not 400 <= provider_status <= 599 or reason_code != f"provider_http_{provider_status}"):
+            return None
+        if "providerErrorCode" in value and (type(provider_code) is not str
+                or provider_code not in _PROVIDER_RUNTIME_ERROR_CODES):
+            return None
+        if "providerErrorType" in value and (type(provider_type) is not str
+                or provider_type not in _PROVIDER_RUNTIME_ERROR_TYPES):
+            return None
+        if "providerExceptionClass" in value and (type(provider_class) is not str
+                or provider_class not in _PROVIDER_RUNTIME_EXCEPTION_CLASSES):
+            return None
     return AgentRuntimeDiagnostic(
         stage=stage,
         exception_kind=exception_kind,
         reason_code=reason_code,
+        provider_http_status=provider_status,
+        provider_error_code=provider_code,
+        provider_error_type=provider_type,
+        provider_exception_class=provider_class,
     )
 
 
@@ -4088,12 +4618,32 @@ def _validated_approval_handoff(value: Any) -> dict[str, str]:
     return dict(value)
 
 
+def _validated_native_request_disposition(value: Any, content: str) -> dict[str, Any] | None:
+    # Older Agents may omit this additive field. Never infer a completed goal.
+    if value is None:
+        return None
+    if (not isinstance(value, dict)
+            or not {'schema_version', 'status', 'summary', 'is_goal_completion_evidence'} <= set(value)
+            or set(value) - {'schema_version', 'status', 'summary', 'is_goal_completion_evidence', 'completion_assessment'}
+            or value.get('schema_version') != '1'
+            or value.get('status') not in {'not_claimed', 'completed', 'blocked', 'needs_user'}
+            or not isinstance(value.get('summary'), str) or not value['summary']
+            or value['summary'] != content
+            or value.get('is_goal_completion_evidence') is not False):
+        raise ValueError('native request disposition')
+    result = dict(value)
+    if 'completion_assessment' in result:
+        from controlstudio_contracts.native_completion import validate_completion_assessment
+        result['completion_assessment'] = validate_completion_assessment(result['completion_assessment'])
+    return result
+
+
 def _output_from_payload(value: Any) -> AgentRunOutput:
     if not isinstance(value, Mapping):
         raise AgentProtocolError("Agent final output is invalid")
     try:
         workflow = value.get("workflow", "engineering")
-        if workflow not in {"engineering", "new_project_planning"}:
+        if workflow not in {"engineering", "new_project_planning", "native_ld_partial_edit"}:
             raise ValueError("workflow")
         plan_status = value.get("plan_status")
         if plan_status not in {None, "needs_clarification", "ready_for_review"}:
@@ -4102,6 +4652,16 @@ def _output_from_payload(value: Any) -> AgentRunOutput:
         model = value["model"]
         if not isinstance(content, str) or not isinstance(model, str):
             raise TypeError("output fields")
+        project_start = validated_native_project_start(value.get('native_project_start'))
+        if project_start is not None and (workflow != 'engineering' or any(value.get(field) is not None for field in (
+                'plan_status', 'project_name', 'plan_artifact', 'plan_digest', 'engineering_analysis',
+                'engineering_analysis_digest', 'engineering_mission', 'digest', 'cycle_disposition',
+                'approval_handoff', 'native_request_disposition'))):
+            raise ValueError('New-project start cannot carry target authority or completion artifacts')
+        native_disposition = _validated_native_request_disposition(
+            value.get("native_request_disposition"), content)
+        if native_disposition is not None and workflow != "native_ld_partial_edit":
+            raise ValueError("native disposition outside native workflow")
         engineering_mission = value.get("engineering_mission")
         engineering_mission_digest = value.get("digest")
         cycle_disposition = value.get("cycle_disposition")
@@ -4152,6 +4712,8 @@ def _output_from_payload(value: Any) -> AgentRunOutput:
             digest=engineering_mission_digest,
             cycle_disposition=cycle_disposition,
             approval_handoff=approval_handoff,
+            native_request_disposition=native_disposition,
+            native_project_start=project_start,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise AgentProtocolError("Agent final output is invalid") from exc

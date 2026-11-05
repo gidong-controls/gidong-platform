@@ -16,10 +16,22 @@ from controlstudio_packaging.bom import PackagingError, verify_bom
 
 
 def _sed_text(
-    *, source: Path, target: Path, files: list[str], release_channel: str
+    *,
+    source: Path,
+    support_source: Path,
+    target: Path,
+    payload_files: list[str],
+    support_files: list[str],
+    release_channel: str,
 ) -> str:
+    files = [*payload_files, *support_files]
     strings = "\n".join(f'FILE{index}="{name}"' for index, name in enumerate(files))
-    entries = "\n".join(f"%FILE{index}%=" for index in range(len(files)))
+    payload_entries = "\n".join(
+        f"%FILE{index}%=" for index in range(len(payload_files))
+    )
+    support_entries = "\n".join(
+        f"%FILE{index}%=" for index in range(len(payload_files), len(files))
+    )
     friendly_name = (
         "ControlStudio Beta Setup"
         if release_channel == "beta"
@@ -39,20 +51,23 @@ CAB_ResvCodeSigning=0
 RebootMode=N
 InstallPrompt=
 DisplayLicense=
-FinishMessage=ControlStudio installation completed.
+FinishMessage=
 TargetName={target}
 FriendlyName={friendly_name}
-AppLaunched=Install-ControlStudio.cmd
+AppLaunched=cmd.exe /D /C Install-ControlStudio.cmd
 PostInstallCmd=<None>
-AdminQuietInstCmd=Install-ControlStudio.cmd
-UserQuietInstCmd=Install-ControlStudio.cmd
+AdminQuietInstCmd=cmd.exe /D /C Install-ControlStudio.cmd
+UserQuietInstCmd=cmd.exe /D /C Install-ControlStudio.cmd
 SourceFiles=SourceFiles
 [Strings]
 {strings}
 [SourceFiles]
 SourceFiles0={source}\\
+SourceFiles1={support_source}\\
 [SourceFiles0]
-{entries}
+{payload_entries}
+[SourceFiles1]
+{support_entries}
 """
 
 
@@ -103,30 +118,33 @@ def main() -> int:
             prefix="controlstudio-installer-"
         ) as temporary:
             staging = Path(temporary)
-            for name in payload_files:
-                shutil.copy2(portable / name, staging / name)
-            for name in ("Install-ControlStudio.cmd", "Install-ControlStudio.ps1"):
-                shutil.copy2(ROOT / "scripts" / name, staging / name)
-            files = [
-                *payload_files,
+            staged_output = staging / output.name
+            support_files = [
                 "Install-ControlStudio.cmd",
                 "Install-ControlStudio.ps1",
+                "Uninstall-ControlStudio.ps1",
+                "Uninstall-ControlStudio.Core.psm1",
             ]
+            for name in support_files:
+                shutil.copy2(ROOT / "scripts" / name, staging / name)
             sed = staging / "ControlStudio.sed"
             sed.write_text(
                 _sed_text(
-                    source=staging,
-                    target=output,
-                    files=files,
+                    source=portable,
+                    support_source=staging,
+                    target=staged_output,
+                    payload_files=payload_files,
+                    support_files=support_files,
                     release_channel=release_channel,
                 ),
                 encoding="utf-8",
             )
-            completed = subprocess.run([str(iexpress), "/N", str(sed)], check=False)
-            if completed.returncode or not output.is_file():
+            completed = subprocess.run([str(iexpress), "/N", str(sed)], cwd=staging, check=False)
+            if completed.returncode or not staged_output.is_file():
                 raise PackagingError(
                     f"IExpress failed with exit code {completed.returncode}"
                 )
+            shutil.copy2(staged_output, output)
     except (OSError, json.JSONDecodeError, KeyError, PackagingError) as exc:
         print(f"Installer build refused: {exc}", file=sys.stderr)
         return 2

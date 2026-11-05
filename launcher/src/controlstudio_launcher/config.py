@@ -11,6 +11,7 @@ from .constants import DEFAULT_EXPECTED_HOST_BUILD, PRODUCT_DATA_DIRECTORY_NAME
 from .errors import ConfigurationError
 
 _ALLOWED_CONFIG_KEYS = {
+    "data_directory",
     "host_command",
     "host_cwd",
     "expected_host_build",
@@ -37,6 +38,7 @@ class LauncherSettings:
     startup_timeout_seconds: float = 180.0
     probe_timeout_seconds: float = 1.0
     poll_interval_seconds: float = 0.2
+    data_directory: Path | None = None
 
 
 def default_settings(*, python_executable: str | None = None) -> LauncherSettings:
@@ -89,6 +91,18 @@ def apply_config(
     values: dict[str, Any],
 ) -> LauncherSettings:
     updates: dict[str, object] = {}
+
+    if "data_directory" in values:
+        directory = values["data_directory"]
+        if directory is None:
+            updates["data_directory"] = None
+        elif isinstance(directory, str) and directory:
+            path = Path(directory)
+            if not path.is_absolute():
+                raise ConfigurationError("data_directory must be an absolute path")
+            updates["data_directory"] = path
+        else:
+            raise ConfigurationError("data_directory must be null or a non-empty absolute path")
 
     if "host_command" in values:
         command = values["host_command"]

@@ -27,6 +27,10 @@ _ELEVATION_CONTEXT_ENVIRONMENT = (
     "LOCALAPPDATA",
     "CONTROLSTUDIO_RELEASE_CHANNEL",
     "CONTROLSTUDIO_PRODUCT_RELEASE",
+    "CONTROLSTUDIO_PRODUCT_BOM",
+    "CONTROLSTUDIO_DATABASE",
+    "CONTROLSTUDIO_WORKSPACE_ROOT",
+    "CONTROLSTUDIO_KNOWLEDGE_DATABASE",
     "CONTROLSTUDIO_DEVELOPMENT_MODEL_BASE_URL",
     "CONTROLSTUDIO_DEVELOPMENT_MODEL_NAME",
     "CONTROLSTUDIO_DEVELOPMENT_MODEL_TIMEOUT_SECONDS",
@@ -183,7 +187,7 @@ def create_elevation_broker(arguments: Sequence[str]) -> ElevationBroker:
 
 
 def encode_elevation_context(environ: dict[str, str] | None = None) -> str:
-    """Carry only the fixed development launch context across ShellExecute.
+    """Carry only the fixed local launch context across ShellExecute.
 
     ``runas`` does not preserve the caller's modified environment.  The
     allowlist intentionally excludes API keys and arbitrary variable names.

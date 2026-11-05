@@ -28,20 +28,6 @@ ControlStudio의 엔지니어링 화면은 챗봇 대화창이 아니다. 사용
 엔지니어링 목표를 Agent가 작업 계획으로 만들고, 필요한 읽기·분석 도구를 연속으로
 실행하며, 완료 조건이 닫힐 때까지 진행 상태와 근거를 관리하는 작업 공간이다.
 
-## 실행 모델
-
-한 사용자 요청은 하나의 `run`을 시작한다. 한 run 안에서 Agent는 최대 여덟 개의
-자율 cycle을 수행하고, 각 cycle 안에서는 모델과 도구 결과를 이어 받아 여러 도구를
-호출할 수 있다. 다음 중 하나가 될 때만 사용자에게 제어를 돌려준다.
-
-- 목표의 모든 완료 조건이 근거와 함께 충족됨
-- 계속하려면 사용자의 구체적인 정보가 필요함
-- digest-bound 사람 승인이 필요함
-- 필요한 capability가 실제로 없음
-- 자율 cycle budget을 소진해 명시적인 재개가 필요함
-
-도구 하나가 끝났거나 분석 문장 하나를 만들었다는 이유만으로 작업을 끝내지 않는다.
-
 ## Mission snapshot
 
 모든 engineering cycle은 다음 상태를 완전한 snapshot으로 남긴다.
@@ -80,16 +66,6 @@ Host 또는 sidecar가 재시작된 뒤 같은 target과 mission을 재검증하
 checkpoint의 message history에서 이어간다. checkpoint는 분석 연속성일 뿐 변경 성공
 증거가 아니며, 중간에 끝나지 않은 tool call이나 mutation을 자동 재실행하지 않는다.
 그 경우 Host evidence와 MCP journal 상태를 다시 확인한다.
-
-## 권한 경계
-
-Mission은 조사와 계획의 진행 권위이지 PLC 변경 권한이 아니다. Agent는 목표와 단계를
-선택하고 read-only 도구를 연속 실행할 수 있지만, mutation은 기존과 동일하게 Platform의
-사람 승인, target binding, lease와 MCP journal/readback 경계를 통과해야 한다. Mission이
-`waiting_for_approval`이라고 기록해도 승인 자체를 만들거나 대신하지 않는다.
-이미 유효한 승인 대기 transaction이 있으면 Host는 그 transaction의 ID·plan digest·
-만료 시각만 Agent에 알려주고 proposal tool을 다시 열지 않는다. 따라서 재시작 뒤 같은
-변경 제안을 중복 생성하지 않고 기존 사람 결정을 기다린다.
 
 ## 재개와 UI
 

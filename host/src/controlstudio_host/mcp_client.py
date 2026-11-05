@@ -17,13 +17,26 @@ from pathlib import Path
 from typing import Any
 
 from controlstudio_contracts import MCPProductManifestV1, ProgramCheckFailureObservationV1
+from controlstudio_contracts.native_failure import (
+    NativeFailureProtocolError,
+    validate_native_failure,
+)
+from controlstudio_contracts.native_ld_commands import (
+    NATIVE_EDITOR_COMPOSITE_SECONDS,
+    NATIVE_EDITOR_DEFAULT_SECONDS,
+    native_ld_composite_actions,
+    native_ld_declaration_seconds,
+    native_ld_entry_seconds,
+)
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 from fastmcp.exceptions import ToolError
+from mcp.shared.exceptions import McpError
+from mcp.types import CONNECTION_CLOSED
 from pydantic import ValidationError
 from typing_extensions import Self
 
-from .windows_mcp_transport import ControlStudioWindowsStdioTransport
+from .windows_mcp_transport import ControlStudioWindowsStdioTransport, _MCPStartupProbe
 
 EXPECTED_SERVER_NAME = "xg5000-mcp-server"
 MCP_PRODUCT_CONTRACT_VERSION = "1.0"
@@ -104,9 +117,21 @@ HOST_WORKSPACE_MCP_TOOLS = frozenset(
         
         
         "workspace.open_native",
+        "workspace.reserve_native",
+        "workspace.prepare_native",
+        "workspace.inspect_native_preparation",
+        "workspace.cancel_native_preparation",
+        "workspace.simulator",
         "workspace.status",
         "workspace.compare",
+        "workspace.structure_index",
+        "project.export_symbols",
+        "project.inspect_symbols_ui",
+        "project.open_symbols_ui",
         "xg5000.open_project",
+        "xg5000.editor",
+        "xg5000.inspect_abandoned_operation",
+        "xg5000.settle_abandoned_operation",
         "xg5000.cleanup_abandoned_workspace_launches",
         "xg5000.resume_terminal_change_session",
         "xg5000.reviewed_no_save_close",
@@ -142,7 +167,6 @@ HOST_RECOVERY_MCP_TOOLS = frozenset(
     {
         "change.release_terminal_lease",
         "change.transaction_lookup",
-        "change.observe_quarantined_target",
         "change.restore_verified_quarantined_backup",
         "xg5000.attach",
         "xg5000.session_status",
@@ -216,6 +240,8 @@ CONTROLLER_ENDPOINT_FIELDS = ("host", "port", "timeout_seconds")
 
 MUTATING_MCP_TOOLS = frozenset(
     {
+        "xg5000.editor",
+        "xg5000.settle_abandoned_operation",
         
         
         "controller.begin_restore_handoff",
@@ -251,12 +277,71 @@ MUTATING_MCP_TOOLS = frozenset(
 )
 
 
+def _editor_batch_sdk_timeout(name: str, arguments: dict[str, Any]) -> float | None:
+    if name in {"xg5000.inspect_abandoned_operation", "xg5000.settle_abandoned_operation"}:
+        # Recovery includes a native read, two process snapshots and mutex admission.
+        return 180.0
+    if name != "xg5000.editor":
+        return None
+    if arguments.get("action") == "find_ld_devices":
+        queries = arguments.get("queries")
+        if (not isinstance(queries, list) or not queries
+                or any(not isinstance(query, str) or not 1 <= len(query) <= 128 for query in queries)):
+            raise MCPToolError("find_ld_devices requires a non-empty ordered queries array")
+        # Shared native setup + per-query120 + CLI return15 + PID-lock30 + SDK15.
+        return 120.0 * (len(queries) + 1) + 60.0
+    if arguments.get("action") != "apply_ld_edits":
+        # Match CLI standalone classification without importing its package.
+        composite = arguments.get('action') in native_ld_composite_actions() or arguments.get('action') in {'set_variable_comment', 'set_declaration_comments', 'inspect_variable_comment', 'activate_find_result', 'set_rung_comment', 'paste_observed_ld_fragment', 'inspect_rung_comment', 'inspect_declaration_comments', 'find_ld_device', 'goto_step'}
+        # Native budget + CLI return15 + PID-lock30 + SDK margin15.
+        return (NATIVE_EDITOR_COMPOSITE_SECONDS if composite else NATIVE_EDITOR_DEFAULT_SECONDS) + 60.0
+    entries = arguments.get("entries")
+    actions = {"write_ld_program", "write_ld_element", "insert_contact", "insert_parallel_contact",
+               "delete_ld_element", "set_ld_vertical_wire", "set_ld_horizontal_wire",
+               "insert_ld_row_before", "insert_ld_row_after", "insert_ld_instruction"}
+    if (not isinstance(entries, list) or not entries
+            or any(not isinstance(entry, dict) or not isinstance(entry.get("action"), str)
+                   or entry["action"] not in actions for entry in entries)):
+        raise MCPToolPreflightError('EDITOR_BATCH_ARGUMENTS_INVALID',
+            "apply_ld_edits requires supported ordered native entries",
+            details={'invalid_fields': ['entries'], 'supported_actions': sorted(actions)})
+    capture_after = arguments.get("capture_after", False)
+    if type(capture_after) is not bool:
+        raise MCPToolPreflightError('EDITOR_BATCH_ARGUMENTS_INVALID',
+            "capture_after must be a boolean", details={'invalid_fields': ['capture_after']})
+    # Native admission30 + sum(existing child budgets) + CLI margin15 +
+    # service PID-lock admission30 + SDK margin15. Optional post-batch capture
+    # adds normal read30 and view-restore30; no per-entry reads or batch ceiling.
+    return (90.0 + sum(native_ld_declaration_seconds(entry) if entry['action'] == 'write_ld_program' else native_ld_entry_seconds(entry["action"]) for entry in entries)
+            + (60.0 if capture_after else 0.0))
+
+
 class MCPStartupError(RuntimeError):
     """The bundled MCP process did not satisfy the Host identity contract."""
 
 
 class MCPToolError(RuntimeError):
     """A direct, read-only MCP call failed."""
+
+
+class MCPToolPreflightError(MCPToolError):
+    """An owned argument guard rejected a request before any native input."""
+
+    def __init__(self, kind: str, message: str, *, details: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.native_failure = validate_native_failure({
+            'schema': 'controlstudio-native-failure/v1', 'kind': kind,
+            'message': message, 'details': {**details, 'phase': 'preflight',
+                'execution_status': 'not_started', 'action_attempted': False,
+                'input_state_unknown': False, 'automatic_replay': False}})
+
+    def as_result(self) -> dict[str, Any]:
+        failure = validate_native_failure(self.native_failure)
+        return {'ok': False, 'status': 'not_started', 'read_only': True,
+            'action_attempted': False, 'input_state_unknown': False, 'automatic_replay': False,
+            'error': {'kind': failure['kind'], 'message': failure['message'],
+                'nativeFailure': failure, **{field: failure['details'][field] for field in
+                    ('invalid_fields', 'missing_fields') if field in failure['details']}}}
 
 
 class MCPToolRejectedError(MCPToolError):
@@ -279,24 +364,63 @@ class MCPToolContractError(MCPToolError):
 
 
 def _exact_tool_error_payload(
-    value: str, *, tool_name: str | None = None,
+    value: str | dict[str, Any], *, tool_name: str | None = None,
 ) -> dict[str, Any] | None:
     """Accept only the complete stdio ToolError envelope, never a substring."""
 
     try:
-        payload = json.loads(value)
+        payload = json.loads(value) if isinstance(value, str) else value
     except (TypeError, json.JSONDecodeError):
         return None
+    # A declared native protocol must either validate or fail explicitly.  It
+    # must not silently fall back to interpreting a human-readable message.
+    native = None
+    if isinstance(payload, dict) and isinstance(payload.get("error"), dict) and "nativeFailure" in payload["error"]:
+        try:
+            native = validate_native_failure(payload["error"]["nativeFailure"])
+        except (NativeFailureProtocolError, TypeError, ValueError) as exc:
+            raise MCPToolContractError("MCP native failure violates the shared protocol") from exc
+        if (set(payload) != {"schema_version", "status", "error"}
+                or payload.get("schema_version") != "1.0"
+                or payload.get("status") != "error"
+                or not {"type", "message", "nativeFailure"} <= set(payload["error"])
+                or set(payload["error"]) - {"type", "message", "code", "nativeFailure", "programCheckFailure"}
+                or not isinstance(payload["error"].get("type"), str)
+                or not isinstance(payload["error"].get("message"), str)
+                or ("code" in payload["error"] and (
+                    not isinstance(payload["error"]["code"], str)
+                    or re.fullmatch(r"[A-Za-z0-9_]{1,120}", payload["error"]["code"]) is None))):
+            raise MCPToolContractError("MCP native failure has an incompatible error envelope")
+    recovery = None
+    if isinstance(payload, dict) and isinstance(payload.get("error"), dict) and "operationRecovery" in payload["error"]:
+        typed = payload["error"]
+        candidate = typed["operationRecovery"]
+        if (typed.get("type") != "OperationQuarantinedError"
+                or typed.get("code") != "XG5000_OPERATION_QUARANTINED"
+                or not isinstance(candidate, dict)
+                or type(candidate.get("input_state_unknown")) is not bool):
+            return None
+        fields = {"state", "quarantined", "inspection_required", "old_outcome_unknown",
+                  "input_state_unknown", "automatic_replay"}
+        if candidate["input_state_unknown"] is False:fields.add("action_attempted")
+        if (set(candidate) != fields or candidate.get("state") != "quarantined"
+                or any(candidate.get(key) is not True for key in
+                       ("quarantined", "inspection_required", "old_outcome_unknown"))
+                or candidate.get("automatic_replay") is not False
+                or (candidate["input_state_unknown"] is False and candidate.get("action_attempted") is not False)):
+            return None
+        recovery = dict(candidate)
     if (
         not isinstance(payload, dict)
         or set(payload) != {"schema_version", "status", "error"}
         or payload.get("schema_version") != "1.0"
         or payload.get("status") != "error"
         or not isinstance(payload.get("error"), dict)
-        or set(payload["error"]) not in (
+        or (native is None and set(payload["error"]) not in (
             {"type", "message"}, {"type", "message", "code"},
             {"type", "message", "code", "programCheckFailure"},
-        )
+            {"type", "message", "code", "operationRecovery"},
+        ))
         or not isinstance(payload["error"].get("type"), str)
         or not isinstance(payload["error"].get("message"), str)
         or (
@@ -312,16 +436,24 @@ def _exact_tool_error_payload(
         "type": payload["error"]["type"],
         "message": payload["error"]["message"],
     }
+    if native is not None:
+        error["nativeFailure"] = native
     if "code" in payload["error"]:
         error["code"] = payload["error"]["code"]
+    if recovery is not None:
+        error["operationRecovery"] = recovery
     if "programCheckFailure" in payload["error"]:
         if error.get("code") != "PROGRAM_CHECK_FAILED":
+            if native is not None:
+                raise MCPToolContractError("MCP native failure has an incompatible program check code")
             return None
         try:
             observation = ProgramCheckFailureObservationV1.model_validate(
                 payload["error"]["programCheckFailure"],
             )
-        except (ValidationError, TypeError, ValueError):
+        except (ValidationError, TypeError, ValueError) as exc:
+            if native is not None:
+                raise MCPToolContractError("MCP native failure has an invalid program check observation") from exc
             return None
         error["programCheckFailure"] = observation.model_dump(mode="json", by_alias=True)
     return {
@@ -396,6 +528,22 @@ def _monorepo_mcp_command() -> str | None:
     return None
 
 
+def _mcp_startup_execution_context(command: str, environment: dict[str,str]) -> dict[str,bool | str]:
+    """Closed comparisons only; never retain environment values, paths or identities."""
+    def matches(actual: str | None, expected: str | None) -> bool:
+        return bool(actual and expected and os.path.normcase(str(Path(actual).resolve()))
+                    == os.path.normcase(str(Path(expected).resolve())))
+    loop_name = type(asyncio.get_running_loop()).__name__
+    loop_kind = ("selector" if loop_name == "_WindowsSelectorEventLoop" else
+                 "proactor" if loop_name == "ProactorEventLoop" else "other")
+    workspace = Path(__file__).resolve().parents[4]
+    return {"command_matches_monorepo":matches(command,_monorepo_mcp_command()),
+            "cli_command_matches_monorepo":matches(environment.get("CONTROLSTUDIO_XG5000_CLI_COMMAND"),
+                str(workspace/"controlstudio-xg5000-cli/.venv/Scripts/controlstudio-xg5000.exe")),
+            "pythonhome_present":"PYTHONHOME" in environment,
+            "pythonpath_present":"PYTHONPATH" in environment,"loop_kind":loop_kind}
+
+
 @dataclass(frozen=True)
 class MCPStatus:
     status: str
@@ -408,6 +556,44 @@ class MCPStatus:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+class _StartupRetryClient(Client[Any]):
+    """Keep the SDK's typed initialize timeout before its context unwraps it."""
+
+    initialize_timed_out = False
+
+    def __init__(self, *args: Any, startup_deadline: float, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._startup_deadline = startup_deadline
+
+    async def initialize(self, timeout: Any = None) -> Any:
+        try:
+            remaining = self._startup_deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError("MCP startup deadline expired before initialize")
+            if timeout is None:
+                timeout = (remaining if self._init_timeout is None
+                           else min(self._init_timeout, remaining))
+            async with asyncio.timeout_at(self._startup_deadline):
+                return await super().initialize(timeout=timeout)
+        except RuntimeError as exc:
+            if isinstance(exc.__cause__, TimeoutError):
+                self.initialize_timed_out = True
+            raise
+
+
+def _safe_mcp_call_failure(exc: Exception) -> str:
+    """Classify closed SDK scalars only; exception messages/data are never exposed."""
+    if isinstance(exc, TimeoutError):
+        return "request timed out"
+    if isinstance(exc, McpError):
+        code = exc.error.code
+        if type(code) is int and code == 408:
+            return "request timed out"
+        if type(code) is int and code == CONNECTION_CLOSED:
+            return "connection closed"
+    return "call failed"
 
 
 class MCPGateway:
@@ -424,7 +610,8 @@ class MCPGateway:
         command: str | None = None,
         args: list[str] | None = None,
         cwd: str | None = None,
-        init_timeout_seconds: float = 20.0,
+        init_timeout_seconds: float | None = None,
+        startup_timeout_seconds: float = 60.0,
         authorization_secret: str | None = None,
     ) -> None:
         # Deployments start a version-pinned MCP artifact from an explicit
@@ -441,7 +628,10 @@ class MCPGateway:
             self._command = "controlstudio-plc-mcp"
             self._args = list(args) if args is not None else []
         self._cwd = cwd
+        # Startup owns the default initialize budget; an explicit cap may shorten it.
         self._init_timeout_seconds = init_timeout_seconds
+        self._startup_timeout_seconds = startup_timeout_seconds
+        self._startup_cleanup_incomplete = False
         self._authorization_secret = (
             authorization_secret
             or os.environ.get("CONTROLSTUDIO_MCP_AUTHORIZATION_SECRET")
@@ -586,30 +776,60 @@ class MCPGateway:
         self._active_controller_endpoint = None
         self._controller_observation_expires_at = None
 
-    async def start(self) -> MCPStatus:
+    async def start(self, *, _startup_deadline: float | None = None) -> MCPStatus:
         async with self._lifecycle_lock:
             self._stopping = False
             if self._client is not None:
                 return self._status
 
-            def startup_stage(stage: str) -> None:
+            if self._startup_cleanup_incomplete:
+                raise MCPStartupError("MCP previous startup process retirement is unconfirmed")
+
+            stage = "process_initialize"
+            startup_started = time.monotonic()
+            loop = asyncio.get_running_loop()
+            startup_deadline = (
+                _startup_deadline if _startup_deadline is not None
+                else loop.time() + self._startup_timeout_seconds
+            )
+            if loop.time() >= startup_deadline:
+                raise MCPStartupError("MCP startup deadline expired before process creation")
+
+            async def startup_step(awaitable: Any) -> Any:
+                # One deadline across all readiness stages; tool-call budgets are separate.
+                async with asyncio.timeout_at(startup_deadline):
+                    return await awaitable
+            startup_probe = _MCPStartupProbe(max(0.0, startup_deadline - loop.time()))
+
+            def startup_stage(value: str) -> None:
+                nonlocal stage
+                stage = value
                 self._status = MCPStatus(status="starting", error=stage)
                 logger.info("MCP startup stage=%s", stage)
 
             startup_stage("process_initialize")
+            environment = _mcp_environment(authorization_secret=self._authorization_secret)
+            try:
+                startup_probe.execution_context = _mcp_startup_execution_context(self._command,environment)
+            except Exception:
+                pass  # Optional diagnostics cannot replace original startup handling.
             transport = _mcp_stdio_transport(
                 command=self._command,
                 args=self._args,
-                environment=_mcp_environment(authorization_secret=self._authorization_secret),
+                environment=environment,
                 cwd=self._cwd,
+                startup_probe=startup_probe,
             )
-            client: Client[Any] = Client(
+            client: Client[Any] = _StartupRetryClient(
                 transport,
                 name="controlstudio-host",
-                init_timeout=self._init_timeout_seconds,
+                init_timeout=(startup_deadline - loop.time() if self._init_timeout_seconds is None
+                              else min(self._init_timeout_seconds, startup_deadline - loop.time())),
+                startup_deadline=startup_deadline,
             )
+            startup_probe.start()
             try:
-                await client.__aenter__()
+                await startup_step(client.__aenter__())
                 startup_stage("tool_catalog")
                 initialize_result = client.initialize_result
                 if initialize_result is None:
@@ -623,7 +843,7 @@ class MCPGateway:
                 if not isinstance(server_version, str) or not server_version.strip():
                     raise MCPStartupError("MCP server version is missing")
 
-                tools = await client.list_tools()
+                tools = await startup_step(client.list_tools())
                 startup_stage("contract_manifest")
                 tool_names = {tool.name for tool in tools}
                 missing = sorted(REQUIRED_PRODUCT_MCP_TOOLS - tool_names)
@@ -632,7 +852,9 @@ class MCPGateway:
                         "required product MCP tools are missing: " + ", ".join(missing)
                     )
                 self._validate_agent_identity_contracts(tools)
-                manifest_result = await client.call_tool(MCP_PRODUCT_MANIFEST_TOOL, {})
+                manifest_result = await startup_step(
+                    client.call_tool(MCP_PRODUCT_MANIFEST_TOOL, {})
+                )
                 manifest = self._manifest_result_data(manifest_result)
                 self._validate_product_contract_manifest(tools, manifest)
                 if not MUTATING_MCP_TOOLS.intersection(tool_names):
@@ -640,6 +862,8 @@ class MCPGateway:
                         "MCP tool catalog is incomplete; safety surface cannot be audited"
                     )
 
+                if asyncio.get_running_loop().time() >= startup_deadline:
+                    raise TimeoutError("MCP startup deadline expired")
                 self._client = client
                 self._status = MCPStatus(
                     status="ready",
@@ -661,14 +885,64 @@ class MCPGateway:
                     name="controlstudio-mcp-monitor",
                 )
             except BaseException as exc:
-                logger.exception("MCP startup failed")
-                await client.__aexit__(type(exc), exc, exc.__traceback__)
                 self._client = None
                 self._active_session_identity = None
-                self._status = MCPStatus(status="unavailable", error=str(exc))
+                failure = (
+                    str(exc) if isinstance(exc, MCPStartupError)
+                    else f"MCP startup failed at {stage} ({type(exc).__name__})"
+                )
+                self._status = MCPStatus(status="unavailable", error=failure)
+                logger.exception(
+                    "MCP startup failed stage=%s elapsed_ms=%d error_type=%s",
+                    stage,
+                    int((time.monotonic() - startup_started) * 1000),
+                    type(exc).__name__,
+                )
+                try:
+                    await client.__aexit__(type(exc), exc, exc.__traceback__)
+                except Exception as cleanup_exc:  # failed entry may rethrow its session error
+                    logger.warning(
+                        "MCP startup cleanup failed error_type=%s",
+                        type(cleanup_exc).__name__,
+                    )
+                finally:
+                    # A later explicit reconnect must also prove the prior child retired.
+                    # Never clear this block on a request that merely asks to start again.
+                    self._startup_cleanup_incomplete = (
+                        startup_probe.transport_observed and not startup_probe.process_retired
+                    )
+                # Diagnostics must not replace original state/cleanup/failure handling.
+                try:
+                    startup_probe.stop()
+                    logger.warning(
+                        "CONTROLSTUDIO_MCP_STARTUP_SAFE %s",
+                        json.dumps(startup_probe.failure_summary(stage, exc), separators=(",", ":")),
+                    )
+                except Exception:
+                    pass
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                # One initialization-only retry uses the existing owner lifecycle.
+                # A failed retry already owns _reconnect_task, so it cannot recurse.
+                if (stage == "process_initialize"
+                        and isinstance(client, _StartupRetryClient)
+                        and client.initialize_timed_out
+                        and startup_probe.process_retired
+                        and loop.time() < startup_deadline
+                        and not self._stopping
+                        and (self._reconnect_task is None or self._reconnect_task.done())):
+                    self._reconnect_task = asyncio.create_task(
+                        self._recover_connection(startup_deadline=startup_deadline),
+                        name="controlstudio-mcp-reconnect"
+                    )
                 if isinstance(exc, MCPStartupError):
                     raise
-                raise MCPStartupError(f"failed to start bundled MCP: {exc}") from exc
+                raise MCPStartupError(failure) from exc
+            finally:
+                try:
+                    startup_probe.stop()
+                except Exception:
+                    pass
             return self._status
 
     async def stop(self) -> None:
@@ -725,10 +999,66 @@ class MCPGateway:
             _log_bounded_change_rejection(name, exc.mcp_error_payload)
             raise
 
+    def project_tools_connection_status(self) -> dict[str, str | int]:
+        # Project only existing connection ownership; no DB or native observation.
+        owner = self._reconnect_task
+        pending = self._lifecycle_lock.locked() or (owner is not None and not owner.done())
+        state = ("ready" if self._status.status == "ready" else
+                 "starting" if pending or self._status.status == "starting" else "unavailable")
+        return {"state": state, "waitTimeoutMs": max(1, int(self._startup_timeout_seconds * 1000))}
+
+    def request_reconnect(self) -> None:
+        """One explicit request shares the existing lifecycle; never replay a tool."""
+        if self._status.status == "ready":
+            return
+        if self._stopping:
+            raise MCPTransportError("MCP is stopping")
+        if self.project_tools_connection_status()["state"] == "starting":
+            return
+        self._reconnect_task = asyncio.create_task(
+            self._recover_connection(), name="controlstudio-mcp-reconnect"
+        )
+
+    async def wait_until_ready(self, *, timeout_seconds: float) -> MCPStatus:
+        """Wait only for an already-owned connection; never start or replay it."""
+        if (isinstance(timeout_seconds, bool) or not math.isfinite(timeout_seconds)
+                or timeout_seconds <= 0):
+            raise ValueError("timeout_seconds must be finite and positive")
+        deadline = time.monotonic() + min(timeout_seconds, self._startup_timeout_seconds)
+
+        async def wait_current_lifecycle() -> None:
+            # Cancellation releases only this waiter, never the connection owner.
+            async with self._lifecycle_lock:
+                pass
+
+        while self._status.status != "ready":
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError("MCP readiness wait expired")
+            reconnect = self._reconnect_task
+            if (reconnect is not None and not reconnect.done()
+                    and reconnect is not asyncio.current_task()):
+                waiter = asyncio.shield(reconnect)
+            elif self._lifecycle_lock.locked():
+                waiter = wait_current_lifecycle()
+            else:
+                # No live owner to wait for: preserve its unavailable/stopped state.
+                return self._status
+            try:
+                await asyncio.wait_for(waiter, timeout=remaining)
+            except asyncio.TimeoutError:
+                raise
+            except Exception as exc:
+                raise MCPTransportError("MCP connection readiness failed") from exc
+            if time.monotonic() >= deadline:
+                raise asyncio.TimeoutError("MCP readiness wait expired")
+        return self._status
+
     async def call_workspace_tool(
         self,
         name: str,
         arguments: dict[str, Any] | None = None,
+        *, private_meta: dict[str, Any] | None = None,
     ) -> Any:
         """Call a Host-owned local workspace tool that is never model-visible."""
 
@@ -737,11 +1067,14 @@ class MCPGateway:
         client = self._client
         if client is None or self._status.status != "ready":
             raise MCPTransportError("MCP is not ready")
+        safe_arguments = dict(arguments or {})
+        batch_timeout = _editor_batch_sdk_timeout(name, safe_arguments)
         try:
             async with self._call_lock:
                 result = await client.call_tool(
                     name,
-                    dict(arguments or {}),
+                    safe_arguments,
+                    **({"meta": private_meta} if private_meta is not None else {}),
                     **(
                         {
                             "timeout": (
@@ -749,7 +1082,8 @@ class MCPGateway:
                             )
                         }
                         if name == "xg5000.open_project"
-                        else {}
+                        else {"timeout": 180.0} if name in {"workspace.prepare_native", "workspace.cancel_native_preparation", "workspace.simulator"}
+                        else {"timeout": batch_timeout} if batch_timeout is not None else {}
                     ),
                 )
         except ToolError as exc:
@@ -911,8 +1245,12 @@ class MCPGateway:
             raise MCPToolError(f"agent attempted a blocked MCP tool: {name}")
         try:
             safe_arguments = self._safe_arguments(name, arguments, session_identity=session_identity)
+            batch_timeout = _editor_batch_sdk_timeout(name, safe_arguments)
             async with self._call_lock:
-                result = await call_tool(name, safe_arguments)
+                if batch_timeout is not None:
+                    result = await call_tool(name, safe_arguments, timeout=batch_timeout)
+                else:
+                    result = await call_tool(name, safe_arguments)
         except ToolError:
             # A validation or domain error is a healthy MCP response. Preserve
             # it for the agent loop without poisoning the transport status.
@@ -970,8 +1308,19 @@ class MCPGateway:
             raise MCPToolContractError(
                 f"{name} returned content that violates its MCP output schema"
             ) from None
+        if (isinstance(exc, McpError) and type(exc.error.code) is int
+                and exc.error.code in {-32700, -32600, -32601, -32602, -32603}):
+            # Standard JSON-RPC errors are received responses, not evidence of
+            # a lost channel. Preserve the caller's failure/uncertainty path;
+            # neither raw message/data nor native success is inferred here.
+            raise error_type(
+                f"{name} returned JSON-RPC error (code={exc.error.code})"
+            ) from exc
+        failure = _safe_mcp_call_failure(exc)
+        logging.getLogger('uvicorn.error.controlstudio_mcp_call').warning(
+            'MCP call failure safe: classification=%s', failure)
         self._mark_connection_lost(exc)
-        raise error_type(f"{name} failed because MCP disconnected") from exc
+        raise error_type(f"{name} {failure}") from exc
 
     def _safe_arguments(
         self, name: str, arguments: dict[str, Any], *, session_identity: dict[str, Any] | None = None,
@@ -1370,10 +1719,14 @@ class MCPGateway:
 
     def _decode_tool_result(self, name: str, result: Any) -> Any:
         if result.is_error:
+            structured = getattr(result, "structured_content", None)
             rendered = self._result_text(result)
+            payload = _exact_tool_error_payload(
+                structured if structured is not None else rendered, tool_name=name,
+            )
+            display = payload["error"]["message"] if payload is not None else rendered
             raise MCPToolRejectedError(
-                f"{name} failed: {rendered}",
-                mcp_error_payload=_exact_tool_error_payload(rendered, tool_name=name),
+                f"{name} failed: {display}", mcp_error_payload=payload,
             )
         if result.structured_content is not None:
             return self._unwrap_success_envelope(result.structured_content)
@@ -1428,7 +1781,7 @@ class MCPGateway:
                 name="controlstudio-mcp-reconnect",
             )
 
-    async def _recover_connection(self) -> None:
+    async def _recover_connection(self, *, startup_deadline: float | None = None) -> None:
         """Replace one broken stdio client without restarting or re-elevating Host."""
 
         try:
@@ -1453,7 +1806,7 @@ class MCPGateway:
             if self._stopping:
                 return
             try:
-                await self.start()
+                await self.start(_startup_deadline=startup_deadline)
             except MCPStartupError:
                 logger.exception("Automatic MCP reconnect failed")
         finally:
@@ -1503,9 +1856,13 @@ class MCPDiagnosticSession:
 
 
 def _mcp_stdio_transport(
-    *, command: str, args: list[str], environment: dict[str, str], cwd: str | None
+    *, command: str, args: list[str], environment: dict[str, str], cwd: str | None,
+    startup_probe: _MCPStartupProbe | None = None
 ) -> Any:
     """Use the reviewed Job policy only for the Host's local Windows MCP child."""
 
     transport_type = ControlStudioWindowsStdioTransport if os.name == "nt" else StdioTransport
-    return transport_type(command=command, args=args, env=environment, cwd=cwd)
+    kwargs: dict[str, Any] = {"command": command, "args": args, "env": environment, "cwd": cwd}
+    if os.name == "nt":
+        kwargs["startup_probe"] = startup_probe
+    return transport_type(**kwargs)

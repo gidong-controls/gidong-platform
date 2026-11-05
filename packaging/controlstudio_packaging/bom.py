@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-COMPONENT_IDS = ("platform", "agent", "plc-mcp")
+COMPONENT_IDS = ("platform", "agent", "plc-mcp", "xg5000-cli")
 REQUIRED_CONTRACTS = (
     "api_contract",
     "event_contract",
@@ -175,7 +175,7 @@ def build_bom(
         )
     if set(components) != set(COMPONENT_IDS):
         raise PackagingError(
-            "exactly platform, agent, and plc-mcp components are required"
+            "exactly platform, agent, plc-mcp, and xg5000-cli components are required"
         )
     result: list[dict[str, Any]] = []
     for component_id in COMPONENT_IDS:

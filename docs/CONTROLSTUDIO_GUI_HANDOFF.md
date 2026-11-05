@@ -1,6 +1,6 @@
 # ControlStudio 사용자 GUI 및 실행 아키텍처
 
-최종 갱신: 2026-09-08
+현행 개발 경계 갱신: 2026-10-11
 
 결정 상태: chat-first 제품 방향 확정. 현재 저장소의 target-first/mission-first
 화면은 이 방향으로 수렴시키는 구현 현황이지, 모든 사용자 요청의 필수 절차가 아니다.
@@ -13,10 +13,9 @@
 [ENGINEERING_COLLABORATION_WORKFLOWS.md](ENGINEERING_COLLABORATION_WORKFLOWS.md)를
 따른다.
 
-2026-09-08의 제품 우선순위와 범위는
-[AGENT_PRODUCT_PLAN.md](AGENT_PRODUCT_PLAN.md), 현재 구현·운영 인수인계는
-[HANDOFF.md](HANDOFF.md)를 함께 따른다. 둘 중 일반 대화의 시작점·표시에 관해
-충돌하는 과거 설명은 이 문서의 chat-first 결정을 적용한다.
+현재 구현·개발 우선순위는 [AGENT_PRODUCT_PLAN.md §4·§5](AGENT_PRODUCT_PLAN.md)를
+따른다. 아래 화면 기능 목록에는 기존 거래 UI도 포함되며 정상 native 대화의 필수
+단계가 아니다. 실제 사용자 작업과 저장본 결과를 같은 대화에서 표시하는 것이 기준이다.
 
 ## 1. 결정 요약
 
@@ -91,8 +90,9 @@ capability로 추가한다.
 CHAT (기본)
   ├─ 일반 질문/읽기·분석 → 모델 결과 + tool timeline
   ├─ 대상이 필요한 질문 → 대화 안에서 target 선택을 제안
-  ├─ 새 프로젝트 의도 → brief/plan 보조 흐름
-  └─ 실제 변경 의도 → proposal → 필요한 승인·실행·검증·복구
+  ├─ 후보/계획만 요청 → 읽기·설계안 설명 (적용 없음)
+  ├─ 새 프로젝트 작성 → 필요한 요구/대상 준비 → 모델의 LD 작성·저장
+  └─ 지정 작업본 수정 → 요청 범위로 native 실행 → 실제 결과·필요한 후속 작업
 ```
 
 - target이 없거나 확인되지 않았다는 이유만으로 대화 surface를 숨기지 않는다.
@@ -116,10 +116,10 @@ CHAT (기본)
 계획을 만들기 위해 필요한 정보를 수집하는 선택적 보조물이며, CPU·경로·계획 검토
 화면을 채팅보다 먼저 강제하지 않는다.
 
-계획 검토 완료는 프로젝트 생성 또는 PLC 작업 승인이 아니다. 이는 신규 native
-project 생성 의도의 gate일 뿐, 일반 대화·읽기·분석을 막지 않는다. 아직 지원되지 않는
-단계는 버튼을 비활성화하고 정확한 이유를 표시하며, 계획이나 기본 조합 프로그램을
-독립 재열기·simulation까지 끝난 완성품이라고 부르지 않는다.
+후보만 요청한 경우 적용하지 않는다. 명확한 작업본 생성·작성·저장 요청은 해당 범위의
+권한으로 Host가 보존한다. 추가 범위나 물리 PLC 작업이 필요하면 그 항목을 확인한다.
+계획 검토 panel을 모든 신규 생성의 필수 gate로 붙이지 않는다. 실제 생성·저장·시험의
+지원 상태와 결과를 표시하며 계획만 작성한 상태를 완성 프로젝트로 부르지 않는다.
 
 ## 3. 실행 수명주기
 
@@ -372,19 +372,6 @@ loopback 주소도 무신뢰 웹페이지의 요청 대상이 될 수 있으므�
 API가 인증됐다는 사실은 MCP capability를 대신하지 않는다. Host와 MCP가 각각
 사용자 권한, 대상 identity와 작업 precondition을 다시 검사한다.
 
-## 9. 현재 선택하지 않는 기술
-
-| 기술 | 첫 제품에서 제외하는 이유 | 재검토 조건 |
-|---|---|---|
-| Tauri/Rust | 웹 GUI와 Python Host만으로 현재 요구 충족 | 전역 단축키·정교한 트레이·단일 native 창 등 필수 요구 |
-| Electron | Chromium 고정 이점보다 초기 배포 복잡성과 runtime 비용이 큼 | 브라우저/PWA 호환성이 현장 PC에서 실패 |
-| Flutter | 모바일 공통 native UI와 자체 canvas가 핵심 요구가 아님 | 현장 태블릿이 동등한 주 제품이 됨 |
-| Qt/PySide6 | 자체 PLC IDE·래더 canvas를 만들지 않음 | 웹 UI가 현장 IME·접근성·배포 기준을 통과하지 못함 |
-| Rust native GUI | 제품 UI 생태계와 개발 비용 대비 이득이 없음 | 검증된 성능 병목을 작은 native 모듈로 해결할 필요 |
-
-이 표는 영구 금지가 아니다. React API와 서버 계약을 제품 소유 스키마로 유지해
-필요하면 셸 또는 클라이언트를 교체할 수 있게 한다.
-
 ## 10. 구현 완료 기준
 
 ### 실행과 설치
@@ -410,16 +397,16 @@ API가 인증됐다는 사실은 MCP capability를 대신하지 않는다. Host�
 - 일반 질문·읽기·분석은 plan review, verification, recovery, Keep/Revert 또는
   target setup을 선행 조건으로 만들지 않음. 특정 tool에 target/evidence가
   필요하면 그 tool만 정확한 이유와 선택 동작을 제시함
-- 새 프로젝트 brief/plan, 기존 프로젝트 선택, 온라인 관찰은 대화에서 시작할 수
-  있는 보조 흐름임. 계획 검토는 native project 생성 전에, 변경 승인은 해당
-  mutation 전에만 요구함
-- 계획 검토와 native project 생성, 로직 변경, 검사·시뮬레이션, 온라인 작업의
-  승인을 서로 재사용하지 않음
+- 새 프로젝트 brief/plan, 기존 프로젝트 선택, 온라인 관찰은 대화에서 시작하는
+  보조 흐름임. 후보만 요청하면 적용하지 않고, 명확한 작업본 작성·수정·저장은
+  Host가 보존한 사용자 요청 범위로 실행함
+- 새 권한 확인은 범위를 벗어나는 대상/작업에 한정함. 오프라인 수정 요청으로 물리 PLC
+  운전 권한이 생기지는 않으며, 같은 요청 범위 안의 도구마다 재승인을 요구하지 않음
 - 자연어 요청에서 실제 MCP 읽기 도구와 결과까지 연결
 - 관련 위치를 벤더 IDE에서 열 수 있음
 - 증거·가설·대안·위험·검증은 결과에 관련된 경우 표시하고, 모든 답변의 필수
   checklist로 만들지 않음
-- 정확한 변경 계약에 대해서만 승인 요청
+- 추가 범위의 실제 변경이 필요할 때만 해당 대상·내용을 확인
 - 새로고침·재연결·복수 클라이언트에서 동일 run 상태 유지
 
 ### 안전과 장애
@@ -427,7 +414,8 @@ API가 인증됐다는 사실은 MCP capability를 대신하지 않는다. Host�
 - 브라우저가 MCP나 벤더 UI를 직접 제어할 수 없음
 - 승인 위조, 중복 요청과 stale plan을 서버와 MCP가 거부
 - 읽기 단계 장애는 안전하게 복구
-- mutation 이후 결과 불명 장애는 자동 재시도 없이 `QUARANTINED`
+- native 입력 결과불명은 unknown과 실제 이력을 보존하고 현재 관측에서 이어감.
+  기존 transaction의 `QUARANTINED` 복구 계약과 구분하며 완료 입력을 자동 재발행하지 않음
 - 원격 접근은 기본 차단이며 HTTPS·인증·capability 없이는 열리지 않음
 - 실제 PLC 쓰기와 런중 수정은 별도 제품 합격 기준 전까지 비활성
 - stale UI build/API schema 불일치에서는 모든 write가 fail-closed
@@ -462,10 +450,11 @@ API가 인증됐다는 사실은 MCP capability를 대신하지 않는다. Host�
 - HMAC Host challenge, origin별 browser session과 인증된 API/event stream
 - ControlStudio Host/FastAPI, 서버 권위 conversation/run/event 저장소
 - Pydantic AI 읽기·분석 runtime과 MCP process supervisor
-- target 없이 시작하는 신규 프로젝트 요구사항 브리프와
-  `new_project_planning` 전용 Pydantic AI 계획 대화
-- 요구사항 → 계획 검토 → XG5000 기술 설정 단계와, 아직 지원하지 않는
-  일반 로직·검사·재열기·시뮬레이션 단계의 명시적 차단
+- 기존 작업본의 `engineering/permanent_offline_revision/offline_native_check_only`
+  native 실행, source-bound 참조 도구·순차 batch·저장·checkpoint 왕복
+- target 없이 시작하는 신규 프로젝트 요구사항 브리프와 `new_project_planning`
+  요청 UI. 현재 targetless planning의 문자열 응답과 Host의 plan-artifact 검증은
+  불일치하며 정상 종료 계약을 교체할 대상
 - 로컬 XG5000 경로 입력, 원본 보존 작업 복사본 생성·열기와 자동 세션 연결
 - 인증·CSRF 보호 Host API가 여는 Windows 네이티브 `.xgw`/`.xgwx` 파일
   선택 창. 브라우저는 임의 로컬 경로를 직접 읽지 않음
@@ -486,8 +475,6 @@ API가 인증됐다는 사실은 MCP capability를 대신하지 않는다. Host�
   도구 인자·결과·원시 오류는 사용자 화면에 노출하지 않는 활동 흐름
 - 동일 길이 LD operand 한 개에 한정된 구조화 변경 계약, 승인·거절·실행과
   `QUARANTINED` transaction의 명시적 PID/HWND 선택 복구 화면
-- 정확한 XG5000 PID/HWND를 선택해 LS 네이티브 프로젝트 생성을 요청하고
-  서버의 idempotent 작업 상태·identity 검증 결과를 표시하는 화면
 - LS FEnet TCP 2004의 상태·device 단발 읽기와 최대 30초 bounded 값 변화 trace를
   표시하는 읽기 전용 연결 화면
 
@@ -497,12 +484,20 @@ runtime truth, 실제 field wiring 또는 프로그램 이름에서 추정한 �
 
 UI는 실행 성공을 추정하지 않는다. Host와 MCP가 반환한 target identity,
 operation 상태, exact native readback과 evidence receipt를 그대로 표시하며,
-필수 receipt가 없는 기능은 활성 상태로 보여 주지 않는다.
+입력 완료·현재 관측·저장·기능 시험을 구분해 표시한다. 현재 native 이벤트는 이름·상태
+위주라 실제 batch prefix/unknown·관측·저장 결과의 공개 요약 투영이 추가로 필요하다.
+
+Web은 permanent 요청 후 scope를 `review_before_apply`로 되돌려 평범한 후속 요청이
+legacy 후보 경로로 들어갈 수 있고, 현재 재개 버튼도 mission 전용이다. 요청 범위 유지와
+native checkpoint 재개를 신규 준비/일반 Web 패키지에서 함께 연결한다.
+이전 native project 생성 panel/API의 존재를 현재 구현으로 간주하지 않는다.
+현재 신규 생성·프로그램 준비는 [구현 계획 §5](AGENT_PRODUCT_PLAN.md)의 개발 계약에
+따라 구현할 기능이다.
 
 설치 프로그램과 서명된 배포물, 원격 접근, 기기 pairing, PLC에서 프로젝트
 복원, 강한 online identity·controller-native scan trace, 실제 PLC write/run edit/force/mode/download,
-일반 LD 생성과 전체 신규 설비 로직 구축은 아직 없다. 구현되지 않은 기능은
-준비됨으로 표시하지 않는다.
+일반 Web 요청부터 신규 프로젝트·LD 제작을 완성하는 제품 연결은 아직 남아 있다.
+직접 native LD 작성·부분 편집 타당성의 인수와 이 제품 통합의 완료를 구분한다.
 
 기존 `xg5000_control.gui` Tkinter 개발·진단 콘솔은 제품 실행 경로가 아니어서
 제거했다. 제품 UI는 Platform Web과 Host API만 사용하며, 문서가 추가됐다는

@@ -45,6 +45,7 @@ def main() -> int:
     parser.add_argument("--pyinstaller", default="pyinstaller")
     parser.add_argument("--clean", action="store_true")
     args = parser.parse_args()
+    args.output = args.output.resolve()
     missing_modules = missing_required_runtime_modules()
     if missing_modules:
         print(
@@ -63,6 +64,7 @@ def main() -> int:
         )
         return 2
     args.output.mkdir(parents=True, exist_ok=True)
+    executable = str(Path(executable).resolve())
     work = args.output / ".pyinstaller-work"
     if not (REPO / "web" / "dist" / "index.html").is_file():
         print(
@@ -74,7 +76,6 @@ def main() -> int:
         executable,
         "--noconfirm",
         "--onefile",
-        "--uac-admin",
         "--name",
         "controlstudio-platform",
         "--distpath",

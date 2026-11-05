@@ -141,7 +141,7 @@ export interface KnowledgeDialogService {
   ): Promise<readonly KnowledgeSearchHit[]>;
   listDocuments(): Promise<readonly KnowledgeDocument[]>;
   importLocalDocument(
-    request: ImportKnowledgeDocumentRequest,
+    request: ImportKnowledgeDocumentRequest, file: File,
   ): Promise<KnowledgeDocument | null>;
   listMemories(): Promise<readonly KnowledgeMemory[]>;
   proposeMemory(
@@ -158,6 +158,7 @@ export interface KnowledgeDialogProps {
   service: KnowledgeDialogService;
   onClose: () => void;
   projectScopeHint?: string;
+  projectDocumentIntake?: { scopeKey: string; label: string };
 }
 
 type KnowledgeTab = "search" | "documents" | "memories" | "patterns";
@@ -285,6 +286,7 @@ function documentScopeLabel(scope: string): string {
   if (scope === "global") {
     return "전체 범위";
   }
+  if (scope.startsWith("project:intake-")) return "새 프로젝트 첨부 자료";
   const [kind, ...parts] = scope.split(":");
   const value = parts.join(":");
   const kindLabels: Record<string, string> = {
@@ -323,10 +325,11 @@ export function KnowledgeDialog({
   service,
   onClose,
   projectScopeHint,
+  projectDocumentIntake,
 }: KnowledgeDialogProps) {
   const titleId = useId();
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const lastProjectScopeHintRef = useRef<string | undefined>(undefined);
+  const projectDocumentScopeKey = projectDocumentIntake?.scopeKey ?? projectScopeHint?.trim();
   const [activeTab, setActiveTab] = useState<KnowledgeTab>("search");
   const [query, setQuery] = useState("");
   const [searchVendor, setSearchVendor] = useState<KnowledgeVendor | "all">(
@@ -347,6 +350,7 @@ export function KnowledgeDialog({
   const [selectedPatternId, setSelectedPatternId] = useState<string | null>(
     null,
   );
+  const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [documentForm, setDocumentForm] = useState(DEFAULT_DOCUMENT_FORM);
   const [memoryForm, setMemoryForm] = useState(DEFAULT_MEMORY_FORM);
   const [busy, setBusy] = useState<string | null>(null);
@@ -368,29 +372,20 @@ export function KnowledgeDialog({
   }, [open]);
 
   useEffect(() => {
-    const hint = projectScopeHint?.trim();
-    if (!open || !hint) {
-      return;
-    }
-    const previousHint = lastProjectScopeHintRef.current;
+    if (!open) return;
+    const projectHint = projectScopeHint?.trim() ?? "";
     setDocumentForm((current) =>
-      (current.kind === "project_document" ||
-        (current.kind === "manual" &&
-          current.scopeType === "project") ||
-        (current.kind === "standard" &&
-          current.scopeType === "project")) &&
-      (!current.scopeValue.trim() || current.scopeValue === previousHint)
-        ? { ...current, scopeValue: hint }
-        : current,
+      current.kind === "project_document"
+        ? { ...current, scopeValue: projectDocumentScopeKey ?? "" }
+        : current.scopeType === "project"
+          ? { ...current, scopeValue: projectHint }
+          : current,
     );
-    setMemoryForm((current) =>
-      current.scope === "project" &&
-      (!current.context.trim() || current.context === previousHint)
-        ? { ...current, context: hint }
-        : current,
-    );
-    lastProjectScopeHintRef.current = hint;
-  }, [open, projectScopeHint]);
+    setMemoryForm((current) => current.scope === "project"
+      ? { ...current, context: projectHint } : current);
+    // A changed context must not retain a previous draft's selected file.
+    setDocumentFile(null);
+  }, [open, projectScopeHint, projectDocumentScopeKey]);
 
   useEffect(() => {
     if (!open) {
@@ -528,6 +523,13 @@ export function KnowledgeDialog({
   const importDocument = async (event: FormEvent) => {
     event.preventDefault();
     const scopeValue = documentForm.scopeValue.trim();
+    const expectedProjectScope = documentForm.kind === "project_document"
+      ? projectDocumentScopeKey : projectScopeHint?.trim();
+    if ((documentForm.kind === "project_document" || documentForm.scopeType === "project") &&
+        (!expectedProjectScope || scopeValue !== expectedProjectScope)) {
+      setError("현재 작성 대화의 자료 연결을 다시 확인해 주세요.");
+      return;
+    }
     if (
       documentForm.kind === "manual" &&
       (!documentForm.productFamily?.trim() || !documentForm.version?.trim())
@@ -547,6 +549,10 @@ export function KnowledgeDialog({
       return;
     }
 
+    if (!documentFile) {
+      setError("가져올 자료 파일을 선택해 주세요.");
+      return;
+    }
     const scope = buildDocumentScope(documentForm);
     setBusy("document-import");
     setError(null);
@@ -560,7 +566,7 @@ export function KnowledgeDialog({
         productFamily: documentForm.productFamily?.trim() || undefined,
         version: documentForm.version?.trim() || undefined,
         language: documentForm.language.trim(),
-      });
+      }, documentFile);
       if (!imported) {
         setNotice("파일 선택을 취소했습니다.");
         setNoticeTone("success");
@@ -854,9 +860,15 @@ export function KnowledgeDialog({
                   >
                     {busy === "document-import"
                       ? "가져오는 중…"
-                      : "Host에서 파일 선택"}
+                      : "자료 가져오기"}
                   </button>
                 </div>
+                <label>
+                  <span>자료 파일</span>
+                  <input type="file" accept=".pdf,.md,.markdown,.txt,.csv,.tsv"
+                    disabled={busy === "document-import"}
+                    onChange={(event) => setDocumentFile(event.target.files?.[0] ?? null)} />
+                </label>
                 <div className="knowledge-form-grid">
                   <label>
                     <span>제목 · 선택</span>
@@ -892,7 +904,7 @@ export function KnowledgeDialog({
                               kind === "standard" ? "generic" : current.vendor,
                             scopeValue:
                               kind === "project_document"
-                                ? projectScopeHint?.trim() ?? ""
+                                ? projectDocumentScopeKey ?? ""
                                 : "",
                           };
                         })
@@ -973,16 +985,16 @@ export function KnowledgeDialog({
                   </label>
                   {documentForm.kind === "project_document" ? (
                     <label className="knowledge-wide-field">
-                      <span>적용 프로젝트 · 필수</span>
+                      <span>첨부할 프로젝트</span>
                       <input
-                        value={documentForm.scopeValue}
+                        value={projectDocumentIntake?.label ?? (projectScopeHint ? "현재 대화의 작업 프로젝트" : "")}
                         readOnly
-                        placeholder="먼저 기존 프로젝트를 여세요"
+                        placeholder="새 프로젝트에서 자료 관리를 열어 주세요"
                         required
                       />
                       <small className="knowledge-field-hint">
-                        현재 열린 작업공간의 고유 ID에 연결해야 Agent가 자동
-                        범위로 사용합니다.
+                        선택한 신규 작성 요구나 현재 작업 대화에만 자료를 첨부합니다.
+                        프로젝트를 만들기 전에도 요구 문서를 등록할 수 있습니다.
                       </small>
                     </label>
                   ) : null}

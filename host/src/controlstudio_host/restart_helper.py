@@ -12,7 +12,7 @@ import time
 _RESTART_LOG_FILE = None
 
 
-def _wait_for_parent_exit(parent_pid: int, timeout_seconds: float = 30.0) -> bool:
+def _wait_for_parent_exit(parent_pid: int, timeout_seconds: float | None = None) -> bool:
     """Wait on the exact Windows process handle; never terminate any process."""
 
     if os.name == "nt":
@@ -27,12 +27,16 @@ def _wait_for_parent_exit(parent_pid: int, timeout_seconds: float = 30.0) -> boo
             wait = kernel32.WaitForSingleObject
             wait.argtypes = (ctypes.c_void_p, ctypes.c_uint)
             wait.restype = ctypes.c_uint
-            return wait(handle, int(timeout_seconds * 1000)) == 0
+            wait_ms = 0xFFFFFFFF if timeout_seconds is None else int(timeout_seconds * 1000)
+            return wait(handle, wait_ms) == 0
         finally:
-            kernel32.CloseHandle(handle)
+            close_handle = kernel32.CloseHandle
+            close_handle.argtypes = (ctypes.c_void_p,)
+            close_handle.restype = ctypes.c_int
+            close_handle(handle)
 
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
+    deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
+    while deadline is None or time.monotonic() < deadline:
         try:
             os.kill(parent_pid, 0)
         except ProcessLookupError:
@@ -89,9 +93,14 @@ def _redirect_replacement_output() -> None:
 
 
 def restart_after_parent_exits(parent_pid: int, port: int) -> int:
-    if not _wait_for_parent_exit(parent_pid) or not _wait_for_port_release(port):
-        return 1
     _redirect_replacement_output()
+    print("CONTROLSTUDIO_HOST_RESTART waiting_for_parent_exit", file=sys.stderr, flush=True)
+    if not _wait_for_parent_exit(parent_pid):
+        print("CONTROLSTUDIO_HOST_RESTART parent_wait_failed", file=sys.stderr, flush=True)
+        return 1
+    if not _wait_for_port_release(port):
+        print("CONTROLSTUDIO_HOST_RESTART port_release_failed", file=sys.stderr, flush=True)
+        return 1
     _run_replacement_host()
     return 0
 

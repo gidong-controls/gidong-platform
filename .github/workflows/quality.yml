@@ -12,9 +12,6 @@ jobs:
   quality:
     runs-on: windows-latest
     timeout-minutes: 20
-    env:
-      CONTROLSTUDIO_RUN_XGWX_ACCEPTANCE: "0"
-
     steps:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

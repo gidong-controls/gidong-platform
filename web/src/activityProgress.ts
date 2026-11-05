@@ -41,7 +41,7 @@ export function agentProgressDetail(
   elapsedSeconds: unknown,
 ): string {
   const elapsed = formatReportedElapsedSeconds(elapsedSeconds);
-  return elapsed ? `${elapsed} 경과` : "";
+  return elapsed ? `전체 작업 ${elapsed} 경과` : "";
 }
 
 export function prependCoalescedActivity<T extends CoalescibleActivity>(

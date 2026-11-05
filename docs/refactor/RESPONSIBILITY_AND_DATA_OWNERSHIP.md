@@ -1,6 +1,6 @@
 # 책임과 데이터 소유권
 
-최종 갱신: 2026-09-08
+현행 실행 경계 갱신: 2026-10-11
 
 이 문서는 [제품 아키텍처](../PRODUCT_ARCHITECTURE.md)와
 [제품 배포·버전 정책](PRODUCT_DISTRIBUTION_AND_VERSIONING.md)의 실행 경계를
@@ -12,37 +12,48 @@
 
 실행 경로는 `Agent → Platform/ExecutionBroker → MCP → 벤더 CLI → 벤더 프로그램`이다.
 별도 `controlstudio-xg5000-cli` 저장소는 LS XG5000의 프로세스·프로젝트·LD 조작을
-명령별 JSON 계약으로 제공한다. MCP는 제품 도구 계약, 대상 결속 및 작업 journal을
-소유하고, CLI는 전달받은 대상에서 벤더 작업을 수행한다. 이 분리는 향후 브랜드별
-CLI를 추가해도 Agent가 창 클래스나 COM 구현을 알 필요 없게 하려는 것이다.
+명령별 계약으로 제공한다. 정상 호출은 canonical UTF-8 JSON을 stdin으로 전달한다.
+MCP는 제품 도구 계약, 대상 결속 및 작업 기록을 소유하고, CLI는 전달받은 대상에서
+벤더 작업을 수행한다. CLI의 분리 단위는 개별 PLC 프로젝트가 아니라 engineering IDE
+계열이다. 이 분리는 후속 CLI를 추가해도 Agent가 창 클래스·native 좌표·입력 구현을
+알 필요 없게 하려는 것이다. 현재 LS 실행 명령 설정과 향후 IDE/버전 매칭은 구분한다.
 
 현재 CLI 실행 경계는 분리됐지만 벤더 코어 일부는 MCP 저장소에서 가져오는 이행
 단계다. 아래 MCP의 벤더 구현 소유권은 이 남은 코드까지 포함한 현재 상태이며,
 전체 소스 추출 완료를 뜻하지 않는다. CLI 추출이 사용자 승인·workspace 소유권을
 CLI로 옮기거나 새 사용자 승인 단계를 추가하는 것은 아니다.
+Agent에는 XG 전용 참조→primitive 계산이, Host에는 XGWX 저장 파일 codec이 남아 있다.
+아래 표는 소유권 기준이며 이 잔여까지 분리 완료했다는 뜻은 아니다. 실제 변경 파일과
+다음 action의 계약 정리는 [구현 계획](../AGENT_PRODUCT_PLAN.md)를 따른다.
 
 | 경계 | Platform | Agent | PLC MCP |
 | --- | --- | --- | --- |
-| 사용자 경험 | Launcher, Web/PWA, HTTP/SSE와 인증 | 모델 응답을 위한 analysis | 없음 |
+| 사용자 경험 | Launcher, Web/PWA, HTTP/SSE와 실제 결과의 공개 표시 | 모델의 조사·설계·도구 선택·수정·최종 설명 | 없음 |
 | 프로세스 | Agent/MCP 시작·manifest/health·종료 감독 | supervised NDJSON sidecar | supervised MCP stdio server |
 | 실행 권위 | `ExecutionBroker`, allowlist, target binding, approval, audit | `ExternalToolRequest` 제안만 | 실제 tool 실행 전 재검증 |
-| 변경 안전 | request/approval/result를 durable run journal에 기록 | 계획·설명·구조화 output | lock, write-ahead operation journal, apply, readback, rollback, quarantine |
-| 벤더/PLC | vendor implementation을 import하지 않음 | raw MCP/PID/HWND/endpoint 없음 | XG5000/XG-SIM/FEnet 및 향후 adapter |
+| 작업 진행 | 요청 범위·작업본/IDE binding·run/event·native checkpoint 보존 | 캡처 지도·상세/참조·모델 계획·완료 도구 이력 | 실제 입력·실패·관측·저장 결과. legacy 거래는 별도 journal/rollback/quarantine |
+| 벤더/PLC | 대상·파일 authority, native UI 실행 없음. 남은 저장 파일 codec은 vendor로 이관 | source/ref 의미와 모델 도구, raw MCP/PID/HWND/endpoint 없음. 남은 XG 위치·배선 계산은 adapter로 분리 | XG5000/XG-SIM/FEnet 및 향후 adapter 연결; native 구현은 CLI로 이관 중 |
 | 모델/RAG | credential lifecycle와 원본 source 전달 정책 | Pydantic AI, prompt, model adapter, derived index/ranking/eval | 없음 |
 
 Platform이 owning하는 `ExecutionBroker`는 model-facing alias를 raw MCP method로
 매핑한다. Agent가 제안한 risk/capability 또는 “완료” 설명은 권위가 아니다.
-Platform은 Product Contract manifest에서 tool schema digest, required capability,
+bound native run은 `NativeWorkspaceExecution`의 catalog와 owner가 처리한다.
+기존 manifest 도구에서는 Platform이 tool schema digest, required capability,
 risk/side-effect, target-binding/approval requirement를 확인한다. MCP도 동일
 precondition을 스스로 확인하므로 Platform만 통과해도 mutation이 허용되지 않는다.
 
 ## 요청 권한과 대상 결속
 
-목표 제품에서는 명확히 요청한 작업 사본 수정·저장의 범위를 Host가 보존하고 후속
+기존 작업본의 native 실행은 Host의 `engineering + permanent_offline_revision +
+offline_native_check_only` 분기에서 이미 연결돼 있다. Host가 descriptor와 실제 대상을
+결속하고 broker·sidecar·Agent의 참조 도구 실행을 잇는다. raw 대상은 사용자가 작성하지 않는다.
+
+제품에서는 명확히 요청한 작업 사본 수정·저장의 범위를 Host가 보존하고 후속
 도구 실행에 전달한다. 후보만 요청하면 적용하지 않는다. 새로운 범위나 되돌리기 어려운
 작업에 필요한 추가 확인과 기존 범위의 반복 승인 요청을 구분한다. 정상 대화·읽기는
 변경 거래/Keep/복구의 선행 조건을 갖지 않는다. 실제 전환 파일은
-[구현 계획](../AGENT_PRODUCT_PLAN.md)을 따른다.
+[구현 계획의 실행·변경 경계·§5](../AGENT_PRODUCT_PLAN.md)를 따른다. 현재 Web의 scope reset과
+mission 전용 재개 버튼은 native 후속 요청·재개로 연결할 잔여다.
 
 아래는 **현재 legacy mutation 구현의 내부 계약**이다. 호환 경로를 다룰 때 참조하되
 모든 요청에 새 사용자 승인 화면을 요구하라는 제품 지시로 사용하지 않는다.
@@ -68,6 +79,27 @@ precondition을 스스로 확인하므로 Platform만 통과해도 mutation이 �
 `confirm: true` 같은 caller flag로 실제 권한을 대신하지 않는다.
 
 ## journal과 상관관계 ID
+
+### 현재 native 대화
+
+Host는 요청·작업본·IDE owner, run/event, 저장 파일 관측과 native checkpoint의
+연결을 소유한다. Agent checkpoint는 모델 계획·메시지, 보관된 capture·source 참조,
+실제 도구 입력 결과와 reader-only 진행까지 포함한다. 저장된 관측은 당시 상태이며
+현재 buffer나 저장 파일 상태를 대신하지 않는다.
+
+실행기는 완료 prefix·실패/unknown·미시작 suffix를 반환한다. 모델로 보내기 전에 이
+결과를 보존하고, 재개 시 이미 완료한 결과를 재주입한다. 미완료 입력을 맹목적으로
+재발행하거나 참조를 새 행 위치로 자동 rebasing하지 않는다. 실제 현재 상태가 필요하면
+모델이 native 읽기를 선택하고, 받은 자료의 상세는 추가 GUI 읽기 없이 조회한다.
+
+`request_id`/tool-call ID는 요청과 실제 결과를 연결한다. 입력 완료, 회로 기능,
+저장 성공과 사용자 작업 완료는 서로 다른 사실이다. Web에는 실제 결과의 공개 요약을
+투영하고 private native payload·credential·대상 내부 정보를 그대로 출력하지 않는다.
+
+### 기존 승인 거래의 journal
+
+아래 mission/approval/MCP operation journal 규칙은 기존 거래를 다루는 계약이다.
+native 참조 대화의 모든 도구 결과를 이 거래 상태로 변환하는 지침이 아니다.
 
 | 기록 | 권위 소유자 | 내용 | side effect 결론 |
 | --- | --- | --- | --- |
@@ -133,7 +165,9 @@ Product Contract digest로 판단한다.
 
 ## 현재 PLC evidence 경계
 
-각 실행은 현재 workspace, exact PID/HWND, project hash, capability와 operation
-journal을 새로 결속해야 한다. 과거 기록만으로 현재 target 성공을 추정하지 않는다.
+native 실행은 현재 workspace/IDE에 결속한 owner를 재사용하며 요청 범위와 실제
+결과를 기록한다. 저장으로 hash가 달라지는 정상 변경과 대상 교체를 구분한다.
+기존 거래의 operation journal과 물리 PLC capability는 각각 해당 경로의 계약이다.
+과거 기록만으로 현재 target 성공을 추정하지 않는다.
 strong controller identity, project/parameter readback, online write, force, mode
 change, download와 run edit이 이 조건을 충족하지 못하면 계속 fail-closed다.

@@ -5,7 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
+
+from .native_failure import validate_native_failure
 
 CONTRACT_VERSION_V1 = "1.0"
 AGENT_PROTOCOL_VERSION_V1 = "1.0"
@@ -95,6 +97,37 @@ class ExternalToolRequestV1(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
+class _NativeFailureBaseV1(BaseModel):
+    """Strict public diagnostic payload; validation grants no input authority."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_name: Literal["controlstudio-native-failure/v1"] = Field(alias="schema")
+    kind: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    details: dict[str, Any]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_native_failure_payload(cls, value: Any) -> dict[str, Any]:
+        # Reuse the versioned contract's exact-field, strict-JSON, depth, and
+        # byte-limit checks before Pydantic builds the typed public model.
+        return validate_native_failure(value)
+
+
+class _NativeFailureWithoutCodeV1(_NativeFailureBaseV1):
+    """The native failure envelope when its optional code is absent."""
+
+
+class _NativeFailureWithCodeV1(_NativeFailureBaseV1):
+    """The native failure envelope when its optional code is present."""
+
+    code: str = Field(min_length=1)
+
+
+NativeFailureV1 = _NativeFailureWithoutCodeV1 | _NativeFailureWithCodeV1
+
+
 class ExternalToolResultV1(BaseModel):
     """Sanitized execution status returned across the Agent boundary."""
 
@@ -103,6 +136,22 @@ class ExternalToolResultV1(BaseModel):
     tool_name: str = Field(min_length=1, max_length=200)
     status: Literal["completed", "failed"]
     failure_kind: Literal["tool_error", "host_policy", "cancelled", "transport"] | None = None
+    native_failure: NativeFailureV1 | None = Field(default=None, alias="nativeFailure")
+
+    @model_serializer(mode="wrap")
+    def omit_absent_native_failure(self, handler: Any, info: Any) -> Any:
+        result = handler(self)
+        if self.native_failure is None and isinstance(result, dict):
+            result.pop("nativeFailure" if info.by_alias else "native_failure", None)
+        return result
+
+    @model_validator(mode="after")
+    def native_failure_requires_tool_error(self) -> ExternalToolResultV1:
+        if self.native_failure is not None and (
+            self.status != "failed" or self.failure_kind != "tool_error"
+        ):
+            raise ValueError("nativeFailure is only valid for a failed tool_error result")
+        return self
 
 
 class MCPProductToolContractV1(BaseModel):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import os
 import subprocess
+import sys
 from collections.abc import Mapping
 from contextlib import suppress
 from datetime import datetime
@@ -103,6 +104,14 @@ class SubprocessHostStarter:
         creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         child_environment = os.environ.copy()
         child_environment.update(environment)
+        if (
+            getattr(sys, "frozen", False)
+            and command
+            and Path(command[0]).resolve() == Path(sys.executable).resolve()
+        ):
+            # This independent Host outlives its one-file launcher. Give it
+            # its own extraction lifetime without changing the parent env.
+            child_environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
         # The first product increment has one canonical loopback identity. Do
         # not let inherited developer or machine environment variables start
         # the child on an endpoint different from the one the launcher proves

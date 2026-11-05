@@ -7,15 +7,15 @@ release pipeline이 미리 빌드하고 검증한 immutable artifact만 설치�
 
 The ordinary-user distribution is one file: `ControlStudio-Setup.exe`.
 Installation exposes one Start Menu entry and one top-level application,
-`ControlStudio.exe`. The Agent and PLC MCP remain separate supervised
+`ControlStudio.exe`. The Agent, PLC MCP, and XG5000 CLI remain separate supervised
 processes for isolation, but are installed under the application's private
 `runtime/` directory and are not presented as separately installed products.
 An independently distributed MCP package is a separate, opt-in product for
 users who deliberately want to run the MCP without ControlStudio Platform.
 
-The release-engineering-only portable payload composes three pre-built immutable files and the public
+The release-engineering-only portable payload composes four pre-built immutable files and the public
 `controlstudio-contracts` wheel: `controlstudio-platform.exe`,
-`controlstudio-agent.exe`, `controlstudio-plc-mcp.exe`, and
+`controlstudio-agent.exe`, `controlstudio-plc-mcp.exe`, `controlstudio-xg5000-cli.exe`, and
 `controlstudio_contracts-<version>-py3-none-any.whl`. A portable release
 contains those files, `controlstudio.bom.json`, and `Start-ControlStudio.ps1`.
 It is an internal assembly and black-box validation boundary, not the normal
@@ -53,6 +53,7 @@ then consumes only the immutable command-line inputs:
 
 ```powershell
 uv run --directory ..\gidong-plc-mcp --with pyinstaller python scripts/build_standalone.py --output "$platformRoot\dist\plc-mcp" --clean
+uv run --directory ..\controlstudio-xg5000-cli --with pyinstaller python scripts/build_standalone.py --output "$platformRoot\dist\xg5000-cli" --clean
 ```
 
 Compose the release by passing every artifact and every component version
@@ -61,7 +62,7 @@ names, missing/tampered inputs, and a wheel whose embedded version differs
 from the version recorded in the BOM:
 
 ```powershell
-python packaging/scripts/assemble_release.py --output dist/release --channel beta --platform-artifact dist/platform/controlstudio-platform.exe --platform-version 0.1.0 --agent-artifact dist/agent/controlstudio-agent.exe --agent-version 0.1.0 --mcp-artifact dist/plc-mcp/controlstudio-plc-mcp.exe --mcp-version 0.1.0 --contracts-wheel dist/contracts/controlstudio_contracts-0.1.0-py3-none-any.whl --contracts-version 0.1.0 --product-release 0.1.0-beta.1 --contracts packaging/contracts-v1.json
+python packaging/scripts/assemble_release.py --output dist/release --channel beta --platform-artifact dist/platform/controlstudio-platform.exe --platform-version 0.1.0 --agent-artifact dist/agent/controlstudio-agent.exe --agent-version 0.1.0 --mcp-artifact dist/plc-mcp/controlstudio-plc-mcp.exe --mcp-version 0.1.0 --cli-artifact dist/xg5000-cli/controlstudio-xg5000-cli.exe --cli-version 0.1.0 --contracts-wheel dist/contracts/controlstudio_contracts-0.1.0-py3-none-any.whl --contracts-version 0.1.0 --product-release 0.1.0-beta.1 --contracts packaging/contracts-v1.json
 ```
 
 `Start-ControlStudio.ps1` validates the BOM schema, component identity, public
@@ -77,18 +78,23 @@ python packaging/scripts/build_windows_installer.py --portable dist/release/port
 
 The installer re-verifies every payload hash before copying anything. It
 renames the Platform artifact to the single public entry point
-`ControlStudio.exe`, places Agent, MCP, the contracts wheel, and the BOM under
+`ControlStudio.exe`, places Agent, MCP, XG5000 CLI, the contracts wheel, and the BOM under
 `runtime/`, and creates only `ControlStudio.lnk`. On every installed launch,
 Platform validates its own hash and all internal runtime hashes and contract
-versions before binding the verified Agent/MCP commands. Missing or changed
+versions before binding the verified Agent/MCP/CLI commands. Missing or changed
 runtime artifacts fail closed.
 
 For a same-channel Beta update, the installer builds and verifies the complete
 new layout in a sibling staging directory, requires the installed Beta BOM and
 all installed artifact hashes to remain valid, and refuses to switch while a
-ControlStudio component is running. It then moves the old complete layout to
-`ControlStudio Beta.previous` and activates the staged layout as one directory
-switch. If activation fails, it restores the previous directory. The separate
+ControlStudio component is running. It moves the current layout to a verified
+same-parent transaction backup and activates the staged layout as one directory
+switch. Activation failure restores only an unchanged verified backup. After
+commit, update and uninstall remove only individually hash-verified owned files;
+unknown remnants are preserved in same-parent GUID-named sibling directories.
+Successful preservation frees the fixed current/previous slots for later installs.
+Cleanup or preservation failure retains the evidence and reports a warning.
+The separate
 `%LOCALAPPDATA%\ControlStudio Beta` data directory is not moved or removed.
 Custom install roots that overlap that data directory are rejected, and an
 activated layout must pass the same BOM/hash validation before the old runtime
@@ -111,3 +117,16 @@ identity. `--RequireProductionSignature` rejects both. Production release must
 independently verify Authenticode and record exact publisher/thumbprint
 metadata in the BOM. No publisher certificate is present here, so this work
 does **not** claim production signing.
+
+
+## Beta 검증 기록
+
+[루트 기준](../../../PRD.md)·[공통 계약](../../../ARCHITECTURE.md)·[제품 PRD §12](../../PRD.md#12-릴리스-완료-기준)·[구현계획](../AGENT_PRODUCT_PLAN.md)에 따른 지원 기록이다.
+현재 조합·측정 환경·실제 인수 범위와 미증명 항목은
+[release18 내부 검증 지원표](../releases/0.1.0-beta.20261020.18.md)를 따른다.
+전체 제품 완료나 검증하지 않은 환경의 호환성을 선언하지 않는다.
+
+[release16-r149 matrix](../../../artifacts/product-release-20261011-native-sim/installed-beta16-r149-acceptance/matrix-result.json)와
+[release14 matrix](../../../artifacts/product-release-20261011-native-sim/installed-beta14-acceptance/matrix-result.json)는
+과거 조합의 설치·데이터 보존 근거다. 현재 release의 실행·기능 인수로 승격하지 않는다.
+실패·unknown 원문과 현재 작업 상태는 [HANDOFF·통합 원장](../../../HANDOFF.md)을 따른다.

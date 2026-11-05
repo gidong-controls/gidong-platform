@@ -10,12 +10,15 @@ from datetime import datetime
 from typing import Protocol
 from urllib.parse import urlsplit, urlunsplit
 
+from controlstudio_contracts.model_input_policy import validate_client_input_limit_tokens
+
 from .api_models import ModelContextV1, ReasoningEffortV1
 from .credential_store import CredentialStoreError, WindowsDpapiCredentialStore
 from .store import HostStore
 
 MODEL_PROTOCOL = "openai_chat_completions"
 _REASONING_EFFORT_UNSET = object()
+_CLIENT_INPUT_LIMIT_UNSET = object()
 _REASONING_EFFORT_VALUES = frozenset(
     {
         "none",
@@ -118,6 +121,7 @@ class StoredModelConnection:
     secrets: ModelSecrets
     model_context: ModelContextV1 | None = None
     reasoning_effort: ReasoningEffortV1 | None = None
+    client_input_limit_tokens: int | None = None
 
 
 class ModelConnectionRepository:
@@ -136,6 +140,10 @@ class ModelConnectionRepository:
         record = self._store.get_model_settings_record()
         if record is None:
             return None
+        try:
+            client_input_limit = validate_client_input_limit_tokens(record.get('client_input_limit_tokens'))
+        except ValueError:
+            raise StoredModelSettingsError('stored client input limit is invalid') from None
         stored_reference = record.get("secret_payload_json")
         if not isinstance(stored_reference, str):
             raise StoredModelSettingsError(
@@ -180,6 +188,7 @@ class ModelConnectionRepository:
             secrets=secret_payload,
             model_context=_decode_model_context(record.get("model_context_json")),
             reasoning_effort=_decode_reasoning_effort(record.get("reasoning_effort")),
+            client_input_limit_tokens=client_input_limit,
         )
 
     def save(
@@ -193,6 +202,7 @@ class ModelConnectionRepository:
         capability_verified_at: datetime | None = None,
         model_context: ModelContextV1 | dict[str, object] | None = None,
         reasoning_effort: ReasoningEffortV1 | None | object = _REASONING_EFFORT_UNSET,
+        client_input_limit_tokens: int | None | object = _CLIENT_INPUT_LIMIT_UNSET,
         inherit_missing_secrets: bool = True,
         allow_insecure_http: bool = False,
     ) -> StoredModelConnection:
@@ -220,6 +230,15 @@ class ModelConnectionRepository:
             normalized_reasoning_effort = _decode_reasoning_effort(
                 previous_record.get("reasoning_effort")
             )
+        try:
+            normalized_input_limit = validate_client_input_limit_tokens(
+                previous_record.get('client_input_limit_tokens')
+                if client_input_limit_tokens is _CLIENT_INPUT_LIMIT_UNSET
+                and previous_record is not None
+                else None if client_input_limit_tokens is _CLIENT_INPUT_LIMIT_UNSET
+                else client_input_limit_tokens)
+        except ValueError as exc:
+            raise ModelSettingsError(str(exc)) from exc
         # Explicit replacement is the recovery path for a legacy setting
         # whose credential backend is unavailable. Only load
         # the previous protected value when an omitted field needs inheritance.
@@ -283,6 +302,7 @@ class ModelConnectionRepository:
                 capability_verified_at=capability_verified_at,
                 model_context_json=_encode_model_context(model_context),
                 reasoning_effort=normalized_reasoning_effort,
+                client_input_limit_tokens=normalized_input_limit,
             )
         except _CREDENTIAL_OPERATION_ERRORS:
             if "reference" in locals():
@@ -429,6 +449,7 @@ class ModelConnectionRepository:
                 ),
                 model_context_json=record.get("model_context_json"),
                 reasoning_effort=record.get("reasoning_effort"),
+                client_input_limit_tokens=record.get("client_input_limit_tokens"),
             )
         except _CREDENTIAL_OPERATION_ERRORS:
             self._delete_protected_quietly(reference)

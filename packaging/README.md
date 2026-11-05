@@ -1,8 +1,8 @@
 # ControlStudio product packaging
 
 The normal user downloads `ControlStudio-Setup.exe`, installs one application,
-and launches `ControlStudio.exe`. Agent and PLC MCP are private supervised
-runtime processes, not separate user-facing installations. The three-artifact
+and launches `ControlStudio.exe`. Agent, PLC MCP, and the XG5000 CLI are private
+runtime processes. The four-artifact
 portable directory exists only as the immutable release assembly and
 black-box validation input. This packaging does not install from source paths
 at runtime and intentionally does not claim a production signature. See

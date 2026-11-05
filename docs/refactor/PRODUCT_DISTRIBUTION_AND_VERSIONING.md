@@ -29,6 +29,7 @@ rollback에 대한 권위 기준이다. 구현이나 다른 문서가 이 정책
 | `gidong-platform` | 공개 | 미리 빌드된 Platform artifact를 설치 |
 | `gidong-agent` | 비공개 | private release pipeline이 미리 빌드한 artifact를 내부 runtime에 설치 |
 | `gidong-plc-mcp` | 비공개 | private release pipeline이 미리 빌드한 artifact를 내부 runtime에 설치 |
+| `controlstudio-xg5000-cli` | 별도 vendor 저장소 | 미리 빌드한 CLI artifact를 내부 runtime에 설치 |
 
 소비자 설치 프로그램은 다음 작업을 **절대 하지 않는다**.
 
@@ -39,7 +40,7 @@ rollback에 대한 권위 기준이다. 구현이나 다른 문서가 이 정책
 - 설치 시점에 source로 Agent/MCP 빌드
 - 검증되지 않은 “latest” Agent/MCP 자동 선택
 
-현재 배포 방식은 검증된 세 executable과 public contracts wheel을 설치 파일 안에
+현재 배포 방식은 검증된 네 executable과 public contracts wheel을 설치 파일 안에
 포함하는 offline bundle이다. 향후 작은 bootstrap installer를 도입하더라도
 내려받을 수 있는 것은 서명된 release manifest가 지정한 immutable binary
 artifact뿐이다. bootstrap installer 역시 private Git 저장소나 source archive에
@@ -54,7 +55,8 @@ Compiled artifact 배포는 private 저장소와 Git history를 공개하지 않
 ```text
 public Platform source ─┐
 private Agent source ───┼─ 독립 production build ─ immutable artifacts
-private MCP source ─────┘                         │
+private MCP source ─────┤                         │
+vendor CLI source ──────┘                         │
 public contracts wheel ───────────────────────────┤
                                                   ▼
                              runtime compatibility + artifact verification
@@ -68,23 +70,24 @@ public contracts wheel ───────────────────
                            ControlStudio.exe + private runtime/
 ```
 
-private release pipeline만 세 저장소의 release artifact에 접근한다. 조립 단계는
+release pipeline은 네 저장소의 release artifact를 조립한다. 조립 단계는
 source repository가 아니라 명시적으로 전달된 immutable artifact만 입력으로 받는다.
 
 ## 4. 버전 모델
 
-네 종류의 버전을 서로 구분한다.
+버전은 다음처럼 구분한다.
 
 1. **Platform version** — `gidong-platform`의 독립 제품 코드 버전
 2. **Agent version** — `gidong-agent`의 독립 구현 버전
 3. **PLC MCP version** — `gidong-plc-mcp`의 독립 구현 버전
-4. **Contract versions** — API, Event, Agent Protocol, MCP Product,
+4. **XG5000 CLI version** — `controlstudio-xg5000-cli`의 독립 구현 버전
+5. **Contract versions** — API, Event, Agent Protocol, MCP Product,
    Workspace, Audit 계약 버전
-5. **Product release version** — 검증된 전체 조합에 부여하는 소비자 릴리스 버전
+6. **Product release version** — 검증된 전체 조합에 부여하는 소비자 릴리스 버전
 
 각 저장소는 독립적으로 버전을 올릴 수 있다. 그러나 일반 사용자에게 전달되는
 조합은 BOM에 exact version과 SHA-256으로 고정한다. 같은 Platform version을
-사용하더라도 Agent 또는 MCP가 바뀌면 새로운 product release와 새로운 BOM이
+사용하더라도 Agent, MCP 또는 CLI가 바뀌면 새로운 product release와 새로운 BOM이
 필요하다.
 
 예:
@@ -95,7 +98,8 @@ source repository가 아니라 명시적으로 전달된 immutable artifact만 �
   "components": [
     {"id": "platform", "version": "1.4.0", "sha256": "..."},
     {"id": "agent", "version": "0.9.3", "sha256": "..."},
-    {"id": "plc-mcp", "version": "2.1.1", "sha256": "..."}
+    {"id": "plc-mcp", "version": "2.1.1", "sha256": "..."},
+    {"id": "xg5000-cli", "version": "0.1.0", "sha256": "..."}
   ],
   "contracts": {
     "api_contract": "3.0",
@@ -110,27 +114,8 @@ source repository가 아니라 명시적으로 전달된 immutable artifact만 �
 
 컴포넌트 개발 단계에서는 지원 가능한 contract 범위를 선언할 수 있다. 릴리스
 조립 후에는 모호한 범위나 “최신 호환 버전”을 사용하지 않고 BOM의 exact contract
-set을 세 컴포넌트가 동일하게 가져야 한다. 현재 runtime 검사는 이 exact equality를
+set을 네 배포 artifact가 동일하게 가져야 한다. 현재 runtime 검사는 이 exact equality를
 강제한다.
-
-## 5. 릴리스 승격 규칙
-
-컴포넌트 하나만 변경되어도 다음 절차 전체를 다시 거친다.
-
-1. 변경된 저장소가 독립 production build와 runtime contract 검증을 통과한다.
-2. public contracts와의 compatibility를 검사한다.
-3. 세 packaged artifact의 exact 후보 조합을 선택한다.
-4. 패키지 후보의 실제 Agent/MCP를 기동해 contract manifest, 프로세스 결속과
-   제품 경로 readback을 확인한다.
-5. 기존 XG5000 검증 범위의 회귀 gate를 수행한다.
-6. artifact version, contract set, SHA-256, 서명 정보를 BOM에 기록한다.
-7. BOM에 고정된 파일만 사용해 하나의 installer를 생성한다.
-8. installer 자체를 clean 환경에 설치해 사용자 진입점, 내부 sidecar 기동,
-   무결성 실패 거부를 다시 검사한다.
-9. 모든 gate가 통과한 product release만 배포 채널로 승격한다.
-
-독립 저장소의 새 tag나 artifact가 존재한다는 사실만으로 소비자 설치본을 자동
-갱신하지 않는다.
 
 ## 6. 설치 레이아웃과 runtime 결속
 
@@ -142,6 +127,7 @@ ControlStudio/
 └─ runtime/
    ├─ controlstudio-agent.exe
    ├─ controlstudio-plc-mcp.exe
+   ├─ controlstudio-xg5000-cli.exe
    ├─ controlstudio_contracts-<version>-py3-none-any.whl
    └─ controlstudio.bom.json
 ```
@@ -150,11 +136,12 @@ ControlStudio/
 Platform은 시작할 때 다음을 다시 검증한다.
 
 - BOM schema와 exact component ID 집합
-- Platform 자신, Agent, MCP, contracts wheel의 SHA-256
-- 세 컴포넌트가 선언한 exact contract set
+- Platform 자신, Agent, MCP, XG5000 CLI, contracts wheel의 SHA-256
+- 네 배포 artifact가 선언한 exact contract set
 - 안전한 artifact 경로
 
-검증 후 Platform은 검증된 내부 경로로만 Agent/MCP를 기동한다. 설치된 제품에서
+검증 후 Platform은 검증된 내부 경로로만 Agent/MCP를 기동하고 MCP에 CLI 경로를 전달한다.
+Agent Protocol과 MCP Product의 실제 handshake는 별도로 확인한다. 설치된 제품에서
 PATH, sibling repository 또는 임의의 “latest” sidecar로 fallback해서는 안 된다.
 manifest/handshake나 hash가 맞지 않으면 부분 기능으로 계속하지 않고 fail closed한다.
 
@@ -166,7 +153,7 @@ release**다.
 - 업데이트 클라이언트는 서명된 release manifest와 installer/package만 신뢰한다.
 - 새 release는 별도 staging 위치에 완전히 다운로드하고 검증한 뒤 활성화한다.
 - 실행 중인 Platform과 자식 프로세스를 정상 종료한 뒤 조합 전체를 교체한다.
-- 서로 다른 release의 Platform·Agent·MCP를 섞은 상태를 정상 상태로 인정하지 않는다.
+- 서로 다른 release의 Platform·Agent·MCP·CLI를 섞은 상태를 정상 상태로 인정하지 않는다.
 - activation 실패 시 이전에 검증된 BOM 조합 전체로 rollback한다.
 - 사용자 원본 문서, workspace 권위, 감사 데이터는 runtime binary 디렉터리 밖에
   보존하며 업데이트나 제거가 기본적으로 삭제하지 않는다.
@@ -183,15 +170,14 @@ release를 만들고 전체 compatibility 및 black-box gate를 통과시킨다.
 
 | 채널 | 대상 | 내용 |
 |---|---|---|
-| ControlStudio product | 일반 사용자 | Platform과 내부 Agent/MCP가 결속된 단일 installer |
+| ControlStudio product | 일반 사용자 | Platform과 내부 Agent/MCP/CLI가 결속된 단일 installer |
 | ControlStudio pre-release | 내부 QA/승인 사용자 | production과 동일한 조립 방식의 사전 검증 release |
 | PLC MCP standalone | MCP 독립 사용자 | MCP만을 위한 별도 설치·버전·지원 정책 |
 
 standalone MCP를 설치했다고 해서 ControlStudio Platform이 그 임의 설치본을
 자동 채택하지 않는다. 제품은 자기 BOM에 포함된 내부 MCP만 사용한다.
 
-소스 개발은 세 저장소의 같은 이름 `dev` integration branch에서 수행하고
-`main`은 검증된 production 기준선만 받는다. `development` BOM은 portable 실행만,
+`development` BOM은 portable 실행만,
 `beta` BOM은 `ControlStudio Beta` 설치 경로·바로가기로 production과 나란히 설치하며,
 `production` BOM은 Authenticode 검증 없이는 조립·설치·실행하지 않는다. branch 이름은
 배포 권위가 아니며 실제 채널은 immutable artifact의 BOM `release_channel`이 결정한다.
@@ -215,8 +201,7 @@ development `ControlStudio Development`/8767. 따라서 beta 검증이 productio
 현재 로컬 구현은 offline single-installer, exact BOM/hash 검증, 단일 사용자
 진입점, 내부 sidecar 자동 기동과 black-box 검증을 제공한다. Beta installer는
 같은 채널의 기존 설치 전체를 검증한 뒤 sibling staging에서 새 BOM 조합을 만들고,
-실행 중인 구성요소가 없을 때만 전체 runtime을 교체한다. 직전의 검증된 설치는
-`previous`로 한 세대 보존하며 별도 local data 디렉터리는 건드리지 않는다.
+실행 중인 구성요소가 없을 때만 전체 runtime을 교체한다. 교체 실패 시 검증된 transaction backup으로 복원하고 commit 후에는 hash-owned 과거 파일만 정리하며, current/previous 고정 slot의 unknown 잔여물은 검증된 경계 안의 GUID 경로에 보존하고 별도 local data 디렉터리는 건드리지 않는다.
 실제 digest가 다른 두 Beta 조합의 연속 설치와 SQLite 사용자 데이터 byte 보존을
 한 Windows 환경에서 replay했다.
 

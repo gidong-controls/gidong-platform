@@ -1,5 +1,9 @@
 # PLC 에이전트 현상태 감사 및 다음 구현 인계
 
+기록 상태: 2026-09-19 당시 감사. 현재 상태·실행 계약·개발 순서는
+[PRD](../../PRD.md)와 [구현 계획 §4·§5](../AGENT_PRODUCT_PLAN.md)를 따른다.
+아래 미완료·다음 구현 표현은 해당 날짜의 조사 결과다.
+
 작성: 2026-09-19. 대상: 현재 소스, 개발 DB의 실제 실행 기록, 최종 저장된 대동인덱스 프로젝트.
 
 후속 보완: [총괄 설계 검토·공식 웹 벤치마킹](PLC_AGENT_ARCHITECTURE_2026-09-19.md).
@@ -259,42 +263,6 @@ manual_start_allowed  M0200D
 
 CLI가 여전히 `xg5000_control`에 의존하는 독립 배포 문제도 남아 있다. 이는 별도 부채이며 이번 수동 모드/재기동 결함의 직접 원인과 혼동하지 않는다. 먼저 에이전트와 생성물의 의미 결함을 해결한다.
 
-## 9. 다음 새 채팅에서 할 구현 순서
-
-이번 감사는 수정 완료 보고가 아니다. 아래는 필요한 개선 범위이며, 구체적인 선후 관계와
-실행 identity는 [2026-09-20 설계 반대 검토의 A→B→C→D](PLC_AGENT_DESIGN_REVIEW_2026-09-20.md)를 우선한다.
-특히 compiler 안의 설계 정책 분리는 native 수정 경로의 선행 작업이고, 수정 소스는 기존 immutable operation의 resume으로 실행할 수 없다.
-[총괄 설계의 D1~D8 및 구조 시험](PLC_AGENT_ARCHITECTURE_2026-09-19.md)을 함께 적용한다.
-아래 항목을 개별 index 수리 함수 추가만으로 처리하지 않는다.
-
-### 1단계 — 확인된 반례와 현재 산출물을 기준점으로 고정
-
-- 이 문서의 최종 operation·파일을 보존한다. 과거 101개 run을 처음부터 다시 돌리지 않는다.
-- F1의 도구 가용성, F4/F5의 저장된 조건 반례를 작은 회귀로 옮긴다. 테스트 기대값은 현재 repair 함수에서 생성하지 않는다.
-- 아직 가설인 수동 짧은 누름의 카운트/스텝 순서는 별도 실제 확인 대상으로 유지한다.
-
-### 2단계 — 에이전트가 읽고 고치고 실행할 수 있는 제어권 복구
-
-- valid check 이후에도 read/compare/edit를 가능하게 하고, 완료 판단을 요청 범위에 맞춘다.
-- 신규 설계와 실제 생성·검사·저장·시험 도구를 동일 작업의 실행 루프에 연결한다. 기존 서비스/API를 재사용한다.
-- 실패 결과를 사람이 내부 signal ID로 번역하여 다음 요청에 붙이지 않아도 Agent가 해당 revision과 관측값을 읽고 수정하도록 한다.
-- 재개 시 같은 사용자 작업/working copy를 유지하고 중복 생성을 피한다. 동일 operation resume은 동일 소스의 후속 검증이며, 소스가 바뀌면 새 변경/실행 identity와 실제 readback을 결속한다. 과거 성공을 새 소스에 그대로 적용하지 않는다.
-
-### 3단계 — 범용 PLC 의미와 생성물 품질 복구
-
-- `running`을 자동 운전으로 간주하는 전제부터 제거한다. 모드별 운전·실제 이동·정지 가능 조건·시작 이벤트/재무장·fault/reset 정책을 구별한다.
-- 내부 ID를 바꾸거나 새로운 장비를 다루어도 유지되는 typed reference와 편집/진단 인터페이스로 정리한다.
-- sequence/control network/ladder의 같은 의미를 여러 번 독립 작성하는 부분은 권위를 정한다. 한 표현을 바꾸면 관련 투영이 일관되게 갱신되어야 하며, 동기화되지 않은 설명을 실행 사실로 취급하지 않는다.
-- Agent의 래더 설계·편집 능력을 제거하지 않는다. Host에 index 전용 정답 템플릿을 더 넣는 것으로 해결하지 않는다.
-- 미사용 선언, 카운터 타입, 중복 reset, 스캔 순서, 잘못된 명칭을 정리한다. 실제 XG5000 symbol/comment 전달과 재열기 확인을 구현한다.
-
-### 4단계 — 실제 일반 사용자 흐름으로 검증하고 인계
-
-- 자연스러운 신규 요청으로 시작한다. 사용자 문장에 내부 ID, 수리 함수명, 도구 순서, 매번 “원본/물리 PLC 쓰기 금지”를 넣어 성공을 유도하지 않는다. 작업 범위와 실행 권한은 제품이 관리한다.
-- 다음 표의 동작을 **새 생성물**에서 확인한다. 시험 성공은 실제 실행한 범위만 보고한다.
-- 독립적인 다른 소형 장비 요구도 수행하여 index 전용 설계를 범용 에이전트로 오인하지 않는다.
-- 마지막에 실제 결과·미완료 범위·현재 문서를 맞춘다. 테스트 숫자나 `COMPLETED` 플래그만으로 완료 선언하지 않는다.
-
 ## 10. 다음 완료 판정표
 
 | 범위 | 필요한 관측/결과 |
@@ -315,15 +283,6 @@ CLI가 여전히 `xg5000_control`에 의존하는 독립 배포 문제도 남아
 
 물리 PLC 투입이나 실제 기계 안전 인증은 이 표의 범위가 아니다. 현재 작업 범위는 오프라인 XG5000과 XG-SIM이다.
 
-## 11. 다음 새 채팅에 전달할 작업 지시
-
-아래 지시보다 먼저 `docs/reviews/PLC_AGENT_DESIGN_REVIEW_2026-09-20.md`의 수정 결정과
-A→B→C→D 구현 순서를 읽는다. `docs/reviews/PLC_AGENT_ARCHITECTURE_2026-09-19.md`의 책임 경계와
-이 감사의 최종 동작 판정표도 적용한다. 최초 핵심 실행 증거는 실패한 native 프로그램을
-수정하여 **그 수정본**을 저장/readback/재시험하는 경로다.
-
-> `docs/reviews/PLC_AGENT_AUDIT_2026-09-19.md`와 `docs/HANDOFF.md`의 2026-09-19 절을 먼저 읽고 구현한다. 이번에는 진단을 반복하는 것이 아니라 F1~F8의 원인을 고친다. 기존 persistent draft/Agent loop/Host broker/native 실행 서비스를 유지하면서, valid 검사 후 발행 강제를 제거하고 신규 설계→실제 실행→관측→부분 수정이 한 작업에서 이어지게 한다. 대동인덱스 최종본의 수동 모드 전환·정지 후 재기동 반례를 해결하되 index 전용 수리 함수를 늘리는 방식으로 끝내지 않는다. 래더의 typed 상태/카운터/스캔 순서와 실제 XG5000 심볼·주석 품질도 고친다. 자연스러운 최초 요청과 후속 변경을 실제 웹·XG5000·XG-SIM으로 수행하고, 이 문서의 완료 판정표와 독립 장비 사례로 범용성을 확인한다. 사용자에게 내부 ID나 금지 문구를 반복 입력하게 하지 않는다. SSH는 이번 범위에서 제외한다. 기존 파일과 이력은 보존한다. 작업자를 위임한다면 사용자가 지정한 Sol medium을 사용하고 주 에이전트가 검토한다. 구현/실기/문서 상태가 일치할 때만 완료를 보고한다.
-
 ## 부록 A. 다음 작업자가 재조회할 실행 식별자
 
 식별자는 사용자 기본 UI가 아니라 이 기술 부록에 둔다.
@@ -342,15 +301,16 @@ SHA-256 9bb733b40e12407a01b631d539a7a2f270691915e38abb8eca2fb888232308d7
 
 ## 부록 B. 소스 탐색 지도
 
-행 번호는 감사 당시 HEAD의 탐색 힌트다. 수정 후에는 함수명을 검색한다.
+행 번호는 감사 당시 HEAD의 탐색 힌트다. 현재 삭제된 파일은 아래에서 당시 경로를
+텍스트로 보존한다. 현행 개발 위치는 구현 계획 §4·§5를 사용한다.
 
 - [Agent runtime](../../../gidong-agent/src/controlstudio_agent/runtime.py): `_route_design_workspace_tool` 183, `prepare_tools` 3315, planning 분기 16686, `_run_design_workspace` 19299, review 지시 19411, 발행 후 종료 19568.
-- [Host planning drafts](../../host/src/controlstudio_host/planning_drafts.py): `_index_acceptance_behavior_diagnostics` 3295, `manual_running` ID 검색 3531, `_index_mode_latch_repair_changes` 4498, manual stop/reset repair 5166 부근.
-- [Host native projects](../../host/src/controlstudio_host/native_projects.py): acceptance scenario 집합 93, `planning_native_failure_observation` 339, `_compile_native_program` 1569, symbol 확인 1628, rung 설명/명령 생성 2360.
+- 당시 `host/src/controlstudio_host/planning_drafts.py` (현재 삭제): `_index_acceptance_behavior_diagnostics` 3295, `manual_running` ID 검색 3531, `_index_mode_latch_repair_changes` 4498, manual stop/reset repair 5166 부근.
+- 당시 `host/src/controlstudio_host/native_projects.py` (현재 삭제): acceptance scenario 집합 93, `planning_native_failure_observation` 339, `_compile_native_program` 1569, symbol 확인 1628, rung 설명/명령 생성 2360.
 - [Host API](../../host/src/controlstudio_host/app.py): planning 도구 결속 10100 부근, native 생성 14935, 시험 수락 15291, resume 16081.
-- [XG-SIM runner](../../../gidong-plc-mcp/src/xg5000_control/live/native_simulation.py): 한쪽 모드 시험 2921, 수동 시험 2956, 수동 두 번째 시작 후 stop/reset 2989, 자동 fault 시험 3018.
-- [Plan review UI](../../web/src/components/NewProjectPlanReviewPanel.tsx): `projectPlanReviewItemIds` 31, `LadderConditionView` 353, `reviewConfirmed` 879, 검토 UI 1465.
-- [Native project UI](../../web/src/components/NativeProjectPanel.tsx): `NativeProjectPanel` 1484, `createNativeProject` 호출 1901.
+- 당시 `gidong-plc-mcp/src/xg5000_control/live/native_simulation.py` (현재 삭제): 한쪽 모드 시험 2921, 수동 시험 2956, 수동 두 번째 시작 후 stop/reset 2989, 자동 fault 시험 3018.
+- 당시 `web/src/components/NewProjectPlanReviewPanel.tsx` (현재 삭제): `projectPlanReviewItemIds` 31, `LadderConditionView` 353, `reviewConfirmed` 879, 검토 UI 1465.
+- 당시 `web/src/components/NativeProjectPanel.tsx` (현재 삭제): `NativeProjectPanel` 1484, `createNativeProject` 호출 1901.
 - [App](../../web/src/App.tsx): 신규 planning prompt 828.
 - [Native XML reader](../../../controlstudio-xg5000-cli/src/controlstudio_xg5000_cli/vendor/project_xml.py): `read_project_xml` 74. 해시로 결속한 저장 파일의 심볼 표 확인에 사용.
 

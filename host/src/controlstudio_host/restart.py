@@ -20,8 +20,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .launch_job import LAUNCH_JOB_ENVIRONMENT_VARIABLE
+
 RESTART_HANDOFF_ENVIRONMENT_VARIABLE = "CONTROLSTUDIO_RESTART_HANDOFF_V1"
 _RESTART_MODULE = "controlstudio_host.restart_helper"
+_FROZEN_RESTART_HELPER_ARGUMENT = "--controlstudio-internal-restart-helper"
 _HOST_MODULE = "controlstudio_host"
 
 
@@ -163,17 +166,32 @@ class HostRestartController:
     def schedule(self, handoff: RestartHandoff) -> None:
         environment = dict(self._environment)
         environment[RESTART_HANDOFF_ENVIRONMENT_VARIABLE] = handoff.encode()
+        if getattr(sys, "frozen", False):
+            # The replacement outlives its one-file parent and needs its own
+            # extraction lifetime. Change only this copied child environment.
+            environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        helper_arguments = (
+            (_FROZEN_RESTART_HELPER_ARGUMENT,)
+            if getattr(sys, "frozen", False)
+            else ("-m", _RESTART_MODULE)
+        )
         creationflags = 0
         if os.name == "nt":
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            if self._environment.get(LAUNCH_JOB_ENVIRONMENT_VARIABLE):
+                # __main__ captures this context only after joining the named
+                # launcher Job and enabling BREAKAWAY_OK. Only this fixed
+                # restart helper must survive that launcher's failure cleanup.
+                # A denied breakaway remains a spawn failure; never retry it
+                # inside the original Job or change other child ownership.
+                creationflags |= subprocess.CREATE_BREAKAWAY_FROM_JOB
         try:
             self._restart_log_path.parent.mkdir(parents=True, exist_ok=True)
             with self._restart_log_path.open("a", encoding="utf-8", buffering=1) as log_file:
                 self._spawn(
                     (
                         str(self._executable),
-                        "-m",
-                        _RESTART_MODULE,
+                        *helper_arguments,
                         "--parent-pid",
                         str(self._parent_pid),
                         "--port",

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import os
 import re
 import sqlite3
 import uuid
@@ -11,7 +13,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
-from .agent_protocol import validated_transcript_checkpoint
+from controlstudio_contracts.checkpoint_transfer import encode_checkpoint
+from controlstudio_contracts.model_input_policy import validate_client_input_limit_tokens
+
+from .agent_protocol import (
+    StoredNativeCheckpointPrefix,
+    ValidatedNativeCheckpoint,
+    validated_native_checkpoint,
+    validated_native_checkpoint_snapshot,
+    validated_transcript_checkpoint,
+)
 from .api_models import canonical_engineering_mission_snapshot
 from .change_outcome import change_outcome_evidence, change_outcome_projection
 from .models import (
@@ -35,9 +46,6 @@ from .models import (
 )
 from .project_planning import (
     calculate_project_brief_digest,
-    calculate_project_plan_attachment_revision_digest,
-    project_plan_review_item_ids,
-    validate_project_plan_scope_evidence,
 )
 
 
@@ -237,6 +245,27 @@ def _utc_text(value: datetime) -> str:
 
 def _json_dump(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def verified_owned_launch_retirement(failure: Any) -> dict[str, Any] | None:
+    """Recognize the existing exact-process terminal proof, never an inventory absence."""
+    details = failure.get('details') if isinstance(failure, dict) else None
+    proof = details.get('launch_retirement') if isinstance(details, dict) else None
+    if (not isinstance(proof, dict) or set(proof) != {
+            'schema', 'launched_identity_observed', 'launched_pid', 'process_create_time',
+            'terminal', 'retired_verified', 'observation_method', 'retirement_state',
+            'cleanup_effect', 'automatic_replay'}
+            or proof.get('schema') != 'controlstudio-launch-retirement/v1'
+            or proof.get('terminal') is not True or proof.get('retired_verified') is not True
+            or proof.get('launched_identity_observed') is not True
+            or type(proof.get('launched_pid')) is not int or proof['launched_pid'] <= 0
+            or type(proof.get('process_create_time')) not in {int, float}
+            or not math.isfinite(proof['process_create_time']) or proof['process_create_time'] <= 0
+            or proof.get('retirement_state') not in ('absent', 'different_lifetime')
+            or proof.get('observation_method') != 'psutil_exact_identity_after_existing_cleanup/v1'
+            or proof.get('automatic_replay') is not False):
+        return None
+    return proof
 
 
 def _json_load(value: str) -> dict[str, Any]:
@@ -927,6 +956,15 @@ MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     ),
 )
 
+# Client policy is not a provider capacity observation.
+_CLIENT_REQUEST_INPUT_LIMIT_MIGRATION = (29, "client_request_input_limit", (
+    "ALTER TABLE model_settings ADD COLUMN client_input_limit_tokens INTEGER "
+    "CHECK (client_input_limit_tokens IS NULL OR "
+    "(typeof(client_input_limit_tokens) = 'integer' AND client_input_limit_tokens > 0 "
+    "AND client_input_limit_tokens <= 9007199254740991))",
+))
+MIGRATIONS = (*MIGRATIONS, _CLIENT_REQUEST_INPUT_LIMIT_MIGRATION)
+
 _CHANGE_TRANSACTION_OBSERVING_SCHEMA_VERSION = 19
 HOST_SCHEMA_VERSION = max(
     MIGRATIONS[-1][0], _CHANGE_TRANSACTION_OBSERVING_SCHEMA_VERSION
@@ -1039,6 +1077,51 @@ def _rebuild_change_transactions_for_observing(
         connection.execute("PRAGMA foreign_keys = ON")
 
 
+def registered_atomic_additive_migration(current_version: int, target_version: int):
+    """The only reviewed no-copy upgrade: nullable model policy, Host28 -> 29.
+
+    No inferred SQL classification or generic backup opt-out. New versions or
+    additional pending migrations must use the existing pair snapshot gate.
+    """
+    if (current_version, target_version) != (28, 29):
+        return None
+    pending = tuple(item for item in MIGRATIONS if item[0] > current_version)
+    return (_CLIENT_REQUEST_INPUT_LIMIT_MIGRATION
+            if pending == (_CLIENT_REQUEST_INPUT_LIMIT_MIGRATION,) else None)
+
+
+def _apply_migration_transaction(connection: sqlite3.Connection, migration, *,
+                                 expected_versions: set[int] | None = None) -> None:
+    """DDL and its version receipt share one SQLite transaction.
+
+    execute(), never executescript(): the latter implicitly commits a pending
+    transaction. Any DDL, version INSERT or commit failure rolls back together.
+    """
+    version, name, statements = migration
+    with connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if expected_versions is not None:
+            actual = {row[0] for row in connection.execute("SELECT version FROM schema_migrations")}
+            if actual != expected_versions:
+                raise sqlite3.DatabaseError("Registered additive migration history changed")
+        for statement in statements:
+            connection.execute(statement)
+        connection.execute(
+            "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (version, name, _utc_now()),
+        )
+
+
+def apply_registered_atomic_additive_migration(connection: sqlite3.Connection,
+                                               current_version: int, target_version: int) -> None:
+    migration = registered_atomic_additive_migration(current_version, target_version)
+    if migration is None:
+        raise sqlite3.DatabaseError("Database upgrade has no registered additive transaction")
+    expected = {version for version, _name, _statements in MIGRATIONS if version <= current_version}
+    expected.add(_CHANGE_TRANSACTION_OBSERVING_SCHEMA_VERSION)
+    _apply_migration_transaction(connection, migration, expected_versions=expected)
+
+
 class HostStore:
     """SQLite-backed authority for UI conversations and run/event state."""
 
@@ -1046,15 +1129,26 @@ class HostStore:
         self.database_path = Path(database_path).expanduser().resolve()
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.instance_id = str(uuid.uuid4())
+        self._native_checkpoint_snapshot = None
         self.initialize()
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.database_path, timeout=5.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 5000")
         try:
+            connection = sqlite3.connect(self.database_path, timeout=5.0)
+        except sqlite3.Error as error:
+            error.controlstudio_store_stage = "connection_open"
+            raise
+        try:
+            stage = "connection_foreign_keys"
+            try:
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA foreign_keys = ON")
+                stage = "connection_busy_timeout"
+                connection.execute("PRAGMA busy_timeout = 5000")
+            except sqlite3.Error as error:
+                error.controlstudio_store_stage = stage
+                raise
             yield connection
         finally:
             connection.close()
@@ -1084,17 +1178,7 @@ class HostStore:
                     applied.add(_CHANGE_TRANSACTION_OBSERVING_SCHEMA_VERSION)
                 if version in applied:
                     continue
-                with connection:
-                    connection.execute("BEGIN IMMEDIATE")
-                    for statement in statements:
-                        connection.execute(statement)
-                    connection.execute(
-                        """
-                        INSERT INTO schema_migrations(version, name, applied_at)
-                        VALUES (?, ?, ?)
-                        """,
-                        (version, name, _utc_now()),
-                    )
+                _apply_migration_transaction(connection, (version, name, statements))
 
     def ping(self) -> bool:
         try:
@@ -1104,17 +1188,443 @@ class HostStore:
         except sqlite3.Error:
             return False
 
-    def get_host_state(self, key: str) -> dict[str, Any] | None:
+    def native_resume_latest_attempt_matches_checkpoint(
+        self, *, conversation_id: str, source_run_id: str, latest_run_id: str,
+        expected_error_detail: str,
+    ) -> bool:
+        """Read-only, bounded admission lineage; never input/replay authority.
+
+        The retained checkpoint must still belong to source_run_id. Every
+        intervening attempt must be an exact resume of that request, rejected
+        at the unique pre-native target stage without execution evidence.
+        New attempts require a closed typed rejection stage; old producers can
+        prove only the unique product error plus the exact created/failed pair.
+        32 is a diagnostic scan bound, not an admission allowance: every row
+        is checked and overflow fails closed. No body is loaded into Python.
+        """
         with self._connection() as connection:
+            connection.execute("BEGIN")
+            latest = connection.execute(
+                "SELECT id FROM runs WHERE conversation_id=? ORDER BY created_at DESC,id DESC LIMIT 1",
+                (conversation_id,)).fetchone()
+            if latest is None or latest["id"] != latest_run_id:
+                return False
+            source = connection.execute(
+                "SELECT id,state,created_at,updated_at,request_message_id FROM runs WHERE id=? AND conversation_id=?",
+                (source_run_id,conversation_id)).fetchone()
+            if source is None:
+                return False
+            if latest_run_id == source_run_id:
+                # Display/admission metadata only. A resumed run can already own
+                # a full seed checkpoint larger than the bounded chain head.
+                # Bind the exact owner key without loading that full body here.
+                # Background resume still validates the full checkpoint, its
+                # source owner, objective and target before model/native work.
+                checkpoint_key = "native_ld_checkpoint:" + source_run_id
+                owner = connection.execute(
+                    """WITH idx AS MATERIALIZED (
+                        SELECT CASE WHEN length(CAST(value_json AS BLOB))<=4096 AND json_valid(value_json)
+                            THEN value_json END j FROM host_state WHERE key=?)
+                        SELECT json_extract(j,'$.key') checkpoint_key,
+                            EXISTS(SELECT 1 FROM host_state WHERE key=?) checkpoint_exists FROM idx""",
+                    ("native_ld_checkpoint_latest:" + conversation_id, checkpoint_key)).fetchone()
+                return bool(owner is not None and owner["checkpoint_key"] == checkpoint_key
+                            and owner["checkpoint_exists"] == 1)
+            retained = connection.execute(
+                """WITH idx AS MATERIALIZED (
+                    SELECT CASE WHEN length(CAST(value_json AS BLOB))<=4096 AND json_valid(value_json)
+                        THEN value_json END j FROM host_state WHERE key=?),
+                    head AS MATERIALIZED (
+                    SELECT CASE WHEN length(CAST(c.value_json AS BLOB))<=2097152 AND json_valid(c.value_json)
+                        THEN c.value_json END j FROM idx JOIN host_state c ON c.key=json_extract(idx.j,'$.key'))
+                    SELECT json_extract(j,'$.source_run_id') source_run_id FROM head""",
+                ("native_ld_checkpoint_latest:"+conversation_id,)).fetchone()
+            if retained is None or retained["source_run_id"] != source_run_id:
+                return False
+            if source["state"] not in {"FAILED","CANCELLED"}:
+                return False
+            # SQL returns only fixed metadata fields and content-equality bits.
+            # Complete messages/checkpoints/provider state never leave SQLite.
+            rows = connection.execute(
+                """WITH bounded AS MATERIALIZED (
+                    SELECT r.id,r.state,r.created_at,r.updated_at,r.error_code,
+                        r.error_detail=? exact_target_error,m.role request_role,
+                        m.content=original.content same_content,
+                        CASE WHEN length(CAST(r.metadata_json AS BLOB))<=2097152 AND json_valid(r.metadata_json)
+                             THEN r.metadata_json END rm,
+                        CASE WHEN length(CAST(m.metadata_json AS BLOB))<=2097152 AND json_valid(m.metadata_json)
+                             THEN m.metadata_json END mm,
+                        CASE WHEN length(CAST(s.metadata_json AS BLOB))<=2097152 AND json_valid(s.metadata_json)
+                             THEN s.metadata_json END sm
+                    FROM runs r JOIN runs s ON s.id=? AND s.conversation_id=r.conversation_id
+                    LEFT JOIN messages m ON m.id=r.request_message_id AND m.conversation_id=r.conversation_id
+                    LEFT JOIN messages original ON original.id=s.request_message_id AND original.conversation_id=s.conversation_id
+                    WHERE r.conversation_id=? AND r.id<>s.id AND r.created_at>=s.created_at
+                    ORDER BY r.created_at,r.id LIMIT 33)
+                    SELECT id,state,created_at,updated_at,error_code,exact_target_error,request_role,same_content,
+                        json_extract(rm,'$.resume_native_run_id') resume_source,
+                        json_extract(rm,'$.workspace_recovery_source_run_id') recovery_source,
+                        json_extract(rm,'$.change_request_scope') scope,
+                        json_extract(rm,'$.verification_scope') verification,
+                        json_extract(rm,'$.native_resume_admission_version') admission_version,
+                        json_type(rm,'$.native_resume_admission_version') admission_version_type,
+                        json_extract(mm,'$.resume_native_run_id') message_source,
+                        json_extract(mm,'$.workspace_recovery_source_run_id') message_recovery_source,
+                        json_extract(mm,'$.change_request_scope') message_scope,
+                        json_extract(mm,'$.verification_scope') message_verification,
+                        json_extract(sm,'$.change_request_scope') source_scope,
+                        json_extract(sm,'$.verification_scope') source_verification FROM bounded""",
+                (expected_error_detail,source_run_id,conversation_id)).fetchall()
+            if not rows or len(rows)>32 or rows[-1]["id"] != latest_run_id:
+                return False
+            try:
+                previous_terminal = datetime.fromisoformat(source["updated_at"])
+            except (ValueError, TypeError):
+                return False
+            if previous_terminal.utcoffset() is None:
+                return False
+            for row in rows:
+                try:
+                    created = datetime.fromisoformat(row["created_at"])
+                    updated = datetime.fromisoformat(row["updated_at"])
+                except (ValueError, TypeError):
+                    return False
+                if (created.utcoffset() is None or updated.utcoffset() is None
+                        or created<=previous_terminal or updated<created
+                        or row["state"]!="FAILED" or row["error_code"]!="runtime_precondition"
+                        or row["same_content"]!=1 or row["request_role"]!="user"
+                        or any(row[key]!=source_run_id for key in
+                            ("resume_source","recovery_source","message_source","message_recovery_source"))
+                        or any(row[key]!="permanent_offline_revision" for key in ("scope","message_scope","source_scope"))
+                        or any(row[key]!="offline_native_check_only" for key in ("verification","message_verification","source_verification"))):
+                    return False
+                version=row["admission_version"]
+                if (row["admission_version_type"] is not None
+                        and (row["admission_version_type"]!="integer" or version!=1)):
+                    return False
+                events=connection.execute(
+                    """SELECT event_type,
+                        CASE WHEN event_type='run.admission_rejected' AND length(CAST(payload_json AS BLOB))<=4096
+                             THEN payload_json END rejection
+                        FROM events WHERE run_id=? AND conversation_id=? ORDER BY sequence LIMIT 4""",
+                    (row["id"],conversation_id)).fetchall()
+                event_types=[item["event_type"] for item in events]
+                expected=["run.created","run.admission_rejected","run.state_changed"]
+                if row["admission_version_type"] is None and event_types==["run.created","run.state_changed"]:
+                    if row["exact_target_error"] != 1:
+                        return False  # Legacy producer has no typed rejection evidence.
+                elif event_types==expected:
+                    try:
+                        def unique_object(pairs):
+                            result=dict(pairs)
+                            if len(result)!=len(pairs):
+                                raise ValueError("duplicate rejection field")
+                            return result
+                        rejection=json.loads(events[1]["rejection"],object_pairs_hook=unique_object)
+                    except (ValueError,TypeError):
+                        return False
+                    if (not isinstance(rejection,dict)
+                            or set(rejection)!={"stage","native_execution_started"}
+                            or rejection["stage"]!="engineering_target_binding"
+                            or rejection["native_execution_started"] is not False):
+                        return False
+                else:
+                    return False
+                prefix="native_ld_receipt:"+row["id"]
+                checkpoint="native_ld_checkpoint:"+row["id"]
+                native=connection.execute(
+                    "SELECT 1 FROM host_state WHERE (key>=? AND key<?) OR (key>=? AND key<?) LIMIT 1",
+                    (prefix,prefix+";",checkpoint,checkpoint+";")).fetchone()
+                if native is not None:
+                    return False
+                previous_terminal=updated
+            return True
+
+    def get_native_checkpoint_admission_source(self, conversation_id: str) -> str | None:
+        """Return latest durable source identity only; never execution authority.
+
+        Malformed/missing index or metadata is unavailable. The full checkpoint
+        body, links and digest must still be validated by the background owner
+        before model/native execution. No private payload is returned here.
+        """
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                WITH latest AS (
+                    SELECT CASE WHEN json_valid(c.value_json) THEN
+                        CASE WHEN json_type(c.value_json, '$.source_run_id') = 'text'
+                             THEN json_extract(c.value_json, '$.source_run_id') END
+                        END AS source_run_id
+                    FROM host_state AS i
+                    JOIN host_state AS c ON c.key = CASE WHEN json_valid(i.value_json) THEN
+                        CASE WHEN json_type(i.value_json, '$.key') = 'text'
+                             THEN json_extract(i.value_json, '$.key') END END
+                    WHERE i.key = ? AND length(i.value_json) <= 4096
+                )
+                SELECT latest.source_run_id
+                FROM latest JOIN runs AS r ON r.id = latest.source_run_id
+                WHERE r.conversation_id = ?
+                """,
+                (f"native_ld_checkpoint_latest:{conversation_id}", conversation_id),
+            ).fetchone()
+        if row is None:
+            return None
+        source = row['source_run_id']
+        return source if isinstance(source, str) and 0 < len(source) <= 128 else None
+
+    def get_native_checkpoint_display_summary(self, conversation_id: str) -> dict[str, Any] | None:
+        """Read UI metadata only; full checkpoint validation remains required for execution.
+
+        SQLite returns scalar public fields, never the checkpoint JSON or private
+        continuation. Each call opens its own connection and can run in a worker.
+        The two point lookups and public pair count observe one SQLite snapshot.
+        """
+        with self._connection() as connection:
+            chain_row=connection.execute("""SELECT CASE WHEN json_valid(c.value_json)
+                AND json_type(c.value_json,'$.native_checkpoint_chain') IS NOT NULL
+                THEN c.value_json END AS head FROM host_state i JOIN host_state c
+                ON c.key=CASE WHEN json_valid(i.value_json) THEN json_extract(i.value_json,'$.key') END
+                WHERE i.key=?""",(f'native_ld_checkpoint_latest:{conversation_id}',)).fetchone()
+        if chain_row is not None and chain_row['head'] is not None:
+            try:
+                head=_json_load(chain_row['head']);self._assert_native_checkpoint_head(head)
+                if head['completed_tool_calls'] is None:return None
+                binding=head['binding']
+                if (not head.get('source_run_id') or any(type(binding.get(k)) is not str or not binding[k]
+                        for k in ('workspace_id','revision_id','project_path'))):return None
+                return {'binding':{k:binding[k] for k in ('workspace_id','revision_id','project_path')},
+                    'source_run_id':head['source_run_id'],'completed_tool_calls':head['completed_tool_calls'],
+                    'full_checkpoint_validated':False}
+            except (ValueError,TypeError,KeyError):return None
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT json_extract(c.value_json, '$.source_run_id') AS source_run_id,
+                       json_extract(c.value_json, '$.binding.workspace_id') AS workspace_id,
+                       json_extract(c.value_json, '$.binding.revision_id') AS revision_id,
+                       json_extract(c.value_json, '$.binding.project_path') AS project_path,
+                       json_extract(c.value_json, '$.digest') AS digest,
+                       json_extract(c.value_json, '$.checkpoint.schemaVersion') AS schema_version,
+                       CASE WHEN json_type(c.value_json, '$.checkpoint.public_state.completed_pairs') = 'array'
+                            THEN CASE WHEN EXISTS (
+                                SELECT 1 FROM json_each(c.value_json, '$.checkpoint.public_state.completed_pairs') AS p
+                                WHERE CASE WHEN p.type = 'object'
+                                           THEN json_type(p.value, '$.results') IS NOT 'array'
+                                           ELSE 1 END
+                            ) THEN NULL ELSE COALESCE((
+                                SELECT SUM(json_array_length(p.value, '$.results'))
+                                FROM json_each(c.value_json, '$.checkpoint.public_state.completed_pairs') AS p
+                            ), 0) END
+                            ELSE NULL END AS completed_tool_calls
+                FROM host_state AS i
+                JOIN host_state AS c ON c.key = CASE WHEN json_valid(i.value_json)
+                    THEN json_extract(i.value_json, '$.key') END
+                WHERE i.key = ? AND json_valid(c.value_json)
+                """,
+                (f"native_ld_checkpoint_latest:{conversation_id}",),
+            ).fetchone()
+        if row is None:
+            return None
+        fields = {key: row[key] for key in ('source_run_id', 'workspace_id', 'revision_id', 'project_path')}
+        digest = row['digest']
+        count = row['completed_tool_calls']
+        if (row['schema_version'] != '1'
+                or any(not isinstance(value, str) or not value for value in fields.values())
+                or not isinstance(digest, str) or len(digest) != 64
+                or any(char not in '0123456789abcdef' for char in digest)
+                or type(count) is not int or count < 0):
+            return None
+        return {'binding': {key: fields[key] for key in ('workspace_id', 'revision_id', 'project_path')},
+                'source_run_id': fields['source_run_id'], 'completed_tool_calls': count,
+                'full_checkpoint_validated': False}
+
+    def get_native_checkpoint_state(self, key: str) -> dict[str, Any] | None:
+        """Internal cold-restore handoff; immutable proof is not native authority."""
+        return self.get_host_state(key, _native_snapshot=True)
+
+    def recent_native_receipts(self, run_id: str) -> list[dict[str, Any]]:
+        prefix=f'native_ld_receipt:{run_id}:'
+        with self._connection() as connection:
+            rows=connection.execute(
+                'SELECT key,value_json FROM host_state WHERE key >= ? AND key < ? ORDER BY key DESC LIMIT 16',
+                (prefix,prefix+'~')).fetchall()
+        return [{'key':row['key'],'receipt':_json_load(str(row['value_json']))} for row in rows]
+
+    def get_host_state(self, key: str, *, _native_snapshot: bool = False) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            connection.execute('BEGIN')
             row = connection.execute(
                 "SELECT value_json FROM host_state WHERE key = ?",
                 (key,),
             ).fetchone()
-        return None if row is None else _json_load(str(row["value_json"]))
+            value = None if row is None else _json_load(str(row['value_json']))
+            if isinstance(value,dict) and 'native_checkpoint_chain' in value:
+                if _json_dump(value)!=row['value_json']:raise ValueError('Native checkpoint head is not canonical JSON')
+                return self._read_native_checkpoint_chain(connection,value, immutable=_native_snapshot)
+            if _native_snapshot and isinstance(value, dict) and 'checkpoint' in value:
+                value['checkpoint'] = validated_native_checkpoint_snapshot(value['checkpoint'], value['digest'])
+            return value
+
+    def _read_native_checkpoint_chain(self, connection, head, *, immutable=False):
+        """Cold restore: validate every immutable link and return legacy full/v1."""
+        self._assert_native_checkpoint_head(head)
+        cached = self._native_checkpoint_snapshot
+        if immutable and cached is not None and cached[0] == _json_dump(head):
+            result = {'binding': head['binding'], 'checkpoint': cached[1], 'digest': head['digest']}
+            if 'source_run_id' in head:result['source_run_id'] = head['source_run_id']
+            return result
+        nodes=[];seen=set();tip=head['tip']
+        while True:
+            if tip in seen or not isinstance(tip,str) or not tip.startswith('native_cp_node:') or len(tip)>128:
+                raise ValueError('Native checkpoint chain link is invalid or cyclic')
+            seen.add(tip)
+            row=connection.execute('SELECT value_json FROM host_state WHERE key=?',(tip,)).fetchone()
+            if row is None:raise ValueError('Native checkpoint chain link is missing')
+            value=_json_load(row['value_json'])
+            if value.get('binding')!=head['binding']:
+                raise ValueError('Native checkpoint chain binding differs')
+            marker=('native_checkpoint_objective' if 'native_checkpoint_objective' in value else
+                    'native_checkpoint_append' if 'native_checkpoint_append' in value else None)
+            if marker is None:
+                base,digest=validated_native_checkpoint(value['checkpoint'],value['digest'],decoded_json=True)
+                break
+            if (set(value)!={marker,'binding','previous','update','digest','transfer_digest'} or value[marker]!='1'
+                    or _json_dump(value)!=row['value_json']):
+                raise ValueError('Native checkpoint chain segment shape differs')
+            nodes.append(value);tip=value['previous']
+        for node in reversed(nodes):
+            update=node['update']
+            encoded=encode_checkpoint(update)
+            if encoded.digest!=node['transfer_digest']:
+                raise ValueError('Native checkpoint segment transfer digest differs')
+            public,private=base['public_state'],base['private_state']
+            counts=[len(public['completed_pairs']),len(public['records']),len(private['transport_records'])]
+            if 'native_checkpoint_objective' in node:
+                self._assert_native_checkpoint_objective_update(
+                    update,head['binding'],digest,counts,public['model_prompt'])
+                if update['digest']!=node['digest']:
+                    raise ValueError('Native checkpoint objective node digest differs')
+                public['model_prompt']=update['model_prompt']
+                public['records'].append(update['record'])
+                digest=update['digest']
+                continue
+            if (type(update) is not dict or set(update)!={'schema','base_digest','digest','base_counts','model_prompt','append'}
+                    or update['schema']!='controlstudio-native-checkpoint-append/v1'
+                    or update['base_digest']!=digest or type(update['base_counts']) is not list
+                    or any(type(n) is not int or n<0 for n in update['base_counts']) or update['base_counts']!=counts
+                    or update['model_prompt']!=public['model_prompt']
+                    or update['digest']!=node['digest'] or type(update['digest']) is not str
+                    or not re.fullmatch('[0-9a-f]{64}',update['digest'])
+                    or type(update['append']) is not dict
+                    or set(update['append'])!={'completed_pairs','records','transport_records'}
+                    or any(type(items) is not list for items in update['append'].values())):
+                raise ValueError('Native checkpoint segment base, counts or shape differs')
+            public['completed_pairs'].extend(update['append']['completed_pairs'])
+            public['records'].extend(update['append']['records'])
+            private['transport_records'].extend(update['append']['transport_records'])
+            digest=update['digest']
+        # Each delta was fully target-digest validated before the original
+        # atomic commit. Cold restore checks every exact segment SHA/link/count,
+        # then validates the complete final canonical checkpoint once, rather
+        # than hashing the growing complete history again for every link.
+        if immutable:
+            base=validated_native_checkpoint_snapshot(base,head['digest'],decoded_json=True)
+            actual=base.digest
+        else:
+            base,actual=validated_native_checkpoint(base,head['digest'],decoded_json=True)
+        public=base['public_state']
+        counts=[len(public['completed_pairs']),len(public['records']),len(base['private_state']['transport_records'])]
+        if (actual!=digest or counts!=head['counts'] or public['model_prompt']!=head['model_prompt']
+                or self._native_checkpoint_tool_count(public['completed_pairs'])!=head['completed_tool_calls']):
+            raise ValueError('Native checkpoint head differs from complete chain')
+        if immutable:
+            self._native_checkpoint_snapshot = (_json_dump(head), base)
+        result={'binding':head['binding'],'checkpoint':base,'digest':actual}
+        if 'source_run_id' in head:result['source_run_id']=head['source_run_id']
+        return result
+
+    @staticmethod
+    def _assert_native_checkpoint_head(head):
+        fields={'native_checkpoint_chain','binding','digest','tip','counts','model_prompt','completed_tool_calls'}
+        if (type(head) is not dict or set(head)-{'source_run_id'}!=fields
+                or head.get('native_checkpoint_chain')!='1' or type(head.get('binding')) is not dict
+                or type(head.get('digest')) is not str or not re.fullmatch('[0-9a-f]{64}',head['digest'])
+                or type(head.get('tip')) is not str or not re.fullmatch('native_cp_node:[0-9a-f-]{36}',head['tip'])
+                or type(head.get('model_prompt')) is not str
+                or type(head.get('counts')) is not list or len(head['counts'])!=3
+                or any(type(n) is not int or n<0 for n in head['counts'])
+                or head.get('completed_tool_calls') is not None and (type(head['completed_tool_calls']) is not int or head['completed_tool_calls']<0)
+                or ('source_run_id' in head and type(head['source_run_id']) is not str)):
+            raise ValueError('Native checkpoint chain head shape is invalid')
+
+    def get_native_checkpoint_prefix_state(
+        self, key: str, binding: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Read the old public prefix without reconstructing private state.
+
+        Binding and public state come from one SQLite snapshot. A different
+        binding keeps the existing prefix-skip behavior; malformed matching
+        checkpoint/public objects still fail rather than becoming absent.
+        This is not a complete checkpoint or a resume/integrity proof.
+        """
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT CASE WHEN json_valid(value_json) AND json_type(value_json, '$.native_checkpoint_chain') IS NOT NULL
+                            THEN value_json END AS chain_head,
+                       json_valid(value_json) AS strict_json_valid,
+                       json_type(value_json) AS envelope_type,
+                       CASE WHEN json_type(value_json, '$.binding') IS NOT NULL
+                            THEN json_quote(json_extract(value_json, '$.binding')) END AS binding_json,
+                       json_type(value_json, '$.checkpoint') AS checkpoint_type,
+                       CASE WHEN json_type(value_json, '$.checkpoint.public_state') IS NOT NULL
+                            THEN json_quote(json_extract(value_json, '$.checkpoint.public_state')) END AS public_json,
+                       (SELECT count(*) FROM json_each(value_json) WHERE key = 'binding') AS binding_count,
+                       (SELECT count(*) FROM json_each(value_json) WHERE key = 'checkpoint') AS checkpoint_count,
+                       (SELECT count(*) FROM json_each(value_json, '$.checkpoint') WHERE key = 'public_state') AS public_count
+                FROM host_state WHERE key = ?
+                """,
+                (key,),
+            ).fetchone()
+        if row is None:
+            return None
+        if row['chain_head'] is not None:
+            head=_json_load(row['chain_head'])
+            if _json_dump(head)!=row['chain_head']:raise ValueError('Native checkpoint head is not canonical JSON')
+            self._assert_native_checkpoint_head(head)
+            if head['binding']!=binding:return {'binding':head['binding']}
+            prefix=StoredNativeCheckpointPrefix(head['digest'],head['counts'],head['model_prompt'],
+                lambda:self.get_host_state(key)['checkpoint']['public_state'])
+            return {'binding':head['binding'],'checkpoint':{'public_state':prefix}}
+
+        if row["strict_json_valid"] != 1:
+            raise ValueError("stored native checkpoint is not valid JSON")
+        if row["envelope_type"] != "object":
+            raise TypeError("stored JSON value is not an object")
+        if row["binding_count"] > 1:
+            raise ValueError("stored native checkpoint binding is ambiguous")
+        previous_binding = (json.loads(row["binding_json"])
+                            if row["binding_json"] is not None else None)
+        if previous_binding != binding:
+            return {"binding": previous_binding}
+        if row["checkpoint_count"] > 1 or row["public_count"] > 1:
+            raise ValueError("stored native checkpoint public prefix is ambiguous")
+        if row["checkpoint_type"] is None:
+            raise KeyError("checkpoint")
+        if row["checkpoint_type"] != "object":
+            raise TypeError("stored native checkpoint is not an object")
+        if row["public_json"] is None:
+            raise KeyError("public_state")
+        return {"binding": previous_binding,
+                "checkpoint": {"public_state": _json_load(row["public_json"])}}
 
     def set_host_state(self, key: str, value: dict[str, Any] | None) -> None:
         if not key or len(key) > 128:
             raise ValueError("host state key must contain between 1 and 128 characters")
+        if (key.startswith('native_ld_checkpoint:') and isinstance(value,dict)
+                and set(value)-{'source_run_id'}=={'binding','checkpoint','digest'}
+                and self._reuse_native_checkpoint_full_ingress(key,value)):
+            return
         with self._connection() as connection, connection:
             if value is None:
                 connection.execute("DELETE FROM host_state WHERE key = ?", (key,))
@@ -1129,6 +1639,302 @@ class HostStore:
                 """,
                 (key, _json_dump(value), _utc_now()),
             )
+
+    def _native_checkpoint_reusable_head(self,connection,binding,digest,source_run_id):
+        """Same conversation only; an exact existing durable chain, never a claim."""
+        if not isinstance(source_run_id,str):return None
+        row=connection.execute("""SELECT h.key,json_extract(h.value_json,'$.digest') AS digest,
+            json_extract(h.value_json,'$.binding') AS binding,h.value_json AS head
+            FROM runs current JOIN host_state i ON i.key='native_ld_checkpoint_latest:'||current.conversation_id
+            JOIN host_state h ON h.key=CASE WHEN json_valid(i.value_json) THEN json_extract(i.value_json,'$.key') END
+            JOIN runs prior ON prior.id=json_extract(h.value_json,'$.source_run_id')
+                AND prior.conversation_id=current.conversation_id
+            WHERE current.id=? AND h.key LIKE 'native_ld_checkpoint:%' AND json_valid(h.value_json)
+            AND json_extract(h.value_json,'$.native_checkpoint_chain')='1'
+            AND json_extract(h.value_json,'$.digest')=?
+            AND json_extract(h.value_json,'$.binding')=?""",
+            (source_run_id,digest,_json_dump(binding))).fetchone()
+        if row is not None:
+            head=_json_load(row['head']);self._assert_native_checkpoint_head(head)
+            if _json_dump(head)!=row['head']:raise ValueError('Native checkpoint head is not canonical JSON')
+            tip=connection.execute('''SELECT
+                CASE WHEN json_valid(value_json) THEN json_extract(value_json,'$.digest') END AS digest,
+                CASE WHEN json_valid(value_json) THEN json_extract(value_json,'$.binding') END AS binding
+                FROM host_state WHERE key=?''',(head['tip'],)).fetchone()
+            if tip is None:
+                raise ValueError('Native checkpoint reusable tip is missing')
+            if (tip['digest']!=head['digest'] or not isinstance(tip['binding'],str)
+                    or _json_load(tip['binding'])!=binding):
+                raise ValueError('Native checkpoint reusable tip differs')
+        return row
+
+    def _reuse_native_checkpoint_full_ingress(self,key,value):
+        """Actual App plain/full bootstrap reuses its independently verified tip.
+
+        No caller-provided digest alone creates a reference: require the Host's
+        immutable full-validation proof or fully validate the incoming checkpoint
+        before replacing it with an exact durable head.
+        An absent match keeps the original legacy full writer unchanged.
+        """
+        stage='native_checkpoint_connect'
+        try:
+            with self._connection() as connection:
+                observed=self._native_checkpoint_reusable_head(connection,value['binding'],value['digest'],value.get('source_run_id'))
+            if observed is None:return False
+            # Full incoming validation is intentionally outside the SQLite write
+            # transaction. Native progress/event writers need not wait for history.
+            checkpoint=value['checkpoint']
+            if type(checkpoint) is ValidatedNativeCheckpoint:
+                # The Host immutable proof already owns full validation. Reading
+                # its exact fields must not materialize the complete canonical JSON.
+                canonical,actual=checkpoint,checkpoint.digest
+            else:
+                canonical,actual=validated_native_checkpoint(checkpoint,value['digest'])
+            head=_json_load(observed['head'])
+            counts=[len(canonical['public_state']['completed_pairs']),len(canonical['public_state']['records']),
+                    len(canonical['private_state']['transport_records'])]
+            if (actual!=head['digest'] or counts!=head['counts']
+                    or canonical['public_state']['model_prompt']!=head['model_prompt']
+                    or self._native_checkpoint_tool_count(canonical['public_state']['completed_pairs'])!=head['completed_tool_calls']):
+                raise ValueError('Native full bootstrap differs from reusable chain')
+            with self._connection() as connection,connection:
+                stage='native_checkpoint_upsert'
+                connection.execute('BEGIN IMMEDIATE')
+                current=self._native_checkpoint_reusable_head(connection,value['binding'],value['digest'],value.get('source_run_id'))
+                if current is None or dict(current)!=dict(observed):
+                    # Only the original absence permits legacy fallback. A race
+                    # after a match is a rejection, never an old-full overwrite.
+                    raise ValueError('Native full bootstrap durable head changed')
+                head['source_run_id']=value['source_run_id']
+                connection.execute('INSERT INTO host_state(key,value_json,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at',
+                    (key,_json_dump(head),_utc_now()))
+                stage='native_checkpoint_commit'
+            if type(canonical) is ValidatedNativeCheckpoint:
+                self._native_checkpoint_snapshot = (_json_dump(head), canonical)
+            return True
+        except sqlite3.Error as error:
+            if not hasattr(error,'controlstudio_store_stage'):
+                error.controlstudio_store_stage=stage
+            raise
+
+    def set_native_checkpoint_snapshot(
+        self, key: str, binding: dict[str, Any], checkpoint: ValidatedNativeCheckpoint, *,
+        source_run_id: str | None = None,
+    ) -> None:
+        """Persist only the immutable proof produced by full Host validation.
+
+        Reuse its exact canonical JSON; the Host envelope is small. This is not
+        a raw JSON writer or an external option to skip checkpoint validation.
+        The original host-state transaction and commit boundary remain intact.
+        """
+        if type(checkpoint) is not ValidatedNativeCheckpoint:
+            raise TypeError("Native checkpoint snapshot requires its full validation proof")
+        if not key or len(key) > 128:
+            raise ValueError("host state key must contain between 1 and 128 characters")
+        if checkpoint.append_update is not None:
+            return self._set_native_checkpoint_append(key,binding,checkpoint,source_run_id=source_run_id)
+        if (key.startswith('native_ld_checkpoint:')
+                and self._set_native_checkpoint_objective(key,binding,checkpoint,source_run_id=source_run_id)):
+            return
+        if (key.startswith('native_ld_checkpoint:')
+                and self._reuse_native_checkpoint_full_ingress(key, {
+                    'binding': binding, 'checkpoint': checkpoint,
+                    'digest': checkpoint.digest, 'source_run_id': source_run_id})):
+            return
+        fields = {"binding": _json_dump(binding), "checkpoint": checkpoint.canonical_json,
+                  "digest": json.dumps(checkpoint.digest)}
+        if source_run_id is not None:
+            fields["source_run_id"] = json.dumps(source_run_id, ensure_ascii=False)
+        encoded = "{" + ",".join(json.dumps(field) + ":" + fields[field] for field in sorted(fields)) + "}"
+        stage = "native_checkpoint_connect"
+        try:
+            with self._connection() as connection, connection:
+                stage = "native_checkpoint_upsert"
+                connection.execute(
+                    """
+                    INSERT INTO host_state(key, value_json, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value_json = excluded.value_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (key, encoded, _utc_now()),
+                )
+                stage = "native_checkpoint_commit"
+        except sqlite3.Error as error:
+            # Keep the original SQLite class, extended code/name and rollback.
+            # This fixed scalar contains no SQL, parameters, path or checkpoint.
+            if not hasattr(error, "controlstudio_store_stage"):
+                error.controlstudio_store_stage = stage
+            raise
+
+    @staticmethod
+    def _assert_native_checkpoint_objective_update(update,binding,digest,counts,model_prompt):
+        """An exact new request/event over one unchanged historical prefix."""
+        fields={'schema','base_digest','base_counts','previous_model_prompt','model_prompt','record','digest'}
+        if (type(update) is not dict or set(update)!=fields
+                or update['schema']!='controlstudio-native-checkpoint-objective/v1'
+                or update['base_digest']!=digest or type(update['base_counts']) is not list
+                or any(type(n) is not int or n<0 for n in update['base_counts'])
+                or update['base_counts']!=counts or update['previous_model_prompt']!=model_prompt
+                or type(update['model_prompt']) is not str
+                or type(update['digest']) is not str or not re.fullmatch('[0-9a-f]{64}',update['digest'])):
+            raise ValueError('Native checkpoint objective base, counts or shape differs')
+        try:
+            original=json.loads(model_prompt);current=json.loads(update['model_prompt'])
+            record=update['record']
+            if (type(original) is not dict or type(current) is not dict
+                    or type(original.get('request')) is not str or type(current.get('request')) is not str
+                    or current.get('previous_request')!=original['request']
+                    or type(original.get('binding')) is not dict or type(current.get('binding')) is not dict
+                    or any(original['binding'].get(key)!=binding.get(key)
+                           or current['binding'].get(key)!=binding.get(key)
+                           for key in ('workspace_id','revision_id'))
+                    or type(record) is not dict
+                    or set(record)!={'event','previous_request','request','source_run_id','meaning'}
+                    or record['event']!='request_continued' or record['previous_request']!=original['request']
+                    or record['request']!=current['request'] or type(record['meaning']) is not str
+                    or record['source_run_id'] is not None and type(record['source_run_id']) is not str):
+                raise ValueError('Native checkpoint objective request/event differs')
+        except (TypeError,KeyError,json.JSONDecodeError) as error:
+            raise ValueError('Native checkpoint objective request/event is invalid') from error
+
+    def _set_native_checkpoint_objective(self,key,binding,checkpoint,*,source_run_id):
+        """Persist only the new objective/event over an exact verified durable tip."""
+        reference=checkpoint.restore_reference
+        objective=reference['objective']
+        if objective is None:return False
+        base=checkpoint.append_base
+        if type(base) is not ValidatedNativeCheckpoint:
+            raise ValueError('Native checkpoint objective has no verified base')
+        stage='native_checkpoint_connect'
+        try:
+            with self._connection() as connection:
+                observed=self._native_checkpoint_reusable_head(connection,binding,base.digest,source_run_id)
+            # An unavailable exact durable parent retains the legacy full writer.
+            # After a match every mismatch/race is a rejection, never fallback.
+            if observed is None:return False
+            head=_json_load(observed['head'])
+            old_public,public=base['public_state'],checkpoint['public_state']
+            previous,current=base.incremental_state,checkpoint.incremental_state
+            counts=list(previous.counts);new_counts=[counts[0],counts[1]+1,counts[2]]
+            update={'schema':'controlstudio-native-checkpoint-objective/v1',
+                'base_digest':base.digest,'base_counts':counts,
+                'previous_model_prompt':old_public['model_prompt'],
+                'model_prompt':objective['model_prompt'],'record':objective['record'],'digest':checkpoint.digest}
+            self._assert_native_checkpoint_objective_update(
+                update,binding,base.digest,counts,old_public['model_prompt'])
+            if (reference['baseDigest']!=base.digest or reference['baseCounts']!=counts
+                    or reference['checkpointDigest']!=checkpoint.digest
+                    or counts!=head['counts'] or old_public['model_prompt']!=head['model_prompt']
+                    or self._native_checkpoint_tool_count(old_public['completed_pairs'])!=head['completed_tool_calls']
+                    or objective['record']['source_run_id']!=head.get('source_run_id')
+                    or list(current.counts)!=new_counts or current.digest!=checkpoint.digest
+                    or current[0]!=_json_dump(objective['model_prompt'])
+                    or current[1]!=previous[1] or current[3]!=previous[3]
+                    or current[2][:-1]!=previous[2] or current[2][-1]!=_json_dump(objective['record'])
+                    or public['model_prompt']!=objective['model_prompt']
+                    or public['completed_pairs'] is not old_public['completed_pairs']
+                    or checkpoint['private_state'] is not base['private_state']):
+                raise ValueError('Native checkpoint objective differs from verified durable base')
+            # Only the small transition is encoded. Every historical byte remains
+            # in its existing immutable nodes, without a full canonical string.
+            node={'native_checkpoint_objective':'1','binding':binding,'previous':head['tip'],
+                  'update':update,'digest':checkpoint.digest,'transfer_digest':encode_checkpoint(update).digest}
+            tip='native_cp_node:'+str(uuid.uuid4())
+            target={'native_checkpoint_chain':'1','binding':binding,'digest':checkpoint.digest,'tip':tip,
+                    'counts':new_counts,'model_prompt':objective['model_prompt'],
+                    'completed_tool_calls':head['completed_tool_calls'],'source_run_id':source_run_id}
+            with self._connection() as connection,connection:
+                stage='native_checkpoint_upsert'
+                connection.execute('BEGIN IMMEDIATE')
+                current_head=self._native_checkpoint_reusable_head(connection,binding,base.digest,source_run_id)
+                if current_head is None or dict(current_head)!=dict(observed):
+                    raise ValueError('Native checkpoint objective durable head changed')
+                connection.execute('INSERT INTO host_state(key,value_json,updated_at) VALUES(?,?,?)',
+                    (tip,_json_dump(node),_utc_now()))
+                connection.execute('INSERT INTO host_state(key,value_json,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at',
+                    (key,_json_dump(target),_utc_now()))
+                stage='native_checkpoint_commit'
+            self._native_checkpoint_snapshot = (_json_dump(target), checkpoint)
+            return True
+        except sqlite3.Error as error:
+            if not hasattr(error,'controlstudio_store_stage'):
+                error.controlstudio_store_stage=stage
+            raise
+
+    @staticmethod
+    def _native_checkpoint_tool_count(pairs):
+        from collections.abc import Mapping
+        if any(not isinstance(p,Mapping) or not isinstance(p.get('results'),(list,tuple)) for p in pairs):
+            return None
+        return sum(len(p['results']) for p in pairs)
+
+    def _set_native_checkpoint_append(self,key,binding,checkpoint,*,source_run_id):
+        update=checkpoint.append_update
+        stage='native_checkpoint_connect'
+        try:
+            with self._connection() as connection,connection:
+                # Reserve the writer before checking the previous head. A
+                # concurrent replacement cannot be overwritten by a stale delta.
+                connection.execute('BEGIN IMMEDIATE')
+                stage='native_checkpoint_append_base'
+                row=connection.execute("""SELECT json_extract(value_json,'$.digest') AS digest,
+                    json_extract(value_json,'$.binding') AS binding,
+                    CASE WHEN json_type(value_json,'$.native_checkpoint_chain') IS NOT NULL
+                         THEN value_json END AS head FROM host_state WHERE key=?""",(key,)).fetchone()
+                seeded=False
+                if row is None:
+                    base=checkpoint.append_base
+                    if type(base) is not ValidatedNativeCheckpoint or base.digest!=update['base_digest']:
+                        raise ValueError('Native checkpoint initial append has no verified base')
+                    # Reuse an exact durable head from the previous run. A
+                    # changed objective has a different digest and seeds once.
+                    row=self._native_checkpoint_reusable_head(connection,binding,update['base_digest'],source_run_id)
+                    if row is None:
+                        previous='native_cp_node:'+str(uuid.uuid4())
+                        encoded='{"binding":'+_json_dump(binding)+',"checkpoint":'+base.canonical_json+',"digest":'+json.dumps(base.digest)+'}'
+                        connection.execute('INSERT INTO host_state(key,value_json,updated_at) VALUES(?,?,?)',(previous,encoded,_utc_now()))
+                        tool_count=self._native_checkpoint_tool_count(base['public_state']['completed_pairs'])
+                        seeded=True
+                if not seeded:
+                    if row['digest']!=update['base_digest'] or _json_load(row['binding'])!=binding:
+                        raise ValueError('Native checkpoint append durable base changed')
+                    if row['head'] is not None:
+                        head=_json_load(row['head'])
+                        if _json_dump(head)!=row['head']:raise ValueError('Native checkpoint head is not canonical JSON')
+                        self._assert_native_checkpoint_head(head)
+                        if head['counts']!=update['base_counts'] or head['model_prompt']!=update['model_prompt']:
+                            raise ValueError('Native checkpoint append durable prefix differs')
+                        previous=head['tip'];tool_count=head['completed_tool_calls']
+                    else:
+                        previous='native_cp_node:'+str(uuid.uuid4())
+                        # SQLite copies the stored full base only on its first
+                        # conversion; subsequent runs reuse the immutable tip.
+                        base_key=row['key'] if 'key' in row.keys() else key
+                        connection.execute('INSERT INTO host_state(key,value_json,updated_at) SELECT ?,value_json,updated_at FROM host_state WHERE key=?',
+                            (previous,base_key))
+                        tool_count=self._native_checkpoint_tool_count(checkpoint['public_state']['completed_pairs'][:update['base_counts'][0]])
+                nonempty=any(update['append'][name] for name in ('completed_pairs','records','transport_records'))
+                tip=previous
+                if nonempty:
+                    tip='native_cp_node:'+str(uuid.uuid4())
+                    node={'native_checkpoint_append':'1','binding':binding,'previous':previous,
+                          'update':update,'digest':checkpoint.digest,'transfer_digest':encode_checkpoint(update).digest}
+                    connection.execute('INSERT INTO host_state(key,value_json,updated_at) VALUES(?,?,?)',(tip,_json_dump(node),_utc_now()))
+                suffix_count=self._native_checkpoint_tool_count(update['append']['completed_pairs'])
+                tool_count=tool_count+suffix_count if tool_count is not None and suffix_count is not None else None
+                head={'native_checkpoint_chain':'1','binding':binding,'digest':checkpoint.digest,'tip':tip,
+                    'counts':list(checkpoint.incremental_state.counts),'model_prompt':update['model_prompt'],
+                    'completed_tool_calls':tool_count}
+                if source_run_id is not None:head['source_run_id']=source_run_id
+                stage='native_checkpoint_upsert'
+                connection.execute('INSERT INTO host_state(key,value_json,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at',(key,_json_dump(head),_utc_now()))
+                stage='native_checkpoint_commit'
+            self._native_checkpoint_snapshot = (_json_dump(head), checkpoint)
+        except sqlite3.Error as error:
+            if not hasattr(error,'controlstudio_store_stage'):error.controlstudio_store_stage=stage
+            raise
 
     def create_conversation(
         self,
@@ -1518,7 +2324,7 @@ class HostStore:
                     )
                 metadata = _json_load(str(latest["metadata_json"]))
                 artifact = metadata.get("plan_artifact")
-                stored_digest = metadata.get("plan_digest")
+                metadata.get("plan_digest")
                 if (
                     not isinstance(artifact, dict)
                     or artifact.get("schemaVersion") != "2"
@@ -1545,160 +2351,12 @@ class HostStore:
                     raise ProjectPlanReviewConflict(
                         "project plan was not generated from the current brief and source revisions"
                     )
-                design = artifact.get("design")
-                completeness = artifact.get("completeness")
                 raise ProjectPlanReviewConflict(
                     "project plan still needs clarification"
                 )
-                canonical_artifact = json.dumps(
-                    artifact,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    sort_keys=True,
-                ).encode("utf-8")
-                actual_digest = hashlib.sha256(canonical_artifact).hexdigest()
-                if stored_digest != actual_digest:
-                    raise ProjectPlanReviewConflict(
-                        "stored project plan digest does not match its artifact"
-                    )
-                if plan_digest != stored_digest:
-                    raise ProjectPlanReviewConflict(
-                        "project plan digest does not match the latest plan"
-                    )
-                expected_section_ids = self._project_plan_section_ids(artifact)
-                supplied_section_ids = self._normalize_reviewed_section_ids(
-                    reviewed_section_ids
-                )
-                if supplied_section_ids != expected_section_ids:
-                    raise ProjectPlanReviewConflict(
-                        "every project plan section must be explicitly reviewed"
-                    )
-                canonical_reviewed_section_ids = expected_section_ids
-                try:
-                    expected_item_ids = project_plan_review_item_ids(artifact)
-                    requirement_messages = {
-                        str(row["id"]): str(row["content"])
-                        for row in connection.execute(
-                            "SELECT id, content FROM messages "
-                            "WHERE conversation_id = ? AND role = 'user'",
-                            (conversation_id,),
-                        ).fetchall()
-                    }
-                    validate_project_plan_scope_evidence(
-                        artifact,
-                        project_brief,
-                        requirement_messages=requirement_messages,
-                    )
-                    artifact_attachment_digest = (
-                        calculate_project_plan_attachment_revision_digest(
-                            artifact.get("attachments", [])
-                        )
-                    )
-                except (TypeError, ValueError) as exc:
-                    raise ProjectPlanReviewConflict(
-                        "project plan executable review rows are invalid"
-                    ) from exc
-                supplied_item_ids = self._normalize_reviewed_item_ids(
-                    reviewed_item_ids
-                )
-                if supplied_item_ids != expected_item_ids:
-                    raise ProjectPlanReviewConflict(
-                        "every project plan item and executable relation must be explicitly reviewed"
-                    )
-                if attachment_revision_digest != artifact_attachment_digest:
-                    raise ProjectPlanReviewConflict(
-                        "project attachment source revisions changed before review"
-                    )
-
-                existing = connection.execute(
-                    """
-                    SELECT * FROM project_plan_reviews
-                    WHERE message_id = ? AND plan_digest = ?
-                    """,
-                    (message_id, plan_digest),
-                ).fetchone()
-                if existing is not None:
-                    if existing["schema_version"] != "2":
-                        raise ProjectPlanReviewConflict(
-                            "legacy section-only review cannot authorize execution; replan and review again"
-                        )
-                    existing_section_ids = self._reviewed_section_ids_from_row(
-                        existing
-                    )
-                    existing_item_ids = self._reviewed_item_ids_from_row(existing)
-                    if (
-                        existing_section_ids != canonical_reviewed_section_ids
-                        or existing_item_ids != expected_item_ids
-                        or existing["project_brief_digest"] != project_brief_digest
-                        or existing["attachment_revision_digest"]
-                        != attachment_revision_digest
-                    ):
-                        raise ProjectPlanReviewConflict(
-                            "stored project plan review authority no longer matches"
-                        )
-                    connection.rollback()
-                    return self._project_plan_review_from_row(existing), False
-
-                timestamp = _utc_now()
-                connection.execute(
-                    """
-                    INSERT INTO project_plan_reviews(
-                        message_id, plan_digest, conversation_id,
-                        actor_id, reviewed_at, reviewed_section_ids_json,
-                        schema_version, reviewed_item_ids_json,
-                        project_brief_digest, attachment_revision_digest
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, '2', ?, ?, ?)
-                    """,
-                    (
-                        message_id,
-                        plan_digest,
-                        conversation_id,
-                        actor_id,
-                        timestamp,
-                        json.dumps(
-                            canonical_reviewed_section_ids,
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        ),
-                        json.dumps(
-                            expected_item_ids,
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        ),
-                        project_brief_digest,
-                        attachment_revision_digest,
-                    ),
-                )
-                self._insert_event(
-                    connection,
-                    conversation_id=conversation_id,
-                    event_type="project_plan.reviewed",
-                    payload={
-                        "conversation_id": conversation_id,
-                        "message_id": message_id,
-                        "plan_digest": plan_digest,
-                        "reviewed_section_ids": canonical_reviewed_section_ids,
-                        "reviewed_item_count": len(expected_item_ids),
-                        "project_brief_digest": project_brief_digest,
-                        "attachment_revision_digest": attachment_revision_digest,
-                        "actor_id": actor_id,
-                    },
-                )
-                row = connection.execute(
-                    """
-                    SELECT * FROM project_plan_reviews
-                    WHERE message_id = ? AND plan_digest = ?
-                    """,
-                    (message_id, plan_digest),
-                ).fetchone()
-                connection.commit()
             except BaseException:
                 connection.rollback()
                 raise
-        assert row is not None
-        return self._project_plan_review_from_row(row), True
-
     def require_reviewed_project_plan(
         self,
         *,
@@ -1736,7 +2394,7 @@ class HostStore:
                     "native project creation requires the current Host project brief"
                 )
             try:
-                actual_brief_digest = calculate_project_brief_digest(current_brief)
+                calculate_project_brief_digest(current_brief)
             except (TypeError, ValueError) as exc:
                 raise ProjectPlanReviewConflict(
                     "current project brief does not match the typed contract"
@@ -1764,90 +2422,9 @@ class HostStore:
                 raise ProjectPlanReviewConflict(
                     "latest project plan artifact is invalid"
                 )
-            design = artifact.get("design")
-            completeness = artifact.get("completeness")
-            actual_digest = hashlib.sha256(
-                json.dumps(
-                    artifact,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    sort_keys=True,
-                ).encode("utf-8")
-            ).hexdigest()
             raise ProjectPlanReviewConflict(
                 "reviewed project plan digest or readiness no longer matches"
             )
-            expected_section_ids = self._project_plan_section_ids(artifact)
-            supplied_section_ids = self._normalize_reviewed_section_ids(
-                reviewed_section_ids
-            )
-            try:
-                expected_item_ids = project_plan_review_item_ids(artifact)
-                requirement_messages = {
-                    str(row["id"]): str(row["content"])
-                    for row in connection.execute(
-                        "SELECT id, content FROM messages "
-                        "WHERE conversation_id = ? AND role = 'user'",
-                        (conversation_id,),
-                    ).fetchall()
-                }
-                validate_project_plan_scope_evidence(
-                    artifact,
-                    current_brief,
-                    requirement_messages=requirement_messages,
-                )
-                artifact_attachment_digest = (
-                    calculate_project_plan_attachment_revision_digest(
-                        artifact.get("attachments", [])
-                    )
-                )
-            except (TypeError, ValueError) as exc:
-                raise ProjectPlanReviewConflict(
-                    "reviewed project plan executable rows are invalid"
-                ) from exc
-            supplied_item_ids = self._normalize_reviewed_item_ids(reviewed_item_ids)
-            if (
-                metadata.get("project_brief_digest") != actual_brief_digest
-                or metadata.get("attachment_revision_digest")
-                != attachment_revision_digest
-            ):
-                raise ProjectPlanReviewConflict(
-                    "reviewed project plan generation authority no longer matches"
-                )
-            review_row = connection.execute(
-                """
-                SELECT * FROM project_plan_reviews
-                WHERE message_id = ? AND plan_digest = ?
-                """,
-                (message_id, plan_digest),
-            ).fetchone()
-            if review_row is None:
-                raise ProjectPlanReviewConflict(
-                    "latest project plan has no human review"
-                )
-            if review_row["schema_version"] != "2":
-                raise ProjectPlanReviewConflict(
-                    "legacy section-only review cannot authorize native execution"
-                )
-            stored_section_ids = self._reviewed_section_ids_from_row(review_row)
-            stored_item_ids = self._reviewed_item_ids_from_row(review_row)
-            if (
-                stored_section_ids != expected_section_ids
-                or supplied_section_ids != expected_section_ids
-                or stored_item_ids != expected_item_ids
-                or supplied_item_ids != expected_item_ids
-                or project_brief_digest != actual_brief_digest
-                or review_row["project_brief_digest"] != actual_brief_digest
-                or attachment_revision_digest != artifact_attachment_digest
-                or review_row["attachment_revision_digest"]
-                != artifact_attachment_digest
-            ):
-                raise ProjectPlanReviewConflict(
-                    "reviewed project plan authority no longer matches"
-                )
-            review = self._project_plan_review_from_row(review_row)
-            connection.rollback()
-            return review, artifact
 
     def get_engineering_handoff_conversation(
         self,
@@ -1855,7 +2432,7 @@ class HostStore:
     ) -> Conversation | None:
         """Return the durable engineering handoff owned by a native operation."""
 
-        with self._connection() as connection:
+        with self._connection():
             row = None
         return self._conversation_from_row(row) if row is not None else None
 
@@ -2708,6 +3285,130 @@ class HostStore:
             else None
         )
         return self._engineering_mission_from_row(row), final_message
+
+    def native_project_origin_brief(self, *, workspace_id: str, revision_id: str):
+        """Only a unique atomically recorded native creation origin may share its brief."""
+        with self._connection() as connection:
+            rows = connection.execute(
+                """SELECT DISTINCT c.id, c.project_brief_json
+                   FROM conversations c JOIN events e ON e.conversation_id = c.id
+                   WHERE e.event_type = 'conversation.native_project_prepared'
+                     AND c.workspace_id = ? AND c.revision_id = ?
+                     AND json_extract(e.payload_json, '$.workspaceId') = c.workspace_id
+                     AND json_extract(e.payload_json, '$.revisionId') = c.revision_id
+                   ORDER BY c.id""", (workspace_id, revision_id)).fetchall()
+        if len(rows) != 1 or rows[0]['project_brief_json'] is None:
+            return None
+        value = _json_load(str(rows[0]['project_brief_json']))
+        return value if isinstance(value, dict) else None
+
+    def consume_unbound_project_start(self, *, conversation_id: str, run_id: str,
+                                      request_message_id: str, prompt: str, handoff: dict[str, Any],
+                                      project_brief: dict[str, Any], usage: dict[str, int],
+                                      public_plan: str | None = None) -> None:
+        """One atomic same-request transition; creates no workspace or IDE input."""
+        if (not isinstance(handoff, dict) or set(handoff) != {
+                'schema_version', 'conversation_id', 'run_id', 'prompt_sha256', 'project_name', 'simulate'}
+                or handoff.get('schema_version') != '1' or handoff.get('conversation_id') != conversation_id
+                or handoff.get('run_id') != run_id
+                or handoff.get('prompt_sha256') != hashlib.sha256(prompt.encode('utf-8')).hexdigest()
+                or type(handoff.get('simulate')) is not bool
+                or not isinstance(handoff.get('project_name'), str) or not handoff['project_name'].strip()
+                or handoff['project_name'] != handoff['project_name'].strip()
+                or len(handoff['project_name']) > 200 or any(ord(c) < 32 for c in handoff['project_name'])
+                or project_brief.get('project_name') != handoff['project_name']
+                or set(usage) != {'input_tokens', 'output_tokens'}
+                or any(type(v) is not int or v < 0 for v in usage.values())):
+            raise EngineeringMissionConflict('new-project start identity is invalid')
+        with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            try:
+                run = connection.execute('SELECT * FROM runs WHERE id = ?', (run_id,)).fetchone()
+                conversation = connection.execute('SELECT * FROM conversations WHERE id = ?', (conversation_id,)).fetchone()
+                message = connection.execute('SELECT * FROM messages WHERE id = ?', (request_message_id,)).fetchone()
+                latest = connection.execute("SELECT id FROM messages WHERE conversation_id = ? AND role = 'user' ORDER BY sequence DESC LIMIT 1", (conversation_id,)).fetchone()
+                latest_run = connection.execute('SELECT id FROM runs WHERE conversation_id = ? ORDER BY created_at DESC, id DESC LIMIT 1', (conversation_id,)).fetchone()
+                if (run is None or conversation is None or message is None or latest is None or latest_run is None
+                        or run['conversation_id'] != conversation_id or run['request_message_id'] != request_message_id
+                        or run['state'] != RunState.ANALYZING.value or latest['id'] != request_message_id or latest_run['id'] != run_id
+                        or message['conversation_id'] != conversation_id or message['role'] != MessageRole.USER.value
+                        or message['content'] != prompt or conversation['workflow'] != 'engineering'
+                        or any(conversation[k] is not None for k in ('workspace_id', 'revision_id', 'engineering_session_id'))
+                        or _json_load(conversation['engineering_handoff_json'])):
+                    raise EngineeringMissionConflict('new-project start requires the active original unbound user request')
+                run_meta = _json_load(run['metadata_json']); message_meta = _json_load(message['metadata_json'])
+                if (run_meta.get('change_request_scope') != 'analysis_only'
+                        or message_meta.get('change_request_scope') != 'analysis_only'
+                        or 'native_project_start' in run_meta or 'native_project_start' in message_meta
+                        or run_meta.get('resume_native_run_id') is not None or message_meta.get('resume_native_run_id') is not None):
+                    raise EngineeringMissionConflict('new-project start was consumed or has another authority')
+                stamp = _utc_now()
+                for meta in (run_meta, message_meta):
+                    meta['native_project_start_original_scopes'] = {k: meta.get(k) for k in ('change_request_scope', 'verification_scope', 'allow_simulator')}
+                    meta.update(native_project_start=dict(handoff), change_request_scope='permanent_offline_revision',
+                        verification_scope='offline_native_check_only', allow_simulator=handoff['simulate'],
+                        native_project_start_usage=dict(usage))
+                connection.execute("UPDATE conversations SET workflow = 'new_project_planning', project_brief_json = ?, updated_at = ? WHERE id = ?", (_json_dump(project_brief), stamp, conversation_id))
+                connection.execute('UPDATE messages SET metadata_json = ? WHERE id = ?', (_json_dump(message_meta), request_message_id))
+                connection.execute('UPDATE runs SET metadata_json = ?, updated_at = ? WHERE id = ?', (_json_dump(run_meta), stamp, run_id))
+                if isinstance(public_plan, str) and public_plan.strip():
+                    plan_id = str(uuid.uuid4())
+                    plan_sequence = int(connection.execute(
+                        'SELECT COALESCE(MAX(sequence), 0) + 1 FROM messages WHERE conversation_id = ?',
+                        (conversation_id,)).fetchone()[0])
+                    connection.execute(
+                        'INSERT INTO messages(id, conversation_id, sequence, role, content, metadata_json, created_at) '
+                        'VALUES (?, ?, ?, ?, ?, ?, ?)',
+                        (plan_id, conversation_id, plan_sequence, MessageRole.ASSISTANT.value,
+                         public_plan.strip(), _json_dump({'run_id': run_id, 'phase': 'implementation_plan',
+                             'request_message_id': request_message_id}), stamp))
+                    self._insert_event(connection, conversation_id=conversation_id, run_id=run_id,
+                        event_type='message.appended', payload={'conversation_id': conversation_id,
+                            'message_id': plan_id, 'message_sequence': plan_sequence,
+                            'role': MessageRole.ASSISTANT.value})
+                self._insert_event(connection, conversation_id=conversation_id, run_id=run_id,
+                    event_type='conversation.native_project_start_selected', payload={
+                        'request_message_id': request_message_id, 'prompt_sha256': handoff['prompt_sha256'],
+                        'project_name': handoff['project_name'], 'simulate': handoff['simulate'],
+                        'creation_input_attempted': False, **usage})
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+
+    def bind_native_created_conversation(self, *, conversation_id: str, run_id: str,
+                                         workspace_id: str, revision_id: str,
+                                         engineering_session_id: str) -> Conversation:
+        """Bind a real preparation result to its existing user dialogue atomically."""
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                run = connection.execute("SELECT conversation_id, state FROM runs WHERE id = ?", (run_id,)).fetchone()
+                if run is None or run["conversation_id"] != conversation_id or run["state"] not in {RunState.ANALYZING.value, RunState.EXECUTING.value}:
+                    raise EngineeringMissionConflict("native preparation has no active owning run")
+                cursor = connection.execute(
+                    """UPDATE conversations SET workflow = 'engineering', workspace_id = ?, revision_id = ?,
+                       engineering_session_id = ?, updated_at = ?,
+                       title = CASE
+                           WHEN NULLIF(TRIM(title), '') IS NULL
+                                AND json_type(project_brief_json, '$.project_name') = 'text'
+                           THEN COALESCE(NULLIF(TRIM(json_extract(project_brief_json, '$.project_name')), ''), title)
+                           ELSE title
+                       END
+                       WHERE id = ? AND workflow = 'new_project_planning' AND workspace_id IS NULL""",
+                    (workspace_id, revision_id, engineering_session_id, _utc_now(), conversation_id))
+                if cursor.rowcount != 1:
+                    raise EngineeringMissionConflict("native preparation conversation already has a target")
+                self._insert_event(connection, conversation_id=conversation_id, run_id=run_id,
+                    event_type="conversation.native_project_prepared",
+                    payload={"workspaceId": workspace_id, "revisionId": revision_id,
+                             "engineeringSessionId": engineering_session_id})
+                row = connection.execute("SELECT * FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return self._conversation_from_row(row)
 
     def rebind_engineering_conversation_session(
         self,
@@ -5135,6 +5836,99 @@ class HostStore:
             return cursor.rowcount
 
 
+    def reconcile_retired_owned_launch_target_lease(self) -> int:
+        """Release only a parked launch whose exact durable recovery proves retirement.
+
+        Older managers parked a launch on its transport error before the outer
+        recovery committed terminal retirement. Preserve both original records
+        and an audit of the proof used to settle this obsolete mutex.
+        """
+        timestamp = _utc_now()
+        with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            try:
+                lease = connection.execute("""SELECT * FROM target_operation_leases
+                    WHERE scope_key='xg5000-host-target' AND released_at IS NULL""").fetchone()
+                if lease is None or lease['state'] != 'STALE_BLOCKED' or lease['owner_kind'] != 'workspace_resume':
+                    connection.rollback(); return 0
+                operation_id = lease['operation_id']
+                raw_wait = connection.execute('SELECT value_json FROM host_state WHERE key=?',
+                    ('owned_launch_wait_operation:' + operation_id,)).fetchone()
+                if raw_wait is None:
+                    connection.rollback(); return 0
+                wait = _json_load(raw_wait['value_json'])
+                owner = wait.get('owner')
+                scope = owner.get('scope') if isinstance(owner, dict) else None
+                target = _json_load(lease['target_identity_json'])
+                scope_fields = {'target_lease_id', 'operation_id', 'workspace_id', 'revision_id',
+                    'project_path', 'project_hash', 'source_run_id'}
+                def path_key(value):
+                    return os.path.normcase(str(Path(value).resolve())) if isinstance(value, str) and value else None
+                if (not isinstance(scope, dict) or set(scope) != scope_fields
+                        or owner != {'owner_ref': hashlib.sha256(_json_dump(scope).encode('utf-8')).hexdigest(), 'scope': scope}
+                        or scope['operation_id'] != operation_id or scope['target_lease_id'] != lease['id']
+                        or any(not isinstance(scope[k], str) or not scope[k] for k in scope_fields)
+                        or not Path(scope['project_path']).is_absolute()
+                        or re.fullmatch('[0-9a-f]{64}', scope['project_hash']) is None
+                        or wait.get('exclusion_lease_id') != lease['id']
+                        or wait.get('state') not in {'parked', 'original_retired'}
+                        or set(target) != scope_fields - {'target_lease_id'}
+                        or any(target[k] != scope[k] for k in target if k != 'project_path')
+                        or path_key(target['project_path']) != path_key(scope['project_path'])
+                        or not isinstance(scope['source_run_id'], str) or not scope['source_run_id']):
+                    connection.rollback(); return 0
+                run = connection.execute('SELECT conversation_id,state FROM runs WHERE id=?',
+                    (scope['source_run_id'],)).fetchone()
+                if run is None or run['state'] not in {'COMPLETED', 'CANCELLED', 'FAILED'}:
+                    connection.rollback(); return 0
+                identity = (run['conversation_id'], scope['workspace_id'], scope['revision_id'])
+                recovery_key = 'native_workspace_recovery:v1:' + hashlib.sha256(
+                    json.dumps(identity, ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hexdigest()
+                raw_recovery = connection.execute('SELECT value_json FROM host_state WHERE key=?',
+                    (recovery_key,)).fetchone()
+                if raw_recovery is None:
+                    connection.rollback(); return 0
+                recovery = _json_load(raw_recovery['value_json'])
+                history = recovery.get('completed_operations', [])
+                if not isinstance(history, list) or any(not isinstance(item, dict) for item in history):
+                    connection.rollback(); return 0
+                matches = [item for item in [recovery, *history] if item.get('operation_id') == operation_id]
+                if len(matches) != 1:
+                    connection.rollback(); return 0
+                terminal = matches[0]
+                binding = terminal.get('binding')
+                proof = verified_owned_launch_retirement(terminal.get('terminal_failure'))
+                if (terminal.get('phase') != 'launch_terminal' or proof is None
+                        or terminal.get('source_run_id') != scope['source_run_id']
+                        or terminal.get('conversation_id') != run['conversation_id']
+                        or terminal.get('saved_sha256') != scope['project_hash']
+                        or not isinstance(binding, dict)
+                        or any(binding.get(k) != scope[k] for k in ('workspace_id', 'revision_id'))
+                        or path_key(binding.get('project_path')) != path_key(scope['project_path'])):
+                    connection.rollback(); return 0
+                frames = [item for item in (wait.get('pending'), terminal.get('launch_pending_frame')) if item is not None]
+                if any(not isinstance(frame, dict) or frame.get('pid') != proof['launched_pid']
+                        or frame.get('process_create_time') != proof['process_create_time'] for frame in frames):
+                    connection.rollback(); return 0
+                audit = {'schema': 'controlstudio-owned-launch-terminal-settlement/v1',
+                    'operation_id': operation_id, 'target_lease_id': lease['id'],
+                    'recovery_key': recovery_key, 'terminal_operation': terminal, 'owned_launch_wait': wait,
+                    'launch_retirement': proof, 'settled_at': timestamp, 'automatic_replay': False}
+                connection.execute('INSERT INTO host_state(key,value_json,updated_at) VALUES(?,?,?)',
+                    ('owned_launch_terminal_settlement:' + operation_id, _json_dump(audit), timestamp))
+                cursor = connection.execute("""UPDATE target_operation_leases
+                    SET state='RELEASED',released_at=?,release_reason=?
+                    WHERE id=? AND state='STALE_BLOCKED' AND released_at IS NULL""",
+                    (timestamp, 'exact_owned_launch_terminal_retirement', lease['id']))
+                connection.commit()
+                return cursor.rowcount
+            except (TypeError, ValueError, KeyError, OSError):
+                connection.rollback()
+                return 0
+            except BaseException:
+                connection.rollback()
+                raise
+
     def supersede_stale_target_lease_for_durable_change_recovery(self) -> int:
         """Let the oldest durable mutation recovery own the global target next.
 
@@ -5349,6 +6143,7 @@ class HostStore:
             "reasoning_effort": row["reasoning_effort"],
             "capability_verified_at": row["capability_verified_at"],
             "model_context_json": row["model_context_json"],
+            "client_input_limit_tokens": row["client_input_limit_tokens"],
             "updated_at": row["updated_at"],
         }
 
@@ -5456,7 +6251,9 @@ class HostStore:
         reasoning_effort: str | None = None,
         capability_verified_at: datetime | None = None,
         model_context_json: str | None = None,
+        client_input_limit_tokens: int | None = None,
     ) -> dict[str, Any]:
+        client_input_limit_tokens = validate_client_input_limit_tokens(client_input_limit_tokens)
         timestamp = _utc_now()
         verified_at = (
             capability_verified_at.astimezone(timezone.utc).isoformat(timespec="milliseconds")
@@ -5468,9 +6265,9 @@ class HostStore:
                 """
                 INSERT INTO model_settings(
                     slot, protocol, base_url, model, secret_payload_json, timeout_seconds,
-                    reasoning_effort, capability_verified_at, model_context_json, updated_at
+                    reasoning_effort, capability_verified_at, model_context_json, client_input_limit_tokens, updated_at
                 )
-                VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(slot) DO UPDATE SET
                     protocol = excluded.protocol,
                     base_url = excluded.base_url,
@@ -5480,6 +6277,7 @@ class HostStore:
                     reasoning_effort = excluded.reasoning_effort,
                     capability_verified_at = excluded.capability_verified_at,
                     model_context_json = excluded.model_context_json,
+                    client_input_limit_tokens = excluded.client_input_limit_tokens,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -5491,6 +6289,7 @@ class HostStore:
                     reasoning_effort,
                     verified_at,
                     model_context_json,
+                    client_input_limit_tokens,
                     timestamp,
                 ),
             )

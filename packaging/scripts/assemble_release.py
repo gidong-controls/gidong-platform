@@ -53,12 +53,14 @@ def main() -> int:
     parser.add_argument("--platform-artifact", type=Path, required=True)
     parser.add_argument("--agent-artifact", type=Path, required=True)
     parser.add_argument("--mcp-artifact", type=Path, required=True)
+    parser.add_argument("--cli-artifact", type=Path, required=True)
     parser.add_argument("--contracts-wheel", type=Path, required=True)
     parser.add_argument("--product-release", required=True)
     parser.add_argument("--channel", required=True, choices=("development", "beta"))
     parser.add_argument("--platform-version", required=True)
     parser.add_argument("--agent-version", required=True)
     parser.add_argument("--mcp-version", required=True)
+    parser.add_argument("--cli-version", required=True)
     parser.add_argument("--contracts-version", required=True)
     parser.add_argument("--contracts", type=Path, required=True)
     args = parser.parse_args()
@@ -75,6 +77,7 @@ def main() -> int:
         platform = _copy_input(args.platform_artifact, artifacts)
         agent = _copy_input(args.agent_artifact, artifacts)
         mcp = _copy_input(args.mcp_artifact, artifacts)
+        cli = _copy_input(args.cli_artifact, artifacts)
         contracts_wheel = _copy_input(args.contracts_wheel, artifacts)
         if _wheel_version(contracts_wheel) != args.contracts_version:
             raise PackagingError(
@@ -85,6 +88,7 @@ def main() -> int:
             "platform": args.platform_version,
             "agent": args.agent_version,
             "plc-mcp": args.mcp_version,
+            "xg5000-cli": args.cli_version,
         }
         bom = build_bom(
             product_release=args.product_release,
@@ -95,6 +99,7 @@ def main() -> int:
                     ("platform", platform),
                     ("agent", agent),
                     ("plc-mcp", mcp),
+                    ("xg5000-cli", cli),
                 )
             },
             contracts=contracts,

@@ -12,7 +12,9 @@ interface EventStreamOptions {
   random?: () => number;
   fetch?: typeof fetch;
   getAuthorizationHeader?: () => string | undefined;
+  prepareSession?: () => Promise<void>;
   onUnauthorized?: () => void;
+  byteIdleTimeoutMs?: number;
 }
 
 export class ControlStudioEventStream {
@@ -20,9 +22,9 @@ export class ControlStudioEventStream {
   private readonly onEvent: (event: HostEventEnvelope) => void;
   private readonly onState: (state: EventStreamState) => void;
   private readonly options: Required<
-    Omit<EventStreamOptions, "getAuthorizationHeader" | "onUnauthorized">
+    Omit<EventStreamOptions, "getAuthorizationHeader" | "prepareSession" | "onUnauthorized">
   > &
-    Pick<EventStreamOptions, "getAuthorizationHeader" | "onUnauthorized">;
+    Pick<EventStreamOptions, "getAuthorizationHeader" | "prepareSession" | "onUnauthorized">;
   private abortController?: AbortController;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private reconnectAttempt = 0;
@@ -42,9 +44,13 @@ export class ControlStudioEventStream {
     this.options = {
       baseDelayMs: options.baseDelayMs ?? 800,
       maxDelayMs: options.maxDelayMs ?? 15_000,
+      // The Host emits a keep-alive after 15 seconds without an event.
+      // Three missed heartbeat intervals retire only this read connection.
+      byteIdleTimeoutMs: options.byteIdleTimeoutMs ?? 3 * 15_000,
       random: options.random ?? Math.random,
       fetch: options.fetch ?? window.fetch.bind(window),
       getAuthorizationHeader: options.getAuthorizationHeader,
+      prepareSession: options.prepareSession,
       onUnauthorized: options.onUnauthorized,
     };
   }
@@ -88,6 +94,10 @@ export class ControlStudioEventStream {
     controller: AbortController,
   ): Promise<void> {
     try {
+      await this.options.prepareSession?.();
+      if (!this.isCurrent(epoch) || controller.signal.aborted) {
+        return;
+      }
       const url = new URL(this.endpoint, window.location.origin);
       if (this.lastSequence > 0) {
         url.searchParams.set("after_sequence", String(this.lastSequence));
@@ -116,6 +126,12 @@ export class ControlStudioEventStream {
         return;
       }
       if (response.status === 401) {
+        if (authorization !== this.options.getAuthorizationHeader?.()) {
+          // This GET used a credential rotated by another request. Preserve
+          // the new session and use the existing bounded reconnect policy.
+          this.scheduleReconnect();
+          return;
+        }
         this.stopped = true;
         this.options.onUnauthorized?.();
         this.onState("disconnected");
@@ -127,7 +143,7 @@ export class ControlStudioEventStream {
 
       this.reconnectAttempt = 0;
       this.onState("connected");
-      await this.readFrames(response.body, epoch);
+      await this.readFrames(response.body, epoch, controller);
       if (this.isCurrent(epoch)) {
         this.scheduleReconnect();
       }
@@ -148,20 +164,43 @@ export class ControlStudioEventStream {
   private async readFrames(
     body: ReadableStream<Uint8Array>,
     epoch: number,
+    controller: AbortController,
   ): Promise<void> {
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let lastByteAt = performance.now();
+    const cancelReader = () => { void reader.cancel().catch(() => undefined); };
+    controller.signal.addEventListener("abort", cancelReader, { once: true });
     try {
       while (this.isCurrent(epoch)) {
-        const { done, value } = await reader.read();
+        let idleTimer: ReturnType<typeof setTimeout> | undefined;
+        const idle = new Promise<never>((_resolve, reject) => {
+          idleTimer = setTimeout(() => {
+            // Reject before abort/cancel so this deliberate idle retirement uses
+            // the existing reconnect path, unlike an external stop AbortError.
+            reject(new Error("Event stream byte idle"));
+            controller.abort();
+          }, Math.max(1, this.options.byteIdleTimeoutMs - (performance.now() - lastByteAt)));
+        });
+        let next: ReadableStreamReadResult<Uint8Array>;
+        try {
+          next = await Promise.race([reader.read(), idle]);
+        } finally {
+          if (idleTimer !== undefined) clearTimeout(idleTimer);
+        }
+        const { done, value } = next;
         if (done) {
           break;
         }
+        // Comments are bytes too; ordinary keep-alives renew liveness.
+        if (value.byteLength > 0) lastByteAt = performance.now();
         buffer += decoder.decode(value, { stream: true });
         buffer = this.consumeCompleteFrames(buffer);
       }
     } finally {
+      controller.signal.removeEventListener("abort", cancelReader);
+      cancelReader();
       reader.releaseLock();
     }
   }

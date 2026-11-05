@@ -2,6 +2,7 @@ import type {
   Conversation,
   ConversationCreate,
   ConversationPage,
+  NativeExecutionResumeRequest,
   EngineeringProgramFocusResponse,
   EngineeringLocation,
   EngineeringLocationFocusResponse,
@@ -72,6 +73,8 @@ import type {
   
   XG5000ProjectFileSelection,
   XG5000InstancesResponse,
+  CloseIdleXG5000Request,
+  CloseIdleXG5000InstanceResponse,
   LaunchIdleXG5000Response,
   LaunchIdleXG5000LaunchMode,
 } from "./types";
@@ -99,6 +102,27 @@ export class HostResponseContractError extends Error {
     super("Host returned an unsupported response contract.");
     this.name = "HostResponseContractError";
   }
+}
+
+function idleCloseResponse(value: unknown, request: CloseIdleXG5000Request): CloseIdleXG5000InstanceResponse {
+  return parseHostResponseContract(value, (response) => {
+    if (!isRecord(response) || response.operation !== "xg5000.close_idle_instance" ||
+        response.verified !== true || response.status !== "closed" || response.closeAction !== "wm_close" ||
+        response.promptObserved !== false || response.modalObserved !== false ||
+        response.noSavePromptClicked !== false || response.processExited !== true || response.processTerminated !== false ||
+        typeof response.receiptDigest !== "string" || !/^[0-9a-f]{64}$/.test(response.receiptDigest) ||
+        !isRecord(response.idleBinding)) {
+      throw new Error("Invalid idle close receipt.");
+    }
+    const binding = response.idleBinding;
+    if (binding.pid !== request.pid || binding.hwnd !== request.hwnd ||
+        typeof binding.process_create_time !== "number" || !Number.isFinite(binding.process_create_time) ||
+        Math.abs(binding.process_create_time - request.processCreateTime) >= 0.001 ||
+        typeof binding.executable !== "string" || !binding.executable.trim()) {
+      throw new Error("Idle close identity mismatch.");
+    }
+    return response as unknown as CloseIdleXG5000InstanceResponse;
+  });
 }
 
 function idleLaunchResponse(value: unknown, launchMode: LaunchIdleXG5000LaunchMode): LaunchIdleXG5000Response {
@@ -142,6 +166,23 @@ function idleLaunchResponse(value: unknown, launchMode: LaunchIdleXG5000LaunchMo
   });
 }
 
+type ProjectToolsConnection = {
+  state: "ready" | "starting" | "unavailable";
+  waitTimeoutMs: number;
+};
+
+function projectToolsConnection(value: unknown): ProjectToolsConnection {
+  return parseHostResponseContract(value, (response) => {
+    if (!isRecord(response) || Object.keys(response).length !== 2 ||
+        typeof response.state !== "string" || !["ready", "starting", "unavailable"].includes(response.state) ||
+        typeof response.waitTimeoutMs !== "number" || !Number.isSafeInteger(response.waitTimeoutMs) ||
+        response.waitTimeoutMs <= 0) {
+      throw new Error("Invalid project tools connection response.");
+    }
+    return response as ProjectToolsConnection;
+  });
+}
+
 type RequestOptions = Omit<RequestInit, "body"> & {
   body?: unknown;
   operationId?: string;
@@ -150,6 +191,9 @@ type RequestOptions = Omit<RequestInit, "body"> & {
 function problemMessage(problem: ProblemDetails | undefined, status: number): string {
   if (typeof problem?.detail === "string") {
     return problem.detail;
+  }
+  if (isRecord(problem?.detail) && typeof problem.detail.message === "string") {
+    return problem.detail.message;
   }
   return problem?.title ?? `Host 요청에 실패했습니다. (${status})`;
 }
@@ -235,7 +279,9 @@ export class HostApiClient {
   readonly baseUrl: string;
   private csrfToken?: string;
   private sessionToken?: string;
+  private sessionGeneration = 0;
   private onUnauthorized?: () => void;
+  private prepareSession?: () => Promise<void>;
 
   constructor(baseUrl = "") {
     this.baseUrl = baseUrl.replace(/\/$/, "");
@@ -246,6 +292,7 @@ export class HostApiClient {
   }
 
   setSessionToken(token: string | undefined): void {
+    this.sessionGeneration += 1;
     this.sessionToken = token;
   }
 
@@ -253,12 +300,16 @@ export class HostApiClient {
     this.onUnauthorized = handler;
   }
 
+  setSessionPreparationHandler(handler: (() => Promise<void>) | undefined): void {
+    this.prepareSession = handler;
+  }
+
   getAuthorizationHeader(): string | undefined {
     return this.sessionToken ? `Bearer ${this.sessionToken}` : undefined;
   }
 
   invalidateSession(): void {
-    this.sessionToken = undefined;
+    this.setSessionToken(undefined);
     this.csrfToken = undefined;
     this.onUnauthorized?.();
   }
@@ -266,13 +317,20 @@ export class HostApiClient {
   private async request<T>(
     path: string,
     options: RequestOptions = {},
+    prepareSession = true,
   ): Promise<T> {
+    // Renew before constructing any protected request. This never retries the
+    // user's request after a response or an unknown submission outcome.
+    if (prepareSession && path.startsWith("/api/v1/")) {
+      await this.prepareSession?.();
+    }
     const { body, operationId, ...requestInit } = options;
     const headers = new Headers(options.headers);
     headers.set("Accept", "application/json");
 
+    const binaryBody = body instanceof Blob;
     if (body !== undefined) {
-      headers.set("Content-Type", "application/json");
+      headers.set("Content-Type", binaryBody ? "application/octet-stream" : "application/json");
     }
     if (this.csrfToken && options.method && options.method !== "GET") {
       headers.set("X-ControlStudio-CSRF", this.csrfToken);
@@ -282,8 +340,9 @@ export class HostApiClient {
     }
     const sessionProtected =
       path.startsWith("/api/v1/") || path === "/api/session/refresh";
-    if (sessionProtected && this.sessionToken) {
-      headers.set("Authorization", `Bearer ${this.sessionToken}`);
+    const requestSessionToken = sessionProtected ? this.sessionToken : undefined;
+    if (requestSessionToken) {
+      headers.set("Authorization", `Bearer ${requestSessionToken}`);
     }
 
     const response = await fetch(`${this.baseUrl}${path}`, {
@@ -291,10 +350,13 @@ export class HostApiClient {
       headers,
       credentials: "same-origin",
       cache: "no-store",
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : binaryBody ? body : JSON.stringify(body),
     });
 
-    if (response.status === 401 && sessionProtected) {
+    if (
+      response.status === 401 && sessionProtected &&
+      requestSessionToken === this.sessionToken
+    ) {
       this.invalidateSession();
     }
 
@@ -327,7 +389,7 @@ export class HostApiClient {
     signal?: AbortSignal,
   ): Promise<BrowserSessionResponse> {
     this.csrfToken = undefined;
-    this.sessionToken = undefined;
+    this.setSessionToken(undefined);
     return this.request<BrowserSessionResponse>("/api/session", {
       method: "POST",
       headers: {
@@ -338,13 +400,38 @@ export class HostApiClient {
   }
 
   refreshBrowserSession(): Promise<BrowserSessionResponse> {
+    const generation = this.sessionGeneration;
     return this.request<BrowserSessionResponse>("/api/session/refresh", {
       method: "POST",
-    }).then((session) => {
-      this.sessionToken = session.sessionToken;
+    }).then(async (session) => {
+      if (generation !== this.sessionGeneration) {
+        throw new Error("Browser session refresh was superseded");
+      }
+      this.setSessionToken(session.sessionToken);
+      const rotatedGeneration = this.sessionGeneration;
       this.csrfToken = undefined;
+      // The new CSRF value is bound to the rotated credential. Bypass only
+      // this client's renewal hook to avoid waiting on its own single flight;
+      // the Host still authenticates this ordinary bootstrap request.
+      const bootstrap = await this.request<HostBootstrapResponse>(
+        "/api/v1/bootstrap", {}, false,
+      );
+      if (rotatedGeneration !== this.sessionGeneration) {
+        throw new Error("Browser session refresh was superseded");
+      }
+      this.csrfToken = bootstrap.csrfToken;
       return session;
     });
+  }
+
+  async getProjectToolsConnection(signal?: AbortSignal): Promise<ProjectToolsConnection> {
+    return projectToolsConnection(await this.request<unknown>("/api/v1/project-tools/connection", { signal }));
+  }
+
+  async reconnectProjectTools(signal?: AbortSignal): Promise<ProjectToolsConnection> {
+    return projectToolsConnection(await this.request<unknown>("/api/v1/project-tools/reconnect", {
+      method: "POST", signal,
+    }));
   }
 
   getStatus(signal?: AbortSignal): Promise<HostStatusResponse> {
@@ -476,6 +563,19 @@ export class HostApiClient {
     );
   }
 
+  importKnowledgeFile(request: ImportKnowledgeRequest, file: File): Promise<KnowledgeImportResult> {
+    if (!file.size || file.size > 100 * 1024 * 1024) {
+      return Promise.reject(new Error("자료 파일은 0 MB보다 크고 100 MB 이하여야 합니다."));
+    }
+    const query = new URLSearchParams({ fileName: file.name });
+    for (const [key, value] of Object.entries(request)) {
+      if (value !== undefined && value !== null) query.set(key, String(value));
+    }
+    return this.request<KnowledgeImportResult>(`/api/v1/knowledge/import-file?${query}`, {
+      method: "POST", body: file,
+    });
+  }
+
   importLocalKnowledge(
     request: ImportKnowledgeRequest,
   ): Promise<KnowledgeImportResult> {
@@ -527,6 +627,19 @@ export class HostApiClient {
 
   
 
+  closeIdleXG5000(request: CloseIdleXG5000Request): Promise<CloseIdleXG5000InstanceResponse> {
+    const timeout = request.timeoutSeconds ?? 12;
+    if (!Number.isSafeInteger(request.pid) || request.pid <= 0 ||
+        !Number.isSafeInteger(request.hwnd) || request.hwnd <= 0 ||
+        !Number.isFinite(request.processCreateTime) || request.processCreateTime <= 0 ||
+        request.confirmIdleClose !== true || !Number.isFinite(timeout) || timeout < 0.1 || timeout > 15) {
+      return Promise.reject(new HostResponseContractError());
+    }
+    return this.request<unknown>("/api/v1/xg5000/close-idle-instance", {
+      method: "POST", body: { ...request, timeoutSeconds: timeout },
+    }).then((value) => idleCloseResponse(value, request));
+  }
+
   launchIdleXG5000(launchMode: LaunchIdleXG5000LaunchMode = "when_none"): Promise<LaunchIdleXG5000Response> {
     if (launchMode !== "when_none" && launchMode !== "new_instance") {
       return Promise.reject(new HostResponseContractError());
@@ -577,6 +690,15 @@ export class HostApiClient {
         body: request,
         operationId: request.operationId,
       },
+    ).then((value) => runStartResponse(value, request.operationId));
+  }
+
+  resumeNativeExecution(
+    conversationId: string, request: NativeExecutionResumeRequest,
+  ): Promise<SendMessageResponse> {
+    return this.request<unknown>(
+      `/api/v1/conversations/${encodeURIComponent(conversationId)}/native-execution/resume`,
+      { method: "POST", body: request, operationId: request.operationId },
     ).then((value) => runStartResponse(value, request.operationId));
   }
 
@@ -653,7 +775,7 @@ export class HostApiClient {
 
   focusEngineeringProgram(
     programId: string,
-    request?: { displayIntent: "LD" },
+    request?: { displayIntent: "LD"; catalogBindingDigest?: string | null },
   ): Promise<EngineeringProgramFocusResponse> {
     return this.request<EngineeringProgramFocusResponse>(
       `/api/v1/engineering/programs/${encodeURIComponent(programId)}/focus`,
@@ -786,15 +908,17 @@ export class HostApiClient {
     ).then((value) => parseHostResponseContract(value, parseChangeTransaction));
   }
 
-  restartHost(): Promise<HostRestartResponse> {
+  restartHost(signal?: AbortSignal): Promise<HostRestartResponse> {
     return this.request<HostRestartResponse>("/api/v1/host/restart", {
       method: "POST",
+      signal,
     });
   }
 
-  getRestartStatus(restartReceipt: string): Promise<HostRestartResponse> {
+  getRestartStatus(restartReceipt: string, signal?: AbortSignal): Promise<HostRestartResponse> {
     return this.request<HostRestartResponse>(
       `/api/v1/host/restart/${encodeURIComponent(restartReceipt)}`,
+      { signal },
     );
   }
 

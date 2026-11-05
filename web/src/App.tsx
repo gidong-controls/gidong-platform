@@ -14,6 +14,7 @@ import {
   HostResponseContractError,
 } from "./api/client";
 import { isChangeTransaction } from "./api/changeContracts";
+import { HOST_RESTART_WAIT_MS, RestartWaitError, waitForRestartReady } from "./restartWait";
 import {
   selectRestorableChange,
   TERMINAL_CHANGE_OUTCOME_STATES,
@@ -39,7 +40,7 @@ import type {
   ControllerRestorePreflight,
   ChangeTransaction,
   EngineeringLocation,
-  EngineeringProgram,
+  EngineeringProgramsResponse,
   EngineeringTargetBinding,
   EvidenceRef,
   HostEventEnvelope,
@@ -74,6 +75,7 @@ import {
   type KnowledgeVendor,
 } from "./components/KnowledgeDialog";
 import { ModelSettingsDialog } from "./components/ModelSettingsDialog";
+import { bindIntakeDraftConversation } from "./newProjectIntakeDraft";
 
 import {
   NewProjectBriefPanel,
@@ -134,6 +136,7 @@ const INITIAL_STATUS: HostStatusResponse = {
     application: "XG5000",
     sessionVerified: false,
     readReady: false,
+    nativeLdEditReady: false,
     identityAssurance: "unverified",
     detail: "연결되지 않음",
   },
@@ -196,6 +199,23 @@ const TERMINAL_RUN_STATES = new Set<RunState>([
   "quarantined",
 ]);
 
+function latestConversationRun(conversation: Conversation): {
+  runId: string;
+  state: RunState;
+} | null {
+  for (let index = conversation.messages.length - 1; index >= 0; index -= 1) {
+    const message = conversation.messages[index];
+    if (isInlineToolActivityAnchor(message) && message.runId) {
+      // Message status describes its text, while runState is the Host's
+      // durable execution state. A completed reply may still await approval.
+      return isRunState(message.runState)
+        ? { runId: message.runId, state: message.runState }
+        : null;
+    }
+  }
+  return null;
+}
+
 const PRIMARY_CHANGE_STATES = new Set<ChangeTransaction["state"]>([
   "pending_approval",
   "approved",
@@ -235,6 +255,11 @@ function isRestorableChange(transaction: ChangeTransaction): boolean {
 }
 
 const TOOL_ACTIVITY_NAMES: Record<string, string> = {
+  prepare_project: "새 프로젝트 준비",
+  inspect_project_preparation: "프로젝트 준비 상태 확인",
+  cancel_project_preparation: "프로젝트 준비 취소",
+  initialize_ld_program: "새 LD 프로그램의 시작 접점 작성",
+  simulator: "XG-SIM 시뮬레이터 작업",
   get_xg5000_session_status: "XG5000 세션 확인",
   list_project_programs: "프로그램 목록 확인",
   focus_xg5000_program: "XG5000 프로그램 열기",
@@ -270,6 +295,19 @@ const TOOL_ACTIVITY_NAMES: Record<string, string> = {
 
 const AGENT_PROGRESS_COPY: Record<string, string> = {
   starting: "에이전트 실행을 준비하고 있습니다.",
+  native_restore_loading: "이전 작업을 불러오는 중입니다.",
+  native_restore_verifying: "이전 작업을 확인하고 있습니다.",
+  native_restore_verified: "이전 작업을 확인했습니다.",
+  native_restore_state: "이전 작업의 이어가기 정보를 준비하고 있습니다.",
+  native_restore_state_ready: "이전 작업의 이어가기 정보를 준비했습니다.",
+  native_restore_context: "이전 작업 내용을 복원하는 중입니다.",
+  native_restore_context_ready: "이전 작업 내용을 복원했습니다.",
+  native_restore_records: "작업 결과와 관측 내용을 복원하는 중입니다.",
+  native_restore_records_ready: "작업 결과와 관측 내용을 복원했습니다.",
+  native_restore_dialogue: "대화 이력을 복원하는 중입니다.",
+  native_restore_dialogue_ready: "대화 이력을 복원했습니다.",
+  native_ld_execution: "XG5000 작업을 진행하는 중입니다.",
+  native_work_plan: "변경 계획",
   engineering_analysis: "PLC 분석을 구성하고 있습니다.",
   planning_narrative: "요구사항과 추가로 확인할 조건을 정리하고 있습니다.",
   planning_native_design: "프로그램의 동작 조건과 순서를 설계하고 있습니다.",
@@ -303,6 +341,8 @@ interface ActivityItem {
   evidenceId?: string;
   diagnostic?: string;
   coalesceKey?: string;
+  workPlan?: boolean;
+  historicalReplay?: boolean;
 }
 
 function isInlineToolActivityAnchor(
@@ -324,16 +364,82 @@ const TOOL_STATE_COPY = {
   selected: "선택됨",
   running: "실행 중",
   completed: "완료",
-  failed: "실패",
+  failed: "시도 실패",
 } as const;
 
-function activityDuration(item: ActivityItem, nowMs: number): string | null {
+function isUnresolvedTerminalToolActivity(
+  item: ActivityItem,
+  terminalRunStates: ReadonlyMap<string, RunState>,
+): boolean {
+  return Boolean(
+    item.runId &&
+      (item.toolState === "selected" || item.toolState === "running") &&
+      terminalRunStates.has(item.runId),
+  );
+}
+
+function activityCardState(
+  item: ActivityItem,
+  terminalRunStates: ReadonlyMap<string, RunState>,
+): string {
+  if (isUnresolvedTerminalToolActivity(item, terminalRunStates)) {
+    return "unconfirmed";
+  }
+  if (item.historicalReplay && item.toolState === "running") {
+    return "historical";
+  }
+  return item.toolState ?? "";
+}
+
+function activityStateCopy(
+  item: ActivityItem,
+  terminalRunStates: ReadonlyMap<string, RunState>,
+): string {
+  if (isUnresolvedTerminalToolActivity(item, terminalRunStates)) {
+    return "실행 종료 · 도구 결과 미확인";
+  }
+  if (item.historicalReplay && (item.toolState === "selected" || item.toolState === "running")) {
+    return "이전 기록 · 현재 상태 미확인";
+  }
+  return item.toolState ? TOOL_STATE_COPY[item.toolState] : "";
+}
+
+function activityBodyCopy(
+  item: ActivityItem,
+  terminalRunStates: ReadonlyMap<string, RunState>,
+): string {
+  if (isUnresolvedTerminalToolActivity(item, terminalRunStates)) {
+    return "실행은 종료됐지만 이 도구의 완료 결과는 기록에서 확인되지 않았습니다.";
+  }
+  if (item.historicalReplay && (item.toolState === "running" || item.toolState === "selected")) {
+    return "이전에 시작된 작업입니다. 현재 상태는 이 기록만으로 확인할 수 없습니다.";
+  }
+  if (item.toolState === "running") {
+    return "프로젝트에서 필요한 내용을 확인하고 있습니다.";
+  }
+  if (item.toolState === "selected") {
+    return "작업을 준비하고 있습니다.";
+  }
+  if (item.toolState === "failed") {
+    return "이 도구 호출은 실패했습니다. 이후 작업 결과와 함께 확인해 주세요.";
+  }
+  return "이 작업을 마쳤습니다.";
+}
+
+function activityDuration(
+  item: ActivityItem,
+  nowMs: number,
+  terminalRunStates: ReadonlyMap<string, RunState>,
+): string | null {
+  if (isUnresolvedTerminalToolActivity(item, terminalRunStates)) {
+    return null;
+  }
   if (!item.startedAt) {
     return null;
   }
   const finishedAt = item.finishedAt
     ? Date.parse(item.finishedAt)
-    : item.toolState === "running"
+    : item.toolState === "running" && !item.historicalReplay
       ? nowMs
       : Number.NaN;
   const elapsed = finishedAt - Date.parse(item.startedAt);
@@ -354,7 +460,8 @@ interface ReturnWorkspaceSnapshot {
   conversation: Conversation;
   evidence: EvidenceRef[];
   activities: ActivityItem[];
-  programs: EngineeringProgram[];
+  programCatalog: EngineeringProgramsResponse;
+  programCatalogTargetKey: string;
   activePanel: "programs" | "evidence" | "activity" | null;
 }
 
@@ -481,6 +588,64 @@ function clearStoredConversationId(): void {
   }
 }
 
+function workingEditorConnected(status: HostStatusResponse): boolean {
+  return (
+    status.engineeringSystem.readReady === true ||
+    status.engineeringSystem.nativeLdEditReady === true
+  );
+}
+
+function mcpPublicDiagnosticSummary(detail: unknown): string | undefined {
+  if (typeof detail !== "string" || detail.length > 120) return undefined;
+  const startup = /^MCP startup failed at (process_initialize|tool_catalog|contract_manifest) \((RuntimeError|TimeoutError|MCPStartupError|ClosedResourceError|BrokenResourceError|ExceptionGroup)\)$/.exec(detail);
+  if (startup && startup[0] === detail) {
+    return `MCP stage: ${startup[1]} · error type: ${startup[2]}`;
+  }
+  const lost = /^MCP connection lost \((RuntimeError|TimeoutError|MCPStartupError|ClosedResourceError|BrokenResourceError|ExceptionGroup)\)$/.exec(detail);
+  if (lost && lost[0] === detail) {
+    return `MCP connection lost · error type: ${lost[1]}`;
+  }
+  return undefined;
+}
+
+function connectionServiceMessage(status: HostStatusResponse): string {
+  return status.mcp.state === "starting"
+    ? "프로젝트 연결 서비스를 준비하고 있습니다. 잠시 후 다시 확인해 주세요."
+    : "프로젝트 연결 서비스를 사용할 수 없습니다. 연결이 복구되면 이어서 요청할 수 있습니다.";
+}
+
+function conversationPlaceholder(
+  status: HostStatusResponse,
+  planning: boolean,
+  targetless: boolean,
+): string {
+  if (status.host.state !== "ready") {
+    return status.host.state === "starting"
+      ? "앱을 시작하고 있습니다. 잠시 후 다시 확인해 주세요."
+      : "앱에 연결한 뒤 대화할 수 있습니다.";
+  }
+  if (status.agent.state !== "ready") {
+    if (status.agent.state === "starting") return "모델 연결을 확인하고 있습니다.";
+    return status.agent.detail === "OpenAI 호환 모델 연결을 설정해 주세요."
+      ? "모델 연결을 설정해 주세요."
+      : "모델 설정에서 연결 상태를 확인해 주세요.";
+  }
+  if (planning) {
+    return status.agent.planningReady === false
+      ? "계획 기능을 준비하고 있습니다."
+      : "계획을 보완하거나 에이전트의 질문에 답해 주세요";
+  }
+  if (!targetless && status.mcp.state !== "ready") return connectionServiceMessage(status);
+  if (status.agent.engineeringReady === false) return "프로젝트 요청 기능을 준비하고 있습니다.";
+  if (targetless) return "PLC 개념, 오류 메시지나 설계 판단을 질문해 주세요";
+  if (currentEngineeringTarget(status) === null) {
+    return status.workspace
+      ? "XG5000 연결을 복구한 뒤 이어서 요청할 수 있습니다."
+      : "먼저 작업할 프로젝트를 연결해 주세요.";
+  }
+  return "프로젝트에 대해 질문하거나 원하는 변경을 말해 주세요";
+}
+
 function currentEngineeringTarget(
   status: HostStatusResponse,
 ): EngineeringTargetBinding | null {
@@ -585,6 +750,39 @@ function conversationMissionMatchesCurrentTarget(
   );
 }
 
+type WorkspaceResumeTarget = Pick<EngineeringTargetBinding, "workspaceId" | "revisionId">;
+
+function localWorkspaceResumeTarget(
+  conversation: Conversation | null,
+  status: HostStatusResponse,
+  useCurrentWorkspace = false,
+): WorkspaceResumeTarget | null {
+  if (!useCurrentWorkspace && conversation?.workflow === "engineering") {
+    const target = conversation.engineeringTarget ?? conversation.engineeringMission;
+    if (!target || target.workspaceId.startsWith("controller-ls:") ||
+      target.workspaceId.startsWith("direct-xg5000:")) return null;
+    const mission = conversation.engineeringMission;
+    if (mission && (mission.workspaceId !== target.workspaceId ||
+      mission.revisionId !== target.revisionId)) return null;
+    return { workspaceId: target.workspaceId, revisionId: target.revisionId };
+  }
+  // The recent-work card and a planning creation keep their existing current
+  // workspace meaning; an unbound engineering draft never inherits another target.
+  const workspace = status.workspace;
+  const revisionId = workspace?.revision ?? workspace?.artifactHash;
+  return workspace && revisionId
+    ? { workspaceId: workspace.workspaceId, revisionId }
+    : null;
+}
+
+function workspaceResumeMatchesStatus(
+  target: WorkspaceResumeTarget,
+  status: HostStatusResponse,
+): boolean {
+  return status.workspace?.workspaceId === target.workspaceId &&
+    (status.workspace.revision ?? status.workspace.artifactHash) === target.revisionId;
+}
+
 function conversationMatchesPendingWorkspace(
   conversation: Pick<Conversation, "workflow" | "engineeringTarget">,
   status: HostStatusResponse,
@@ -603,9 +801,9 @@ function conversationMatchesPendingWorkspace(
 
 export function pendingWorkspaceConversationKeepsAgentWorkspaceVisible(
   pendingWorkspaceConversation: boolean,
-  recoveryAttachRequired: boolean,
 ): boolean {
-  return pendingWorkspaceConversation && !recoveryAttachRequired;
+  // Reading the saved conversation does not require a live editor binding.
+  return pendingWorkspaceConversation;
 }
 
 function isUnboundEngineeringConversation(conversation: Conversation): boolean {
@@ -659,6 +857,9 @@ function takeBrowserHandoffTicket(): string | null {
 
 let pendingLauncherSessionExchange: Promise<void> | null = null;
 let browserSessionRefreshTimer: number | undefined;
+let currentBrowserSession: StoredBrowserSession | null = null;
+let pendingBrowserSessionRefresh: Promise<void> | null = null;
+let browserSessionGeneration = 0;
 
 interface StoredBrowserSession {
   sessionToken: string;
@@ -666,6 +867,9 @@ interface StoredBrowserSession {
 }
 
 function clearBrowserSession(): void {
+  browserSessionGeneration += 1;
+  pendingBrowserSessionRefresh = null;
+  currentBrowserSession = null;
   if (browserSessionRefreshTimer !== undefined) {
     window.clearTimeout(browserSessionRefreshTimer);
     browserSessionRefreshTimer = undefined;
@@ -676,6 +880,38 @@ function clearBrowserSession(): void {
   } catch {
     // The in-memory token is still cleared.
   }
+}
+
+function ensureBrowserSessionFresh(force = false): Promise<void> {
+  if (pendingBrowserSessionRefresh) {
+    return pendingBrowserSessionRefresh;
+  }
+  if (!currentBrowserSession) {
+    return Promise.resolve();
+  }
+  const expiry = Date.parse(currentBrowserSession.expiresAt);
+  if (!force && expiry - Date.now() > 10 * 60 * 1000) {
+    return Promise.resolve();
+  }
+  const generation = browserSessionGeneration;
+  const refresh = hostApi.refreshBrowserSession().then((session) => {
+    if (generation === browserSessionGeneration) storeBrowserSession(session);
+  });
+  const pending = refresh.catch((error) => {
+    if (generation !== browserSessionGeneration) {
+      if (currentBrowserSession) return;
+      throw error;
+    }
+    // Refresh may have rotated the credential even if its response was lost.
+    // Fail closed and use the official Launcher instead of replaying it.
+    clearBrowserSession();
+    hostApi.invalidateSession();
+    throw error;
+  }).finally(() => {
+    if (pendingBrowserSessionRefresh === pending) pendingBrowserSessionRefresh = null;
+  });
+  pendingBrowserSessionRefresh = pending;
+  return pending;
 }
 
 function scheduleBrowserSessionRefresh(session: StoredBrowserSession): void {
@@ -703,20 +939,17 @@ function scheduleBrowserSessionRefresh(session: StoredBrowserSession): void {
       scheduleBrowserSessionRefresh(session);
       return;
     }
-    void hostApi
-      .refreshBrowserSession()
-      .then((refreshed) => {
-        storeBrowserSession(refreshed);
-        return hostApi.getBootstrap();
-      })
-      .then((bootstrap) => hostApi.setCsrfToken(bootstrap.csrfToken))
-      .catch(() => {
-        clearBrowserSession();
-      });
+    void ensureBrowserSessionFresh(true).catch(() => {
+      // The shared refresh path already invalidated the failed session and
+      // notified the normal UI. No protected request is replayed.
+    });
   }, delay);
 }
 
 function storeBrowserSession(session: StoredBrowserSession): void {
+  browserSessionGeneration += 1;
+  pendingBrowserSessionRefresh = null;
+  currentBrowserSession = session;
   hostApi.setSessionToken(session.sessionToken);
   scheduleBrowserSessionRefresh(session);
   try {
@@ -734,6 +967,7 @@ function restoreBrowserSession(): StoredBrowserSession | null {
   try {
     const raw = window.sessionStorage.getItem(BROWSER_SESSION_STORAGE_KEY);
     if (!raw) {
+      currentBrowserSession = null;
       hostApi.setSessionToken(undefined);
       return null;
     }
@@ -752,6 +986,7 @@ function restoreBrowserSession(): StoredBrowserSession | null {
       sessionToken: candidate.sessionToken,
       expiresAt: candidate.expiresAt,
     };
+    currentBrowserSession = restored;
     hostApi.setSessionToken(restored.sessionToken);
     if (expiry > Date.now()) {
       scheduleBrowserSessionRefresh(restored);
@@ -774,15 +1009,15 @@ function establishLauncherSession(): Promise<void> {
     if (!restored || Date.parse(restored.expiresAt) > Date.now()) {
       return Promise.resolve();
     }
-    const refresh = hostApi
-      .refreshBrowserSession()
-      .then((session) => storeBrowserSession(session));
+    const refresh = ensureBrowserSessionFresh();
     pendingLauncherSessionExchange = refresh.finally(() => {
       pendingLauncherSessionExchange = null;
     });
     return pendingLauncherSessionExchange;
   }
 
+  browserSessionGeneration += 1;
+  pendingBrowserSessionRefresh = null;
   const exchange = hostApi
     .exchangeHandoffTicket(ticket)
     .then((session) => storeBrowserSession(session));
@@ -792,6 +1027,8 @@ function establishLauncherSession(): Promise<void> {
   });
   return pendingLauncherSessionExchange;
 }
+
+hostApi.setSessionPreparationHandler(ensureBrowserSessionFresh);
 
 function newOperationId(): string {
   const suffix =
@@ -815,10 +1052,13 @@ function newCanonicalUuid(): string {
 function newProjectBriefMessage(
   brief: NewProjectBrief,
   updating: boolean,
+  createProject: boolean,
 ): string {
   const optional = (value: string) => value || "아직 모름";
   return [
-    updating
+    createProject
+      ? "다음 요구사항과 자료를 확인하고 새 작업 프로젝트의 LD 작성·검사·저장까지 진행해 주세요."
+      : updating
       ? "새 프로젝트 요구사항을 다음 내용으로 수정했습니다. 기존 계획을 다시 검토해 주세요."
       : "다음 요구사항으로 새 PLC 프로젝트 계획을 시작해 주세요.",
     "",
@@ -831,7 +1071,9 @@ function newProjectBriefMessage(
     `성능·품질·인수 기준: ${optional(brief.performanceAndAcceptance)}`,
     `첨부 자료 source IDs: ${brief.attachmentSourceIds.join(", ") || "없음"}`,
     "",
-    "이 단계에서는 파일이나 XG5000을 변경하지 말고, 확인된 사실·가정·미결 질문을 구분한 검토 가능한 프로젝트 계획서를 작성해 주세요.",
+    createProject
+      ? "확인된 사실·가정·미결 질문을 구분하고, 제작에 필요한 조건이 부족하면 대화에서 확인해 주세요."
+      : "이 단계에서는 파일이나 XG5000을 변경하지 말고, 확인된 사실·가정·미결 질문을 구분한 검토 가능한 프로젝트 계획서를 작성해 주세요.",
   ].join("\n");
 }
 
@@ -879,7 +1121,8 @@ function eventRunState(event: HostEventEnvelope): RunState | undefined {
   if (typeof state !== "string") {
     return undefined;
   }
-  return state.toLowerCase() as RunState;
+  const normalized = state.toLowerCase();
+  return isRunState(normalized) ? normalized : undefined;
 }
 
 function knowledgeVendor(value: string | undefined): KnowledgeVendor {
@@ -1006,12 +1249,12 @@ const KNOWLEDGE_DIALOG_SERVICE: KnowledgeDialogService = {
     });
     return response.items.map(knowledgeDocumentFromApi);
   },
-  async importLocalDocument(request) {
-    const result = await hostApi.importLocalKnowledge({
+  async importLocalDocument(request, file) {
+    const result = await hostApi.importKnowledgeFile({
       ...request,
       scope: request.scope,
       authority: "user_imported_reference",
-    });
+    }, file);
     if (!result.source) {
       return null;
     }
@@ -1089,6 +1332,9 @@ function App() {
   const [connectionMessage, setConnectionMessage] = useState(
     "ControlStudio Host를 확인하고 있습니다.",
   );
+  const [connectionCheckBusy, setConnectionCheckBusy] = useState(false);
+  const connectionCheckRef = useRef<AbortController | null>(null);
+  useEffect(() => () => connectionCheckRef.current?.abort(), []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [conversationHistoryOpen, setConversationHistoryOpen] = useState(false);
@@ -1108,8 +1354,36 @@ function App() {
   >("idle");
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [streamingText, setStreamingText] = useState("");
-  const [activeRunState, setActiveRunState] = useState<RunState | null>(null);
-  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [activeRunState, setActiveRunStateValue] = useState<RunState | null>(null);
+  const [activeRunId, setActiveRunIdValue] = useState<string | null>(null);
+  const activeRunIdRef = useRef<string | null>(null);
+  const activeRunStateRef = useRef<RunState | null>(null);
+  const terminalRunStatesRef = useRef(new Map<string, RunState>());
+  const [, setTerminalRunStateRevision] = useState(0);
+  const recordTerminalRunState = useCallback((runId: string, state: RunState) => {
+    if (!TERMINAL_RUN_STATES.has(state) || terminalRunStatesRef.current.get(runId) === state) {
+      return;
+    }
+    terminalRunStatesRef.current.set(runId, state);
+    setTerminalRunStateRevision((revision) => revision + 1);
+  }, []);
+  const setActiveRunId = useCallback((runId: string | null) => {
+    activeRunIdRef.current = runId;
+    setActiveRunIdValue(runId);
+  }, []);
+  const setActiveRunState = useCallback((state: RunState | null) => {
+    const runId = activeRunIdRef.current;
+    if (runId && state && TERMINAL_RUN_STATES.has(state)) {
+      recordTerminalRunState(runId, state);
+    }
+    // A POST receipt can arrive after SSE or a conversation read reported
+    // termination. Its original accepted state must not revive that run.
+    const nextState = runId && state
+      ? terminalRunStatesRef.current.get(runId) ?? state
+      : state;
+    activeRunStateRef.current = nextState;
+    setActiveRunStateValue(nextState);
+  }, [recordTerminalRunState]);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelNotice, setCancelNotice] = useState("");
   const [evidence, setEvidence] = useState<EvidenceRef[]>([]);
@@ -1119,13 +1393,33 @@ function App() {
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [activityClockMs, setActivityClockMs] = useState(() => Date.now());
   const [debugMode, setDebugMode] = useState(false);
-  const [programs, setPrograms] = useState<EngineeringProgram[]>([]);
+  const [programCatalog, setProgramCatalog] = useState<EngineeringProgramsResponse>({ programs: [] });
+  const programs = programCatalog.programs;
+  const programCatalogEpochRef = useRef(0);
+  const programTargetKey = JSON.stringify([
+    status.workspace?.workspaceId, status.workspace?.revision,
+    status.workspace?.artifactHash,
+    status.engineeringSystem.sessionId, status.engineeringSystem.processId,
+    status.engineeringSystem.windowHandle, status.engineeringSystem.processCreateTime,
+    status.engineeringSystem.projectPath, status.engineeringSystem.projectHash,
+    status.engineeringSystem.nativeLdEditReady,
+  ]);
+  const programCatalogTargetRef = useRef(programTargetKey);
+  programCatalogTargetRef.current = programTargetKey;
   const [programsLoading, setProgramsLoading] = useState(false);
   const [programFocusBusyId, setProgramFocusBusyId] = useState<string>();
   const [programNotice, setProgramNotice] = useState("");
+  useEffect(() => {
+    programCatalogEpochRef.current += 1;
+    setProgramCatalog({ programs: [] });
+    setProgramsLoading(false);
+    setProgramFocusBusyId(undefined);
+    setProgramNotice("");
+  }, [programTargetKey]);
   const [message, setMessage] = useState("");
   const [messageHistoryExpanded, setMessageHistoryExpanded] = useState(false);
   const [targetlessAnalysisOpen, setTargetlessAnalysisOpen] = useState(false);
+  const [allowSimulator, setAllowSimulator] = useState(false);
   const [changeRequestScope, setChangeRequestScope] =
     useState<ConversationPermission>("review_before_apply");
   
@@ -1154,6 +1448,8 @@ function App() {
   const [workspaceCompareBusy, setWorkspaceCompareBusy] = useState(false);
   const [workChooserOpen, setWorkChooserOpen] = useState(false);
   const [newProjectBriefOpen, setNewProjectBriefOpen] = useState(false);
+  const [newProjectBriefIsNew, setNewProjectBriefIsNew] = useState(false);
+  const [projectDocumentIntake, setProjectDocumentIntake] = useState<{ scopeKey: string; label: string } | undefined>(undefined);
   const [newProjectPlanning, setNewProjectPlanning] =
     useState<NewProjectPlanningSession | null>(null);
   
@@ -1166,8 +1462,11 @@ function App() {
   const [instancePickerOpen, setInstancePickerOpen] = useState(false);
   const [instances, setInstances] = useState<XG5000Instance[]>([]);
   const [instancesLoading, setInstancesLoading] = useState(false);
+  const [idleLaunchBusy, setIdleLaunchBusy] = useState(false);
   const [recoveryAttachIntent, setRecoveryAttachIntent] = useState(false);
   const [attachingHwnd, setAttachingHwnd] = useState<number | null>(null);
+  const [closingIdleHwnd, setClosingIdleHwnd] = useState<number | null>(null);
+  const [idleCloseAttempted, setIdleCloseAttempted] = useState(false);
   const [offlineCandidateBindingBusy, setOfflineCandidateBindingBusy] =
     useState(false);
   const [restorePreflightBusyHwnd, setRestorePreflightBusyHwnd] = useState<
@@ -1198,7 +1497,15 @@ function App() {
   const streamRef = useRef<ControlStudioEventStream | null>(null);
   const streamingDraftRef = useRef<StreamingDraft | null>(null);
   const requestAbortRef = useRef<AbortController | null>(null);
+  const restartAbortRef = useRef<AbortController | null>(null);
+  const restartReceiptRef = useRef<{ receipt: string; deadline: number } | null>(null);
+  const restartSubmissionRef = useRef<"idle" | "unknown" | "accepted">("idle");
+  useEffect(() => () => {
+    restartAbortRef.current?.abort();
+    restartAbortRef.current = null;
+  }, []);
   const statusRefreshRef = useRef<Promise<HostStatusResponse> | null>(null);
+  const statusRefreshTrailingRequestedRef = useRef(false);
   const statusRefreshEpochRef = useRef(0);
   const conversationIdRef = useRef<string | null>(null);
   
@@ -1214,6 +1521,11 @@ function App() {
     new Map<string, PendingConversationRefresh>(),
   );
   const targetActivationEpochRef = useRef(0);
+  const workspaceRecoveryContextRef = useRef("");
+  workspaceRecoveryContextRef.current = JSON.stringify([
+    conversation?.conversationId, conversation?.workflow,
+    newProjectBriefOpen, newProjectBriefIsNew,
+  ]);
   const changeRecoveryReplayPinRef = useRef<{
     transactionId: string;
     throughSequence: number;
@@ -1264,6 +1576,7 @@ function App() {
   const engineeringAgentReady =
     status.agent.engineeringReady ?? agentReady;
   const mcpReady = status.mcp.state === "ready";
+  const mcpPublicDiagnostic = debugMode ? mcpPublicDiagnosticSummary(status.mcp.detail) : undefined;
   const offlineMutateFeature = status.featureReadiness?.find(
     (feature) => feature.featureId === "offline_mutate",
   );
@@ -1274,7 +1587,12 @@ function App() {
     status.engineeringSystem.sessionVerified &&
     (offlineMutateFeature?.currentReady ??
       status.capabilities.includes("offline_mutate"));
+  const nativeLdEditAvailable =
+    hostReady && mcpReady && status.engineeringSystem.nativeLdEditReady === true;
   const localAnalysisAvailable = hostReady && mcpReady;
+  const pendingWorkspaceConversation = Boolean(
+    conversation && conversationMatchesPendingWorkspace(conversation, status),
+  );
   const selectedEngineeringTarget = currentEngineeringTarget(status);
   const workspaceRevision =
     status.workspace?.revision ?? status.workspace?.artifactHash ?? null;
@@ -1282,20 +1600,28 @@ function App() {
     Boolean(status.workspace) &&
     selectedEngineeringTarget?.workspaceId === status.workspace?.workspaceId &&
     selectedEngineeringTarget?.revisionId === workspaceRevision;
-  const workspaceResumeSelectable = Boolean(
-    localAnalysisAvailable &&
-    workspaceTargetActive &&
-    !status.engineeringSystem.sessionVerified &&
-    conversation && conversationMatchesCurrentTarget(conversation, status),
+  const conversationWorkspaceResumeTarget = localWorkspaceResumeTarget(conversation, status);
+  const conversationWorkspaceNeedsResume = Boolean(
+    conversation?.workflow === "engineering" && conversationWorkspaceResumeTarget &&
+    (!conversationMatchesCurrentTarget(conversation, status) || !workingEditorConnected(status)),
   );
-  const offlineCandidateSelectable =
+  const workspaceResumeSelectable = Boolean(
+    localAnalysisAvailable && conversationWorkspaceResumeTarget &&
+    (conversationWorkspaceNeedsResume || !status.engineeringSystem.sessionVerified),
+  );
+  const offlineChangeSelectable =
+    nativeLdEditAvailable ||
     offlineCandidateAvailable ||
     Boolean(status.engineeringSystem.offlineCandidateEligible) ||
     workspaceResumeSelectable;
   // Selecting an intent does not grant mutation authority. Submission prepares
   // the session and checks current readiness before dispatching that intent.
   
-  const planningConversationActive = Boolean(newProjectPlanning);
+  const planningConversationActive = Boolean(
+    newProjectPlanning && conversation?.workflow === "new_project_planning",
+  );
+  const planningCreationActive =
+    planningConversationActive && changeRequestScope === "permanent_offline_revision";
   const engineeringScopeVisible = !planningConversationActive;
   const targetlessAnalysisConversation = Boolean(
     conversation &&
@@ -1307,7 +1633,9 @@ function App() {
     engineeringScopeVisible &&
     changeRequestScope !== "review_before_apply" &&
     changeRequestScope !== "analysis_only" &&
-    !offlineCandidateAvailable;
+    !(changeRequestScope === "permanent_offline_revision"
+      ? nativeLdEditAvailable
+      : offlineCandidateAvailable);
   const missionChangeTransactionId =
     conversation?.engineeringMission?.changeTransactionId ?? null;
   const currentConversationQuarantineDiagnostic =
@@ -1326,6 +1654,11 @@ function App() {
   const canCancelActiveRun =
     Boolean(activeRunId) &&
     (!activeRunState || !TERMINAL_RUN_STATES.has(activeRunState));
+  const workspaceRecoveryIdle =
+    hostReady && !workspaceResumeBusy && !sending && !canCancelActiveRun &&
+    !offlineCandidateBindingBusy && attachingHwnd === null && conversationHistorySelectingId === null;
+  const workspaceRecoveryAvailable = workspaceRecoveryIdle && Boolean(conversationWorkspaceResumeTarget);
+  const currentWorkspaceRecoveryAvailable = workspaceRecoveryIdle && Boolean(status.workspace);
   const visibleStreamingText = visibleStreamingDraftText(
     streamingDraftRef.current,
     activeRunId,
@@ -1342,6 +1675,7 @@ function App() {
       : engineeringAgentReady) &&
     conversation !== null &&
     !canCancelActiveRun &&
+    !workspaceResumeBusy &&
     (planningConversationActive ||
       (targetlessAnalysisActive
         ? changeRequestScope === "analysis_only" || changeRequestScope === "review_before_apply"
@@ -1350,7 +1684,10 @@ function App() {
             conversationMissionMatchesCurrentTarget(conversation, status)) &&
           currentEngineeringTarget(status) !== null));
   const hasRunningToolActivity = activities.some(
-    (item) => item.toolState === "running",
+    (item) =>
+      item.toolState === "running" &&
+      !item.historicalReplay &&
+      !isUnresolvedTerminalToolActivity(item, terminalRunStatesRef.current),
   );
 
   useEffect(() => {
@@ -1424,11 +1761,57 @@ function App() {
   const canReverifyBlockedEngineeringMissionStep =
     missionReverifyEligibility.available;
 
+  const serverRequestOptionsRef = useRef<{
+    conversationId: string | undefined;
+    scope: ConversationPermission;
+    simulate: boolean;
+  } | null>(null);
   useEffect(() => {
-    setChangeRequestScope("review_before_apply");
-    
+    const next: NonNullable<typeof serverRequestOptionsRef.current> = {
+      conversationId: conversation?.conversationId,
+      scope: conversation?.requestScope ?? "review_before_apply",
+      simulate: conversation?.allowSimulator ?? false,
+    };
+    const previous = serverRequestOptionsRef.current;
+    const switched = previous?.conversationId !== next.conversationId;
+    setChangeRequestScope((current) =>
+      !previous || switched || current === previous.scope ? next.scope : current);
+    setAllowSimulator((current) =>
+      !previous || switched || current === previous.simulate ? next.simulate : current);
+    serverRequestOptionsRef.current = next;
+  }, [conversation?.conversationId, conversation?.requestScope, conversation?.allowSimulator]);
+  useEffect(() => {
     setSelectedEvidenceId(null);
   }, [conversation?.conversationId]);
+
+  const restoreConversationRun = useCallback((
+    detail: Conversation,
+    replace = false,
+  ) => {
+    const latest = latestConversationRun(detail);
+    const currentRunId = activeRunIdRef.current;
+    const currentState = activeRunStateRef.current;
+    if (!latest) {
+      // Hosts without the new message field still expose live operations in
+      // bootstrap. Missing message state must not release a running operation.
+      return;
+    }
+    if (
+      !replace && currentRunId && currentRunId !== latest.runId &&
+      (!currentState || !TERMINAL_RUN_STATES.has(currentState))
+    ) {
+      return;
+    }
+    setActiveRunId(latest.runId);
+    setActiveRunState(latest.state);
+    if (TERMINAL_RUN_STATES.has(latest.state)) {
+      const nextDraft = clearStreamingDraftForRun(streamingDraftRef.current, latest.runId);
+      if (nextDraft !== streamingDraftRef.current) {
+        streamingDraftRef.current = nextDraft;
+        setStreamingText("");
+      }
+    }
+  }, [setActiveRunId, setActiveRunState]);
 
   const refreshConversation = useCallback((
     conversationId: string,
@@ -1460,6 +1843,7 @@ function App() {
             conversationIdRef.current = detail.conversationId;
             setConversation(detail);
             setNewProjectPlanning(planningSessionFromConversation(detail));
+            restoreConversationRun(detail, refreshAllowsSwitch);
           }
           if (!next.trailingRequested) {
             return detail;
@@ -1479,7 +1863,7 @@ function App() {
     };
     pendingConversationRefreshesRef.current.set(conversationId, next);
     return completion;
-  }, []);
+  }, [restoreConversationRun]);
 
   
 
@@ -1497,19 +1881,40 @@ function App() {
     [],
   );
 
-  const refreshHostStatus = useCallback((): Promise<HostStatusResponse> => {
+  const refreshHostStatus = useCallback((
+    invalidate = false,
+  ): Promise<HostStatusResponse> => {
+    if (invalidate) {
+      // A durable target change makes any already-running status read stale.
+      statusRefreshEpochRef.current += 1;
+    }
     if (statusRefreshRef.current) {
+      if (invalidate) {
+        statusRefreshTrailingRequestedRef.current = true;
+      }
       return statusRefreshRef.current;
     }
-    const requestEpoch = ++statusRefreshEpochRef.current;
-    const request = hostApi
-      .getStatus()
-      .then((nextStatus) => {
-        if (requestEpoch === statusRefreshEpochRef.current) {
-          setStatus(nextStatus);
-          
+    const request = Promise.resolve()
+      .then(async (): Promise<HostStatusResponse> => {
+        for (;;) {
+          const requestEpoch = ++statusRefreshEpochRef.current;
+          statusRefreshTrailingRequestedRef.current = false;
+          let nextStatus: HostStatusResponse;
+          try {
+            nextStatus = await hostApi.getStatus();
+          } catch (error) {
+            if (statusRefreshTrailingRequestedRef.current) {
+              continue;
+            }
+            throw error;
+          }
+          if (requestEpoch === statusRefreshEpochRef.current) {
+            setStatus(nextStatus);
+          }
+          if (!statusRefreshTrailingRequestedRef.current) {
+            return nextStatus;
+          }
         }
-        return nextStatus;
       })
       .finally(() => {
         if (statusRefreshRef.current === request) {
@@ -1622,6 +2027,7 @@ function App() {
       title: string,
       detail: string,
       tone: ActivityItem["tone"] = "default",
+      historicalReplay: boolean = false,
     ) => {
       const toolCallId =
         typeof event.payload.toolCallId === "string"
@@ -1698,12 +2104,10 @@ function App() {
           requestId,
           toolCallId,
           toolState,
+          historicalReplay,
           toolRole: toolRole ?? existing?.toolRole,
           toolTarget: toolTarget ?? existing?.toolTarget,
-          resultSummary:
-            event.eventType === "tool.failed"
-              ? undefined
-              : resultSummary ?? existing?.resultSummary,
+          resultSummary: resultSummary ?? existing?.resultSummary,
           startedAt:
             existing?.startedAt ??
             (event.eventType === "tool.started" ? event.occurredAt : undefined),
@@ -1734,6 +2138,7 @@ function App() {
             .filter((value): value is string => value !== null)
             .join(" · ") || undefined,
           coalesceKey,
+          workPlan: progressStage === "native_work_plan",
         };
         return prependCoalescedActivity(
           current.filter(
@@ -1745,14 +2150,14 @@ function App() {
               ),
           ),
           next,
-        ).slice(0, 50);
+        ).filter((item, index) => index < 50 || item.workPlan);
       });
     },
     [],
   );
 
   const handleHostEvent = useCallback(
-    (event: HostEventEnvelope) => {
+    (event: HostEventEnvelope, historicalReplay: boolean = false) => {
       const currentConversationId = conversationIdRef.current;
       if (
         event.conversationId &&
@@ -1773,13 +2178,14 @@ function App() {
         changeRecoveryReplayPinRef.current = null;
       }
 
-      if (event.eventType === "host.status") {
-        // Historical event replay can contain status payloads written by an
-        // older Host schema. Treat the event only as an invalidation signal
-        // and fetch the current, fully typed snapshot before replacing UI
-        // state. This also keeps every connected browser on the same
-        // server-authoritative target after another client changes it.
-        void refreshHostStatus()
+      if (
+        !historicalReplay &&
+        (event.eventType === "host.status" ||
+          event.eventType === "conversation.native_project_prepared")
+      ) {
+        // The bootstrap snapshot already covers historical invalidations.
+        // Live events invalidate it; never install an old event's payload.
+        void refreshHostStatus(true)
           .catch(() => {
             setConnectionMessage(
               "Host 상태 변경을 다시 확인하지 못했습니다.",
@@ -1802,13 +2208,18 @@ function App() {
 
       if (event.eventType === "agent.progress") {
         const stage = event.payload.stage;
+        const plan = event.payload.work_plan;
+        const planText = stage === "native_work_plan" && plan && typeof plan === "object"
+          && "text" in plan && typeof plan.text === "string" ? plan.text : undefined;
         if (typeof stage === "string") {
           const label = AGENT_PROGRESS_COPY[stage];
           if (label) {
             addActivity(
               event,
               label,
-              agentProgressDetail(event.runId ?? "agent", event.payload.elapsedSeconds),
+              planText ?? agentProgressDetail(event.runId ?? "agent", event.payload.elapsedSeconds),
+              "default",
+              historicalReplay,
             );
           }
         }
@@ -1846,7 +2257,7 @@ function App() {
       }
 
       if (
-        !historicalChangeReplay &&
+        !historicalReplay && !historicalChangeReplay &&
         (event.eventType === "approval.requested" ||
           event.eventType === "approval.resolved" ||
           event.eventType === "approval.expired" ||
@@ -1863,14 +2274,16 @@ function App() {
       }
 
       if (
-        event.eventType === "message.appended" ||
+        !historicalReplay &&
+        (event.eventType === "message.appended" ||
         event.eventType === "agent.message" ||
         event.eventType === "mission.checkpointed" ||
         event.eventType === "mission.blocked_step_reverified" ||
         event.eventType === "mission.recovery_digest_repaired" ||
+        event.eventType === "conversation.native_project_prepared" ||
         event.eventType === "run.created" ||
         event.eventType === "run.state" ||
-        event.eventType === "run.state_changed"
+        event.eventType === "run.state_changed")
       ) {
         if (currentConversationId) {
           void refreshConversation(currentConversationId).catch(() => {
@@ -1880,9 +2293,10 @@ function App() {
       }
 
       if (
-        event.eventType === "controller.connected" ||
+        !historicalReplay &&
+        (event.eventType === "controller.connected" ||
         event.eventType === "controller.observed" ||
-        event.eventType === "controller.disconnected"
+        event.eventType === "controller.disconnected")
       ) {
         void refreshHostStatus()
           .catch(() => {
@@ -1898,11 +2312,11 @@ function App() {
           streamingDraftRef.current,
           event.runId,
         );
-        if (nextDraft !== streamingDraftRef.current) {
+        if (!historicalReplay && nextDraft !== streamingDraftRef.current) {
           streamingDraftRef.current = nextDraft;
           setStreamingText("");
         }
-        addActivity(event, "에이전트 응답을 저장했습니다.", event.runId ?? "agent");
+        addActivity(event, "에이전트 응답을 저장했습니다.", event.runId ?? "agent", "default", historicalReplay);
         return;
       }
 
@@ -1913,6 +2327,15 @@ function App() {
       ) {
         const runState = eventRunState(event);
         if (runState) {
+          if (
+            event.runId && TERMINAL_RUN_STATES.has(runState) &&
+            activeRunIdRef.current && activeRunIdRef.current !== event.runId &&
+            activeRunStateRef.current &&
+            !TERMINAL_RUN_STATES.has(activeRunStateRef.current)
+          ) {
+            recordTerminalRunState(event.runId, runState);
+            return;
+          }
           if (TERMINAL_RUN_STATES.has(runState)) {
             const nextDraft = clearStreamingDraftForRun(
               streamingDraftRef.current,
@@ -1936,6 +2359,7 @@ function App() {
             runState === "failed" || runState === "quarantined"
               ? "warning"
               : "default",
+            historicalReplay,
           );
         }
         return;
@@ -1945,7 +2369,7 @@ function App() {
         const stage = event.payload.stage;
         const label = typeof stage === "string" ? NATIVE_CHECKPOINT_COPY[stage] : undefined;
         if (label) {
-          addActivity(event, label, "XG5000 변경 실행");
+          addActivity(event, label, "XG5000 변경 실행", "default", historicalReplay);
         }
         return;
       }
@@ -1955,6 +2379,7 @@ function App() {
           "mission.checkpointed": "에이전트 작업 계획과 진행 상태를 저장했습니다.",
           "agent.checkpointed": "에이전트 실행 체크포인트를 저장했습니다.",
           "conversation.created": "서버에 새 대화를 만들었습니다.",
+          "conversation.native_project_prepared": "새 프로젝트를 준비하고 작업 대화에 연결했습니다.",
           "message.appended": "대화 메시지를 저장했습니다.",
           "tool.selected": "Agent가 다음 도구를 선택했습니다.",
           "tool.started": "Agent 도구 작업을 시작했습니다.",
@@ -1997,11 +2422,13 @@ function App() {
             event.eventType === "tool.failed"
             ? "warning"
             : "default",
+          historicalReplay,
         );
       }
     },
     [
       addActivity,
+      recordTerminalRunState,
       refreshConversation,
       refreshHostStatus,
       
@@ -2023,8 +2450,9 @@ function App() {
           // Conversation messages and active operation already came from the
           // bootstrap snapshot. Keep historical tool evidence, but never let
           // replayed run states/tokens resurrect a finished request in the UI.
-          if (isHistoricalRunReplay(event, snapshotSequence)) return;
-          handleHostEvent(event);
+          if (isHistoricalRunReplay(event, snapshotSequence)
+              && !(event.eventType === "agent.progress" && event.payload.stage === "native_work_plan")) return;
+          handleHostEvent(event, event.sequence <= snapshotSequence);
         },
         (streamState) => {
           if (streamState === "connected") {
@@ -2037,6 +2465,7 @@ function App() {
         },
         {
           getAuthorizationHeader: () => hostApi.getAuthorizationHeader(),
+          prepareSession: ensureBrowserSessionFresh,
           onUnauthorized: () => hostApi.invalidateSession(),
         },
       );
@@ -2062,7 +2491,8 @@ function App() {
     setStreamingText("");
     setEvidence([]);
     setActivities([]);
-    setPrograms([]);
+    programCatalogEpochRef.current += 1;
+    setProgramCatalog({ programs: [] });
     setProgramsLoading(false);
     setProgramFocusBusyId(undefined);
     setProgramNotice("");
@@ -2248,7 +2678,7 @@ function App() {
 
     // A saved workspace resumes from its existing entry card. Opening the
     // application is not a request to create an unrelated analysis task.
-    if (currentStatus.workspace && !currentStatus.engineeringSystem.readReady) {
+    if (currentStatus.workspace && !workingEditorConnected(currentStatus)) {
       return null;
     }
     changeRecoveryReplayPinRef.current = null;
@@ -2284,6 +2714,7 @@ function App() {
       }
       if (previousConversationId !== activeConversation.conversationId) {
         resetConversationScopedUi();
+        restoreConversationRun(activeConversation, true);
       }
       if (previousConversationId !== activeConversation.conversationId) {
         startEventStream(activeConversation.conversationId, 0);
@@ -2294,6 +2725,7 @@ function App() {
       applyHostStatus,
       ensureConversation,
       resetConversationScopedUi,
+      restoreConversationRun,
       startEventStream,
     ],
   );
@@ -2347,13 +2779,16 @@ function App() {
           setActiveRunId(currentOperation.runId);
           if (isRunState(currentOperation.state)) setActiveRunState(currentOperation.state);
         }
+        restoreConversationRun(detail, true);
         startEventStream(detail.conversationId, 0, snapshot.lastEventSequence);
         setConversationHistoryOpen(false);
         const matchesCurrentTarget =
           isUnboundEngineeringConversation(detail) ||
           conversationMatchesCurrentTarget(detail, status) ||
           conversationMissionMatchesCurrentTarget(detail, status);
-        if (restoredPlanningSession || (detail.workflow === "engineering" && matchesCurrentTarget)) {
+        const matchesPendingWorkspace = conversationMatchesPendingWorkspace(detail, status);
+        if (restoredPlanningSession || (detail.workflow === "engineering" &&
+          (matchesCurrentTarget || matchesPendingWorkspace))) {
           setNewProjectBriefOpen(false);
           
           setLocalProjectOpen(false);
@@ -2364,6 +2799,8 @@ function App() {
         setConnectionMessage(
           restoredPlanningSession
             ? "저장된 계획 대화를 열었습니다. 이어서 요청할 수 있습니다."
+            : matchesPendingWorkspace
+            ? "저장된 작업 대화를 열었습니다. XG5000 연결을 확인한 뒤 이어서 요청할 수 있습니다."
             : matchesCurrentTarget
             ? "저장된 작업 기록을 열었습니다."
             : "현재 엔지니어링 대상과 다른 작업 기록을 읽기 전용으로 열었습니다.",
@@ -2382,7 +2819,7 @@ function App() {
         );
       }
     },
-    [resetConversationScopedUi, startEventStream, status],
+    [resetConversationScopedUi, restoreConversationRun, startEventStream, status],
   );
 
   const connectHost = useCallback(async () => {
@@ -2448,7 +2885,7 @@ function App() {
         activeOperation.transactionId
           ? activeOperation.transactionId
           : null;
-      if (!restoreActiveOperation) {
+      if (!restoreActiveOperation || !activeOperation?.runId) {
         setActiveRunId(null);
         setActiveRunState(null);
         setActiveChange(null);
@@ -2491,7 +2928,7 @@ function App() {
             activationEpoch === targetActivationEpochRef.current &&
             !activeOperation &&
             bootstrap.status.workspace &&
-            !bootstrap.status.engineeringSystem.readReady &&
+            !workingEditorConnected(bootstrap.status) &&
             targetAtBootstrap === null
           ) {
             setConnectionMessage(
@@ -2505,6 +2942,7 @@ function App() {
       if (controller.signal.aborted) {
         return;
       }
+      restoreConversationRun(activeConversation, true);
       const restoredPlanning =
         planningSessionFromConversation(activeConversation);
       if (restoredPlanning) {
@@ -2546,7 +2984,7 @@ function App() {
           ? "Host와 대화를 복원하고 확인 또는 복구가 필요한 변경 계약을 다시 불러왔습니다."
           : restoredPlanning
               ? "Host와 신규 프로젝트 계획 대화를 복원했습니다."
-              : "Host와 서버 대화가 준비되었습니다. 엔지니어링 요청을 시작할 수 있습니다.",
+              : "Host와 저장된 대화를 복원했습니다.",
       );
       startEventStream(
         activeConversation.conversationId,
@@ -2586,7 +3024,51 @@ function App() {
         );
       }
     }
-  }, [applyHostStatus, ensureConversation, startEventStream]);
+  }, [applyHostStatus, ensureConversation, restoreConversationRun, startEventStream]);
+
+  const checkAppConnection = useCallback(async () => {
+    if (connectionCheckRef.current) return;
+    const controller = new AbortController();
+    connectionCheckRef.current = controller;
+    setConnectionCheckBusy(true);
+    let timer;
+    let connectionReady = false;
+    try {
+      setConnectionMessage("앱 연결을 확인하고 있습니다.");
+      let connection = await hostApi.getProjectToolsConnection(controller.signal);
+      timer = window.setTimeout(() => controller.abort(), connection.waitTimeoutMs);
+      if (connection.state === "unavailable") {
+        setConnectionMessage("프로젝트 도구 연결을 복구하고 있습니다.");
+        connection = await hostApi.reconnectProjectTools(controller.signal);
+      }
+      while (connection.state === "starting") {
+        await new Promise((resolve) => window.setTimeout(resolve, 500));
+        if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
+        connection = await hostApi.getProjectToolsConnection(controller.signal);
+      }
+      if (controller.signal.aborted) return;
+      connectionReady = connection.state === "ready";
+      window.clearTimeout(timer);
+      const bootstrap = await hostApi.getBootstrap(controller.signal);
+      if (controller.signal.aborted) return;
+      hostApi.setCsrfToken(bootstrap.csrfToken);
+      applyHostStatus(bootstrap.status);
+      connectionReady = bootstrap.status.mcp.state === "ready";
+      setConnectionMessage(connectionReady
+        ? "앱 연결을 확인했습니다."
+        : "프로젝트 도구 연결을 복구하지 못했습니다. 연결 진단을 확인해 주세요.");
+    } catch (error) {
+      setConnectionMessage(connectionReady
+        ? "연결은 확인했지만 화면 상태를 갱신하지 못했습니다. 다시 확인해 주세요."
+        : error instanceof Error && error.name === "AbortError"
+          ? "연결 준비가 계속되고 있습니다. 잠시 후 다시 확인해 주세요."
+          : error instanceof HostApiError ? error.message : "앱 연결을 확인하지 못했습니다. 다시 확인해 주세요.");
+    } finally {
+      window.clearTimeout(timer);
+      if (connectionCheckRef.current === controller) connectionCheckRef.current = null;
+      setConnectionCheckBusy(false);
+    }
+  }, [applyHostStatus]);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -2617,8 +3099,8 @@ function App() {
         setWorkChooserOpen(false);
         setLocalProjectOpen(false);
         setConnectionMessage(
-          result.session && nextStatus.engineeringSystem.readReady
-            ? "원본을 보존한 작업 복사본을 XG5000에서 열고 분석 세션에 연결했습니다."
+          result.session && workingEditorConnected(nextStatus)
+            ? "원본을 보존한 작업 복사본을 XG5000 작업 세션에 연결했습니다."
             : "원본을 보존한 작업 복사본의 정적 구조 분석을 시작했습니다. LD 의미 분석은 XG5000 연결 뒤 사용할 수 있습니다.",
         );
         if (nextStatus.agent.state === "ready") {
@@ -2700,24 +3182,39 @@ function App() {
     }
   };
 
-  const resumeWorkspace = async () => {
-    const workspaceId = status.workspace?.workspaceId;
-    if (!workspaceId || workspaceResumeBusy) {
-      return;
-    }
+  const resumeWorkspace = async (useCurrentWorkspace = false) => {
+    const target = localWorkspaceResumeTarget(conversation, status, useCurrentWorkspace);
+    const available = useCurrentWorkspace ? currentWorkspaceRecoveryAvailable : workspaceRecoveryAvailable;
+    if (!target || !available || conversationHistorySelectingId) return;
+    const requestedConversationId = conversationIdRef.current;
+    if (conversation && conversation.conversationId !== requestedConversationId) return;
+    const activationEpoch = targetActivationEpochRef.current;
+    const context = workspaceRecoveryContextRef.current;
+    const current = () => conversationIdRef.current === requestedConversationId &&
+      targetActivationEpochRef.current === activationEpoch && workspaceRecoveryContextRef.current === context;
     setWorkspaceResumeBusy(true);
     setWorkspaceResumeNotice("");
     try {
-      const result = await hostApi.resumeLocalWorkspace(workspaceId, {
-        timeoutSeconds: 120,
-      });
+      const result = await hostApi.resumeLocalWorkspace(target.workspaceId, { timeoutSeconds: 120 });
+      if (!current()) return;
+      if (result.workspace.workspaceId !== target.workspaceId || result.workspace.revisionId !== target.revisionId) {
+        throw new HostApiError("선택한 작업과 연결된 프로젝트가 일치하지 않습니다.", 409);
+      }
       const nextStatus = await hostApi.getStatus();
-      if (result.session && nextStatus.engineeringSystem.readReady) {
-        
-        {
-          // Restore an exact durable mission for this workspace/revision before
-          // falling back to a new target-bound engineering conversation.
-          await activateEngineeringTargetConversation(nextStatus);
+      if (!current()) return;
+      if (!workspaceResumeMatchesStatus(target, nextStatus)) {
+        throw new HostApiError("선택한 작업의 프로젝트 연결을 확인하지 못했습니다.", 409);
+      }
+      if (result.session && workingEditorConnected(nextStatus)) {
+        if (!useCurrentWorkspace && conversation?.workflow === "engineering" && requestedConversationId) {
+          applyHostStatus(nextStatus);
+          await refreshConversation(requestedConversationId);
+          if (!current()) return;
+        } else if (planningConversationActive) {
+          applyHostStatus(nextStatus);
+        } else {
+          const activated = await activateEngineeringTargetConversation(nextStatus);
+          if (!activated || conversationIdRef.current !== activated.conversationId) return;
         }
         setWorkChooserOpen(false);
         setLocalProjectOpen(false);
@@ -2736,10 +3233,15 @@ function App() {
         );
       }
     } catch (error) {
+      if (!current()) return;
       setWorkspaceResumeNotice(
-        error instanceof HostApiError
+        status.mcp.state !== "ready"
+          ? connectionServiceMessage(status)
+          : error instanceof HostApiError && error.status === 409
+          ? "현재 프로젝트의 연결을 확인하지 못했습니다. 열린 프로젝트 연결에서 현재 창을 확인해 주세요."
+          : error instanceof HostApiError
           ? error.message
-          : "저장된 작업을 다시 열지 못했습니다.",
+          : "저장된 프로젝트에 다시 연결하지 못했습니다.",
       );
     } finally {
       setWorkspaceResumeBusy(false);
@@ -2747,52 +3249,61 @@ function App() {
   };
 
   const loadEngineeringPrograms = async () => {
-    if (programsLoading) {
+    if (programsLoading || programFocusBusyId) {
       return;
     }
     setProgramsLoading(true);
     setProgramNotice("");
+    const epoch = ++programCatalogEpochRef.current;
+    const target = programCatalogTargetRef.current;
+    const current = () => programCatalogEpochRef.current === epoch && programCatalogTargetRef.current === target;
     try {
       const result = await hostApi.listEngineeringPrograms();
-      setPrograms(result.programs);
-      if (result.programs.length === 0) {
-        setProgramNotice("");
-      }
+      if (!current()) return;
+      setProgramCatalog(result);
+      setProgramNotice(result.catalogSource === "saved_working_copy" ? "저장된 작업 사본의 프로그램 목록입니다." : "");
     } catch (error) {
-      setPrograms([]);
+      if (!current()) return;
+      setProgramCatalog({ programs: [] });
       setProgramNotice(
         error instanceof HostApiError
           ? error.message
           : "XG5000 프로그램 목록을 불러오지 못했습니다.",
       );
     } finally {
-      setProgramsLoading(false);
+      if (current()) setProgramsLoading(false);
     }
   };
 
   const focusEngineeringProgram = async (programId: string) => {
-    if (programFocusBusyId) {
+    if (programsLoading || programFocusBusyId || canCancelActiveRun) {
       return;
     }
+    const program = programCatalog.programs.find((entry) => entry.programId === programId);
+    if (!program) return;
+    const epoch = programCatalogEpochRef.current;
+    const target = programCatalogTargetRef.current;
+    const current = () => programCatalogEpochRef.current === epoch && programCatalogTargetRef.current === target;
     setProgramFocusBusyId(programId);
     setProgramNotice("");
     try {
-      const program = programs.find((entry) => entry.programId === programId);
       const result = await hostApi.focusEngineeringProgram(
         programId,
-        program?.language === "LD" ? { displayIntent: "LD" } : undefined,
+        program.language === "LD" ? { displayIntent: "LD", catalogBindingDigest: programCatalog.catalogBindingDigest } : undefined,
       );
+      if (!current()) return;
       setProgramNotice(
         `${result.program.name} 프로그램을 XG5000에서 열었습니다. 프로젝트 내용은 변경되지 않았습니다.`,
       );
     } catch (error) {
+      if (!current()) return;
       setProgramNotice(
         error instanceof HostApiError
           ? error.message
           : "XG5000에서 프로그램을 열지 못했습니다.",
       );
     } finally {
-      setProgramFocusBusyId(undefined);
+      if (current()) setProgramFocusBusyId(undefined);
     }
   };
 
@@ -2805,9 +3316,10 @@ function App() {
     try {
       const response = await hostApi.getXG5000Instances();
       setInstances(response.instances);
+      setIdleCloseAttempted(false);
       if (response.instances.length === 0) {
         setInstanceNotice(
-          "실행 중인 XG5000 창을 찾지 못했습니다. XG5000에서 프로젝트를 연 뒤 다시 확인해 주세요.",
+          "실행 중인 XG5000 창이 없습니다. XG5000을 실행하거나 열린 창을 다시 확인해 주세요.",
         );
       }
     } catch (error) {
@@ -2819,6 +3331,57 @@ function App() {
       );
     } finally {
       setInstancesLoading(false);
+    }
+  };
+
+  const launchIdleInstance = async () => {
+    if (!hostReady || idleLaunchBusy || instancesLoading || instances.length > 0 ||
+        attachingHwnd !== null || closingIdleHwnd !== null ||
+        restorePreflightBusyHwnd !== null || restoreActionBusy || restoreHandoff !== null ||
+        workspaceResumeBusy || sending || canCancelActiveRun || status.activeOperation) {
+      return;
+    }
+    setIdleLaunchBusy(true);
+    setInstanceNotice("");
+    try {
+      await hostApi.launchIdleXG5000("when_none");
+      const response = await hostApi.getXG5000Instances();
+      setInstances(response.instances);
+      setIdleCloseAttempted(false);
+      setInstanceNotice(response.instances.length > 0
+        ? "XG5000에서 프로젝트를 연 뒤 연결할 창을 선택하세요."
+        : "XG5000 창을 아직 찾지 못했습니다. 잠시 뒤 다시 확인해 주세요.");
+    } catch (error) {
+      setInstanceNotice(error instanceof HostApiError ? error.message
+        : "XG5000 실행 결과를 확인하지 못했습니다. 창 목록을 다시 확인해 주세요.");
+    } finally {
+      setIdleLaunchBusy(false);
+    }
+  };
+
+  const closeIdleInstance = async (instance: XG5000Instance) => {
+    if (instance.title !== "XG5000" || typeof instance.process_create_time !== "number" ||
+        !Number.isFinite(instance.process_create_time) || instance.process_create_time <= 0 ||
+        closingIdleHwnd !== null || idleCloseAttempted || attachingHwnd !== null ||
+        restorePreflightBusyHwnd !== null || restoreActionBusy || restoreHandoff !== null ||
+        sending || canCancelActiveRun || status.activeOperation ||
+        (status.engineeringSystem.processId === instance.pid && status.engineeringSystem.windowHandle === instance.hwnd)) {
+      return;
+    }
+    setIdleCloseAttempted(true);
+    setClosingIdleHwnd(instance.hwnd);
+    setInstanceNotice("");
+    try {
+      await hostApi.closeIdleXG5000({ pid: instance.pid, hwnd: instance.hwnd,
+        processCreateTime: instance.process_create_time, confirmIdleClose: true });
+      setInstances((current) => current.filter((item) => item.pid !== instance.pid || item.hwnd !== instance.hwnd ||
+        item.process_create_time !== instance.process_create_time));
+      setInstanceNotice("프로젝트가 없는 XG5000 창을 닫았습니다.");
+    } catch (error) {
+      setInstanceNotice(error instanceof HostApiError ? error.message
+        : "빈 창 닫기 결과를 확인하지 못했습니다. 창 목록을 다시 확인해 주세요.");
+    } finally {
+      setClosingIdleHwnd(null);
     }
   };
 
@@ -2839,7 +3402,7 @@ function App() {
       const nextStatus = await hostApi.getStatus();
       if (
         nextStatus.engineeringSystem.sessionVerified ||
-        nextStatus.engineeringSystem.readReady
+        workingEditorConnected(nextStatus)
       ) {
         if (attachForReviewedClose) {
           applyHostStatus(nextStatus);
@@ -2856,7 +3419,9 @@ function App() {
         setConnectionMessage(
           nextStatus.engineeringSystem.sessionVerified
             ? "선택한 XG5000 PID와 프로젝트 정체성을 검증했습니다."
-            : "ControlStudio가 연 XG5000 PID에 읽기 전용 분석 세션을 연결했습니다. 변경 권한은 닫혀 있습니다.",
+            : nextStatus.engineeringSystem.nativeLdEditReady === true
+              ? "XG5000 작업 복사본의 native LD 세션에 연결했습니다."
+              : "ControlStudio가 연 XG5000 PID에 읽기 전용 분석 세션을 연결했습니다. 변경 권한은 닫혀 있습니다.",
         );
         if (nextStatus.agent.state === "ready") {
           composerRef.current?.focus();
@@ -2883,38 +3448,57 @@ function App() {
     }
   };
 
-  const prepareOfflineCandidateSession = async (): Promise<HostStatusResponse | null> => {
+  const prepareOfflineChangeSession = async (scope: ConversationPermission): Promise<HostStatusResponse | null> => {
     const requestedConversationId = conversationIdRef.current;
-    if (offlineCandidateBindingBusy || !requestedConversationId) {
-      return null;
-    }
+    if (offlineCandidateBindingBusy || !requestedConversationId || !conversation ||
+      conversation.conversationId !== requestedConversationId || conversationHistorySelectingId) return null;
+    const target = localWorkspaceResumeTarget(conversation, status);
+    const activationEpoch = targetActivationEpochRef.current;
+    const context = workspaceRecoveryContextRef.current;
+    const current = () => conversationIdRef.current === requestedConversationId &&
+      targetActivationEpochRef.current === activationEpoch && workspaceRecoveryContextRef.current === context;
+    const prepareCandidate = scope !== "permanent_offline_revision" &&
+      status.engineeringSystem.offlineCandidateEligible &&
+      (conversationMatchesCurrentTarget(conversation, status) || conversationMissionMatchesCurrentTarget(conversation, status));
     setOfflineCandidateBindingBusy(true);
     setConnectionMessage("");
     try {
-      if (status.engineeringSystem.offlineCandidateEligible) {
+      if (prepareCandidate) {
         await hostApi.prepareOfflineCandidateSession({
           conversationId: requestedConversationId,
         });
       } else {
-        const workspaceId = status.workspace?.workspaceId;
-        if (!workspaceId) return null;
-        await hostApi.resumeLocalWorkspace(workspaceId, { timeoutSeconds: 120 });
+        if (!target) return null;
+        const result = await hostApi.resumeLocalWorkspace(target.workspaceId, { timeoutSeconds: 120 });
+        if (!current()) return null;
+        if (result.workspace.workspaceId !== target.workspaceId || result.workspace.revisionId !== target.revisionId) {
+          throw new HostApiError("선택한 작업과 연결된 프로젝트가 일치하지 않습니다.", 409);
+        }
       }
+      if (!current()) return null;
       const nextStatus = await hostApi.getStatus();
+      if (!current()) return null;
+      if (!prepareCandidate && target && !workspaceResumeMatchesStatus(target, nextStatus)) {
+        throw new HostApiError("선택한 작업의 프로젝트 연결을 확인하지 못했습니다.", 409);
+      }
       applyHostStatus(nextStatus);
-      if (!nextStatus.engineeringSystem.sessionVerified ||
-          !nextStatus.featureReadiness?.some((feature) =>
-            feature.featureId === "offline_mutate" && feature.currentReady)) {
+      const ready = scope === "permanent_offline_revision"
+        ? nextStatus.engineeringSystem.nativeLdEditReady === true
+        : nextStatus.engineeringSystem.sessionVerified &&
+          nextStatus.featureReadiness?.some((feature) =>
+            feature.featureId === "offline_mutate" && feature.currentReady);
+      if (!ready) {
         setConnectionMessage(
-          "오프라인 후보 세션의 PID와 작업 복사본 정체성을 확인하지 못했습니다.",
+          "작업 사본의 편집 연결을 확인하지 못했습니다.",
         );
         return null;
       }
-      if (conversationIdRef.current !== requestedConversationId) {
+      if (!current()) {
         return null;
       }
-      await refreshConversation(requestedConversationId);
-      if (conversationIdRef.current !== requestedConversationId) {
+      const refreshed = await refreshConversation(requestedConversationId);
+      if (!current() || (!conversationMatchesCurrentTarget(refreshed, nextStatus) &&
+        !conversationMissionMatchesCurrentTarget(refreshed, nextStatus))) {
         return null;
       }
       setConnectionMessage(
@@ -2923,6 +3507,7 @@ function App() {
       composerRef.current?.focus();
       return nextStatus;
     } catch (error) {
+      if (!current()) return null;
       setConnectionMessage(
         error instanceof HostApiError
           ? error.message
@@ -3319,39 +3904,71 @@ function App() {
   };
 
   const restartControlStudio = async () => {
+    if (restartAbortRef.current) return;
+    if (restartSubmissionRef.current === "unknown") {
+      setShutdownNotice("앞선 재시작 결과를 확인하지 못했습니다. 앱 실행기에서 현재 상태를 확인해 주세요.");
+      return;
+    }
+    const controller = new AbortController();
+    restartAbortRef.current = controller;
     setShutdownBusy(true);
-    setShutdownNotice("");
+    setShutdownNotice("앱을 다시 시작하고 있습니다. 최대 3분 정도 기다려 주세요.");
     try {
-      const restart = await hostApi.restartHost();
+      if (!restartReceiptRef.current) {
+        const deadline = performance.now() + HOST_RESTART_WAIT_MS;
+        const timer = window.setTimeout(() => controller.abort(), HOST_RESTART_WAIT_MS);
+        try {
+          // Latch before sending: response loss cannot authorize a second POST.
+          restartSubmissionRef.current = "unknown";
+          const restart = await hostApi.restartHost(controller.signal);
+          if (typeof restart.restartReceipt !== "string" || restart.restartReceipt.length < 32 ||
+              restart.restartReceipt.length > 512 || (restart.status !== "scheduled" && restart.status !== "ready")) {
+            throw new RestartWaitError("invalid_receipt");
+          }
+          restartReceiptRef.current = { receipt: restart.restartReceipt, deadline };
+          restartSubmissionRef.current = "accepted";
+        } finally {
+          window.clearTimeout(timer);
+        }
+      }
       streamRef.current?.stop();
       requestAbortRef.current?.abort();
-      const deadline = Date.now() + 45_000;
-      while (Date.now() < deadline) {
-        try {
-          const status = await hostApi.getRestartStatus(restart.restartReceipt);
-          if (status.status === "ready") {
-            window.location.reload();
-            return;
-          }
-        } catch {
-          // A refused connection is expected while the old listener hands off
-          // to its already-elevated replacement. Never retry with UAC here.
-        }
-        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      const pending = restartReceiptRef.current;
+      await waitForRestartReady({
+        receipt: pending.receipt,
+        deadline: pending.deadline,
+        signal: controller.signal,
+        getStatus: (signal) => hostApi.getRestartStatus(pending.receipt, signal),
+        // Listener handoff can refuse a connection. HTTP/contract errors are terminal.
+        isTransientError: (error) => error instanceof TypeError,
+      });
+      window.location.reload();
+    } catch (error) {
+      if (restartAbortRef.current !== controller) return;
+      // 409 is Host preflight rejection, before it launches any replacement.
+      if (!restartReceiptRef.current && error instanceof HostApiError && error.status === 409) {
+        restartSubmissionRef.current = "idle";
       }
       setShutdownNotice(
-        "Host 재시작 준비 시간이 초과되었습니다. UAC를 다시 요청하지 않았습니다. 상태를 확인한 뒤 Launcher에서 다시 열어 주세요.",
-      );
-    } catch (error) {
-      setShutdownNotice(
-        error instanceof HostApiError && error.status === 409
-          ? `현재 작업 때문에 재시작할 수 없습니다: ${error.message}`
-          : error instanceof HostApiError
-            ? error.message
-            : "ControlStudio Host 재시작 요청에 실패했습니다.",
+        error instanceof RestartWaitError && error.reason === "timeout"
+          ? "앱 재시작이 3분 안에 완료되지 않았습니다. 앱 실행기에서 현재 상태를 확인해 주세요."
+          : error instanceof RestartWaitError
+            ? "요청한 앱의 재시작을 확인하지 못했습니다. 앱 실행기에서 현재 상태를 확인해 주세요."
+            : error instanceof DOMException && error.name === "AbortError"
+              ? "앱 재시작 결과를 확인하지 못했습니다. 앱 실행기에서 현재 상태를 확인해 주세요."
+              : error instanceof HostApiError && error.status === 409
+                ? `현재 작업 때문에 재시작할 수 없습니다: ${error.message}`
+                : restartSubmissionRef.current === "unknown"
+                  ? "앱 재시작 결과를 확인하지 못했습니다. 앱 실행기에서 현재 상태를 확인해 주세요."
+                : error instanceof HostApiError
+                  ? error.message
+                  : "ControlStudio 재시작을 확인하지 못했습니다.",
       );
     } finally {
-      setShutdownBusy(false);
+      if (restartAbortRef.current === controller) {
+        restartAbortRef.current = null;
+        setShutdownBusy(false);
+      }
     }
   };
 
@@ -3613,7 +4230,9 @@ function App() {
       setConversation(returnWorkspace.conversation);
       setEvidence(returnWorkspace.evidence);
       setActivities(returnWorkspace.activities);
-      setPrograms(returnWorkspace.programs);
+      programCatalogEpochRef.current += 1;
+      setProgramCatalog(returnWorkspace.programCatalogTargetKey === programCatalogTargetRef.current
+        ? returnWorkspace.programCatalog : { programs: [] });
       setActivePanel(returnWorkspace.activePanel);
       startEventStream(returnWorkspace.conversation.conversationId, 0);
       setConnectionMessage("기존 엔지니어링 작업으로 돌아왔습니다.");
@@ -3623,7 +4242,8 @@ function App() {
 
     setEvidence([]);
     setActivities([]);
-    setPrograms([]);
+    programCatalogEpochRef.current += 1;
+    setProgramCatalog({ programs: [] });
     setActivePanel(null);
     clearStoredConversationId();
     conversationIdRef.current = null;
@@ -3644,7 +4264,8 @@ function App() {
         conversation,
         evidence,
         activities,
-        programs,
+        programCatalog,
+        programCatalogTargetKey: programCatalogTargetRef.current,
         activePanel,
       };
     }
@@ -3709,6 +4330,7 @@ function App() {
   };
 
   const closeNewProjectBrief = () => {
+    setNewProjectBriefIsNew(false);
     setNewProjectBriefOpen(false);
     if (newProjectPlanning) {
       setWorkChooserOpen(false);
@@ -3723,7 +4345,7 @@ function App() {
     setWorkChooserOpen(true);
   };
 
-  const submitNewProjectBrief = async (brief: NewProjectBrief) => {
+  const submitNewProjectBrief = async (brief: NewProjectBrief, createProject = false, simulate = false, intakeScopeKey?: string) => {
     if (
       !hostReady ||
       !planningAgentReady ||
@@ -3738,12 +4360,15 @@ function App() {
       return;
     }
 
-    const updating = Boolean(newProjectPlanning);
+    const updating = Boolean(
+      !newProjectBriefIsNew && newProjectPlanning && conversation?.workflow === "new_project_planning",
+    );
     const previousConversation = conversation;
     const previousPlanning = newProjectPlanning;
-    const requestContent = newProjectBriefMessage(brief, updating);
+    const requestContent = newProjectBriefMessage(brief, updating, createProject);
     const requestOperationId = newOperationId();
     let createdPlanningConversation = false;
+    let requestAccepted = false;
     let planningConversationId =
       updating && conversation?.workflow === "new_project_planning"
         ? conversation.conversationId
@@ -3781,15 +4406,28 @@ function App() {
 
       const result = await hostApi.sendMessage(
         planningConversation.conversationId,
-        {
+        createProject ? {
           content: requestContent,
           operationId: requestOperationId,
           workflow: "new_project_planning",
           projectBrief: brief,
-        },
+          changeRequestScope: "permanent_offline_revision",
+          verificationScope: "offline_native_check_only",
+          allowSimulator: simulate,
+        } : { content: requestContent, operationId: requestOperationId,
+              workflow: "new_project_planning", projectBrief: brief },
       );
+      // A successful send is authoritative even if later screen refresh fails.
+      requestAccepted = true;
+      if (intakeScopeKey) {
+        try { bindIntakeDraftConversation(localStorage, intakeScopeKey, planningConversation.conversationId); }
+        catch { setCancelNotice("작성 요청은 접수됐지만 초안 복구 연결을 저장하지 못했습니다. 등록 자료는 보존합니다."); }
+      }
       setNewProjectPlanning({ brief });
+      setChangeRequestScope(createProject ? "permanent_offline_revision" : "review_before_apply");
+      setAllowSimulator(createProject && simulate);
       setWorkChooserOpen(false);
+      setNewProjectBriefIsNew(false);
       setNewProjectBriefOpen(false);
       
       setActiveChange(null);
@@ -3798,9 +4436,17 @@ function App() {
       setActiveRunState(result.state);
       await refreshConversation(planningConversation.conversationId);
       setConnectionMessage(
-        "요구사항을 바탕으로 계획서를 만들고 있습니다. 파일과 XG5000은 변경하지 않습니다.",
+        createProject
+          ? "자료를 조회하고 새 작업 프로젝트의 LD 작성·검사·저장을 진행하고 있습니다."
+          : "요구사항을 바탕으로 계획서를 만들고 있습니다. 파일과 XG5000은 변경하지 않습니다.",
       );
     } catch (error) {
+      if (requestAccepted) {
+        setConnectionMessage(
+          "작성 요청은 접수됐지만 화면을 새로 조회하지 못했습니다. 현재 대화에서 진행 상태를 다시 확인해 주세요.",
+        );
+        return;
+      }
       setConnectionMessage(
         error instanceof HostApiError
           ? error.message
@@ -3827,6 +4473,7 @@ function App() {
             setConversation(detail);
             setNewProjectPlanning(planningSessionFromConversation(detail));
             setWorkChooserOpen(false);
+            setNewProjectBriefIsNew(false);
             setNewProjectBriefOpen(false);
             
             try {
@@ -3883,7 +4530,9 @@ function App() {
 
   const sendMessage = async () => {
     const content = message.trim();
-    const resolvedRequestScope = resolveRequestScope(changeRequestScope, Boolean(offlineCandidateAvailable), targetlessAnalysisActive || planningConversationActive);
+    const resolvedRequestScope = planningConversationActive && changeRequestScope === "permanent_offline_revision"
+      ? "permanent_offline_revision"
+      : resolveRequestScope(changeRequestScope, Boolean(offlineCandidateAvailable), targetlessAnalysisActive || planningConversationActive);
     const requestScope = currentConversationQuarantineDiagnostic
       ? "analysis_only"
       : resolvedRequestScope;
@@ -3891,11 +4540,14 @@ function App() {
     if (!content || !conversationId || !canChat || sending || offlineCandidateBindingBusy) {
       return;
     }
-    if (requestScope !== "analysis_only" && !offlineCandidateAvailable) {
+    const requestedChangeReady = requestScope === "permanent_offline_revision"
+      ? nativeLdEditAvailable
+      : offlineCandidateAvailable;
+    if (!planningConversationActive && requestScope !== "analysis_only" && !requestedChangeReady) {
       setSending(true);
       setConnectionMessage("작업 사본의 편집 연결을 준비하고 있습니다.");
       try {
-        const preparedStatus = await prepareOfflineCandidateSession();
+        const preparedStatus = await prepareOfflineChangeSession(requestScope);
         if (!preparedStatus) return;
       } catch (error) {
         setConnectionMessage(error instanceof HostApiError ? error.message : "작업 연결을 준비하지 못했습니다.");
@@ -3911,28 +4563,23 @@ function App() {
       conversation.workflow === "new_project_planning"
         ? "계획 보완 요청을 에이전트에 전달하고 있습니다."
         : targetlessAnalysisActive
-          ? "대상 없는 엔지니어링 질문을 에이전트에 전달하고 있습니다."
+          ? "요청을 에이전트에 전달하고 있습니다."
         : "엔지니어링 요청을 에이전트에 전달하고 있습니다.",
     );
-    const permanentAttempt =
-      !planningConversationActive &&
-      requestScope === "permanent_offline_revision";
+    const permanentAttempt = requestScope === "permanent_offline_revision";
     let acceptedByServer = false;
     const operationId = newOperationId();
-    const request: SendMessageRequest = planningConversationActive
+    const request: SendMessageRequest = requestScope === "permanent_offline_revision"
       ? {
           content,
           operationId,
           workflow: conversation.workflow,
+          changeRequestScope: "permanent_offline_revision",
+          verificationScope: "offline_native_check_only",
+          allowSimulator,
         }
-      : requestScope === "permanent_offline_revision"
-        ? {
-            content,
-            operationId,
-            workflow: conversation.workflow,
-            changeRequestScope: "permanent_offline_revision",
-            verificationScope: "offline_native_check_only",
-          }
+      : planningConversationActive
+        ? { content, operationId, workflow: conversation.workflow }
         : requestScope === "offline_candidate_revision"
           ? {
               content,
@@ -3957,13 +4604,13 @@ function App() {
       setCancelNotice("");
       await refreshConversation(conversationId);
       setConnectionMessage(
-        planningConversationActive
-          ? "계획 에이전트가 요구사항과 안전 조건을 반영해 계획서를 보완합니다."
+        requestScope === "permanent_offline_revision"
+          ? "에이전트가 요청한 작업을 진행하고 있습니다."
+          : planningConversationActive
+          ? "요구사항을 반영해 계획서를 보완하고 있습니다."
           : targetlessAnalysisActive
-            ? "외부 도구와 변경 권한 없이 일반 엔지니어링 질문을 분석합니다."
-          : requestScope === "permanent_offline_revision"
-            ? "에이전트가 MCP 근거를 확인한 뒤 작업 사본을 수정·검사·저장합니다."
-            : requestScope === "offline_candidate_revision"
+            ? "요청을 접수했습니다. 에이전트가 작업을 준비하고 있습니다."
+          : requestScope === "offline_candidate_revision"
               ? "에이전트가 MCP 근거를 확인하고 승인 가능한 변경안을 만듭니다."
               : "에이전트가 MCP 근거를 확인해 읽기·분석합니다.",
       );
@@ -3979,10 +4626,6 @@ function App() {
           : "메시지를 보내지 못했습니다.",
       );
     } finally {
-      if (permanentAttempt) {
-        setChangeRequestScope("review_before_apply");
-        
-      }
       setSending(false);
     }
   };
@@ -4044,6 +4687,7 @@ function App() {
       });
       setActiveRunId(result.runId);
       setActiveRunState(result.state);
+      setCancelNotice("");
       await refreshConversation(conversationId);
     } catch (error) {
       setConnectionMessage(
@@ -4051,6 +4695,28 @@ function App() {
           ? error.message
           : "저장된 엔지니어링 작업을 재개하지 못했습니다.",
       );
+    } finally {
+      setMissionResumeBusy(false);
+    }
+  };
+
+  const resumeNativeExecution = async () => {
+    const native = conversation?.nativeExecution;
+    if (!conversation || !native?.resumable || missionResumeBusy || sending || canCancelActiveRun) return;
+    const conversationId = conversation.conversationId;
+    setMissionResumeBusy(true);
+    setStreamingText("");
+    setConnectionMessage("완료한 도구 결과를 보존하고 중단된 요청을 이어갑니다.");
+    try {
+      const result = await hostApi.resumeNativeExecution(conversationId, {
+        operationId: newOperationId(), sourceRunId: native.sourceRunId, allowSimulator,
+      });
+      setActiveRunId(result.runId);
+      setActiveRunState(result.state);
+      setCancelNotice("");
+      await refreshConversation(conversationId);
+    } catch (error) {
+      setConnectionMessage(error instanceof HostApiError ? error.message : "중단된 작업을 재개하지 못했습니다.");
     } finally {
       setMissionResumeBusy(false);
     }
@@ -4164,8 +4830,22 @@ function App() {
     ? currentMessages
     : currentMessages.slice(-RECENT_MESSAGE_WINDOW);
   const hiddenMessageCount = currentMessages.length - renderedMessages.length;
+  const nativeResumeAction = conversation?.nativeExecution?.resumable ? (
+    <button type="button"
+      disabled={!hostReady || !engineeringAgentReady || !mcpReady || missionResumeBusy || sending || canCancelActiveRun}
+      onClick={() => void resumeNativeExecution()}>
+      {missionResumeBusy ? "재개 중…" : "중단된 작업 이어가기"}
+    </button>
+  ) : null;
+  const nativeResumeSourceRunId = conversation?.nativeExecution?.resumable
+    ? conversation.nativeExecution.sourceRunId : undefined;
+  const nativeResumeMessageId = nativeResumeSourceRunId
+    ? [...renderedMessages].reverse().find((item) =>
+        isInlineToolActivityAnchor(item) && item.runId === nativeResumeSourceRunId,
+      )?.messageId
+    : undefined;
   const activeToolActivity = activities.find(
-    (activity) => activity.runId === activeRunId && activity.toolState === "running",
+    (activity) => activity.runId === activeRunId && activity.toolState === "running" && !activity.historicalReplay,
   );
   const activeProgressActivity = activities.find(
     (activity) => activity.runId === activeRunId && activity.eventType === "agent.progress",
@@ -4174,18 +4854,21 @@ function App() {
   const canBrowseEngineeringPrograms =
     !targetlessAnalysisActive &&
     !planningConversationActive &&
-    status.engineeringSystem.readReady &&
+    (status.engineeringSystem.readReady || status.engineeringSystem.nativeLdEditReady === true) &&
     status.engineeringSystem.application === "XG5000";
+  const nativeProgramCatalogActive = status.engineeringSystem.nativeLdEditReady === true &&
+    programCatalog.catalogSource === "saved_working_copy" &&
+    typeof programCatalog.catalogBindingDigest === "string" && /^[a-f0-9]{64}$/.test(programCatalog.catalogBindingDigest);
   const programFocusAvailable =
     hostReady &&
     mcpReady &&
-    programFocusFeature?.currentReady === true &&
-    programFocusFeature.verification === "real_xg5000";
+    (nativeProgramCatalogActive || (programFocusFeature?.currentReady === true &&
+    programFocusFeature.verification === "real_xg5000"));
   const programFocusUnavailableReason =
     programFocusFeature?.detail ||
     "XG5000 위치 열기는 실제 환경 검증 전 비활성입니다.";
   const workspaceStaticTargetActive =
-    workspaceTargetActive && !status.engineeringSystem.readReady;
+    workspaceTargetActive && !workingEditorConnected(status);
   const directXgTargetActive =
     status.engineeringSystem.readReady && !workspaceTargetActive;
   const reviewedCloseTarget =
@@ -4205,7 +4888,7 @@ function App() {
         }
       : null;
   const recoveryAttachRequired =
-    Boolean(status.workspace) && !status.engineeringSystem.readReady;
+    Boolean(status.workspace) && !workingEditorConnected(status);
 
   const openReviewedCloseDialog = (
     target: Omit<ReviewedNoSaveCloseRequest, "confirmNoSave"> | null = reviewedCloseTarget,
@@ -4283,10 +4966,10 @@ function App() {
     !workChooserOpen &&
     (planningConversationActive ||
       hasEngineeringTarget ||
+      (conversation?.workflow === "engineering" && Boolean(conversationWorkspaceResumeTarget)) ||
       targetlessAnalysisActive ||
       pendingWorkspaceConversationKeepsAgentWorkspaceVisible(
-        Boolean(conversation && conversationMatchesPendingWorkspace(conversation, status)),
-        recoveryAttachRequired,
+        pendingWorkspaceConversation,
       ) ||
       canCancelActiveRun);
   const showStartSection =
@@ -4381,7 +5064,9 @@ function App() {
     window.setTimeout(() => returnFocus?.focus(), 0);
   };
   const engineeringSessionLabel = planningConversationActive
-    ? "새 프로젝트 계획"
+    ? planningCreationActive ? "새 프로젝트 작성" : "새 프로젝트 계획"
+    : nativeLdEditAvailable
+    ? "LD 작업 사본 연결"
     : status.engineeringSystem.sessionVerified
     ? "강한 프로젝트 일치"
     : status.engineeringSystem.readReady
@@ -4404,7 +5089,7 @@ function App() {
     ? newProjectPlanning.brief.projectName
     : workspaceTargetActive && status.workspace
       ? status.workspace.displayName
-      : status.engineeringSystem.readReady && status.engineeringSystem.processId
+      : workingEditorConnected(status) && status.engineeringSystem.processId
         ? `XG5000 PID ${status.engineeringSystem.processId}`
       : status.controller.endpoint
         ? `${status.controller.endpoint.host}:${status.controller.endpoint.port}`
@@ -4512,9 +5197,9 @@ function App() {
                 <strong>{item.toolState ? item.detail : item.title}</strong>
                 <span>
                   {item.toolState
-                    ? `${TOOL_STATE_COPY[item.toolState]}${
-                        activityDuration(item, activityClockMs)
-                          ? ` · ${activityDuration(item, activityClockMs)}`
+                    ? `${activityStateCopy(item, terminalRunStatesRef.current)}${
+                        activityDuration(item, activityClockMs, terminalRunStatesRef.current)
+                          ? ` · ${activityDuration(item, activityClockMs, terminalRunStatesRef.current)}`
                           : ""
                       }`
                     : item.detail}
@@ -4569,7 +5254,7 @@ function App() {
             <span
               className={`session-chip ${
                 status.engineeringSystem.sessionVerified ||
-                status.engineeringSystem.readReady
+                workingEditorConnected(status)
                   ? "session-verified"
                   : "session-limited"
               }`}
@@ -4580,7 +5265,9 @@ function App() {
               {status.controller.state === "ready" && !status.workspace
                 ? "온라인 관찰 · 쓰기 차단"
                 : planningConversationActive
-                  ? "계획 전용 · 파일과 PLC 변경 없음"
+                  ? planningCreationActive ? "작업 사본 작성 · 검사 · 저장" : "계획 전용 · 파일과 PLC 변경 없음"
+                : nativeLdEditAvailable
+                  ? "LD 작업 사본 읽기 · 수정 · 저장"
                 : (offlineMutateFeature?.currentReady ??
                       status.capabilities.includes("offline_mutate")) &&
                     status.engineeringSystem.sessionVerified
@@ -4651,7 +5338,7 @@ function App() {
           <button
             className="header-text-button"
             type="button"
-            onClick={() => setKnowledgeOpen(true)}
+            onClick={() => { setProjectDocumentIntake(undefined); setKnowledgeOpen(true); }}
             aria-label="엔지니어링 지식 열기"
           >
             <Icon name="database" size={16} />
@@ -4659,7 +5346,31 @@ function App() {
           </button>
           <details className="header-advanced-options">
           <summary>더 보기</summary>
-          <div className="header-advanced-menu">
+          <div className="header-advanced-menu" onClick={(event) => {
+            if (event.target instanceof Element && event.target.closest("button")) {
+              event.currentTarget.closest("details")?.removeAttribute("open");
+            }
+          }}>
+          {(hasEngineeringTarget || targetlessAnalysisActive) && !planningConversationActive && (
+            <button
+              className="header-text-button header-mobile-new-work-button"
+              type="button"
+              disabled={canCancelActiveRun}
+              onClick={openWorkChooser}
+            >
+              <Icon name="new" size={16} />
+              새 작업 시작
+            </button>
+          )}
+          <button
+            className="header-text-button header-mobile-knowledge-button"
+            type="button"
+            onClick={() => { setProjectDocumentIntake(undefined); setKnowledgeOpen(true); }}
+            aria-label="엔지니어링 지식 열기"
+          >
+            <Icon name="database" size={16} />
+            지식·자료 관리
+          </button>
           <button
             className="header-text-button"
             type="button"
@@ -4678,7 +5389,8 @@ function App() {
           <button
             className="connection-button"
             type="button"
-            onClick={() => void refreshStatus()}
+            onClick={() => void checkAppConnection()}
+            disabled={connectionCheckBusy}
             aria-label="앱 연결 다시 확인"
           >
             <span
@@ -4747,7 +5459,7 @@ function App() {
               debugMode && status.mcp.agentToolCount !== undefined
                 ? `AI 최대 허용 ${status.mcp.agentToolCount}개 · MCP 등록 ${
                     status.mcp.toolCount ?? 0
-                  }개`
+                  }개${mcpPublicDiagnostic ? ` · ${mcpPublicDiagnostic}` : ""}`
                 : mcpReady ? "사용 가능" : "연결 확인 필요"
             }
             icon="shield"
@@ -4758,7 +5470,7 @@ function App() {
             detail={
               debugMode && status.engineeringSystem.processId
                 ? `PID ${status.engineeringSystem.processId}`
-                : status.engineeringSystem.readReady ? "프로젝트 연결됨" : "프로젝트를 열면 연결됩니다"
+                : workingEditorConnected(status) ? "프로젝트 연결됨" : "프로젝트를 열면 연결됩니다"
             }
             icon="cpu"
           />
@@ -4907,8 +5619,7 @@ function App() {
 
                 {status.workspace &&
                   (!hasEngineeringTarget ||
-                    !status.engineeringSystem.readReady ||
-                    !status.engineeringSystem.sessionVerified) && (
+                    !workingEditorConnected(status)) && (
                   <section
                     className="workspace-resume-card"
                     aria-labelledby="workspace-resume-title"
@@ -4962,18 +5673,18 @@ function App() {
                       <button
                         className="button primary-button"
                         type="button"
-                        disabled={workspaceResumeBusy || !localAnalysisAvailable}
-                        onClick={() => void resumeWorkspace()}
+                        disabled={!currentWorkspaceRecoveryAvailable}
+                        onClick={() => void resumeWorkspace(true)}
                       >
                         {workspaceResumeBusy
                           ? "프로젝트 연결 중…"
                           : "이 작업 계속하기"}
                       </button>
-                      {!status.engineeringSystem.readReady && (
+                      {!workingEditorConnected(status) && (
                         <button
                           className="button secondary-button"
                           type="button"
-                          disabled={workspaceResumeBusy || !localAnalysisAvailable}
+                          disabled={!currentWorkspaceRecoveryAvailable}
                           onClick={() => {
                             setWorkChooserOpen(false);
                             void openInstancePicker(false);
@@ -5016,6 +5727,7 @@ function App() {
                         : "Host 연결 필요"
                     }
                     onClick={() => {
+                       setNewProjectBriefIsNew(true);
                       setWorkChooserOpen(false);
                       setLocalProjectOpen(false);
                       setInstancePickerOpen(false);
@@ -5118,12 +5830,14 @@ function App() {
 
           {newProjectBriefOpen && (
             <NewProjectBriefPanel
-              initialBrief={newProjectPlanning?.brief}
+              key={!newProjectBriefIsNew && newProjectPlanning && conversation ? conversation.conversationId : "unsubmitted"}
+              draftContext={!newProjectBriefIsNew && newProjectPlanning && conversation ? `conversation:${conversation.conversationId}` : "unsubmitted"}
+              initialBrief={newProjectBriefIsNew ? undefined : newProjectPlanning?.brief}
               busy={sending}
               
               onCancel={closeNewProjectBrief}
-              onManageKnowledge={() => setKnowledgeOpen(true)}
-              onSubmit={(brief) => void submitNewProjectBrief(brief)}
+              onManageKnowledge={(context) => { setProjectDocumentIntake(context); setKnowledgeOpen(true); }}
+              onSubmit={(brief, createProject, simulate, intakeScopeKey) => void submitNewProjectBrief(brief, createProject, simulate, intakeScopeKey)}
             />
           )}
 
@@ -5316,7 +6030,9 @@ function App() {
                             ? `${new Date(instance.process_create_time * 1000).toLocaleTimeString("ko-KR", {hour: "2-digit", minute: "2-digit"})}에 연 창`
                             : "열려 있는 프로젝트"}
                         </span>
-                        {debugMode && <code>PID {instance.pid} · HWND {instance.hwnd}</code>}
+                        {debugMode && <code>
+                          PID {instance.pid} · HWND {instance.hwnd} · visible {typeof instance.visible === "boolean" ? String(instance.visible) : "unknown"} · class {typeof instance.class_name === "string" ? instance.class_name : "unknown"} · rect {Array.isArray(instance.rect) && instance.rect.length === 4 && instance.rect.every((value) => typeof value === "number" && Number.isFinite(value)) ? instance.rect.join(", ") : "unknown"}
+                        </code>}
                         {restorePreflight?.target.hwnd === instance.hwnd && (
                           <div className="restore-preflight-result" role="status">
                             <strong>
@@ -5356,7 +6072,7 @@ function App() {
                           className="button secondary-button"
                           type="button"
                           disabled={
-                            attachingHwnd !== null || restorePreflightBusyHwnd !== null
+                            attachingHwnd !== null || closingIdleHwnd !== null || restorePreflightBusyHwnd !== null
                           }
                           onClick={() => void preflightControllerProjectRestore(instance)}
                         >
@@ -5370,7 +6086,7 @@ function App() {
                             <button
                               className="button primary-button"
                               type="button"
-                              disabled={restoreActionBusy || attachingHwnd !== null}
+                              disabled={restoreActionBusy || attachingHwnd !== null || closingIdleHwnd !== null}
                               onClick={() => void beginControllerProjectRestore(instance)}
                             >
                               {restoreActionBusy ? "복원 창 여는 중…" : "PLC에서 열기 시작"}
@@ -5386,11 +6102,24 @@ function App() {
                             {restoreActionBusy ? "저장·검증 중…" : "업로드 완료"}
                           </button>
                         )}
+                        {instance.title === "XG5000" && (
+                          <button className="button secondary-button" type="button"
+                            title="프로젝트나 대화상자가 없는 창인지 확인한 뒤 닫습니다."
+                            disabled={closingIdleHwnd !== null || idleCloseAttempted || attachingHwnd !== null ||
+                              restorePreflightBusyHwnd !== null || restoreActionBusy || restoreHandoff !== null ||
+                              sending || canCancelActiveRun || Boolean(status.activeOperation) ||
+                              typeof instance.process_create_time !== "number" ||
+                              !Number.isFinite(instance.process_create_time) || instance.process_create_time <= 0 ||
+                              (status.engineeringSystem.processId === instance.pid && status.engineeringSystem.windowHandle === instance.hwnd)}
+                            onClick={() => void closeIdleInstance(instance)}>
+                            {closingIdleHwnd === instance.hwnd ? "닫는 중…" : "빈 창 닫기"}
+                          </button>
+                        )}
                         <button
                           className="button primary-button"
                           type="button"
                           disabled={
-                            attachingHwnd !== null ||
+                            attachingHwnd !== null || closingIdleHwnd !== null ||
                             restorePreflightBusyHwnd !== null ||
                             restoreActionBusy ||
                             restoreHandoff !== null
@@ -5414,12 +6143,24 @@ function App() {
               )}
 
               <div className="instance-picker-actions">
+                {!instancesLoading && instances.length === 0 && (
+                  <button
+                    className="button primary-button"
+                    type="button"
+                    disabled={!hostReady || idleLaunchBusy || attachingHwnd !== null || closingIdleHwnd !== null ||
+                      restorePreflightBusyHwnd !== null || restoreActionBusy || restoreHandoff !== null ||
+                      workspaceResumeBusy || sending || canCancelActiveRun || Boolean(status.activeOperation)}
+                    onClick={() => void launchIdleInstance()}
+                  >
+                    {idleLaunchBusy ? "XG5000 실행 중…" : "XG5000 실행"}
+                  </button>
+                )}
                 <button
                   className="button secondary-button"
                   type="button"
                   disabled={
-                    instancesLoading ||
-                    attachingHwnd !== null ||
+                    instancesLoading || idleLaunchBusy ||
+                    attachingHwnd !== null || closingIdleHwnd !== null ||
                     restorePreflightBusyHwnd !== null
                   }
                   onClick={() => void openInstancePicker(recoveryAttachIntent)}
@@ -5438,7 +6179,8 @@ function App() {
             className={`workspace-grid ${activePanel ? "insight-open" : ""}`}
             aria-label="에이전트 작업 공간"
           >
-          {!newProjectPlanning && !targetlessAnalysisActive && hasEngineeringTarget && (
+          {!newProjectPlanning && !targetlessAnalysisActive &&
+            (hasEngineeringTarget || pendingWorkspaceConversation || conversationWorkspaceNeedsResume) && (
             <section
               className="target-proof-bar"
               aria-label="현재 엔지니어링 대상"
@@ -5446,7 +6188,7 @@ function App() {
               <div className="target-proof-name">
                 <p className="eyebrow">작업 프로젝트</p>
                 <strong>
-                  {workspaceTargetActive && status.workspace
+                  {(workspaceTargetActive || pendingWorkspaceConversation) && status.workspace
                     ? status.workspace.displayName
                     : directXgTargetActive && status.engineeringSystem.processId
                       ? "연결된 XG5000 프로젝트"
@@ -5461,7 +6203,7 @@ function App() {
                 <div>
                   <dt>벤더</dt>
                   <dd>
-                    {workspaceTargetActive
+                    {workspaceTargetActive || pendingWorkspaceConversation
                       ? status.workspace?.vendor?.toUpperCase() ?? "LS"
                       : "LS"}
                   </dd>
@@ -5479,12 +6221,16 @@ function App() {
                 </div>
                 <div>
                   <dt>연결 상태</dt>
-                  <dd>{status.engineeringSystem.readReady ? "XG5000 연결됨" : "저장된 파일 분석 가능"}</dd>
+                  <dd>{workingEditorConnected(status) ? "XG5000 연결됨" : "XG5000 연결 확인 필요"}</dd>
                 </div>
                 <div>
                   <dt>사용 가능 작업</dt>
                   <dd>
-                    {(offlineMutateFeature?.currentReady ??
+                    {recoveryAttachRequired
+                      ? "저장된 대화 읽기 · 연결 복구"
+                      : nativeLdEditAvailable
+                      ? "LD 작업 사본 읽기 · 수정"
+                      : (offlineMutateFeature?.currentReady ??
                       status.capabilities.includes("offline_mutate")) &&
                     status.engineeringSystem.sessionVerified
                       ? "분석 · 작업 사본 수정"
@@ -5504,7 +6250,7 @@ function App() {
               <button
                 className="button secondary-button"
                 type="button"
-                disabled={canCancelActiveRun || sending}
+                disabled={canCancelActiveRun || sending || pendingWorkspaceConversation}
                 onClick={() => {
                   void startFreshConversation("PLC 분석 대화").catch(() => {
                     setCancelNotice("새 대화를 열지 못했습니다. 작업 기록에서 기존 대화를 다시 열 수 있습니다.");
@@ -5514,13 +6260,16 @@ function App() {
                 이 프로젝트에서 새 대화
               </button>
               </details>
-              {(workspaceStaticTargetActive ||
-                (workspaceTargetActive && !status.engineeringSystem.sessionVerified)) && (
+              {(conversationWorkspaceNeedsResume || workspaceStaticTargetActive || (pendingWorkspaceConversation && recoveryAttachRequired)) && (
                 <div className="workspace-reconnect">
-                  <span>XG5000 연결을 복구하면 프로그램 읽기와 변경안 작성을 이어갈 수 있습니다.</span>
-                  <button type="button" disabled={workspaceResumeBusy || canCancelActiveRun || sending || !mcpReady}
+                  <span>저장된 대화를 읽을 수 있습니다. 이어서 요청하려면 작업 사본의 XG5000 연결을 확인해 주세요.</span>
+                  <button type="button" disabled={!workspaceRecoveryAvailable}
                     onClick={() => void resumeWorkspace()}>
                     {workspaceResumeBusy ? "프로젝트 확인 중…" : "XG5000 연결 복구"}
+                  </button>
+                  <button type="button" disabled={!workspaceRecoveryAvailable}
+                    onClick={() => void openInstancePicker(false)}>
+                    열린 창 연결
                   </button>
                   {workspaceResumeNotice && <p role="status">{workspaceResumeNotice}</p>}
                 </div>
@@ -5536,12 +6285,34 @@ function App() {
               <div className="project-plan-actions">
                 <button className="button secondary-button" type="button"
                   disabled={sending || canCancelActiveRun}
-                  onClick={() => setNewProjectBriefOpen(true)}>요구사항 수정</button>
+                  onClick={() => { setNewProjectBriefIsNew(false); setNewProjectBriefOpen(true); }}>요구사항 수정</button>
                 <button className="project-plan-cancel" type="button"
                   disabled={sending || canCancelActiveRun}
                   onClick={() => void leaveNewProjectPlanning()}>계획 닫기</button>
               </div>
             </details>
+          )}
+          {planningCreationActive && (
+            <label className="project-plan-simulation">
+              <input type="checkbox" checked={allowSimulator}
+                disabled={sending || canCancelActiveRun}
+                onChange={(event) => setAllowSimulator(event.target.checked)} />
+              XG-SIM 시험 허용
+            </label>
+          )}
+          {planningCreationActive && status.workspace && !nativeLdEditAvailable &&
+            !conversation?.nativeExecution && (
+            <section className="target-proof-bar" aria-label="신규 작성 연결 복구">
+              <div className="workspace-reconnect">
+                <span>새 프로젝트 작성을 계속하려면 현재 작업 사본의 XG5000 연결을 복구해 주세요.</span>
+                <button type="button"
+                  disabled={!workspaceRecoveryAvailable || !mcpReady}
+                  onClick={() => void resumeWorkspace()}>
+                  {workspaceResumeBusy ? "프로젝트 확인 중…" : "XG5000 연결 복구"}
+                </button>
+                {workspaceResumeNotice && <p role="status">{workspaceResumeNotice}</p>}
+              </div>
+            </section>
           )}
           {conversation && (
             <GoalCompletionNotice completion={conversation.goalCompletion} runActive={sending || canCancelActiveRun} />
@@ -5611,19 +6382,27 @@ function App() {
                     진행 내역
                   </button>
                 </div>
-                {debugMode && engineeringScopeVisible && !targetlessAnalysisActive && (
+                {engineeringScopeVisible && !targetlessAnalysisActive && (
                   <ConversationPermissions
                     key={conversation?.conversationId}
                     scope={changeRequestScope}
+                    allowSimulator={allowSimulator}
+                    onSimulatorChange={setAllowSimulator}
                     busy={sending || canCancelActiveRun || offlineCandidateBindingBusy}
-                    canChange={offlineCandidateSelectable}
+                    canChange={offlineChangeSelectable}
                     
                     
                     
                     onSelect={(scope) => {
-                      if (scope !== "analysis_only" && scope !== "review_before_apply" && !offlineCandidateAvailable) {
-                        void prepareOfflineCandidateSession().then((preparedStatus) => {
-                          if (!preparedStatus) return;
+                      const changeReady = scope === "permanent_offline_revision"
+                        ? nativeLdEditAvailable
+                        : offlineCandidateAvailable;
+                      if (scope !== "analysis_only" && scope !== "review_before_apply" && !changeReady) {
+                        const requestedConversationId = conversationIdRef.current;
+                        const activationEpoch = targetActivationEpochRef.current;
+                        void prepareOfflineChangeSession(scope).then((preparedStatus) => {
+                          if (!preparedStatus || conversationIdRef.current !== requestedConversationId ||
+                            targetActivationEpochRef.current !== activationEpoch) return;
                           setChangeRequestScope(scope);
                           
                         });
@@ -5639,14 +6418,14 @@ function App() {
                     className={`stream-dot stream-${eventConnection}`}
                     aria-hidden="true"
                   />
-                  {activeRunState &&
-                  !TERMINAL_RUN_STATES.has(activeRunState)
-                    ? RUN_COPY[activeRunState] ?? activeRunState
-                    : eventConnection === "connected"
-                      ? "실시간 연결"
-                      : eventConnection === "reconnecting"
-                        ? "재연결 중"
-                        : "연결 대기"}
+                  {activeRunState && !TERMINAL_RUN_STATES.has(activeRunState) && (
+                    <>{RUN_COPY[activeRunState] ?? activeRunState} · </>
+                  )}
+                  {eventConnection === "connected"
+                    ? "실시간 연결"
+                    : eventConnection === "reconnecting"
+                      ? "재연결 중"
+                      : "연결 대기"}
                 </div>
                 {cancelNotice && (
                   <span className="run-notice" role="status">
@@ -5853,8 +6632,14 @@ function App() {
                     </li>
                     {isInlineToolActivityAnchor(item) && (
                       <li className="message-work-log">
+                        {activities.filter((activity) => activity.runId === item.runId && activity.workPlan).map((activity) => (
+                          <div className="message-content" key={activity.id}>
+                            <strong>{activity.title}</strong>
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{activity.detail}</ReactMarkdown>
+                          </div>
+                        ))}
                         <details>
-                          <summary>작업 과정 보기{activities.some((activity) => activity.runId === item.runId && activity.toolState === "failed") ? " · 확인하지 못한 항목 있음" : ""}</summary>
+                          <summary>작업 과정 보기{activities.some((activity) => activity.runId === item.runId && activity.toolState === "failed") ? " · 도구 오류 기록 있음" : ""}</summary>
                           <ol>
                       {activities
                         .filter(
@@ -5865,7 +6650,7 @@ function App() {
                         .map((activity) => (
                           <li
                             key={`tool-${activity.id}`}
-                            className={`compact-tool-card tool-${activity.toolState}`}
+                            className={`compact-tool-card tool-${activityCardState(activity, terminalRunStatesRef.current)}`}
                           >
                             <span className="compact-tool-card__marker" aria-hidden="true" />
                             <div>
@@ -5873,9 +6658,9 @@ function App() {
                               <summary>
                               <strong>{activity.detail}</strong>
                               <span>
-                                {TOOL_STATE_COPY[activity.toolState!]}
-                                {activityDuration(activity, activityClockMs)
-                                  ? ` · ${activityDuration(activity, activityClockMs)}`
+                                {activityStateCopy(activity, terminalRunStatesRef.current)}
+                                {activityDuration(activity, activityClockMs, terminalRunStatesRef.current)
+                                  ? ` · ${activityDuration(activity, activityClockMs, terminalRunStatesRef.current)}`
                                   : ""}
                               </span>
                               </summary>
@@ -5893,7 +6678,7 @@ function App() {
                                     : activity.resultSummary}
                                 </p>
                               )}
-                              {!activity.resultSummary && <p>{activity.toolState === "running" ? "프로젝트에서 필요한 내용을 확인하고 있습니다." : activity.toolState === "selected" ? "작업을 준비하고 있습니다." : activity.toolState === "failed" ? "이 항목은 확인하지 못했습니다. 완료된 결과로 사용하지 않습니다." : "이 작업을 마쳤습니다."}</p>}
+                              {!activity.resultSummary && <p>{activityBodyCopy(activity, terminalRunStatesRef.current)}</p>}
                               </details>
                               {activity.failureReason && (
                                 <p className="compact-tool-card__failure">
@@ -5905,6 +6690,7 @@ function App() {
                         ))}
                           </ol>
                         </details>
+                        {item.messageId === nativeResumeMessageId && nativeResumeAction}
                       </li>
                     )}
                     </Fragment>
@@ -5963,24 +6749,7 @@ function App() {
                   }
                 }}
                 disabled={!canChat || sending}
-                placeholder={
-                  !hostReady
-                    ? "Host에 연결한 뒤 대화할 수 있습니다"
-                    : planningConversationActive &&
-                        !planningAgentReady
-                      ? "계획 모델 연결을 설정해 주세요"
-                      : planningConversationActive
-                        ? "계획을 보완하거나 에이전트의 질문에 답해 주세요"
-                    : !engineeringAgentReady
-                      ? "엔지니어링 모델 연결을 설정해 주세요"
-                      : targetlessAnalysisActive
-                        ? "PLC 개념, 오류 메시지나 설계 판단을 질문해 주세요"
-                      : !mcpReady
-                        ? "MCP 안전 코어를 확인해 주세요"
-                      : !hasEngineeringTarget
-                        ? "먼저 XG5000 프로젝트나 온라인 LS PLC를 선택해 주세요"
-                        : "프로젝트에 대해 질문하거나 원하는 변경을 말해 주세요"
-                }
+                placeholder={conversationPlaceholder(status, planningConversationActive, targetlessAnalysisActive)}
               />
               <div className="composer-footer">
                 <span>
@@ -6074,6 +6843,12 @@ function App() {
             </div>
 
             <div className="insight-content" role="tabpanel">
+              {activePanel === "activity" && conversation?.nativeExecution && (
+                <div className="native-execution-status">
+                  <p>보존된 도구 결과 {conversation.nativeExecution.completedToolCalls}건</p>
+                  {nativeResumeAction}
+                </div>
+              )}
               {activePanel === "activity" &&
                 conversation?.engineeringMission &&
                 !newProjectPlanning && (
@@ -6184,7 +6959,7 @@ function App() {
                       <li
                         key={item.id}
                         className={`${item.tone ?? "default"}${
-                          item.toolState ? ` tool-${item.toolState}` : ""
+                          item.toolState ? ` tool-${activityCardState(item, terminalRunStatesRef.current)}` : ""
                         }`}
                       >
                         <span className="activity-marker" />
@@ -6194,9 +6969,9 @@ function App() {
                           </strong>
                           {(item.toolState || item.detail) && <p>
                             {item.toolState
-                              ? `${TOOL_STATE_COPY[item.toolState]}${
-                                  activityDuration(item, activityClockMs)
-                                    ? ` · ${activityDuration(item, activityClockMs)}`
+                              ? `${activityStateCopy(item, terminalRunStatesRef.current)}${
+                                  activityDuration(item, activityClockMs, terminalRunStatesRef.current)
+                                    ? ` · ${activityDuration(item, activityClockMs, terminalRunStatesRef.current)}`
                                     : ""
                                 }`
                               : item.detail}
@@ -6288,8 +7063,9 @@ function App() {
       <KnowledgeDialog
         open={knowledgeOpen}
         service={KNOWLEDGE_DIALOG_SERVICE}
-        projectScopeHint={status.workspace?.workspaceId}
-        onClose={() => setKnowledgeOpen(false)}
+        projectScopeHint={newProjectBriefOpen ? undefined : conversation?.engineeringTarget?.workspaceId ?? conversation?.engineeringMission?.workspaceId ?? undefined}
+        projectDocumentIntake={newProjectBriefOpen ? projectDocumentIntake : undefined}
+        onClose={() => { setKnowledgeOpen(false); setProjectDocumentIntake(undefined); }}
       />
 
       {reviewedCloseDialogOpen && reviewedCloseDialogTarget && (

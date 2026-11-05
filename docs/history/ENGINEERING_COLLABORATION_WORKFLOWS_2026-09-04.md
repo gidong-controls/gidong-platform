@@ -7,12 +7,12 @@
 
 최종 갱신: 2026-09-04
 
-이 문서는 [루트 PRD](../PRD.md)의 두 핵심 결과인 `신규 구축`과
+이 문서는 [루트 PRD](../../PRD.md)의 두 핵심 결과인 `신규 구축`과
 `기존 설비 엔지니어링`을 사람이 실제로 사용하는 화면과 상태 전이로 구체화한다.
 기능·안전 범위는 PRD가 우선하고, GUI 및 런타임의 기술 경계는
-[CONTROLSTUDIO_GUI_HANDOFF.md](CONTROLSTUDIO_GUI_HANDOFF.md),
-[PRODUCT_ARCHITECTURE.md](PRODUCT_ARCHITECTURE.md)와
-[책임·데이터 소유권](refactor/RESPONSIBILITY_AND_DATA_OWNERSHIP.md)을 따른다.
+[CONTROLSTUDIO_GUI_HANDOFF.md](../CONTROLSTUDIO_GUI_HANDOFF.md),
+[PRODUCT_ARCHITECTURE.md](../PRODUCT_ARCHITECTURE.md)와
+[책임·데이터 소유권](../refactor/RESPONSIBILITY_AND_DATA_OWNERSHIP.md)을 따른다.
 
 ## 1. 공통 원칙
 
@@ -90,7 +90,7 @@ copy와 현재 XG5000 대상에 결속하고, 기존 승인 경로로 실행한�
   조용히 승격하지 않는다. 실제 적용에 영향을 주는 차이만 확인 항목으로 남긴다.
 
 원본·파생 지식과 확인 상태의 현재 계약은
-[책임·데이터 소유권](refactor/RESPONSIBILITY_AND_DATA_OWNERSHIP.md)을 따른다.
+[책임·데이터 소유권](../refactor/RESPONSIBILITY_AND_DATA_OWNERSHIP.md)을 따른다.
 
 ## 2. 신규 프로젝트 협업
 
@@ -196,53 +196,6 @@ scope로 재계획해야 한다.
 정지 중 제품·축 위치가 달라질 수 있어 기존 STEP 재개를 안전하게
 증명할 수 없습니다.
 ```
-
-### 2.5 계획 검토
-
-데스크톱 기본 구성은 다음 관계를 유지한다.
-
-```text
-상단  단계·project revision·전체 완전성
-왼쪽 artifact 목록·미결 수
-중앙 선택 artifact의 구조화 내용·revision diff
-오른쪽 또는 하단 에이전트 대화·결정 질문
-```
-
-설명 문장은 하드웨어/I/O, 운전·복구, 안전·인터록, architecture·시험처럼 위험
-경계가 다른 묶음별로 읽는다. 그러나 native build의 실행 권한이 되는 구조화
-설계는 누락을 숨길 수 없도록 다음 값을 각각 독립 검토 항목으로 펼친다.
-
-- 각 collection의 전체 개수·ID와 confirmed/N/A basis
-- I/O mapping, kind, normal/safe state
-- mode activation·transition과 network output·permit·mode/step binding
-- timer address·time base·preset·유효 시간·enable 조건
-- sequence restart policy·start/reset·각 STEP 주소와 완료 조건
-- alarm latch·trigger·affected output, recovery condition·reset target
-- safety classification·action·permit와 각 affected output
-
-각 항목은 에이전트 제안임을 표시하며 자동 선택하지 않는다. 사용자가 화면에
-표시된 정확한 값과 “이 목록이 전체 집합”이라는 scope 항목을 직접 확인해야 한다.
-
-`계획 검토 완료`는 화면 전환 버튼이 아니다. 다음을 서버에 기록한다.
-
-```text
-plan_revision_id
-plan_digest
-project_brief_digest
-attachment_revision_digest
-actor_id
-reviewed_at
-blocking_unknown_count = 0
-review_scope
-reviewed_item_ids = Host가 설계에서 계산한 전체 실행 항목 집합
-```
-
-클라이언트나 모델은 검토 항목의 전체 집합을 정하지 못한다. Host가 canonical
-설계에서 이름 공간이 있는 안정 ID를 다시 계산하고 제출된 ID 집합과 정확히
-일치하는지 검사한다. 계획 내용, 최신 project brief 또는 첨부 source revision 중
-하나라도 바뀌면 이전 검토는 자동 무효다. build 직전에도 Store의 최신 artifact를
-다시 읽어 digest, 전체 항목 coverage, 참조·주소·상태·시간·안전 불변식을 재검증한다.
-계획 검토는 native project 생성, PLC 쓰기 또는 online 작업 승인이 아니다.
 
 ### 2.6 생성과 검증
 
@@ -392,36 +345,6 @@ T120 elapsed, X14, Y23, STEP 40
 - `검증 결과를 새 revision으로 유지`
 
 일반적인 `확인`이나 모호한 `적용` 버튼을 사용하지 않는다.
-
-### 3.4 누락 방지 gate
-
-다음 coverage를 계약에 구조화해 표시한다.
-
-1. exact target identity와 before hash
-2. 값 단위와 instruction/CPU 의미
-3. direct·indirect reference와 multiple writer
-4. task·call·execution order
-5. auto·manual·maintenance·startup·power recovery·fault 경로
-6. online/offline 비교와 관찰 시각
-7. physical actuator·hazard mapping
-8. 현재 active sequence·timer 상태
-9. 관찰 신호·acceptance window·중단 조건
-10. 전체 artifact rollback manifest와 readback
-11. capability·권한·승인
-12. 남은 unknown과 미지원 native 요소
-
-적용 가능 판정은 단순한 항목 개수가 아니라 각 coverage의 상태와 근거를 사용한다.
-영향 경로를 닫는 데 필요한 항목이 `partial`, `unknown` 또는 `conflicting`이면
-승인 버튼을 비활성화한다.
-
-화면은 `영향 분석 완료` 같은 포괄 문구 대신 범위를 보여 준다.
-
-```text
-프로그램 4/4 조사
-직접 참조 12 · 간접 경로 3 · 다중 쓰기 1
-미지원 명령 2 → 적용 차단
-runtime snapshot 11:42:08 · 18초 전
-```
 
 ### 3.5 시험 상태와 최종 결과
 

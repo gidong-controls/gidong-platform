@@ -1,46 +1,18 @@
 # 기동 Platform
 
-2026-09-08: 제품 방향과 인계를 갱신했다. 기본 화면은 채팅이며 Agent가 도구를 선택하고
-실제 결과로 작업을 이어간다. 선택·실행·완료·실패를 같은 대화에 표시하는 것이 핵심이다.
-기존 loop/broker/SSE를 재사용하고 고정 mission·반복 승인·검증 중심의 정상 경로를 단순화한다.
-프로그램 생성·조회·수정의 요구사항은 LD 전용이다. 현재 직접 LD 구조 생성·부분 편집은
-미구현이며, 기존 LD 조회·피연산자 수정과 구분한다. 제품 요구는 [PRD](PRD.md)를 따른다.
+저장소 간 공통 기준은 [루트 PRD](../PRD.md)와 [ARCHITECTURE](../ARCHITECTURE.md), 현재 작업 상태는 [HANDOFF](../HANDOFF.md)를 따른다.
 
-기동(GIDONG)은 근거 중심 PLC 엔지니어링 제품이다. 이 저장소는 공개 가능한
-Platform 경계인 Web/PWA, Windows Launcher, FastAPI Host, 공개 계약과 패키징
-조립 규칙을 담는다.
+기동(GIDONG) Platform은 Web/PWA, Windows Launcher, FastAPI Host, 공개 계약과
+패키징 조립을 담당한다. Host는 SQLite 원본 기록, Evidence Store,
+ExecutionBroker와 Agent sidecar 수명주기를 소유한다.
 
-```text
-gidong-platform  ← UI, Host, ExecutionBroker, 데이터·감사 권한
-gidong-agent     ← 모델 추론, 계획, 파생 지식
-gidong-plc-mcp   ← XG5000/XG-SIM 실행, readback, journal, rollback
-controlstudio-xg5000-cli ← 별도 실행 파일과 JSON 계약을 가진 LS XG5000 벤더 CLI
-```
+Platform은 private Agent/MCP 소스를 import하지 않으며 Agent Protocol과 MCP
+Product Contract로 통신한다. CLI로 이관된 기능은 별도 프로세스의 JSON 계약을
+사용한다. 아직 남은 MCP compatibility core 의존은
+[CLI 구현 상태](../controlstudio-xg5000-cli/README.md#current-implementation-status)에 기록한다.
 
-Platform은 private Agent/MCP 소스를 import하지 않는다. Agent Protocol과 MCP
-Product Contract로 통신하며, Host가 세션·승인·감사 기록과 외부 도구 실행 경계를
-소유한다. 실행 경로는 `Agent → Host/ExecutionBroker → MCP → 벤더 CLI → XG5000`이다.
-CLI로 이관된 경로에서 MCP는 별도 CLI 프로세스의 JSON 계약을 사용한다.
-
-CLI 분리는 벤더별 창·COM·프로젝트 형식의 구현을 Agent와 공통 MCP 계약에서
-분리하고, 다른 브랜드를 추가할 때 해당 벤더 CLI를 독립적으로 개발·시험하기
-위한 것이다. 현재는 저장소·실행 파일·호출 경계가 분리된 단계다. 일부 벤더 코어는
-아직 `gidong-plc-mcp`에 있어 CLI에서 의존하므로, 완전한 소스·배포 독립이나 전체
-실사용 검증이 끝났다는 뜻은 아니다. 상세 이관 상태는
-[CLI README](https://github.com/gidong-controls/controlstudio-ls-xg5000-cli/blob/main/README.md)에 기록한다.
-
-## 현재 제품 경계
-
-- Web은 대화와 실제 도구 진행/결과를 기본으로 표시한다. 분석·계획·변경/복구 상세는 필요한 보조 화면으로 전환 중이다.
-- Host는 SQLite 원본 기록, Evidence Store, ExecutionBroker와 sidecar 수명주기를 소유한다.
-- Agent는 도구 호출을 제안할 수 있지만 MCP나 PLC에 직접 연결하지 않는다.
-- PLC MCP는 XG5000/XG-SIM 작업을 수행하고 exact readback과 변경 journal을 반환한다.
-- PLC 쓰기·강제·모드 변경·다운로드는 명시적으로 구현되고 검증된 capability가
-  아니면 fail-closed다.
-
-제품·안전 요구사항은 [PRD](PRD.md)가 우선한다. 컴포넌트 책임과 데이터 소유권은
-[책임 경계](docs/refactor/RESPONSIBILITY_AND_DATA_OWNERSHIP.md), 조립과 업데이트
-불변조건은 [배포·버전 정책](docs/refactor/PRODUCT_DISTRIBUTION_AND_VERSIONING.md),
+상세 데이터 소유권은 [책임 경계](docs/refactor/RESPONSIBILITY_AND_DATA_OWNERSHIP.md),
+조립·업데이트는 [배포·버전 정책](docs/refactor/PRODUCT_DISTRIBUTION_AND_VERSIONING.md),
 패키지 BOM은 [패키징 경계](docs/refactor/PACKAGING.md)를 따른다.
 
 ## 개발과 조립
@@ -69,6 +41,19 @@ Windows의 사용자별 PowerShell 실행 정책을 변경하지 않고, 저장�
 .\scripts\Start-ControlStudio-Development.ps1 -Web
 ```
 
+프런트엔드 수정도 즉시 반영하려면 `-WebDev`를 사용한다. 이 명령은 이 저장소의
+Vite 개발 서버를 `127.0.0.1:5173`에 시작하거나 확인하여 재사용하고, 기존 Host에
+정상 일회성 세션으로 연결한다. `/api` 요청과 실시간 작업 이벤트는 Host로 전달한다.
+다른 Origin은 허용하지 않으며 Host 인증·CSRF 검증을 유지한다.
+
+```powershell
+.\scripts\Start-ControlStudio-Development.ps1 -WebDev
+```
+
+선택한 브라우저에서 개발 화면을 열려면 `-WebDev -WebUrl`을 사용한다. 이미 사용하는
+작업·설정 디렉터리는 `-ProfileRoot`로 지정할 수 있다. 웹의 지식 화면에서는 브라우저
+파일 선택기로 PDF·텍스트 자료를 가져올 수 있다.
+
 선택한 개발 브라우저로 연결하려면 `-WebUrl`로 발급된 일회성 URL을 그 브라우저에서
 연다. Launcher는 웹의 인증·초기 연결 완료까지 기다린다. 발급 URL은 인증 정보이므로
 문서·로그·커밋에 저장하지 않는다. `-Web`, `-WebUrl`, `-NoOpen`은 동시에 사용할 수 없다.
@@ -96,7 +81,7 @@ source-development 보조 기동도 동일한 named launcher Job을 사용한다
 마친 XG5000만 문서화된 breakaway 경로를 사용하며, Host/MCP 재시작 후의 exact identity
 재연결은 기존 reconcile 절차가 fail-closed로 처리한다.
 
-Beta는 source checkout을 beta라고 표시해 실행하지 않는다. 세 immutable artifact와
+Beta는 source checkout을 beta라고 표시해 실행하지 않는다. 네 immutable executable artifact와
 public contracts wheel을 `assemble_release.py --channel beta`로 조립하고 생성된
 `ControlStudio Beta` 설치본을 실행해야 한다. 실제 채널 권위는 branch 이름이 아니라
 BOM의 `release_channel`이다.
@@ -112,11 +97,13 @@ Host에는 설치된 공식 Agent와 PLC MCP 실행 명령을 명시적으로 �
 소스 경로를 패키지 메타데이터에 넣거나 Platform이 private 소스를 직접 import해서는
 안 된다. 위 세 폴더가 모두 Git 개발 checkout인 경우에만 Host가 각 sibling의
 `.venv`에 설치된 `controlstudio-agent`와 `controlstudio-plc-mcp` 실행 파일을 로컬
-개발 fallback으로 찾는다. 배포 조립은 이 fallback을 사용하지 않고 세 컴포넌트의
+개발 fallback으로 찾는다. 배포 조립은 이 fallback을 사용하지 않고 네 컴포넌트의
 버전·SHA-256·계약 버전을 BOM 하나에 결속한 뒤 Launcher가 검증된 artifact만
 시작하도록 구성한다.
 
 ## 문서
+
+- [Beta 0.1.0-beta.20261020.18 내부 검증 지원표](docs/releases/0.1.0-beta.20261020.18.md)
 
 - [제품 요구사항](PRD.md)
 - [제품 아키텍처](docs/PRODUCT_ARCHITECTURE.md)

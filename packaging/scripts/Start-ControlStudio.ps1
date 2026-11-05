@@ -12,8 +12,8 @@ if ($bom.bom_schema -ne 'controlstudio-bom/v1') { throw 'Unsupported ControlStud
 if ($bom.release_channel -notin @('development', 'beta', 'production')) { throw 'Unsupported ControlStudio release channel.' }
 $RequireProductionSignature = $RequireProductionSignature -or $bom.release_channel -eq 'production'
 $names = @('api_contract', 'event_contract', 'agent_contract', 'mcp_product_contract', 'workspace_contract', 'audit_contract')
-$ids = @('platform', 'agent', 'plc-mcp')
-if (@($bom.components).Count -ne 3) { throw 'BOM must contain exactly three components.' }
+$ids = @('platform', 'agent', 'plc-mcp', 'xg5000-cli')
+if (@($bom.components).Count -ne $ids.Count) { throw 'BOM must contain all four internal components.' }
 $contractArtifact = $bom.contract_artifact
 if ($null -eq $contractArtifact) { throw 'Public contracts artifact is missing from BOM.' }
 if ([IO.Path]::GetFileName($contractArtifact.artifact) -ne $contractArtifact.artifact) { throw 'Public contracts artifact path escapes portable release.' }
@@ -22,7 +22,7 @@ if (-not (Test-Path -LiteralPath $contractArtifactPath -PathType Leaf)) { throw 
 $contractArtifactHash = (Get-FileHash -LiteralPath $contractArtifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($contractArtifactHash -ne $contractArtifact.sha256.ToLowerInvariant()) { throw 'Public contracts artifact hash mismatch.' }
 $executables = @{}
-for ($index = 0; $index -lt 3; $index++) {
+for ($index = 0; $index -lt $ids.Count; $index++) {
     $component = $bom.components[$index]
     if ($component.id -ne $ids[$index]) { throw 'BOM component order or identity is invalid.' }
     foreach ($name in $names) {
@@ -49,5 +49,9 @@ for ($index = 0; $index -lt 3; $index++) {
 # creates the stdio transports itself.
 $env:CONTROLSTUDIO_AGENT_COMMAND = '"' + $executables['agent'] + '"'
 $env:CONTROLSTUDIO_MCP_COMMAND = $executables['plc-mcp']
+$env:CONTROLSTUDIO_XG5000_CLI_COMMAND = '"' + $executables['xg5000-cli'] + '"'
+$env:CONTROLSTUDIO_RELEASE_CHANNEL = $bom.release_channel
+$env:CONTROLSTUDIO_PRODUCT_RELEASE = $bom.product_release
+$env:CONTROLSTUDIO_PRODUCT_BOM = $bomPath
 & $executables['platform']
 exit $LASTEXITCODE

@@ -1,22 +1,23 @@
 # 기동(GIDONG) PLC 엔지니어링 에이전트 제품 요구사항
 
+여러 저장소의 공통 책임·계약·통합 규칙은 [루트 ARCHITECTURE](../ARCHITECTURE.md), 현재 작업은 [HANDOFF](../HANDOFF.md)에서 관리한다.
+
 | 항목 | 내용 |
 | --- | --- |
-| 문서 상태 | 채팅 중심 PLC 개발 에이전트 기준선 · 구현 전환 중 |
-| 최종 갱신 | 2026-10-05 |
+| 문서 상태 | 대형 XG5000 LD 제어 구조 타당성 인수 완료 · 선정 구조에 따른 제품 개발 기준선 |
+| 최종 갱신 | 2026-10-16 |
 | 제품 상태 | 개발 중 · production release 아님 |
 | 제품 브랜드 | 기동 / GIDONG |
 | 제품 형태 | 단일 설치·단일 실행 진입점, 내부적으로 격리된 멀티프로세스 sidecar |
 | 소스 구조 | 공개 `gidong-platform`, 비공개 `gidong-agent`·`gidong-plc-mcp`, 별도 vendor repository `controlstudio-xg5000-cli` |
 
-2026-09-08 방향 결정: 사용자는 채팅으로 일을 맡기고, Agent는 필요한 도구를 선택하여
-실제 결과를 받은 뒤 다음 도구 또는 답변을 결정한다. 선택·실행·완료·실패는 같은 대화에
-즉시 표시한다. 검증·복구·승인 관리 화면을 운영하는 것이 제품의 주 기능이 아니다.
-아래 요구는 목표이며, 기존 구현이 이미 이 요구를 만족한다는 뜻이 아니다.
-프로그램 생성·조회·수정은 LD 전용이다. 현재 직접 LD 구조 생성·부분 편집과 이를 사용하는
-제품 Agent의 실제 실행은 확보되지 않았다. 피연산자 한 개 변경을 일반 편집 완료로 취급하지 않는다.
-이 결정은 이전의 모든 요청에 고정 거래 절차를 요구하던 설계와
-“M30 → Keep → COMMITTED가 최우선 제품 완료선”이라는 계획을 대체한다.
+사용자는 채팅으로 PLC 개발·분석·수정을 맡긴다. 모델이 필요한 자료와 현재 LD를 읽고,
+설계·도구 선택·실패 수정·저장·마무리를 판단한다. 제품은 선택·실행·결과를 같은 대화에
+표시하고, 중단 후에도 요청과 실제 작업 이력을 이어간다.
+
+XG5000의 네이티브 LD 데이터와 구조 지도에 근거한 부분 편집 방식을 제품 개발 기준으로 인수했다.
+[인수 근거](../artifacts/ld-feasibility/native-structure-current.json)는 보존하며,
+구현 순서는 [구현 계획](docs/AGENT_PRODUCT_PLAN.md), 현재 진행은 [HANDOFF](../HANDOFF.md)를 따른다.
 
 ## 요구사항의 출처와 이번 작업 범위
 
@@ -29,52 +30,20 @@
 - 기존 에이전트가 정한 수단: Pydantic AI, 현재 Host/MCP/CLI 분할, 고정 compiler/mission,
   digest·nonce·Keep 절차, 200k 입력 하한은 사용자 요구와 구분한다. 현재 저장소/계약은
   보존할 데이터와 실제 재사용 가능성을 판단할 대상이지 반드시 유지할 설계가 아니다.
-- 이번 작업은 핵심 구현 타당성의 실제 실행과 그 결과에 연결된 PRD·완성품 계획이다.
-  전체 제품 재개발, 테스트 코드·mock·테스트 프레임워크·검증 기반 시설 증설은 하지 않는다.
+- 타당성 단계에서 실제 대형 LD의 앞·중간·끝 탐색, 여러 프로그램의 부분 변경·보존,
+  저장본 재열기와 선정 방식의 비용 비교를 수행했다. 다음 개발은 이 결과를 사용한 제품
+  구현이며, 기존 성공 근거를 반복하는 대신 신규 대상 준비·자료 조사·웹·SIM 연결을 완성한다.
 
 ## 0. 이 문서의 목적과 판정 규칙
 
-이 문서는 기동이 **누구의 어떤 문제를 해결하는 제품인지**, 사용자가 얻게 될
-결과가 무엇인지, 제품이 반드시 지켜야 할 안전 원칙과 출시 조건이 무엇인지,
-그리고 현재 어디까지 실제로 완료됐는지를 한곳에서 판단하기 위한 최상위
-제품 문서다.
-
-잘 만든 PRD는 기능 목록이나 개발 일지가 아니다. 제품 목표, 사용자 흐름,
-요구사항, 비범위, 성공 기준과 검증 상태를 연결하여 다음 질문에 같은 답을 주어야
-한다.
-
-1. 왜 이 제품을 만드는가?
-2. 누구를 위한 제품인가?
-3. 사용자는 어떤 결과를 얻는가?
-4. 제품은 무엇을 반드시 보장하고 무엇을 절대 해서는 안 되는가?
-5. 무엇을 근거로 기능 또는 제품을 완료라고 판정하는가?
-6. 현재 검증된 것과 아직 주장할 수 없는 것은 무엇인가?
-
-이 문서와 세부 문서가 충돌하면 제품 범위와 완료 판정에는 이 문서가 우선한다.
-다만 이 문서의 날짜가 있는 현황 기록은 최신의 명시적 제품 요구를 대체하지 않는다.
-현재 구현·검증 상태는 source와 runtime evidence로 판단하되, 아직 구현되지 않았거나
-검증되지 않은 범위를 제품 요구에서 제외하는 근거로 사용하지 않는다.
+이 문서는 제품 목표·사용자 흐름·요구사항·범위·완료 판정 기준을 정의한다.
+현재 적용·실행·검증 상태는 [HANDOFF](../HANDOFF.md)에서 관리한다.
+제품 범위와 완료 기준은 이 문서를 따르며, 최신 사용자 지시가 우선한다.
 세부 사용자 경험은 [GUI 명세](docs/CONTROLSTUDIO_GUI_HANDOFF.md)와
 [엔지니어링 작업 흐름](docs/ENGINEERING_COLLABORATION_WORKFLOWS.md), 실행 책임은
 [제품 아키텍처](docs/PRODUCT_ARCHITECTURE.md), 배포와 버전 결속은
 [제품 배포·버전 정책](docs/refactor/PRODUCT_DISTRIBUTION_AND_VERSIONING.md)을
 따른다.
-
-### 상태 용어
-
-| 상태 | 의미 |
-| --- | --- |
-| 요구됨 | 제품 범위에 포함되지만 구현 또는 검증이 끝나지 않음 |
-| 구현됨 | 제품 runtime 코드와 사용자 입력·출력 경로가 존재함 |
-| runtime 검증됨 | production 의존성으로 component load·schema·manifest·build를 확인함. 실제 장비 성공을 뜻하지 않음 |
-| 실제 검증됨 | 지정한 실제 IDE·시뮬레이터·장비 환경에서 직접 실행한 증거가 있음 |
-| 부분 완료 | 제한된 입력·버전·경로에서만 구현 또는 검증됨 |
-| `NOT_EXECUTED` | 안전 조건이나 실행 환경이 없어 현재 재실행하지 않았음 |
-| 미구현·미검증 | 완료로 주장하거나 사용자에게 활성화할 수 없음 |
-
-코드, API 또는 버튼이 존재하는 것만으로 제품 기능을 완료로 판정하지 않는다.
-PLC·IDE와 상호작용하는 기능은 지원 환경에서의 실제 증거가 있어야
-`실제 검증됨`으로 승격한다.
 
 ## 1. 제품 정의
 
@@ -257,6 +226,15 @@ device value, 상태 변화, trace와 알람의 읽기 관찰은 알려진 대�
 | LD-03 | 실제 편집 위치와 결과를 읽는다. | 프로그램과 LD 구조 위치를 식별해 필요한 구간을 읽고, 적용 후 바뀐 요소/연결을 확인한다. 저장·후속 변경에서도 같은 의미의 대상을 다시 찾는다. |
 | LD-04 | 사람이 읽고 후속 수정할 수 있다. | 운전 모드·시퀀스·인터록·알람의 관계가 LD 배치·기호·설명에 드러나고 XG5000에서 직접 읽고 편집할 수 있다. 단순 컴파일 통과만으로 가독성을 판정하지 않는다. |
 | LD-05 | 실제 수정본을 시험한다. | XG-SIM 입력/관측과 실행한 소스를 연결한다. 실패 전 파일을 재실행하거나 출력값을 강제로 맞춘 것을 로직 수정 성공으로 보고하지 않는다. |
+| LD-06 | 모델은 공통 LD 구조를 제어한다. | 접점·코일·명령·피연산자·포트·연결·분기·런을 조회하고 구조 변경을 지정한다. XG5000·GX Works·Rockwell의 실행 경로는 어댑터가 담당한다. 화면 픽셀, 키 누름 횟수, PID/HWND와 벤더의 행·열은 공통 편집 계약이나 영속 요소 ID가 아니다. |
+| LD-07 | 원래 명령과 대상 밖 내용을 보존한다. | 명령의 종류·타입·평가 순서, 라벨·주석·배치와 필요한 native 확장을 유지한다. 타이머·카운터·FB·다중 출력을 접점의 Boolean 식으로 강제 변환하지 않는다. 해석되지 않은 요소를 삭제하거나 인접 레코드를 실제 연결로 만들어내지 않는다. |
+| LD-08 | 읽은 소스와 지원 범위가 분명하다. | 현재 편집 버퍼, SDK 프로젝트 세션, 저장 파일, 현재 선택 범위를 구분한다. SDK·XML·접근성·런타임 통신의 존재만으로 LD 부분 편집 지원을 주장하지 않는다. 어댑터별 실제 부분 읽기·분기 내부 수정·연결 변경·저장 결과를 근거로 지원을 표시한다. |
+
+공통 계약은 전체 PLC 언어를 새로 컴파일하는 엔진이 아니라 모델이 기존 LD의 어느
+요소와 연결을 바꿀지 지정하는 도구다. 벤더의 공식 구조 교환 경로가 있으면 그 경로를
+우선 평가하고, 없으면 native LD 선택·편집과 구조 관측을 결합한다. 벤더마다 같은
+SDK나 같은 GUI 자동화 방식을 전제하지 않는다. 실제 비교와 채택 조건은
+[구현 계획](docs/AGENT_PRODUCT_PLAN.md)에 둔다. 이 요구의 추가는 구현 완료 주장이 아니다.
 
 ### 5.4 사용자 제품과 배포
 
@@ -267,16 +245,24 @@ device value, 상태 변화, trace와 알람의 읽기 관찰은 알려진 대�
 | UX-03 | 채팅 안에 실행 과정을 표시한다. | 도구 역할·대상·상태·경과 시간·짧은 결과를 표시한다. 선택과 실제 시작을 구분하고 상세 인자·원문은 접는다. |
 | UX-04 | 사용자가 개입할 수 있다. | 중단과 후속 지시를 같은 대화에서 처리한다. 중단 요청 수신과 실제 동작 정지는 구분한다. |
 | REL-01 | private source를 소비자 설치와 분리한다. | installer가 private Git repository를 clone하거나 source-control credential을 요구하지 않는다. |
-| REL-02 | 정확한 조합만 실행한다. | BOM이 Platform, Agent, MCP, contracts의 exact version, contract set, hash와 signature metadata를 고정한다. |
+| REL-02 | 정확한 조합만 실행한다. | BOM이 Platform, Agent, MCP, XG5000 CLI, contracts의 exact version, contract set, hash와 signature metadata를 고정한다. |
 | REL-03 | 전체 조합을 검증·업데이트한다. | 컴포넌트 하나가 바뀌어도 새 product release와 BOM을 만들고 packaged runtime handshake·readback을 다시 확인한다. |
 | REL-04 | 사용자 데이터를 binary와 분리한다. | 업데이트·rollback·제거가 원본 문서, workspace와 audit를 기본적으로 삭제하지 않는다. |
 | REL-05 | 공개 Platform을 독립 개발할 수 있다. | 공개 contracts만으로 production build가 가능하고 private component는 versioned protocol artifact로 결합한다. |
 
 ## 6. 제품·저장소·프로세스 경계
 
-아래는 기존 구현의 책임 배치이며 이번에 채택 설계나 실행 성공이 확정됐다는 뜻이 아니다.
-실제 LD 실행 경로에 맞춰 교체할 수 있다. 변경 시 사용자 원본·요청 권한·실제 변경 결과의
-소유권은 유지하되 Pydantic AI나 현재 sidecar/저널 분할 자체를 필수 제품 요구로 고정하지 않는다.
+아래는 선정한 실행 구조와 현재 이행 상태다. Agent는 모델의 판단·대화 루프를, Host는
+작업공간·요청 범위·MCP client를, MCP는 도구 연결을, 벤더 CLI/backend는 IDE 동작을 맡는다.
+MCP는 에이전트의 지능이나 고정 제작 절차가 아니다. CLI는 개별 PLC 프로젝트마다 만드는
+것이 아니라 XG5000·GX Works·Studio 5000 같은 IDE 계열별 실행 어댑터다. 버전·CPU별
+지원 동작은 capability로 구분하며 현재는 XG5000 경로만 구현돼 있다.
+
+공통 읽기·참조 편집·저장 계약을 유지하고 실제 native 해석·조작은 벤더 영역에 둔다.
+현재 Agent/Host의 일부 XG 전용 처리와 MCP/CLI 역의존은 정리할 잔여이며 분리 완료가 아니다.
+공개 구현·사용 경험과 비교한 선택 이유 및 현행 차이는
+[제품 아키텍처](docs/PRODUCT_ARCHITECTURE.md)의 Agent·MCP·벤더 CLI 절과 구현 계획의 실행·변경 경계를 따른다.
+Pydantic AI나 특정 transport/저널 분할 자체를 필수 제품 요구로 고정하지 않는다.
 
 ```mermaid
 flowchart LR
@@ -293,7 +279,7 @@ flowchart LR
 | 저장소 | 공개 범위 | 소유하는 권위 | 소유하지 않는 것 |
 | --- | --- | --- | --- |
 | `gidong-platform` | public | Launcher/UI/Host, 공개 contracts, 사용자 원본·workspace, conversation/run, target binding, approval, `ExecutionBroker`, audit, process supervision, packaging/BOM | private prompt·RAG 정책, vendor native 실행 구현, MCP operation truth |
-| `gidong-agent` | private | 공식 Pydantic AI sidecar, 모델 adapter, prompt, 추론·계획, 파생 RAG index/ranking/eval, Agent checkpoint | raw MCP, PID/HWND/endpoint, approval secret, 원본 문서 authority, 실제 변경 성공 판정 |
+| `gidong-agent` | private | Pydantic AI sidecar, 모델 adapter, prompt, 조사·설계·도구 선택·실제 결과에 따른 완료 판단, 파생 RAG, Agent checkpoint | raw MCP, PID/HWND/endpoint, approval secret, 원본 문서 authority, 관측되지 않은 변경 사실 생성 |
 | `gidong-plc-mcp` | private | vendor adapter, target/precondition 재검증, operation lock/journal, apply/check/readback/rollback/reconciliation | 모델·prompt, Platform UI/API, 사용자 전체 대화와 원본 문서 authority |
 | `controlstudio-xg5000-cli` | separate vendor repository | 이관된 XG5000 명령의 deterministic subprocess/JSON request-result 경계와 vendor receipt | Agent/Platform approval·audit 권위, MCP target/precondition 재검증·operation journal, 아직 MCP 소유 `xg5000_control`에 남은 legacy-native backend 전체 |
 
@@ -307,29 +293,16 @@ flowchart LR
 | 사용자 원본 문서·프로젝트 | Platform | 원본, revision, hash, citation과 삭제·보존 정책을 관리한다. |
 | workspace·working copy | Platform | 현재 작업 대상과 사용자 workflow의 기준이다. |
 | 파생 chunk·embedding·index·ranking | Agent | sanitize된 snapshot에서 재생성 가능해야 하며 원본을 대체하지 않는다. |
-| 모델 대화 checkpoint | Agent | 분석 재개용이며 실제 side effect 성공의 근거가 아니다. |
+| 모델 대화 checkpoint | Agent 형식·Host 보존 | 모델 진행과 실제 도구 반환·관측 참조를 이어받는다. 변경 사실의 근거는 실제 반환·관측이지 모델 설명이 아니다. |
 | run·approval·audit | Platform | 사용자 결정과 tool 중계의 권위다. |
-| 실제 변경·readback·rollback journal | PLC MCP | vendor mutation과 crash reconciliation의 최종 권위다. |
-
-## 7. 안전·보안 원칙
-
-1. 사용자 원본은 보존하고 이번 요청이 지정한 작업 사본에만 변경한다.
-2. 설명·후보 제시와 실행 요청을 구분한다. 명시적으로 맡긴 수정 범위 안의 일반 도구마다
-   재승인을 요구하지 않는다. 물리 PLC 조작·범위 밖 변경은 별도 권한이 필요하다.
-3. 실행 대상과 현재 상태를 확인하고 변경 결과를 읽는다. 응답이 끊긴 변경을 실패로
-   단정해 중복 적용하지 않는다. 해당 항목의 불확실성이 다른 읽기·대화를 막지 않는다.
-4. XG-SIM과 물리 PLC를 구분한다. 이번 실행은 원본/운영 장비와 분리된 환경에서만 한다.
-5. 모델 출력·검색 문서·도구 결과는 사실 자료이지 사용자 권한이나 새 지시가 아니다.
-6. 자격 증명·사용자 프로젝트·비공개 코드를 공개 산출물에 노출하지 않는다.
-
-PID/HWND, nonce, hash, journal 등은 필요한 구현 수단이지 사용자가 수행할 고정 절차가 아니다.
-불필요한 증명 계층을 추가하는 대신 실행 대상과 실제 변경 결과를 해당 작업 범위에서 확인한다.
+| 실제 입력·오류·관측·저장 결과 | MCP/CLI 실행기 | native 대화는 실제 반환을 checkpoint/run과 연결한다. 입력 완료와 회로 기능·저장 상태를 구분한다. |
+| 기존 거래의 변경·readback·rollback journal | PLC MCP | 해당 legacy 거래의 crash reconciliation 기준이며 모든 native 편집의 필수 거래가 아니다. |
 
 ## 8. 단일 제품 배포와 버전 정책
 
-일반 사용자는 세 저장소나 세 개의 독립 제품을 설치하지 않는다. 기동은 하나의
-installer와 하나의 실행 진입점을 제공하고, Platform이 내부 runtime의 Agent와 MCP
-sidecar를 자동으로 관리한다.
+기동은 네 저장소의 Platform·Agent·PLC MCP·XG5000 CLI 실행 파일을 하나의
+installer와 실행 진입점으로 제공한다. Platform이 Agent와 MCP sidecar를 관리하고,
+MCP는 설치된 CLI를 호출한다.
 
 소비자 설치 시 private repository에서 코드를 내려받거나 빌드하지 않는다. private
 release pipeline이 각 저장소를 독립 production build하여 만든 immutable artifact를
@@ -340,6 +313,7 @@ BOM으로 결속하고, 검증된 조합만 installer에 넣는다.
 - Platform version
 - Agent version
 - PLC MCP version
+- XG5000 CLI version
 - API/Event/Agent/MCP Product/Workspace/Audit contract version
 - 위 exact 조합을 나타내는 Product release version
 
@@ -354,39 +328,27 @@ packaged runtime handshake와 사용자 경로 readback을 다시 검증한다. 
 실행 파일과 package namespace의 최종 GIDONG 전환은 별도 호환성 마이그레이션과
 회귀 검증을 거쳐야 한다.
 
-## 9. 현재 상태 — 2026-10-05
+## 9. 검증 근거
 
-과거의 완료 표와 실행 기록은 현재 성공 근거로 사용하지 않는다. 아래는 이번 재판단에서
-직접 확인한 범위다. 상세 채택 근거와 다음 실행은 [구현 계획](docs/AGENT_PRODUCT_PLAN.md)에 둔다.
+선정한 LD 제어 구조의 [인수 근거](../artifacts/ld-feasibility/native-structure-current.json)와
+[과거 실증 기록](PRD.history-20261016.md#9-현재-상태--2026-10-11)을 보존한다.
+현재 적용·실행·검증 상태는 [HANDOFF](../HANDOFF.md)를 따른다.
 
-| 항목 | 현재 관측 | 판정 |
-| --- | --- | --- |
-| 복구 가능한 소스 기준 | Platform `019ecee`, Agent `9fef68f`, MCP `7b3efc2`, CLI `57dc226`에 현재 정리 상태를 커밋했다. | 소스 기준 확보; 제품 실행 성공 아님 |
-| 설치 환경 | `C:\\XG5000\\XG5000.exe` 파일 버전 4.82.1.0 (2026-07-20). 권한 있는 프로세스 조회에서는 Session 1의 XG5000 세 프로세스와 응답 중인 창 핸들을 확인했다. | 설치/프로세스 관측; 편집기 접근·LD 변경 미확인 |
-| 화면 제어 | 창 목록은 일부 반환됐지만 실행/재조회가 시간 초과됐다. JavaScript 세션 초기화 후에도 목록 조회가 시간 초과됐다. | 접근 경로 미확보; LD 편집이 기술적으로 불가능하다는 근거 아님 |
-| 기존 LD 편집 함수 | `apply_ld_operand`는 기존 요소 하나의 operand 대화상자를 열고 값 변경을 비교한다. 접점·분기·코일 구조 생성/부분 편집 구현이 아니다. | 일반 LD 작성 경로로 채택하지 않음 |
-| 신규/구조적 LD 작업 | 이번 실행에서 실제 생성·변경·저장한 결과물 없음. | 미구현·미확인 |
-| 자연어 제품 Agent | 이번 실행에서 사용자 요청→LD 작성→XG-SIM→모델 수정→수정본 재시험을 수행하지 못함. | 미완료 |
-| 배포·물리 PLC·다른 벤더 | 이번 타당성 작업에서 실행하지 않음. | 원래 제품/후속 범위 유지; 완료 주장 없음 |
+## 10. 제품 개발 순서와 후속 배포 범위
 
-삭제한 MNE/IL 생성 경로는 복구하거나 fallback으로 다시 연결하지 않는다.
-아직 증거가 없는 일반 LD 편집을 UI 버튼·manifest·단위 검사 통과로 활성 기능이라 부르지 않는다.
+현재 개발 순서는 [구현 계획](docs/AGENT_PRODUCT_PLAN.md#구현-순서와-완료-조건)의 구현 단계를 따른다.
+G0~G5는 후속 배포·지원 범위를 정리한다. 현재 오프라인 제품 구현은 확보한 LD 제어
+기준선과 기존 작업본 대화 실행을 사용해 진행한다.
 
-## 10. 남은 제품 로드맵과 승격 게이트
+### P0 — LD 제어 기준선: 인수 완료
 
-현재 개발 순서는 [구현 계획](docs/AGENT_PRODUCT_PLAN.md)의 실제 불확실성 해소 순서다.
-G0~G5는 최종 제품 범위를 유지하기 위한 배포·기능 구분이며, LD 핵심 실행 전에 모두
-통과해야 하는 선행 절차가 아니다.
-
-### P0 — LD 자체를 실제로 생성·부분 수정하는 실행 경로
-
-- 원본과 분리된 프로젝트에서 LD 구조 생성, 접점/분기 삽입·변경, 검사·저장·다시 읽기를 수행한다.
-- 실제 편집 API 또는 관측한 LD 편집 명령으로 최소 구현을 만든다. 도구 실행 로그가 아닌
-  대상 LD의 변화로 판단한다. 필요한 동작이 없으면 기존 한-operand 경로를 확장 포장하지 않는다.
+- 현재 LD 캡처, 구조 지도·부분 조회, 요소·포트 참조 편집과 native 묶음 실행을 사용한다.
+- 모델이 실제 결과를 보고 수정·저장·재개하며, 해당 범위의 성공 근거는 §9와 구현 계획에 둔다.
 
 ### P1 — 대표 자연어 요청과 모델 주도 수정·재시험
 
-- 일반 사용자 요청을 같은 도구 호출/결과 루프로 연결하고 실제 웹에서 실행한다.
+- 기존 작업본의 native 대화를 재사용해 신규 프로젝트·프로그램 준비와 자료 조사를 연결한다.
+- 일반 사용자 요청을 실제 웹에서 실행하고 도구 선택·진행·오류·결과를 같은 대화에 표시한다.
 - 대동인덱스 요구에 따라 조사·설계·생성·부분 수정·XG-SIM을 수행한다. 쉬운 예제로
   요구를 대체하지 않는다. 실패를 모델에 반환해 수정한 소스로 재시험한다.
 - 작은 문맥 모델의 부분 조회·작업 지속, 후속 변경과 중단·재개를 실제로 확인한다.
@@ -400,7 +362,7 @@ G0~G5는 최종 제품 범위를 유지하기 위한 배포·기능 구분이며
 ### G0 — 공개·배포 기반 확정
 
 - 실제 법적 저작권자 명칭 확정 및 Platform `LICENSE`/`NOTICE` 최종 확인
-- GitHub 조직 `gidong-controls`의 세 repository visibility와 branch protection 확정
+- GitHub 조직 `gidong-controls`의 제품 repository visibility와 branch protection 확정
 - GIDONG 제품 표시명과 기존 `controlstudio_*` 기술 식별자의 호환성 마이그레이션 결정
 - production code signing, immutable artifact registry, signed manifest, updater와 전체 BOM rollback
 - clean Windows 설치·업데이트·제거 및 사용자 데이터 보존 행렬 통과
@@ -443,15 +405,6 @@ G0~G5는 최종 제품 범위를 유지하기 위한 배포·기능 구분이며
 
 ## 11. 성공 지표
 
-### 절대 통과 지표
-
-- 승인되지 않았거나 stale/mismatched target인 mutation의 실행: **0건**
-- 결과 불명확 상태를 성공으로 표시하거나 자동 재실행한 mutation: **0건**
-- 승인된 mutation의 Platform audit와 MCP journal 연결 누락: **0건**
-- public reachable history의 private 코드·secret·사용자 데이터: **0건**
-- BOM과 다른 component·contract·hash를 실행한 release: **0건**
-- 지원한다고 표시한 PLC capability 중 지정 실기 gate를 통과하지 않은 항목: **0건**
-
 ### 제품 효과 지표
 
 pilot 전에 대표 LS 프로젝트와 실제 사용자 작업 집합을 고정하고 다음을 측정한다.
@@ -463,9 +416,6 @@ pilot 전에 대표 LS 프로젝트와 실제 사용자 작업 집합을 고정�
 - rollback 성공률과 불명확 operation의 안전한 quarantine 비율
 - 사용자가 AI 답변을 수정·거절한 이유와 반복 오류율
 
-목표 수치는 임의로 정하지 않고 대표 corpus와 pilot baseline을 만든 뒤 release별로
-고정한다. 단, 위 절대 통과 지표는 pilot 결과와 무관하게 완화하지 않는다.
-
 ## 12. 릴리스 완료 기준
 
 어떤 capability든 다음 증거가 모두 있어야 지원 완료로 표시할 수 있다.
@@ -476,7 +426,7 @@ pilot 전에 대표 LS 프로젝트와 실제 사용자 작업 집합을 고정�
 
 1. 지원 vendor·제품·버전·환경과 비지원 범위가 명시돼 있다.
 2. 공개 계약과 production 구현이 일치하고 각 component가 실제 runtime으로 로드된다.
-3. 세 packaged artifact의 exact BOM 조합으로 사용자 경로와 readback이 끝까지 동작한다.
+3. 네 packaged artifact의 exact BOM 조합으로 사용자 경로와 readback이 끝까지 동작한다.
 4. IDE·simulator·PLC 기능이면 지정 실제 환경의 replay 가능한 evidence가 있다.
 5. target mismatch, stale state, crash, timeout, tamper와 denial 경로가 fail-closed다.
 6. 요청한 변경·저장과 필요한 검사의 실제 결과가 확인된다. 독립 재열기·시뮬레이션은

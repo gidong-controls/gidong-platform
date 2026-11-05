@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
 from typing import Literal
 from urllib.parse import quote
 
@@ -58,13 +59,19 @@ class ControlStudioLauncher:
         token_store: LaunchTokenStore,
         elevation_broker: ElevationBroker | None = None,
         elevation_receipts: ElevationReceiptStore | None = None,
+        development_web: bool = False,
+        web_url_sink: Callable[[str], None] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
+        if development_web and os.environ.get("CONTROLSTUDIO_RELEASE_CHANNEL") != "development":
+            raise ValueError("The development web UI requires the development release channel")
+        self._ui_base_url = "http://127.0.0.1:5173" if development_web else CANONICAL_BASE_URL
         self._settings = settings
         self._health_probe = health_probe
         self._host_starter = host_starter
         self._ui_opener = ui_opener
+        self._web_url_sink = web_url_sink
         self._instance_guard = instance_guard
         self._token_store = token_store
         self._elevation_broker = elevation_broker or NoopElevationBroker()
@@ -115,6 +122,7 @@ class ControlStudioLauncher:
             write_launcher_diagnostic(
                 "elevation handoff started before launcher instance lock"
             )
+            host_retention_verified = False
             try:
                 self._wait_until_ready(None)
                 launch_token = self._token_store.load()
@@ -125,6 +133,7 @@ class ControlStudioLauncher:
                     )
                 self._verify_launch_token_until_ready(launch_token, None)
                 self._verify_elevated_host_retention()
+                host_retention_verified = True
                 if open_ui:
                     self._open_elevation_handoff_under_instance_guard(
                         launch_token,
@@ -142,21 +151,22 @@ class ControlStudioLauncher:
                 self._elevation_receipts.finish(
                     observation,
                     elevation_relaunch_requested=True,
-                    host_ready=False,
-                    elevated_host_retention_verified=False,
+                    host_ready=host_retention_verified,
+                    elevated_host_retention_verified=host_retention_verified,
                     outcome="failed",
                 )
                 raise
 
         host_only_environment = _take_host_only_environment()
 
-        with self._instance_guard:
+        with ExitStack() as startup_guard:
+            startup_guard.enter_context(self._instance_guard)
             initial = self._health_probe.probe()
             write_launcher_diagnostic(
                 f"health initial state={initial.state.value} detail={initial.detail!r}"
             )
             process: HostProcess | None = None
-            launch_succeeded = False
+            host_retention_verified = False
             try:
                 if initial.state is HealthState.UNEXPECTED:
                     raise UnexpectedServiceError(initial.detail)
@@ -205,6 +215,14 @@ class ControlStudioLauncher:
 
                 self._verify_launch_token_until_ready(launch_token, process)
                 self._verify_elevated_host_retention()
+                host_retention_verified = True
+
+                # Retain the Host after verified readiness. Browser bootstrap
+                # can fail independently, and another web launch must be able
+                # to issue a fresh ticket while this one is still waiting.
+                # Keep Host creation and its second health probe serialized.
+                if ui_mode in {"web", "web-url"}:
+                    startup_guard.close()
 
                 if open_ui:
                     self._open_ui(
@@ -218,13 +236,12 @@ class ControlStudioLauncher:
                             )
                         ),
                     )
-                launch_succeeded = True
             except BaseException:
                 self._elevation_receipts.finish(
                     observation,
                     elevation_relaunch_requested=False,
-                    host_ready=False,
-                    elevated_host_retention_verified=False,
+                    host_ready=host_retention_verified,
+                    elevated_host_retention_verified=host_retention_verified,
                     outcome="failed",
                 )
                 raise
@@ -238,7 +255,7 @@ class ControlStudioLauncher:
                 )
             finally:
                 if process is not None:
-                    if launch_succeeded:
+                    if host_retention_verified:
                         release_process_started_by_launcher(process)
                     else:
                         stop_process_started_by_launcher(process)
@@ -265,7 +282,11 @@ class ControlStudioLauncher:
         launch_token: str,
         ui_mode: UiMode,
     ) -> None:
-        """Serialize parent-side UI handoff after the elevated child exits."""
+        """Serialize app windows while allowing independent web handoffs."""
+
+        if ui_mode in {"web", "web-url"}:
+            self._open_ui(launch_token, ui_mode=ui_mode, reuse_existing=False)
+            return
 
         deadline = self._monotonic() + self._settings.startup_timeout_seconds
         while self._monotonic() < deadline:
@@ -299,13 +320,16 @@ class ControlStudioLauncher:
             or handoff.readiness_receipt is None
         ):
             raise UnexpectedServiceError(handoff.detail)
-        url = f"{CANONICAL_BASE_URL}/#handoff_ticket={quote(handoff.ticket, safe='')}"
+        url = f"{self._ui_base_url}/#handoff_ticket={quote(handoff.ticket, safe='')}"
         if ui_mode == "app":
             self._ui_opener.open(url)
         elif ui_mode == "web":
             self._ui_opener.open_browser(url)
         elif ui_mode == "web-url":
-            print(url, flush=True)
+            if self._web_url_sink is None:
+                print(url, flush=True)
+            else:
+                self._web_url_sink(url)
         else:
             raise ValueError(f"unsupported UI mode: {ui_mode}")
         self._wait_for_browser_bootstrap(launch_token, handoff.readiness_receipt)

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { hostApi } from "../api/client";
 import type { KnowledgeSource } from "../api/types";
 import { Icon } from "./Icon";
+import { blankIntakeBrief, createIntakeDraft, initializeIntakeDraftState, listIntakeDrafts, saveIntakeDraft, selectIntakeDraft, type ProjectIntakeDraft } from "../newProjectIntakeDraft";
 
 export interface NewProjectBrief {
   supplementalRequirements?: string;
@@ -17,10 +18,11 @@ export interface NewProjectBrief {
 
 interface NewProjectBriefPanelProps {
   initialBrief?: NewProjectBrief;
+  draftContext: string;
   busy: boolean;
   onCancel: () => void;
-  onManageKnowledge: () => void;
-  onSubmit: (brief: NewProjectBrief) => void;
+  onManageKnowledge: (context: { scopeKey: string; label: string }) => void;
+  onSubmit: (brief: NewProjectBrief, createProject: boolean, simulate: boolean, intakeScopeKey: string) => void;
 }
 
 const ATTACHMENT_KIND_LABELS: Record<
@@ -65,41 +67,49 @@ export function ProjectFlowStepper({
 
 export function NewProjectBriefPanel({
   initialBrief,
+  draftContext,
   busy,
   onCancel,
   onManageKnowledge,
   onSubmit,
 }: NewProjectBriefPanelProps) {
+  const [initialDraftState] = useState(() => initializeIntakeDraftState(() => localStorage, draftContext, initialBrief));
+  const [intakeDraft, setIntakeDraft] = useState<ProjectIntakeDraft | null>(initialDraftState.draft);
+  const [draftOptions, setDraftOptions] = useState(initialDraftState.drafts);
+  const [draftStorageError, setDraftStorageError] = useState(initialDraftState.error);
+  const draftBrief = intakeDraft?.brief ?? initialBrief ?? blankIntakeBrief();
   const [supplementalRequirements, setSupplementalRequirements] = useState(
-    initialBrief?.supplementalRequirements ?? "",
+    draftBrief.supplementalRequirements ?? "",
   );
   const [projectName, setProjectName] = useState(
-    initialBrief?.projectName ?? "",
+    draftBrief.projectName ?? "",
   );
   const [machinePurpose, setMachinePurpose] = useState(
-    initialBrief?.machinePurpose ?? "",
+    draftBrief.machinePurpose ?? "",
   );
-  const [sequence, setSequence] = useState(initialBrief?.sequence ?? "");
+  const [sequence, setSequence] = useState(draftBrief.sequence ?? "");
   const [hardwareAndIo, setHardwareAndIo] = useState(
-    initialBrief?.hardwareAndIo ?? "",
+    draftBrief.hardwareAndIo ?? "",
   );
   const [safetyAndInterlocks, setSafetyAndInterlocks] = useState(
-    initialBrief?.safetyAndInterlocks ?? "",
+    draftBrief.safetyAndInterlocks ?? "",
   );
   const [operatingModes, setOperatingModes] = useState(
-    initialBrief?.operatingModes ?? "",
+    draftBrief.operatingModes ?? "",
   );
   const [performanceAndAcceptance, setPerformanceAndAcceptance] = useState(
-    initialBrief?.performanceAndAcceptance ?? "",
+    draftBrief.performanceAndAcceptance ?? "",
   );
   const [attachmentSourceIds, setAttachmentSourceIds] = useState<string[]>(
-    initialBrief?.attachmentSourceIds ?? [],
+    draftBrief.attachmentSourceIds ?? [],
   );
+  const attachmentScopeKey = intakeDraft?.scopeKey ?? "";
+  const [createProject, setCreateProject] = useState(false);
+  const [simulate, setSimulate] = useState(false);
   const [attachmentSources, setAttachmentSources] = useState<KnowledgeSource[]>([]);
   const [attachmentLoading, setAttachmentLoading] = useState(false);
   const [attachmentError, setAttachmentError] = useState("");
   const [attachmentRefresh, setAttachmentRefresh] = useState(0);
-  const [safetyTouched, setSafetyTouched] = useState(false);
   const [optionalDetailsOpen, setOptionalDetailsOpen] = useState(
     Boolean(
       initialBrief?.sequence ||
@@ -110,11 +120,44 @@ export function NewProjectBriefPanel({
   );
   const projectNameReady = Boolean(projectName.trim());
   const machinePurposeReady = Boolean(machinePurpose.trim());
-  const safetyReady = Boolean(safetyAndInterlocks.trim());
   const briefReady =
-    projectNameReady && machinePurposeReady && safetyReady && !busy;
+    projectNameReady && machinePurposeReady && !busy && Boolean(intakeDraft) && !draftStorageError;
+
+  const currentDraftBrief: NewProjectBrief = { supplementalRequirements, projectName, machinePurpose,
+    sequence, hardwareAndIo, safetyAndInterlocks, operatingModes, performanceAndAcceptance, attachmentSourceIds };
+  useEffect(() => {
+    if (!intakeDraft) return;
+    try {
+      saveIntakeDraft(localStorage, { ...intakeDraft, brief: currentDraftBrief });
+      setDraftStorageError("");
+    } catch {
+      setDraftStorageError("초안을 보존하지 못했습니다. 브라우저 저장 공간을 확인해 주세요.");
+    }
+  }, [attachmentScopeKey, supplementalRequirements, projectName, machinePurpose, sequence, hardwareAndIo,
+    safetyAndInterlocks, operatingModes, performanceAndAcceptance, attachmentSourceIds]);
+  const useDraft = (draft: ProjectIntakeDraft) => {
+    setIntakeDraft(draft);
+    setSupplementalRequirements(draft.brief.supplementalRequirements ?? "");
+    setProjectName(draft.brief.projectName); setMachinePurpose(draft.brief.machinePurpose);
+    setSequence(draft.brief.sequence); setHardwareAndIo(draft.brief.hardwareAndIo);
+    setSafetyAndInterlocks(draft.brief.safetyAndInterlocks); setOperatingModes(draft.brief.operatingModes);
+    setPerformanceAndAcceptance(draft.brief.performanceAndAcceptance);
+    setAttachmentSourceIds(draft.brief.attachmentSourceIds);
+    setCreateProject(false); setSimulate(false); setAttachmentSources([]);
+    setDraftOptions(listIntakeDrafts(localStorage, draftContext));
+  };
+  const chooseDraft = (scopeKey?: string) => {
+    if (!intakeDraft) return;
+    try {
+      saveIntakeDraft(localStorage, { ...intakeDraft, brief: currentDraftBrief });
+      useDraft(scopeKey ? selectIntakeDraft(localStorage, draftContext, scopeKey)
+        : createIntakeDraft(localStorage, draftContext));
+      setDraftStorageError("");
+    } catch { setDraftStorageError("초안을 전환하지 못했습니다. 기존 자료는 보존합니다."); }
+  };
 
   useEffect(() => {
+    if (!attachmentScopeKey || draftStorageError) return;
     const controller = new AbortController();
     setAttachmentLoading(true);
     setAttachmentError("");
@@ -125,7 +168,11 @@ export function NewProjectBriefPanel({
         limit: 200,
         signal: controller.signal,
       })
-      .then((page) => setAttachmentSources(page.items))
+      .then((page) => setAttachmentSources(page.items.filter((source) =>
+        source.kind !== "project_document" ||
+        source.scope === `project:${attachmentScopeKey}` ||
+        attachmentSourceIds.includes(source.sourceId),
+      )))
       .catch((error: unknown) => {
         if (!controller.signal.aborted) {
           setAttachmentError(
@@ -141,7 +188,7 @@ export function NewProjectBriefPanel({
         }
       });
     return () => controller.abort();
-  }, [attachmentRefresh]);
+  }, [attachmentRefresh, attachmentScopeKey, attachmentSourceIds, draftStorageError]);
 
   const availableAttachmentIds = new Set(
     attachmentSources.map((source) => source.sourceId),
@@ -181,7 +228,6 @@ export function NewProjectBriefPanel({
         className="new-project-brief-form"
         onSubmit={(event) => {
           event.preventDefault();
-          setSafetyTouched(true);
           if (!briefReady) {
             return;
           }
@@ -195,7 +241,7 @@ export function NewProjectBriefPanel({
             operatingModes: operatingModes.trim(),
             performanceAndAcceptance: performanceAndAcceptance.trim(),
             attachmentSourceIds,
-          });
+          }, createProject, createProject && simulate, attachmentScopeKey);
         }}
       >
         {initialBrief?.supplementalRequirements && (
@@ -213,6 +259,20 @@ export function NewProjectBriefPanel({
             </label>
           </details>
         )}
+        {draftStorageError && <p role="alert">{draftStorageError}</p>}
+        {!initialBrief && <div className="brief-attachment-heading">
+          <label><span>보존된 작성 초안</span>
+            <select value={attachmentScopeKey} disabled={busy || !intakeDraft}
+              onChange={(event) => chooseDraft(event.target.value)}>
+              {draftOptions.map((draft, index) => <option key={draft.scopeKey} value={draft.scopeKey}>
+                {draft.scopeKey === attachmentScopeKey ? projectName || "새 초안" : draft.brief.projectName || "이름 없는 초안"} · 초안 {index + 1}
+              </option>)}
+            </select>
+          </label>
+          <button type="button" className="button secondary-button" disabled={busy || !intakeDraft}
+            onClick={() => chooseDraft()}>새 초안</button>
+          <small>닫거나 취소해도 요구사항과 등록 자료는 보존합니다. 새 초안은 자료를 별도로 모읍니다.</small>
+        </div>}
         <label>
           <span>프로젝트 이름</span>
           <input
@@ -240,37 +300,22 @@ export function NewProjectBriefPanel({
         </label>
 
         <label className="brief-wide">
-          <span>안전·인터록·운영 제약 · 필수</span>
+          <span>안전·인터록·운영 조건 · 선택</span>
           <textarea
             value={safetyAndInterlocks}
             maxLength={4000}
             rows={4}
-            required
             aria-label="안전·인터록·운영 제약"
-            aria-invalid={safetyTouched && !safetyReady}
             aria-describedby="safety-and-interlocks-requirement"
             disabled={busy}
             placeholder="예: 도어가 열리면 축 정지, 클램프 확인 전 이송 금지, 수동·자동 모드 필요"
-            onBlur={() => setSafetyTouched(true)}
-            onChange={(event) => {
-              setSafetyAndInterlocks(event.target.value);
-              if (event.target.value.trim()) {
-                setSafetyTouched(true);
-              }
-            }}
+            onChange={(event) => setSafetyAndInterlocks(event.target.value)}
           />
           <small
             id="safety-and-interlocks-requirement"
-            className={
-              safetyTouched && !safetyReady
-                ? "brief-field-requirement brief-field-error"
-                : "brief-field-requirement"
-            }
-            role={safetyTouched && !safetyReady ? "alert" : undefined}
+            className="brief-field-requirement"
           >
-            {safetyTouched && !safetyReady
-              ? "계획을 시작하려면 안전 조건이나 현재 확인되지 않은 위험을 반드시 적어 주세요."
-              : "필수 · 확인된 조건이 없다면 “현재 확인된 안전 조건 없음 · 현장 위험성 평가 필요”라고 적어 주세요."}
+            알고 있는 추가 조건이 있으면 적어 주세요. 동작 설명에 포함했다면 비워도 됩니다.
           </small>
         </label>
 
@@ -347,8 +392,14 @@ export function NewProjectBriefPanel({
               <button
                 className="button secondary-button"
                 type="button"
-                disabled={busy}
-                onClick={onManageKnowledge}
+                disabled={busy || !intakeDraft || !projectNameReady || Boolean(draftStorageError)}
+                onClick={() => {
+                  if (!intakeDraft) return;
+                  try {
+                    saveIntakeDraft(localStorage, { ...intakeDraft, brief: currentDraftBrief });
+                    onManageKnowledge({ scopeKey: attachmentScopeKey, label: projectName.trim() });
+                  } catch { setDraftStorageError("자료를 가져오기 전에 초안을 보존하지 못했습니다."); }
+                }}
               >
                 <Icon name="database" size={15} />
                 자료 관리
@@ -398,7 +449,7 @@ export function NewProjectBriefPanel({
                   <span>
                     <strong>{source.title}</strong>
                     <small>
-                      {kindLabel} · {source.scope}
+                      {kindLabel} · {source.scope.startsWith("project:intake-") ? "새 프로젝트 첨부 자료" : source.scope}
                       {source.vendor ? ` · ${source.vendor}` : ""}
                       {source.productFamily
                         ? ` · ${source.productFamily}`
@@ -444,10 +495,21 @@ export function NewProjectBriefPanel({
         </fieldset>
         </details>
 
+        <label>
+          <input type="checkbox" checked={createProject} disabled={busy}
+            onChange={(event) => setCreateProject(event.target.checked)} />
+          자료 조사 후 새 프로젝트를 만들고 LD 작성·검사·저장까지 진행
+        </label>
+        {createProject && <label>
+          <input type="checkbox" checked={simulate} disabled={busy}
+            onChange={(event) => setSimulate(event.target.checked)} />
+          XG-SIM 시험과 결과에 따른 수정·재시험까지 진행
+        </label>}
         <div className="new-project-brief-note">
           <Icon name="shield" size={17} />
           <span>
-            먼저 계획을 만듭니다. 아직 프로젝트 파일이나 PLC는 변경하지 않습니다.
+            {createProject ? "별도 작업 사본에 새 프로젝트를 작성합니다. 필요한 조건은 대화에서 확인합니다."
+              : "요구사항과 자료를 검토하고 계획을 작성합니다."}
           </span>
         </div>
 
@@ -465,7 +527,7 @@ export function NewProjectBriefPanel({
             type="submit"
             disabled={!briefReady}
           >
-            {busy ? "계획 대화 준비 중…" : "계획서 초안 만들기"}
+            {busy ? "대화 준비 중…" : createProject ? "새 프로젝트 작성 시작" : "계획서 초안 만들기"}
           </button>
         </div>
       </form>

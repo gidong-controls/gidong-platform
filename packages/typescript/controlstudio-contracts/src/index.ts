@@ -56,6 +56,7 @@ export interface EngineeringSystemStatus extends ServiceStatus {
   targetRevisionId?: string;
   sessionVerified: boolean;
   readReady?: boolean;
+  nativeLdEditReady?: boolean;
   offlineCandidateEligible?: boolean;
   identityAssurance?:
     | "strong_readback"
@@ -552,6 +553,7 @@ export interface ConversationMessage {
   content: string;
   createdAt: string;
   runId?: string;
+  runState?: RunState | null;
   operationId?: string;
   status: MessageStatus;
   workflow?: "engineering" | "new_project_planning";
@@ -572,7 +574,7 @@ export interface ConversationMessage {
  */
 export interface ConversationCompletionV1 {
   schemaVersion: "1";
-  status: "not_claimed" | "phase_complete" | "goal_complete" | "blocked";
+  status: "not_claimed" | "phase_complete" | "goal_complete" | "request_complete" | "blocked";
   phase: "planning" | "engineering";
   basis:
     | "no_completion_evidence"
@@ -585,7 +587,12 @@ export interface ConversationCompletionV1 {
     | "engineering_cycle_budget_exhausted"
     | "engineering_objective_achieved"
     | "engineering_blocked"
-    | "invalid_engineering_mission";
+    | "invalid_engineering_mission"
+    | "native_request_blocked"
+    | "native_request_needs_user"
+    | "native_completion_unverified"
+    | "native_request_assessed"
+    | "native_project_goal_assessed";
   sourceMessageId?: string | null;
   sourceDigest?: string | null;
 }
@@ -604,6 +611,15 @@ export interface Conversation {
   engineeringTarget?: EngineeringTargetBinding | null;
   engineeringHandoff?: EngineeringConversationHandoff | null;
   engineeringMission?: EngineeringMission | null;
+  requestScope?: EngineeringChangeRequestScope | null;
+  allowSimulator?: boolean;
+  nativeExecution?: {
+    sourceRunId: string;
+    requestMessageId?: string | null;
+    state: string;
+    resumable: boolean;
+    completedToolCalls: number;
+  } | null;
   latestNativeProject?: {
     nativeProjectId: string;
     state: "allocated" | "executing" | "completed" | "failed" | "quarantined";
@@ -681,6 +697,14 @@ interface SendMessageRequestBase {
   operationId: string;
   workflow?: "engineering" | "new_project_planning";
   projectBrief?: ProjectBrief;
+  resumeNativeRunId?: string;
+  allowSimulator?: boolean;
+}
+
+export interface NativeExecutionResumeRequest {
+  allowSimulator?: boolean;
+  operationId: string;
+  sourceRunId: string;
 }
 
 /**
@@ -866,6 +890,9 @@ export interface ModelSettings {
   customHeaderNames: string[];
   timeoutSeconds: number;
   reasoningEffort?: ModelReasoningEffort | null;
+  /** Client estimated total input policy; null is Auto, not provider capacity. */
+  /** Strict positive safe integer, at most Number.MAX_SAFE_INTEGER; null means Auto. */
+  clientInputLimitTokens?: number | null;
   hasApiKey: boolean;
   externalEndpoint: boolean;
   updatedAt?: string;
@@ -879,6 +906,9 @@ export interface SaveModelSettingsRequest {
   customHeaders?: Record<string, string>;
   timeoutSeconds: number;
   reasoningEffort?: ModelReasoningEffort | null;
+  /** Client estimated total input policy; null is Auto, not provider capacity. */
+  /** Strict positive safe integer, at most Number.MAX_SAFE_INTEGER; null means Auto. */
+  clientInputLimitTokens?: number | null;
   externalModelConsent: boolean;
   insecureHttpConsent: boolean;
 }
@@ -913,6 +943,9 @@ export interface EngineeringProgram {
 
 export interface EngineeringProgramsResponse {
   programs: EngineeringProgram[];
+  /** Comparison context only; never native or edit authority. */
+  catalogBindingDigest?: string | null;
+  catalogSource?: "saved_working_copy" | null;
 }
 
 export interface EngineeringProgramFocusResponse {
@@ -954,6 +987,28 @@ export interface ChangeTargetFocusResponse {
 export interface XG5000InstancesResponse {
   status: "ready" | "unavailable";
   instances: XG5000Instance[];
+}
+
+export interface CloseIdleXG5000Request {
+  pid: number;
+  hwnd: number;
+  processCreateTime: number;
+  confirmIdleClose: true;
+  timeoutSeconds?: number;
+}
+
+export interface CloseIdleXG5000InstanceResponse {
+  operation: "xg5000.close_idle_instance";
+  verified: true;
+  status: "closed";
+  idleBinding: { pid: number; hwnd: number; process_create_time: number; executable: string };
+  closeAction: "wm_close";
+  promptObserved: false;
+  modalObserved: false;
+  noSavePromptClicked: false;
+  processExited: true;
+  processTerminated: false;
+  receiptDigest: string;
 }
 
 export type LaunchIdleXG5000LaunchMode = "when_none" | "new_instance";
@@ -1073,6 +1128,7 @@ export interface LocalWorkspace {
   engineeringSystem: "XG5000";
   createdAt: string;
   source: {
+    displayName?: string | null;
     originalPath: string;
     capturedPath: string;
     sha256: string;
@@ -1101,6 +1157,13 @@ export interface LocalWorkspace {
         reviewedPlanDigest: string;
         buildBundleId: string;
         buildReceiptDigest: string;
+        savedProjectSha256: string;
+        receiptDigest: string;
+      }
+    | {
+        schema: "controlstudio-native-creation-provenance/v1";
+        workspaceId: string;
+        creationReceiptDigest: string;
         savedProjectSha256: string;
         receiptDigest: string;
       };
@@ -1436,6 +1499,7 @@ export interface ChangeReceiptAcknowledgementResponse {
 
 export type HostEventType =
   | "conversation.created"
+  | "conversation.native_project_prepared"
   | "conversation.engineering_handoff_created"
   | "change.simulation_finalized"
   | "conversation.engineering_session_rebound"
@@ -1501,7 +1565,7 @@ export interface HostEventEnvelope<TPayload = Record<string, unknown>> {
 export interface ProblemDetails {
   title?: string;
   status?: number;
-  detail?: string | Array<Record<string, unknown>>;
+  detail?: string | Record<string, unknown> | Array<Record<string, unknown>>;
   code?: string;
 }
 

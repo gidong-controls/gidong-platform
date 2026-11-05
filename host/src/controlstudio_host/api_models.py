@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
+from controlstudio_contracts.model_input_policy import MAX_CLIENT_INPUT_LIMIT_TOKENS
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -99,6 +100,7 @@ class EngineeringSystemStatusV1(ServiceStatusV1):
     project_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     session_verified: bool = False
     read_ready: bool = False
+    native_ld_edit_ready: bool = False
     offline_candidate_eligible: bool = False
     target_workspace_id: str | None = Field(default=None, min_length=1, max_length=256)
     target_revision_id: str | None = Field(default=None, min_length=1, max_length=256)
@@ -1601,7 +1603,7 @@ class ConversationCompletionV1(ApiModel):
     """
 
     schema_version: Literal["1"] = "1"
-    status: Literal["not_claimed", "phase_complete", "goal_complete", "blocked"]
+    status: Literal["not_claimed", "phase_complete", "goal_complete", "request_complete", "blocked"]
     phase: Literal["planning", "engineering"]
     basis: Literal[
         "no_completion_evidence",
@@ -1615,6 +1617,11 @@ class ConversationCompletionV1(ApiModel):
         "engineering_objective_achieved",
         "engineering_blocked",
         "invalid_engineering_mission",
+        "native_request_blocked",
+        "native_request_needs_user",
+        "native_completion_unverified",
+        "native_request_assessed",
+        "native_project_goal_assessed",
     ]
     source_message_id: str | None = None
     source_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -1626,6 +1633,8 @@ class ConversationMessageV1(ApiModel):
     content: str
     created_at: datetime
     run_id: str | None = None
+    run_state: Literal["idle", "analyzing", "waiting_for_user", "waiting_for_approval", "approved_pending_execution",
+                       "executing", "verifying", "completed", "cancelled", "failed", "quarantined"] | None = None
     operation_id: str | None = None
     status: Literal["streaming", "complete", "failed"] = "complete"
     workflow: Literal["engineering", "new_project_planning"] | None = None
@@ -1722,6 +1731,14 @@ class ConversationNativeProjectV1(ApiModel):
     updated_at: datetime
 
 
+class ConversationNativeExecutionV1(ApiModel):
+    source_run_id: str
+    request_message_id: str | None = None
+    state: str
+    resumable: bool
+    completed_tool_calls: int = Field(ge=0)
+
+
 class ConversationV1(ApiModel):
     conversation_id: str
     title: str
@@ -1731,6 +1748,9 @@ class ConversationV1(ApiModel):
     engineering_handoff: EngineeringConversationHandoffV1 | None = None
     engineering_mission: EngineeringMissionV1 | None = None
     latest_native_project: ConversationNativeProjectV1 | None = None
+    native_execution: ConversationNativeExecutionV1 | None = None
+    request_scope: Literal["analysis_only", "offline_candidate_revision", "permanent_offline_revision"] | None = None
+    allow_simulator: bool = False
     # The Host always supplies this projection in current responses.  Keeping
     # a deterministic default makes the additive field backward-compatible
     # for legacy model constructors and persisted response fixtures while
@@ -1839,9 +1859,13 @@ class SendMessageRequestV1(ApiModel):
         
     ] = "offline_native_reopen"
     offline_operand_mission: OfflineOperandMissionV1 | None = None
+    resume_native_run_id: str | None = Field(default=None, min_length=1, max_length=128)
+    allow_simulator: bool = False
 
     @model_validator(mode="after")
     def validate_project_brief_workflow(self) -> SendMessageRequestV1:
+        if self.allow_simulator and self.change_request_scope != "permanent_offline_revision":
+            raise ValueError("Local simulator verification requires the native working-copy scope")
         if (
             self.change_request_scope == "permanent_offline_revision"
             and "verification_scope" not in self.model_fields_set
@@ -1849,6 +1873,10 @@ class SendMessageRequestV1(ApiModel):
             self.verification_scope = "offline_native_check_only"
         if self.workflow == "engineering" and self.project_brief is not None:
             raise ValueError("projectBrief is only valid for new_project_planning")
+        if self.resume_native_run_id is not None and (
+            self.change_request_scope != "permanent_offline_revision"
+        ):
+            raise ValueError("native resume requires the bound permanent offline request")
         pass
         pass
         pass
@@ -1856,11 +1884,12 @@ class SendMessageRequestV1(ApiModel):
         pass
         pass
         pass
-        if self.workflow == "new_project_planning" and self.change_request_scope is not None:
-            raise ValueError("changeRequestScope is only valid for engineering messages")
+        if self.workflow == "new_project_planning" and self.change_request_scope not in {None, "permanent_offline_revision"}:
+            raise ValueError("planning accepts consultation or an explicit native creation request")
         if (
             self.workflow != "engineering"
             and self.verification_scope != "offline_native_reopen"
+            and self.change_request_scope != "permanent_offline_revision"
         ):
             raise ValueError("verificationScope is only valid for engineering messages")
         pass
@@ -1912,6 +1941,11 @@ class EngineeringMissionResumeRequestV1(ApiModel):
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", value):
             raise ValueError("operation_id contains invalid characters")
         return value
+
+
+class NativeExecutionResumeRequestV1(EngineeringMissionResumeRequestV1):
+    source_run_id: str = Field(min_length=1, max_length=128)
+    allow_simulator: bool = False
 
 
 class EngineeringMissionBlockedStepReverifyRequestV1(ApiModel):
@@ -3015,6 +3049,9 @@ class ModelSettingsV1(ApiModel):
     custom_header_names: list[str]
     timeout_seconds: float
     reasoning_effort: ReasoningEffortV1 | None = None
+    client_input_limit_tokens: int | None = Field(
+        default=None, gt=0, le=MAX_CLIENT_INPUT_LIMIT_TOKENS, strict=True
+    )
     has_api_key: bool
     external_endpoint: bool
     updated_at: datetime | None = None
@@ -3129,6 +3166,9 @@ class SaveModelSettingsRequestV1(ApiModel):
     custom_headers: dict[str, str] | None = None
     timeout_seconds: float = Field(default=60, ge=1, le=3600)
     reasoning_effort: ReasoningEffortV1 | None = None
+    client_input_limit_tokens: int | None = Field(
+        default=None, gt=0, le=MAX_CLIENT_INPUT_LIMIT_TOKENS, strict=True
+    )
     external_model_consent: bool = False
     insecure_http_consent: bool = False
 
@@ -3622,6 +3662,7 @@ class ResumeLocalWorkspaceRequestV1(ApiModel):
 
 
 class LocalWorkspaceSourceV1(ApiModel):
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
     original_path: str
     captured_path: str
     sha256: str
@@ -3665,7 +3706,8 @@ class NewBuildWorkspaceProvenanceV1(ApiModel):
     receipt_schema: Literal[
         "controlstudio-new-build-workspace-provenance/v1"
     ] = Field(alias="schema")
-    pass
+    # Compatibility reader for already captured legacy builds.
+    native_project_id: str | None = Field(default=None, pattern=r"^[0-9a-f-]{36}$")
     reviewed_plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     build_bundle_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     build_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -3674,11 +3716,11 @@ class NewBuildWorkspaceProvenanceV1(ApiModel):
 
     @model_validator(mode="after")
     def validate_provenance(self) -> NewBuildWorkspaceProvenanceV1:
-        if str(uuid.UUID(None)) != None:
+        if self.native_project_id is None or str(uuid.UUID(self.native_project_id)) != self.native_project_id:
             raise ValueError("new-build provenance nativeProjectId is not canonical")
         unsigned = {
             "schema": self.receipt_schema,
-            "native_project_id": None,
+            "native_project_id": self.native_project_id,
             "reviewed_plan_digest": self.reviewed_plan_digest,
             "build_bundle_id": self.build_bundle_id,
             "build_receipt_digest": self.build_receipt_digest,
@@ -3686,6 +3728,25 @@ class NewBuildWorkspaceProvenanceV1(ApiModel):
         }
         if _canonical_sha256(unsigned) != self.receipt_digest:
             raise ValueError("new-build provenance digest mismatched")
+        return self
+
+
+class NativeCreationWorkspaceProvenanceV1(ApiModel):
+    receipt_schema: Literal["controlstudio-native-creation-provenance/v1"] = Field(alias="schema")
+    workspace_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
+    creation_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    saved_project_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_provenance(self) -> NativeCreationWorkspaceProvenanceV1:
+        if str(uuid.UUID(self.workspace_id)) != self.workspace_id:
+            raise ValueError("native creation workspace identity is not canonical")
+        unsigned = {"schema": self.receipt_schema, "workspace_id": self.workspace_id,
+                    "creation_receipt_digest": self.creation_receipt_digest,
+                    "saved_project_sha256": self.saved_project_sha256}
+        if _canonical_sha256(unsigned) != self.receipt_digest:
+            raise ValueError("native creation provenance digest mismatched")
         return self
 
 
@@ -3701,6 +3762,7 @@ class LocalWorkspaceV1(ApiModel):
     provenance: (
         ControllerRestoreWorkspaceProvenanceV1
         | NewBuildWorkspaceProvenanceV1
+        | NativeCreationWorkspaceProvenanceV1
         | None
     ) = None
 
@@ -3709,10 +3771,12 @@ class LocalWorkspaceV1(ApiModel):
         expected_provenance_type = {
             "local_file": type(None),
             "restored_from_controller": ControllerRestoreWorkspaceProvenanceV1,
-            "new_build": NewBuildWorkspaceProvenanceV1,
+            "new_build": (NewBuildWorkspaceProvenanceV1, NativeCreationWorkspaceProvenanceV1),
         }[self.source_kind]
         if not isinstance(self.provenance, expected_provenance_type):
             raise ValueError("workspace source kind and provenance disagree")
+        if isinstance(self.provenance, NativeCreationWorkspaceProvenanceV1) and self.provenance.workspace_id != self.workspace_id:
+            raise ValueError("native creation provenance belongs to another workspace")
         if (
             self.provenance is not None
             and self.provenance.saved_project_sha256 != self.source.sha256
@@ -3890,10 +3954,13 @@ class EngineeringProgramV1(ApiModel):
 
 class EngineeringProgramsV1(ApiModel):
     programs: list[EngineeringProgramV1]
+    catalog_binding_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    catalog_source: Literal["saved_working_copy"] | None = None
 
 
 class EngineeringProgramFocusRequestV1(ApiModel):
     display_intent: Literal["LD"]
+    catalog_binding_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class EngineeringProgramFocusV1(ApiModel):
@@ -4071,6 +4138,16 @@ class ReviewedNoSaveCloseResponseV1(ApiModel):
     close: dict[str, Any]
     receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     next_step: Literal["explicit_user_confirmed_workspace_open_required"]
+
+
+class CloseIdleXG5000RequestV1(ApiModel):
+    """Explicit standalone close of one exact blank instance; no change contract."""
+
+    pid: StrictInt = Field(gt=0)
+    hwnd: StrictInt = Field(gt=0)
+    process_create_time: float = Field(gt=0, allow_inf_nan=False)
+    confirm_idle_close: Literal[True]
+    timeout_seconds: float = Field(default=12, ge=0.1, le=15, allow_inf_nan=False)
 
 
 class CloseIdleXG5000InstanceRequestV1(ExecuteChangeTransactionRequestV1):

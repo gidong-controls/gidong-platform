@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import hmac
 import ipaddress
@@ -10,6 +11,8 @@ import math
 import os
 import re
 import secrets
+import sqlite3
+import tempfile
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
@@ -29,6 +32,7 @@ from . import __version__
 from .agent_client import (
     _SAFE_PRIOR_DESIGN_FAILURE_REASON_CODES,
     _SAFE_PRIOR_DESIGN_RUN_ID,
+    AgentSidecarCrashed,
     AgentSupervisor,
     SubprocessAgentClient,
     _bounded_design_failure_diagnostics,
@@ -37,9 +41,15 @@ from .agent_client import (
     _validated_approval_handoff,
     build_historical_evidence_bundle,
     project_historical_evidence,
+    sidecar_failure_detail,
+    sidecar_failure_diagnostic,
 )
 from .agent_protocol import (
-    AgentProtocolError, scrub_agent_tool_result, validated_transcript_checkpoint,
+    AgentProtocolError,
+    native_checkpoint_boundary,
+    scrub_agent_tool_result,
+    validated_native_checkpoint_snapshot,
+    validated_transcript_checkpoint,
 )
 from .agent_runtime import (
     AgentOutputContractDiagnostic,
@@ -47,8 +57,122 @@ from .agent_runtime import (
     AgentRuntimeDiagnostic,
     AgentRuntimeError,
     ModelCapabilityResult,
+    provider_failure_detail,
+    validated_native_project_start,
 )
-from .api_models import AgentStatusV1, AttachXG5000RequestV1, AttachXG5000ResponseV1, BootstrapV1, BrowserSessionV1, ChangeApprovalV1, ChangeDecisionRequestV1, ChangeDecisionResponseV1, ChangeExecutionResponseV1, ChangePlanContract, ChangePlanV1, ChangeReceiptAcknowledgementV1, ChangeReconciliationResponseV1, ChangeTargetFocusV1, ChangeTargetIdentityV1, ChangeTransactionCreatedV1, ChangeTransactionV1, CloseIdleXG5000InstanceAttentionV1, CloseIdleXG5000InstanceRequestV1, CloseIdleXG5000InstanceResponseV1, ConfirmKnowledgeMemoryRequestV1, ConnectLSControllerRequestV1, ControllerRestoreBeginRequestV1, ControllerRestoreCompletedV1, ControllerRestoreCompleteRequestV1, ControllerRestoreHandoffV1, ControllerRestorePreflightRequestV1, ControllerRestorePreflightV1, ConversationCompletionV1, ConversationCreateV1, ConversationMessageV1, ConversationPageV1, ConversationSummaryV1, ConversationV1, CreateChangeTransactionRequestV1, CreateKnowledgeMemoryRequestV1, EngineeringAnalysisArtifactV1, EngineeringConversationHandoffV1, EngineeringLocationFocusRequestV1, EngineeringLocationFocusV1, EngineeringLocationV2, EngineeringMissionBlockedStepReverifyRequestV1, EngineeringMissionResumeRequestV1, EngineeringMissionSnapshotV1, EngineeringMissionSummaryV1, EngineeringMissionV1, EngineeringProgramFocusRequestV1, EngineeringProgramFocusV1, EngineeringProgramsV1, EngineeringProgramV1, EngineeringSystemStatusV1, EngineeringTargetBindingV1, ExecuteChangeTransactionRequestV1, HostRestartResponseV1, HostStatusV1, ImportKnowledgeRequestV1, KnowledgeCitationV1, KnowledgeImportResultV1, KnowledgeSearchHitV1, KnowledgeSearchResponseV1, KnowledgeSourcePageV1, KnowledgeSourceV1, KnowledgeSummaryV1, LauncherHandoffV1, LauncherReadinessV1, LaunchIdleXG5000AttentionV1, LaunchIdleXG5000RequestV1, LaunchIdleXG5000ResponseV1, LocalWorkspaceCompareV1, LocalWorkspaceV1, LSControllerConnectionStatusV1, LSControllerEndpointV1, LSControllerObservationV1, LSControllerReadV1, LSControllerTraceV1, MCPStatusV1, ModelCapabilityFlagsV1, ModelCapabilityResultV1, ModelSettingsV1, OfflineOperandMissionV1, OpenLocalWorkspaceRequestV1, OpenLocalWorkspaceResponseV1, ProductFeatureStatusV1, ProjectBriefV1, ProjectPlanArtifactV1, ProjectPlanReviewRequestV1, ProjectPlanReviewResponseV1, ProjectPlanReviewV1, ProjectPlanRevisionDeltaV1, ReadLSControllerRequestV1, ReconcileChangeTransactionRequestV1, ResumeLocalWorkspaceRequestV1, ReviewedNoSaveCloseRequestV1, ReviewedNoSaveCloseResponseV1, RunCancellationV1, SaveModelSettingsRequestV1, SendMessageRequestV1, SendMessageResponseV1, ServiceStatusV1, TraceLSControllerRequestV1, WorkspaceSummaryV1, XG5000InstancesV1, XG5000ProjectFileSelectionV1, XG5000ProjectLaunchV1, canonical_engineering_mission_snapshot, is_hardware_free_m_operand_target
+from .api_models import (
+    AgentStatusV1,
+    AttachXG5000RequestV1,
+    AttachXG5000ResponseV1,
+    BootstrapV1,
+    BrowserSessionV1,
+    ChangeApprovalV1,
+    ChangeDecisionRequestV1,
+    ChangeDecisionResponseV1,
+    ChangeExecutionResponseV1,
+    ChangePlanContract,
+    ChangePlanV1,
+    ChangeReceiptAcknowledgementV1,
+    ChangeReconciliationResponseV1,
+    ChangeTargetFocusV1,
+    ChangeTargetIdentityV1,
+    ChangeTransactionCreatedV1,
+    ChangeTransactionV1,
+    CloseIdleXG5000InstanceAttentionV1,
+    CloseIdleXG5000InstanceRequestV1,
+    CloseIdleXG5000InstanceResponseV1,
+    CloseIdleXG5000RequestV1,
+    ConfirmKnowledgeMemoryRequestV1,
+    ConnectLSControllerRequestV1,
+    ControllerRestoreBeginRequestV1,
+    ControllerRestoreCompletedV1,
+    ControllerRestoreCompleteRequestV1,
+    ControllerRestoreHandoffV1,
+    ControllerRestorePreflightRequestV1,
+    ControllerRestorePreflightV1,
+    ConversationCompletionV1,
+    ConversationCreateV1,
+    ConversationMessageV1,
+    ConversationNativeExecutionV1,
+    ConversationPageV1,
+    ConversationSummaryV1,
+    ConversationV1,
+    CreateChangeTransactionRequestV1,
+    CreateKnowledgeMemoryRequestV1,
+    EngineeringAnalysisArtifactV1,
+    EngineeringConversationHandoffV1,
+    EngineeringLocationFocusRequestV1,
+    EngineeringLocationFocusV1,
+    EngineeringLocationV2,
+    EngineeringMissionBlockedStepReverifyRequestV1,
+    EngineeringMissionResumeRequestV1,
+    EngineeringMissionSnapshotV1,
+    EngineeringMissionSummaryV1,
+    EngineeringMissionV1,
+    EngineeringProgramFocusRequestV1,
+    EngineeringProgramFocusV1,
+    EngineeringProgramsV1,
+    EngineeringProgramV1,
+    EngineeringSessionV1,
+    EngineeringSystemStatusV1,
+    EngineeringTargetBindingV1,
+    ExecuteChangeTransactionRequestV1,
+    HostRestartResponseV1,
+    HostStatusV1,
+    ImportKnowledgeRequestV1,
+    KnowledgeCitationV1,
+    KnowledgeImportResultV1,
+    KnowledgeSearchHitV1,
+    KnowledgeSearchResponseV1,
+    KnowledgeSourcePageV1,
+    KnowledgeSourceV1,
+    KnowledgeSummaryV1,
+    LauncherHandoffV1,
+    LauncherReadinessV1,
+    LaunchIdleXG5000AttentionV1,
+    LaunchIdleXG5000RequestV1,
+    LaunchIdleXG5000ResponseV1,
+    LocalWorkspaceCompareV1,
+    LocalWorkspaceV1,
+    LSControllerConnectionStatusV1,
+    LSControllerEndpointV1,
+    LSControllerObservationV1,
+    LSControllerReadV1,
+    LSControllerTraceV1,
+    MCPStatusV1,
+    ModelCapabilityFlagsV1,
+    ModelCapabilityResultV1,
+    ModelSettingsV1,
+    NativeExecutionResumeRequestV1,
+    OfflineOperandMissionV1,
+    OpenLocalWorkspaceRequestV1,
+    OpenLocalWorkspaceResponseV1,
+    ProductFeatureStatusV1,
+    ProjectBriefV1,
+    ProjectPlanArtifactV1,
+    ProjectPlanAttachmentV1,
+    ProjectPlanReviewRequestV1,
+    ProjectPlanReviewResponseV1,
+    ProjectPlanReviewV1,
+    ProjectPlanRevisionDeltaV1,
+    ReadLSControllerRequestV1,
+    ReconcileChangeTransactionRequestV1,
+    ResumeLocalWorkspaceRequestV1,
+    ReviewedNoSaveCloseRequestV1,
+    ReviewedNoSaveCloseResponseV1,
+    RunCancellationV1,
+    SaveModelSettingsRequestV1,
+    SendMessageRequestV1,
+    SendMessageResponseV1,
+    ServiceStatusV1,
+    TraceLSControllerRequestV1,
+    WorkspaceSummaryV1,
+    XG5000InstancesV1,
+    XG5000ProjectFileSelectionV1,
+    XG5000ProjectLaunchV1,
+    canonical_engineering_mission_snapshot,
+    is_hardware_free_m_operand_target,
+)
 from .change_execution import (
     ChangeExecutionFailedSafely,
     ChangeExecutionOutcomeUncertain,
@@ -73,9 +197,27 @@ from .database_upgrade import protect_database_upgrades
 from .execution_broker import (
     ExecutionBroker,
     MCPExecutionBroker,
+    mcp_rejection_projection,
     validate_workspace_compare_result,
 )
-from .api_models import ProjectPlanAttachmentV1
+from .failure_location import host_failure_location_detail, safe_host_failure_location
+from .native_completion import (
+    NativeCompletionLedger,
+    completion_review_current,
+    completion_state_key,
+)
+from .native_recovery_wait import owned_launch_wait_requires_park
+from .native_workspace_host import (
+    NativeWorkspaceExecution,
+    latest_native_checkpoint,
+    latest_native_checkpoint_summary,
+    native_admission_generation,
+    native_checkpoint_matches_request,
+    native_followup_checkpoint,
+    persist_native_checkpoint_with_index,
+    saved_project_observation,
+)
+
 pass
 pass
 from .knowledge import (
@@ -88,6 +230,8 @@ from .knowledge import (
     PageRecord,
 )
 from .knowledge_ingestion import (
+    MAX_KNOWLEDGE_FILE_BYTES,
+    SUPPORTED_KNOWLEDGE_SUFFIXES,
     KnowledgeIngestionError,
     extract_local_knowledge_document,
 )
@@ -98,7 +242,9 @@ from .mcp_client import (
     MCPToolContractError,
     MCPToolError,
     MCPToolRejectedError,
+    MCPTransportError,
 )
+
 pass
 from .model_connection import (
     MODEL_PROTOCOL,
@@ -131,6 +277,7 @@ from .models import (
     RunState,
     StoredEvent,
 )
+
 pass
 pass
 pass
@@ -180,6 +327,76 @@ from .windows_dialogs import (
     select_knowledge_document_file,
     select_xg5000_project_file,
 )
+
+_SAFE_HOST_SQLITE_STAGES = frozenset({
+    "host_run", "native_checkpoint_restore", "native_checkpoint_resume_persist",
+    "native_checkpoint_persist", "native_tool_receipt_persist",
+    "native_saved_binding_persist", "native_event_persist",
+})
+_SAFE_STORE_SQLITE_STAGES = frozenset({
+    "connection_open", "connection_foreign_keys", "connection_busy_timeout",
+    "native_checkpoint_connect", "native_checkpoint_upsert", "native_checkpoint_commit",
+})
+_SAFE_SQLITE_ERROR_NAMES = frozenset({
+    "SQLITE_ERROR", "SQLITE_INTERNAL", "SQLITE_PERM", "SQLITE_ABORT", "SQLITE_BUSY",
+    "SQLITE_LOCKED", "SQLITE_NOMEM", "SQLITE_READONLY", "SQLITE_INTERRUPT", "SQLITE_IOERR",
+    "SQLITE_CORRUPT", "SQLITE_NOTFOUND", "SQLITE_FULL", "SQLITE_CANTOPEN", "SQLITE_PROTOCOL",
+    "SQLITE_EMPTY", "SQLITE_SCHEMA", "SQLITE_TOOBIG", "SQLITE_CONSTRAINT", "SQLITE_MISMATCH",
+    "SQLITE_MISUSE", "SQLITE_NOLFS", "SQLITE_AUTH", "SQLITE_FORMAT", "SQLITE_RANGE", "SQLITE_NOTADB",
+    "SQLITE_ERROR_MISSING_COLLSEQ", "SQLITE_ERROR_RETRY", "SQLITE_ERROR_SNAPSHOT",
+    "SQLITE_BUSY_RECOVERY", "SQLITE_BUSY_SNAPSHOT", "SQLITE_BUSY_TIMEOUT",
+    "SQLITE_LOCKED_SHAREDCACHE", "SQLITE_LOCKED_VTAB", "SQLITE_ABORT_ROLLBACK",
+    "SQLITE_READONLY_RECOVERY", "SQLITE_READONLY_CANTLOCK", "SQLITE_READONLY_ROLLBACK",
+    "SQLITE_READONLY_DBMOVED", "SQLITE_READONLY_CANTINIT", "SQLITE_READONLY_DIRECTORY",
+    "SQLITE_CONSTRAINT_CHECK", "SQLITE_CONSTRAINT_COMMITHOOK", "SQLITE_CONSTRAINT_FOREIGNKEY",
+    "SQLITE_CONSTRAINT_FUNCTION", "SQLITE_CONSTRAINT_NOTNULL", "SQLITE_CONSTRAINT_PRIMARYKEY",
+    "SQLITE_CONSTRAINT_TRIGGER", "SQLITE_CONSTRAINT_UNIQUE", "SQLITE_CONSTRAINT_VTAB",
+    "SQLITE_CONSTRAINT_ROWID", "SQLITE_CONSTRAINT_PINNED", "SQLITE_CONSTRAINT_DATATYPE",
+})
+
+
+def _host_sqlite_boundary(stage: str, callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Tag only an actual local SQLite exception; preserve its original identity and outcome."""
+    try:
+        return callback(*args, **kwargs)
+    except sqlite3.Error as exc:
+        try:
+            exc.controlstudio_host_sqlite_stage = stage if stage in _SAFE_HOST_SQLITE_STAGES else "host_run"
+        except Exception:
+            pass
+        raise
+
+
+def _safe_host_sqlite_failure(exc: BaseException) -> dict[str, Any] | None:
+    if not isinstance(exc, sqlite3.Error):
+        return None
+    # No exception text, SQL, parameters, traceback or provider fields enter this projection.
+    code = getattr(exc, "sqlite_errorcode", None)
+    if type(code) is not int or not 0 < code <= 65535 or not 1 <= (code & 255) <= 28:
+        code = None
+    name = getattr(exc, "sqlite_errorname", None)
+    if (type(name) is not str or name not in _SAFE_SQLITE_ERROR_NAMES
+            or code is None or getattr(sqlite3, name, None) != code):
+        name = "unknown"
+    stage = getattr(exc, "controlstudio_host_sqlite_stage", None)
+    if type(stage) is not str or stage not in _SAFE_HOST_SQLITE_STAGES:
+        stage = "host_run"
+    result = {"stage": stage, "sqliteErrorCode": code, "sqliteErrorName": name}
+    store_stage = getattr(exc, "controlstudio_store_stage", None)
+    if type(store_stage) is str and store_stage in _SAFE_STORE_SQLITE_STAGES:
+        result["storeStage"] = store_stage
+    return result
+
+
+def _host_sqlite_failure_detail(diagnostic: Mapping[str, Any]) -> str:
+    return (
+        "Host SQLite diagnostic: "
+        f"stage={diagnostic['stage']}; sqliteErrorCode={diagnostic['sqliteErrorCode'] if diagnostic['sqliteErrorCode'] is not None else 'unknown'}; "
+        f"sqliteErrorName={diagnostic['sqliteErrorName']}"
+        + (f"; storeStage={diagnostic['storeStage']}" if "storeStage" in diagnostic else "")
+        + "."
+    )
+
 
 API_VERSION = "1"
 SERVICE_NAME = "controlstudio-host"
@@ -759,9 +976,11 @@ _AGENT_TOOL_FAILURE_REASON_BY_KIND: dict[str, str] = {
 }
 
 
-def _agent_tool_failure_projection(payload: Mapping[str, Any]) -> dict[str, str]:
+def _agent_tool_failure_projection(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Project current and historical failures without replaying raw diagnostics."""
 
+    rejection = mcp_rejection_projection(payload.get("mcp_rejection"))
+    diagnostic = {"mcp_rejection": rejection} if rejection is not None else {}
     reason_code = payload.get("reason_code")
     if isinstance(reason_code, str) and reason_code in _AGENT_TOOL_FAILURE_REASON_BY_CODE:
         projected = {
@@ -770,13 +989,14 @@ def _agent_tool_failure_projection(payload: Mapping[str, Any]) -> dict[str, str]
         }
         if reason_code == "change_proposal_invalid" and payload.get("stage") == "proposal":
             projected["stage"] = "proposal"
-        return projected
+        return {**projected, **diagnostic}
     failure_kind = payload.get("failure_kind")
     return {
         "failure_reason": _AGENT_TOOL_FAILURE_REASON_BY_KIND.get(
             str(failure_kind),
             "도구 실행을 완료하지 못했습니다.",
-        )
+        ),
+        **diagnostic,
     }
 
 
@@ -1171,6 +1391,46 @@ _LEGACY_PROJECT_BRIEF_FOOTER = (
     "구분한 검토 가능한 프로젝트 계획서를 작성해 주세요."
 )
 _LEGACY_UNKNOWN_VALUE = "아직 모름"
+
+
+def _workspace_engineering_conversation_session_id(workspace_id: str, revision_id: str) -> str:
+    """Server-owned file-only conversation identity; never native authority."""
+    target_digest = hashlib.sha256(
+        json.dumps([workspace_id, revision_id], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"workspace:{target_digest}"
+
+_ENGINEERING_TARGET_PRECONDITION_MESSAGE = (
+    "이 대화가 생성된 XG5000 대상과 현재 대상이 다릅니다. "
+    "현재 대상에서 새 엔지니어링 대화를 시작해 주세요."
+)
+
+
+def _native_checkpoint_target_matches(current: object, binding: object, *, file_only: bool = False) -> bool:
+    """Compare target fields only; callers retain recovery ownership authority."""
+    if not isinstance(current, dict) or not isinstance(binding, dict):
+        return False
+    if any(not isinstance(binding.get(key), str) or not binding[key]
+            for key in ("workspace_id", "revision_id", "project_path")):
+        return False
+    if any(current.get(key) != binding[key] for key in ("workspace_id", "revision_id")):
+        return False
+    if not file_only:
+        return current.get("project_path") == binding["project_path"]
+    try:
+        path = current.get("working_path")
+        return (isinstance(path, str) and bool(path)
+            and _normalized_workspace_path(path) == _normalized_workspace_path(binding["project_path"]))
+    except (ValueError, TypeError, OSError):
+        return False
+
+def _native_resume_latest_attempt_matches_checkpoint(detail, source, source_message, latest, store) -> bool:
+    """One read-only admission predicate shared by Web projection and resume."""
+    if latest is None or source is None or source_message is None:
+        return False
+    return store.native_resume_latest_attempt_matches_checkpoint(
+        conversation_id=detail.id, source_run_id=source.id, latest_run_id=latest.id,
+        expected_error_detail=_ENGINEERING_TARGET_PRECONDITION_MESSAGE)
 
 
 class AgentRunPreconditionError(RuntimeError):
@@ -2297,6 +2557,8 @@ def _conversation_completion_v1(
     *,
     project_plan_authority_digests: tuple[str, str] | None = None,
     engineering_mission: EngineeringMission | None = None,
+    native_completion_current_state: dict[str, Any] | None = None,
+    native_completion_saved_sha256: str | None = None,
 ) -> ConversationCompletionV1:
     """Project goal state separately from completion of one Agent turn.
 
@@ -2312,6 +2574,34 @@ def _conversation_completion_v1(
             if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
             else None
         )
+
+    latest_answer = next((item for item in reversed(detail.messages)
+                          if item.role is MessageRole.ASSISTANT), None)
+    if latest_answer is not None and latest_answer.metadata.get("native_ld_execution") is True:
+        latest_user = next((item for item in reversed(detail.messages) if item.role is MessageRole.USER), None)
+        if (latest_user is not None and detail.messages.index(latest_user) > detail.messages.index(latest_answer)):
+            return ConversationCompletionV1(status="not_claimed", phase="engineering", basis="no_completion_evidence")
+        review = latest_answer.metadata.get("native_completion_review")
+        if completion_review_current(review, detail=detail, current_state=native_completion_current_state,
+                                     current_saved_sha256=native_completion_saved_sha256):
+            return ConversationCompletionV1(
+                status="goal_complete" if review["scope"] == "project_goal" else "request_complete",
+                phase="engineering", basis=("native_project_goal_assessed" if review["scope"] == "project_goal"
+                    else "native_request_assessed"), source_message_id=latest_answer.id,
+                source_digest=review["assessment_sha256"])
+        disposition = latest_answer.metadata.get("native_request_disposition")
+        status = disposition.get("status") if isinstance(disposition, dict) else None
+        # This is the recorded model stop reason, not independently verified success.
+        trusted_shape = bool(isinstance(disposition, dict)
+            and disposition.get("schema_version") == "1"
+            and disposition.get("summary") == latest_answer.content
+            and disposition.get("is_goal_completion_evidence") is False)
+        basis = ("native_request_blocked" if trusted_shape and status == "blocked"
+                 else "native_request_needs_user" if trusted_shape and status == "needs_user"
+                 else "native_completion_unverified")
+        return ConversationCompletionV1(
+            status="blocked" if basis == "native_request_blocked" else "not_claimed",
+            phase="engineering", basis=basis, source_message_id=latest_answer.id)
 
     if detail.workflow == "new_project_planning":
         latest_plan_message = next(
@@ -2431,12 +2721,15 @@ def _conversation_v1(
     *,
     project_plan_authority_digests: tuple[str, str] | None = None,
     engineering_mission: EngineeringMission | None = None,
+    native_completion_current_state: dict[str, Any] | None = None,
+    native_completion_saved_sha256: str | None = None,
 ) -> ConversationV1:
     request_run_ids = {
         run.request_message_id: run.id
         for run in detail.runs
         if run.request_message_id is not None
     }
+    run_states = {run.id: run.state.value.casefold() for run in detail.runs}
     messages = [
         ConversationMessageV1(
             message_id=item.id,
@@ -2455,6 +2748,8 @@ def _conversation_v1(
                 if isinstance(item.metadata.get("run_id"), str)
                 else request_run_ids.get(item.id)
             ),
+            run_state=run_states.get(str(item.metadata["run_id"])
+                if isinstance(item.metadata.get("run_id"), str) else request_run_ids.get(item.id)),
             operation_id=(
                 str(item.metadata["operation_id"])
                 if isinstance(item.metadata.get("operation_id"), str)
@@ -2546,6 +2841,8 @@ def _conversation_v1(
             detail,
             project_plan_authority_digests=project_plan_authority_digests,
             engineering_mission=engineering_mission,
+            native_completion_current_state=native_completion_current_state,
+            native_completion_saved_sha256=native_completion_saved_sha256,
         ),
         messages=messages,
         updated_at=detail.updated_at,
@@ -2816,6 +3113,7 @@ def _model_settings_v1(
         custom_header_names=sorted(value.secrets.custom_headers),
         timeout_seconds=value.timeout_seconds,
         reasoning_effort=value.reasoning_effort,
+        client_input_limit_tokens=value.client_input_limit_tokens,
         has_api_key=bool(value.secrets.api_key),
         external_endpoint=is_external_model_endpoint(value.base_url),
         updated_at=value.updated_at,
@@ -2828,6 +3126,20 @@ def _local_workspace_v1(value: Any) -> LocalWorkspaceV1:
         raise TypeError("workspace result must be an object")
     fields = {name: value[name] for name in LocalWorkspaceV1.model_fields if name in value}
     return LocalWorkspaceV1.model_validate(fields)
+
+
+def _local_workspace_display_name(value: Any, project_path: str | None) -> str:
+    """Display the retained source name independently of the IDE working basename."""
+    source = value.get("source") if isinstance(value, dict) else None
+    display_name = source.get("display_name") if isinstance(source, dict) else None
+    if isinstance(display_name, str) and display_name:
+        return display_name
+    original_path = source.get("original_path") if isinstance(source, dict) else None
+    if isinstance(original_path, str) and original_path.strip():
+        original_name = Path(original_path).name
+        if original_name:
+            return original_name
+    return Path(project_path).name if project_path else "XG5000 프로젝트"
 
 
 def _workspace_resume_identity(value: LocalWorkspaceV1) -> dict[str, str]:
@@ -2854,6 +3166,13 @@ def _workspace_resume_identity(value: LocalWorkspaceV1) -> dict[str, str]:
         "working_baseline_sha256": value.working_copy.baseline_sha256.casefold(),
         "working_current_sha256": value.working_copy.current_sha256.casefold(),
     }
+
+
+def _workspace_resume_stable_identity(value: LocalWorkspaceV1) -> dict[str, str]:
+    """Match a retained workspace without freezing its mutable saved version."""
+    identity = _workspace_resume_identity(value)
+    identity.pop("working_current_sha256")
+    return identity
 
 
 def _normalized_workspace_path(value: str) -> str:
@@ -3368,6 +3687,10 @@ def _ephemeral_model_settings(
         model=model,
         timeout_seconds=timeout,
         reasoning_effort=reasoning_effort,
+        client_input_limit_tokens=(existing.client_input_limit_tokens
+            if 'client_input_limit_tokens' not in body.model_fields_set
+            and existing is not None
+            else body.client_input_limit_tokens),
         updated_at=datetime.now(timezone.utc),
         capability_verified_at=None,
         secrets=ModelSecrets(api_key=api_key, custom_headers=headers),
@@ -3533,6 +3856,73 @@ def _engineering_session_read_ready(session: dict[str, Any] | None) -> bool:
     )
 
 
+def _native_ld_edit_ready(session: dict[str, Any] | None, workspace: dict[str, Any] | None) -> bool:
+    """Native working-copy binding is not the legacy COM transaction capability."""
+    if _host_native_binding_ready(session, workspace):
+        return True
+    if not _engineering_session_read_ready(session) or not isinstance(workspace, dict):
+        return False
+    assert isinstance(session, dict)
+    working = workspace.get("working_copy")
+    metadata = session.get("metadata", {})
+    if (not isinstance(working, dict) or workspace.get("source_kind") not in {"local_file", "new_build", "restored_from_controller"}
+            or not all(workspace.get(key) for key in ("workspace_id", "revision_id"))
+            or not isinstance(session.get("session_id"), str) or not session["session_id"]
+            or any(type(session.get(key)) is not int or session[key] <= 0 for key in ("pid", "hwnd"))
+            or any(not isinstance(value, str) or not value for value in (working.get("path"), session.get("project_path")))
+            or metadata.get("project_identity_assurance") not in {"strong_readback", "controlled_launch_read_only"}
+            or session.get("project_hash") != working.get("current_sha256")):
+        return False
+    expected_hash = session.get("project_hash")
+    saved = metadata.get("native_ld_saved_observation")
+    if (isinstance(saved, dict) and all(saved.get(key) == session.get(key)
+            for key in ("session_id", "pid", "hwnd", "project_path"))
+            and saved.get("current_project_hash") == expected_hash
+            and isinstance(saved.get("disk_receipt"), dict)
+            and saved["disk_receipt"].get("sha256") == expected_hash
+            and saved["disk_receipt"].get("stable_during_read") is True):
+        expected_hash = saved.get("anchor_project_hash")
+    proof = next((metadata[key] for key in ("project_identity_proof", "controlled_open_read_proof", "offline_candidate_mutation_binding")
+                  if isinstance(metadata.get(key), dict)), None)
+    if (not isinstance(proof, dict) or proof.get("pid") != session.get("pid")
+            or proof.get("main_hwnd") != session.get("hwnd") or proof.get("project_hash") != expected_hash
+            or not isinstance(proof.get("process_create_time"), (int, float))
+            or isinstance(proof["process_create_time"], bool)
+            or not math.isfinite(float(proof["process_create_time"])) or proof["process_create_time"] <= 0):
+        return False
+    try:
+        paths = [os.path.normcase(str(Path(str(value)).resolve())) for value in (
+            working.get("path"), session.get("project_path"), proof.get("project_path"))]
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return all(paths[0] == path for path in paths[1:])
+
+
+def _host_native_binding_ready(session: dict[str, Any] | None, workspace: dict[str, Any] | None) -> bool:
+    """A retained anchor authorizes only a freshly observed, same-live native target."""
+    if not isinstance(session, dict) or not isinstance(workspace, dict):
+        return False
+    metadata = session.get("metadata")
+    evidence = metadata.get("native_ld_host_revalidation") if isinstance(metadata, dict) else None
+    binding = evidence.get("binding") if isinstance(evidence, dict) else None
+    anchor = binding.get("session") if isinstance(binding, dict) else None
+    observed = evidence.get("observed") if isinstance(evidence, dict) else None
+    if (not isinstance(anchor, dict) or not isinstance(observed, dict)
+            or not isinstance(anchor.get("metadata"), dict)
+            or "native_ld_host_revalidation" in anchor["metadata"]
+            or not _native_ld_edit_ready(anchor, workspace)
+            or any(binding.get(key) != workspace.get(key) for key in ("workspace_id", "revision_id"))
+            or any(session.get(key) != anchor.get(key) for key in ("pid", "hwnd", "project_path", "project_hash"))
+            or any(observed.get(key) != session.get(key) for key in ("pid", "hwnd", "project_path", "project_hash"))
+            or observed.get("main_hwnd") != session.get("hwnd")
+            or observed.get("method") != "same_live_native_observe"):
+        return False
+    created = _engineering_session_process_create_time(anchor)
+    actual_created = observed.get("process_create_time")
+    return (created is not None and type(actual_created) in {int, float}
+            and math.isfinite(actual_created) and abs(actual_created - created) < 0.001)
+
+
 def _engineering_session_process_create_time(session: dict[str, Any] | None) -> float | None:
     """Return only an exact existing session lifetime proof, never an estimate."""
 
@@ -3541,6 +3931,13 @@ def _engineering_session_process_create_time(session: dict[str, Any] | None) -> 
     metadata = session.get("metadata")
     if not isinstance(metadata, dict):
         return None
+    host_evidence = metadata.get("native_ld_host_revalidation")
+    if isinstance(host_evidence, dict):
+        binding = host_evidence.get("binding")
+        anchor = binding.get("session") if isinstance(binding, dict) else None
+        if (isinstance(anchor, dict) and isinstance(anchor.get("metadata"), dict)
+                and "native_ld_host_revalidation" not in anchor["metadata"]):
+            return _engineering_session_process_create_time(anchor)
     for key in (
         "project_identity_proof",
         "controlled_open_read_proof",
@@ -3652,6 +4049,102 @@ def _quarantined_diagnostic_context(
     }
 
 
+async def _healthy_current_recovery(executor, state, anchor, workspace, generation, revalidate, current_generation):
+    """Fresh current proof; a successful result does not settle prior outcomes."""
+    if (generation is None or not executor.allow_simulator or executor.recovery_only
+            or executor.recovery_pending or executor.operation_recoveries):
+        return None
+    if state is not None:
+        previous = state.get('new_binding') if isinstance(state, dict) and state.get('phase') == 'rebound' else None
+        if (not isinstance(previous, dict) or any(previous.get(key) != anchor.get(key) for key in
+                ('workspace_id', 'revision_id', 'pid', 'hwnd', 'project_path', 'process_create_time'))):
+            return None
+    try:
+        session = await revalidate(workspace)
+        if (not isinstance(session, dict)
+                or any(session.get(k) != anchor[k] for k in ('pid', 'hwnd', 'project_path'))
+                or _engineering_session_process_create_time(session) != anchor['process_create_time']
+                or session.get('project_hash') != workspace.working_copy.current_sha256
+                or current_generation(executor) != generation):
+            return None
+        observed = await executor._execute('simulator', {'action': 'observe'})
+        constraints = observed.get('current_constraints') if isinstance(observed, dict) else None
+        saved = observed.get('saved_project') if isinstance(observed, dict) else None
+        navigation = observed.get('navigation_input') if isinstance(observed, dict) else None
+        inactive = observed.get('current_session_observation') if isinstance(observed, dict) else None
+        continuation = observed.get('current_operation_continuation') if isinstance(observed, dict) else None
+        context = getattr(executor, '_diagnostic_call_context', None)
+        continuable = False
+        if isinstance(continuation, dict) and isinstance(constraints, dict) and isinstance(saved, dict):
+            from controlstudio_contracts.native_operation_continuation import (
+                operation_constraints_digest,
+                validate_current_operation_continuation,
+            )
+            try:
+                proof = validate_current_operation_continuation(continuation)
+                continuable = (proof['source_tool_name'] == 'simulator'
+                    and isinstance(context, dict) and proof['source_call_id'] == context.get('call_id')
+                    and proof['host_request_id'] == context.get('request_id')
+                    and proof['admitted_generation'] == generation and proof['saved_sha256'] == saved.get('sha256')
+                    and proof['constraints_schema'] == constraints.get('schema')
+                    and proof['constraints_sha256'] == operation_constraints_digest(constraints)
+                    and proof['route_tool_name'] == 'simulator')
+            except (ValueError, KeyError, TypeError):
+                pass
+        reconciled = (isinstance(observed, dict) and observed.get('read_only') is False
+            and observed.get('action_attempted') is True and observed.get('simulator_control_action_attempted') is False
+            and observed.get('input_state_unknown') is False and observed.get('load_state') == 'ended'
+            and observed.get('end_reconciled_without_simulator_control') is True
+            and observed.get('current_session_inactive_verified') is True
+            and isinstance(inactive, dict) and inactive.get('current_session_inactive_verified') is True
+            and isinstance(navigation, dict) and navigation.get('attempted') is True
+            and navigation.get('outcome') == 'opened' and navigation.get('close_outcome') in {'closed', 'already_closed'}
+            and navigation.get('control_action_attempted') is False
+            and isinstance(constraints, dict) and constraints.get('journal_state') == 'ended')
+        if (not isinstance(observed, dict) or observed.get('ok') is not True
+                or observed.get('action') != 'observe'
+                or (not reconciled and (observed.get('read_only') is False or observed.get('action_attempted') is True))
+                or observed.get('input_state_unknown') is True
+                or observed.get('error') or observed.get('failure')
+                or not isinstance(constraints, dict) or constraints.get('schema') != 'xg5000-simulator-current-constraints/v1'
+                or constraints.get('evidence_scope') != 'current_binding_journal_snapshot'
+                or (not continuable and (constraints.get('start_behavior') != 'fresh_native_preflight'
+                    or constraints.get('start_journal_blocker') is not None
+                    or constraints.get('journal_state') not in {'not_loaded', 'different_binding', 'loaded', 'ended'}))
+                or not isinstance(saved, dict) or saved.get('stable_during_read') is not True
+                or saved.get('sha256') != workspace.working_copy.current_sha256
+                or current_generation(executor) != generation):
+            return None
+        return {'ok': True, 'rebound': False, 'relaunch_not_required': True,
+                'current_binding_verified': True, 'current_request_input_attempted': reconciled,
+                'simulator_observation': observed, 'automatic_replay': False}
+    except (MCPToolError, HTTPException, OSError, ValueError, TypeError, KeyError):
+        return None
+
+
+def _pending_recovery_conversation_target(stored, current, anchor, *, file_only):
+    """Use a validated recovery owner solely to retain the conversation identity."""
+    return bool(isinstance(anchor, dict) and stored is not None
+                and stored == tuple(anchor.get(key) for key in ('workspace_id', 'revision_id', 'session_id'))
+                and (current is None or file_only))
+
+
+def _native_workspace_recovery_state_key(conversation_id: str, workspace_id: str, revision_id: str) -> str:
+    """Bounded key for the exact ordered identity tuple, without changing it."""
+    identity = (conversation_id, workspace_id, revision_id)
+    if any(not isinstance(value, str) or not value for value in identity):
+        raise ValueError("recovery state identity must contain three nonempty strings")
+    encoded = json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return "native_workspace_recovery:v1:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _engineering_session_v1(session: dict[str, Any]) -> EngineeringSessionV1:
+    """Project the public DTO without discarding the internal MCP session."""
+    return EngineeringSessionV1.model_validate({
+        name: session[name] for name in EngineeringSessionV1.model_fields if name in session
+    })
+
+
 def _validated_engineering_session_result(
     result: Any,
     *,
@@ -3706,6 +4199,8 @@ def _validated_engineering_session_result(
 async def _find_existing_workspace_session(
     mcp: MCPGateway,
     workspace: LocalWorkspaceV1,
+    *,
+    on_unverified: Callable[[int, int, Any], None] | None = None,
 ) -> dict[str, Any] | None:
     """Reuse a uniquely proven live file, never a matching window title alone."""
 
@@ -3717,6 +4212,7 @@ async def _find_existing_workspace_session(
             detail="열려 있는 프로젝트를 자동으로 선택하지 못했습니다. 연결할 창을 선택해 주세요.",
         )
     matches: list[dict[str, Any]] = []
+    unverified_candidate = False
     seen: set[tuple[int, int]] = set()
     for instance in instances:
         if not isinstance(instance, dict):
@@ -3742,6 +4238,7 @@ async def _find_existing_workspace_session(
                 },
             )
         except MCPToolError:
+            unverified_candidate = True
             continue
         validated = _validated_engineering_session_result(
             result, pid=pid, hwnd=hwnd,
@@ -3750,11 +4247,19 @@ async def _find_existing_workspace_session(
         )
         if validated is not None:
             matches.append(validated)
+        elif on_unverified is not None:
+            on_unverified(pid, hwnd, result)
+            raw_session = result.get("session", result) if isinstance(result, dict) else {}
+            diagnostic = _safe_identity_diagnostic(raw_session if isinstance(raw_session, dict) else {})
+            if diagnostic.get("native_file_code") != "WINDOW_TITLE_MISMATCH":
+                unverified_candidate = True
     if len(matches) > 1:
         raise HTTPException(
             status_code=409,
             detail="같은 작업 사본을 연 창이 여러 개입니다. 이어서 작업할 창을 선택해 주세요.",
         )
+    if not matches and unverified_candidate:
+        raise HTTPException(status_code=409, detail="열려 있는 프로젝트를 재검증하지 못했습니다. 기존 창을 보존했습니다.")
     return matches[0] if matches else None
 
 
@@ -3778,7 +4283,7 @@ async def _revalidate_exact_engineering_session(
         )
     except MCPToolError:
         return None
-    return _validated_engineering_session_result(
+    validated = _validated_engineering_session_result(
         status_result,
         session_id=session_id,
         pid=pid,
@@ -3786,6 +4291,30 @@ async def _revalidate_exact_engineering_session(
         project_path=project_path,
         project_hash=project_hash,
     )
+    if validated is None:
+        return None
+    # session_status describes retained state. Only a fresh inventory can
+    # establish that this exact process/window/lifetime is still present.
+    observed = await mcp.call_read_tool("xg5000.instances", {})
+    instances = observed.get("instances") if isinstance(observed, dict) else None
+    if not isinstance(instances, list) or any(
+        not isinstance(item, dict) or any(type(item.get(key)) is not int or item[key] <= 0
+                                         for key in ("pid", "hwnd"))
+        for item in instances
+    ):
+        raise MCPToolError("Retained session instances were not observed")
+    candidates = [item for item in instances if item.get("pid") == pid or item.get("hwnd") == hwnd]
+    if not candidates:
+        return None
+    if (len(candidates) != 1 or candidates[0].get("pid") != pid
+            or candidates[0].get("hwnd") != hwnd or candidates[0].get("visible") is not True):
+        raise MCPToolError("The retained session target was not exactly observed")
+    created = _engineering_session_process_create_time(validated)
+    lifetime = candidates[0].get("process_create_time")
+    if (created is None or type(lifetime) not in {int, float}
+            or not math.isfinite(lifetime) or abs(lifetime - created) >= 0.001):
+        raise MCPToolError("The retained session process lifetime changed")
+    return validated
 
 
 async def _rebind_reconciled_change_session(
@@ -3928,7 +4457,7 @@ def _planning_requirement_message_sources(
         ),
         None,
     )
-    source_ids = set(retained_message_ids)
+    source_ids = set(retained_message_ids or ())
     if reviewed is not None:
         source_ids.update(
             source.get("messageId")
@@ -4089,6 +4618,7 @@ async def _reconcile_late_workspace_open(
     *,
     bind_session: Callable[[Any], dict[str, Any]],
     timeout_seconds: float = LATE_WORKSPACE_RECONCILE_SECONDS,
+    expected_frame: dict[str, Any] | None = None,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> tuple[XG5000ProjectLaunchV1, dict[str, Any]] | None:
@@ -4116,6 +4646,14 @@ async def _reconcile_late_workspace_open(
                 return None
             if pid <= 0 or hwnd <= 0:
                 return None
+            if expected_frame is not None:
+                actual_created=instance.get('process_create_time')
+                expected_created=expected_frame.get('process_create_time')
+                if (pid!=expected_frame.get('pid') or hwnd!=expected_frame.get('hwnd')
+                        or type(actual_created) not in {int,float} or not math.isfinite(actual_created)
+                        or type(expected_created) not in {int,float} or not math.isfinite(expected_created)
+                        or expected_created<=0 or abs(actual_created-expected_created)>=0.001):
+                    return None
             try:
                 attached = await mcp.call_read_tool(
                     "xg5000.attach",
@@ -4158,6 +4696,10 @@ async def _reconcile_late_workspace_open(
                 "controlled_launch_read_only",
             }:
                 return None
+            if expected_frame is not None:
+                created=_engineering_session_process_create_time(raw_session)
+                if created is None or abs(created-expected_frame['process_create_time'])>=0.001:
+                    return None
             session = bind_session(attached)
             mutation_identity_verified = _engineering_session_identity_verified(session)
             return (
@@ -4275,13 +4817,16 @@ def _safe_identity_diagnostic(session: dict[str, Any]) -> dict[str, str]:
     if not isinstance(diagnostic, dict):
         return {}
     return {key: value for key, value in diagnostic.items()
-            if key in {"stage", "code"} and isinstance(value, str)
+            if key in {"stage", "code", "native_file_stage", "native_file_code"}
+            and isinstance(value, str)
             and re.fullmatch(r"[A-Za-z0-9_]{1,80}", value)}
 
 
 def _agent_runtime_user_message(diagnostic: AgentRuntimeDiagnostic) -> str:
     """Return the bounded user-facing message for a sidecar runtime diagnostic."""
 
+    if diagnostic.exception_kind == "working_memory_validation":
+        return "이번 실행을 완료하지 못했습니다. 이미 수행한 변경과 대화는 보존되어 있습니다. ‘중단된 작업 이어가기’로 계속할 수 있습니다."
     if diagnostic.reason_code == "tool_call_budget":
         return "도구 호출 한도에 도달해 실행이 종료됐습니다."
     if diagnostic.reason_code.startswith("provider_http_"):
@@ -4407,6 +4952,89 @@ def create_app(
     shutdown_event = asyncio.Event()
     active_engineering_session: dict[str, Any] | None = None
     active_workspace: dict[str, Any] | None = store.get_host_state("active_workspace")
+    # Restart restores evidence, not a ready session or an MCP capability.
+    # The legacy single value is only the selected view. Retain each workspace's
+    # independently proven lineage before another workspace replaces that view.
+    native_workspace_binding = store.get_host_state("native_workspace_binding")
+    native_workspace_bindings = store.get_host_state("native_workspace_bindings:v1")
+
+    def native_workspace_binding_key(workspace: dict[str, Any] | None) -> str | None:
+        if (not isinstance(workspace, dict)
+                or any(not isinstance(workspace.get(key), str) or not workspace[key]
+                       for key in ("workspace_id", "revision_id"))):
+            return None
+        return _canonical_json_digest({key: workspace[key] for key in ("workspace_id", "revision_id")})
+
+    def retained_native_workspace_binding(workspace: dict[str, Any] | None) -> dict[str, Any] | None:
+        key = native_workspace_binding_key(workspace)
+        retained = native_workspace_bindings.get(key) if isinstance(native_workspace_bindings, dict) else None
+        if (not isinstance(retained, dict) or not isinstance(workspace, dict)
+                or any(retained.get(field) != workspace.get(field) for field in ("workspace_id", "revision_id"))
+                or not isinstance(retained.get("session"), dict)):
+            return None
+        # Selection restores evidence only; each existing caller still checks
+        # current workspace/hash, exact lifetime and fresh native observation.
+        return deepcopy(retained)
+
+    if native_workspace_bindings is None:
+        native_workspace_bindings = {}
+        # One-time migration accepts only the old value's own current workspace
+        # and original proof. A three-field checkpoint or another workspace's
+        # session cannot manufacture this lineage. An existing map, even empty,
+        # is authoritative, so a retired legacy view cannot be resurrected.
+        legacy = native_workspace_binding
+        key = native_workspace_binding_key(active_workspace)
+        if (key is not None and isinstance(legacy, dict)
+                and all(legacy.get(field) == active_workspace.get(field)
+                        for field in ("workspace_id", "revision_id"))
+                and _native_ld_edit_ready(legacy.get("session"), active_workspace)):
+            native_workspace_bindings[key] = deepcopy(legacy)
+        store.set_host_state("native_workspace_bindings:v1", native_workspace_bindings)
+    elif not isinstance(native_workspace_bindings, dict):
+        raise ValueError("Persisted native workspace bindings are invalid")
+    native_workspace_binding = retained_native_workspace_binding(active_workspace)
+    store.set_host_state("native_workspace_binding", native_workspace_binding)
+
+    def update_native_workspace_binding(
+        session: dict[str, Any] | None = None,
+        *,
+        workspace: dict[str, Any] | None = None,
+        closed_target: tuple[int, int] | None = None,
+        closed_process_create_time: float | None = None,
+    ) -> None:
+        nonlocal native_workspace_binding, native_workspace_bindings
+        selected = workspace if workspace is not None else active_workspace
+        updated = deepcopy(native_workspace_bindings)
+        if closed_target is not None:
+            # Retirement is about the exact original frame/lifetime, never the
+            # currently selected workspace or a recycled PID/HWND generation.
+            if (type(closed_process_create_time) not in {int, float}
+                    or not math.isfinite(closed_process_create_time) or closed_process_create_time <= 0):
+                raise ValueError("Native binding retirement requires its original process lifetime")
+            for key, retained in tuple(updated.items()):
+                anchor = retained.get("session") if isinstance(retained, dict) else None
+                created = _engineering_session_process_create_time(anchor)
+                if (isinstance(anchor, dict) and closed_target == (anchor.get("pid"), anchor.get("hwnd"))
+                        and created is not None and abs(created - closed_process_create_time) < 0.001):
+                    del updated[key]
+        if session is not None:
+            key = native_workspace_binding_key(selected)
+            if _host_native_binding_ready(session, selected):
+                updated[key] = deepcopy(session["metadata"]["native_ld_host_revalidation"]["binding"])
+            elif _native_ld_edit_ready(session, selected):
+                updated[key] = {
+                    "workspace_id": selected["workspace_id"],
+                    "revision_id": selected["revision_id"],
+                    "session": deepcopy(session),
+                }
+            # An unsuccessful attach is not evidence that an earlier native
+            # lineage retired. Retain it for the unchanged fresh revalidation.
+        # Commit the per-workspace authority first. The compatibility view is
+        # derived afterwards; interrupted writes cannot revive a retired entry.
+        store.set_host_state("native_workspace_bindings:v1", updated)
+        native_workspace_bindings = updated
+        native_workspace_binding = retained_native_workspace_binding(active_workspace)
+        store.set_host_state("native_workspace_binding", native_workspace_binding)
 
     def workspace_agent_binding(
         workspace: LocalWorkspaceV1 | dict[str, Any],
@@ -4428,8 +5056,11 @@ def create_app(
         brief: dict[str, Any] | ProjectBriefV1,
     ) -> list[dict[str, Any]]:
         validated = brief if isinstance(brief, ProjectBriefV1) else ProjectBriefV1.model_validate(brief)
+        return resolve_engineering_attachment_ids(validated.attachment_source_ids)
+
+    def resolve_engineering_attachment_ids(source_ids) -> list[dict[str, Any]]:
         attachments = []
-        for source_id in validated.attachment_source_ids:
+        for source_id in source_ids:
             source = knowledge_store.get_source(source_id)
             if source is None or source.kind not in _PROJECT_BRIEF_ATTACHMENT_KINDS or source.status is not KnowledgeStatus.CONFIRMED:
                 raise ValueError("project brief attachment is unavailable or unconfirmed")
@@ -4444,6 +5075,36 @@ def create_app(
             attachments.append(attachment.model_dump(mode="json", by_alias=True))
         return attachments
 
+    def resolve_native_engineering_sources(detail, target) -> list[dict[str, Any]]:
+        # Explicit attachments keep their existing validation failures.
+        attachments = (resolve_project_brief_attachments(detail.project_brief)
+                       if detail.project_brief is not None else [])
+        workspace_id, revision_id = target.get('workspace_id'), target.get('revision_id')
+        if isinstance(workspace_id, str) and workspace_id:
+            scoped = knowledge_store.confirmed_sources_for_scope(
+                scope='project:' + workspace_id, kinds=_PROJECT_BRIEF_ATTACHMENT_KINDS)
+            attachments.extend(resolve_engineering_attachment_ids(item.source_id for item in scoped))
+            if isinstance(revision_id, str) and revision_id:
+                origin_brief = store.native_project_origin_brief(
+                    workspace_id=workspace_id, revision_id=revision_id)
+                if origin_brief is not None:
+                    validated_origin = ProjectBriefV1.model_validate(origin_brief)
+                    inherited_ids = []
+                    for source_id in validated_origin.attachment_source_ids:
+                        source = knowledge_store.get_source(source_id)
+                        if (source is not None and source.kind in _PROJECT_BRIEF_ATTACHMENT_KINDS
+                                and source.status is KnowledgeStatus.CONFIRMED):
+                            inherited_ids.append(source_id)
+                    attachments.extend(resolve_engineering_attachment_ids(inherited_ids))
+        by_id = {}
+        for item in attachments:
+            value = {'source_id': item['sourceId'], 'sha256': item['sha256'], 'revision': item['revision']}
+            previous = by_id.get(value['source_id'])
+            if previous is not None and previous != value:
+                raise ValueError('engineering source changed while resolving attachments')
+            by_id[value['source_id']] = value
+        return [by_id[key] for key in sorted(by_id)]
+
     def current_project_plan_authority_digests(conversation_id: str) -> tuple[str, str]:
         conversation = store.get_conversation(conversation_id)
         if conversation is None or conversation.project_brief is None:
@@ -4457,6 +5118,8 @@ def create_app(
             raise ProjectPlanReviewConflict("project brief attachment revisions are unavailable") from exc
 
     def bind_agent_workspace_target(workspace: LocalWorkspaceV1 | dict[str, Any]) -> None:
+        update_native_workspace_binding(workspace=(workspace.model_dump(mode="json")
+                                                   if isinstance(workspace, LocalWorkspaceV1) else workspace))
         execution_broker.bind_agent_workspace(workspace_agent_binding(workspace))
     active_ls_controller: dict[str, Any] | None = store.get_host_state("active_ls_controller")
 
@@ -4611,7 +5274,8 @@ def create_app(
         if mcp.status.status != "ready":
             return None
         session = active_engineering_session
-        if _engineering_session_read_ready(session):
+        if (_engineering_session_read_ready(session)
+                or _native_ld_edit_ready(session, active_workspace)):
             assert isinstance(session, dict)
             session_id = str(session.get("session_id") or "")
             project_path = str(session.get("project_path") or "")
@@ -4657,14 +5321,7 @@ def create_app(
                 and isinstance(bound_target, dict)
                 and bound_target.get("workspace_id") == workspace_id
             ):
-                target_digest = hashlib.sha256(
-                    json.dumps(
-                        [workspace_id, revision_id],
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                ).hexdigest()
-                return workspace_id, revision_id, f"workspace:{target_digest}"
+                return workspace_id, revision_id, _workspace_engineering_conversation_session_id(workspace_id, revision_id)
         return None
 
     def engineering_conversation_matches_current_target(
@@ -4720,7 +5377,6 @@ def create_app(
             execution_broker.clear_agent_session()
             return False
         pass
-        prior_session = active_engineering_session
         pass
         try:
             expected_path = Path(transaction.target.project_path).resolve()
@@ -4921,6 +5577,88 @@ def create_app(
                 )
             yield
 
+    launch_wait_request_context = contextvars.ContextVar("owned_launch_request", default=None)
+
+    def pending_owned_launch_resume(request_path):
+        """Find the exact parked Agent launch owned by this explicit Web resume."""
+        lease = store.active_target_operation_lease()
+        if (not isinstance(lease, dict) or lease.get('state') != 'STALE_BLOCKED'
+                or lease.get('owner_kind') != 'workspace_resume'):
+            return None
+        operation_id = lease['operation_id']
+        wait = store.get_host_state('owned_launch_wait_operation:' + operation_id)
+        owner = wait.get('owner') if isinstance(wait, dict) else None
+        scope = owner.get('scope') if isinstance(owner, dict) else None
+        fields = {'target_lease_id', 'operation_id', 'workspace_id', 'revision_id',
+                  'project_path', 'project_hash', 'source_run_id'}
+        if (not isinstance(scope, dict) or set(scope) != fields
+                or owner != {'owner_ref': _canonical_json_digest(scope), 'scope': scope}
+                or any(not isinstance(scope[k], str) or not scope[k] for k in fields)
+                or request_path != f"/api/v1/workspaces/{scope['workspace_id']}/resume"
+                or scope['operation_id'] != operation_id or scope['target_lease_id'] != lease['id']
+                or wait.get('exclusion_lease_id') != lease['id']
+                or wait.get('state') not in {'parked', 'launch_pending', 'binding_pending',
+                    'launch_unresolved', 'owned_modal', 'binding_ready', 'ready'}):
+            return None
+        try:
+            original_target = json.loads(lease['target_identity_json'])
+            if (set(original_target) != fields - {'target_lease_id'}
+                    or any(original_target[k] != scope[k] for k in original_target if k != 'project_path')
+                    or _normalized_workspace_path(original_target['project_path']) != _normalized_workspace_path(scope['project_path'])):
+                return None
+            source_run = store.get_run(scope['source_run_id'])
+            if source_run is None or source_run.state not in {RunState.COMPLETED, RunState.CANCELLED, RunState.FAILED}:
+                return None
+            key = _native_workspace_recovery_state_key(source_run.conversation_id,
+                scope['workspace_id'], scope['revision_id'])
+            recovery = store.get_host_state(key)
+            if (not isinstance(recovery, dict) or recovery.get('phase') != 'launch_pending'
+                    or recovery.get('operation_id') != operation_id
+                    or recovery.get('source_run_id') != scope['source_run_id']
+                    or recovery.get('conversation_id') != source_run.conversation_id
+                    or recovery.get('saved_sha256') != scope['project_hash']):
+                return None
+            binding, frame, pending = recovery.get('binding'), recovery.get('launch_pending_frame'), wait.get('pending')
+            if (not isinstance(binding, dict) or not isinstance(frame, dict) or not isinstance(pending, dict)
+                    or any(binding.get(k) != scope[k] for k in ('workspace_id', 'revision_id'))
+                    or _normalized_workspace_path(binding.get('project_path')) != _normalized_workspace_path(scope['project_path'])
+                    or any(type(frame.get(k)) is not int or frame[k] <= 0 for k in ('pid', 'hwnd'))
+                    or type(frame.get('process_create_time')) not in {int, float}
+                    or not math.isfinite(frame['process_create_time']) or frame['process_create_time'] <= 0
+                    or any(pending.get(k) != frame[k] for k in ('pid', 'hwnd', 'process_create_time'))
+                    or pending.get('launch_operation_id') != recovery.get('launch_operation_id')
+                    or not isinstance(recovery.get('launch_operation_id'), str) or not recovery['launch_operation_id']):
+                return None
+            return {'operation_id': operation_id, 'source_run_id': scope['source_run_id'],
+                'target_identity': original_target, 'owner': deepcopy(owner),
+                'frame': deepcopy(frame), 'recovery_key': key, 'recovery': deepcopy(recovery)}
+        except (KeyError, TypeError, ValueError, OSError, RuntimeError):
+            return None
+
+    def complete_owned_launch_resume(workspace, session):
+        context = launch_wait_request_context.get()
+        original = context.get('recovery') if isinstance(context, dict) else None
+        if original is None:
+            return
+        wait = store.get_host_state('owned_launch_wait_operation:' + original['operation_id'])
+        state = store.get_host_state(original['recovery_key'])
+        frame = original['frame']
+        scope = original['owner']['scope']
+        if (state != original['recovery'] or not isinstance(wait, dict) or wait.get('state') != 'ready'
+                or wait.get('owner') != original['owner']
+                or (workspace.workspace_id, workspace.revision_id) != (scope['workspace_id'], scope['revision_id'])
+                or workspace.working_copy.current_sha256 != scope['project_hash']
+                or any(session.get(k) != frame[k] for k in ('pid', 'hwnd'))
+                or _engineering_session_process_create_time(session) != frame['process_create_time']
+                or session.get('project_hash') != workspace.working_copy.current_sha256
+                or _normalized_workspace_path(session.get('project_path')) != _normalized_workspace_path(workspace.working_copy.path)):
+            raise HTTPException(status_code=409, detail='Original recovery completion scope changed')
+        state.update(phase='rebound', rebound_kind='original_owned_launch_web_reconciled',
+            new_binding={'workspace_id': workspace.workspace_id, 'revision_id': workspace.revision_id,
+                **{k: session[k] for k in ('session_id', 'pid', 'hwnd', 'project_path')},
+                'process_create_time': frame['process_create_time']})
+        store.set_host_state(original['recovery_key'], state)
+
     async def target_switch_lease(
         request: Request,
         _run_guard: None = Depends(engineering_target_run_guard),
@@ -5040,7 +5778,14 @@ def create_app(
                 )
             )
         lease_acquired = False
+        original_recovery = None
         try:
+            store.reconcile_retired_owned_launch_target_lease()
+            if owner_kind == 'workspace_resume':
+                original_recovery = pending_owned_launch_resume(request.url.path)
+                if original_recovery is not None:
+                    operation_id = original_recovery['operation_id']
+                    request_identity = original_recovery['target_identity']
             store.acquire_target_operation_lease(
                 operation_id=operation_id,
                 owner_kind=owner_kind,
@@ -5050,15 +5795,27 @@ def create_app(
             )
             lease_acquired = True
         except TargetOperationLeaseConflict as exc:
-            parked_lease = store.active_target_operation_lease()
+            store.active_target_operation_lease()
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        request_token = launch_wait_request_context.set({"request": request,
+            "operation_id": operation_id, "holder_token": holder_token, 'recovery': original_recovery})
         try:
             yield
         finally:
+            launch_wait_request_context.reset(request_token)
             if lease_acquired:
                 pass
                 pass
-                if quarantined_reviewed_close:
+                launch_wait = store.get_host_state(f"owned_launch_wait_operation:{operation_id}")
+                recovered = (store.get_host_state(original_recovery['recovery_key'])
+                    if original_recovery is not None else None)
+                if (owned_launch_wait_requires_park(launch_wait)
+                        or original_recovery is not None and (not isinstance(recovered, dict)
+                            or recovered.get('phase') != 'rebound'
+                            or recovered.get('operation_id') != operation_id)):
+                    store.park_target_operation_lease(operation_id=operation_id, holder_token=holder_token,
+                        reason="owned_launch_binding_wait_requires_read_only_rejoin")
+                elif quarantined_reviewed_close:
                     store.park_target_operation_lease(
                         operation_id=operation_id,
                         holder_token=holder_token,
@@ -6176,6 +6933,7 @@ def create_app(
         store.reconcile_interrupted_runs()
         store.reconcile_interrupted_change_transactions()
         None
+        store.reconcile_retired_owned_launch_target_lease()
         store.supersede_stale_target_lease_for_durable_change_recovery()
 
         async def initialize_mcp_and_workspace() -> None:
@@ -6411,8 +7169,15 @@ def create_app(
             bearer_token = bearer[7:] if bearer.startswith("Bearer ") else ""
             expires_at = browser_sessions.get(bearer_token)
             authenticated = expires_at is not None and expires_at > datetime.now(timezone.utc)
-            if expires_at is not None and not authenticated:
+            # Expired credentials still fail authentication. Keep only the
+            # existing bounded refresh grace, so a rejected request cannot
+            # erase the official renewal authority before refresh is attempted.
+            if (
+                expires_at is not None
+                and expires_at + BROWSER_SESSION_REFRESH_GRACE <= datetime.now(timezone.utc)
+            ):
                 browser_sessions.pop(bearer_token, None)
+                browser_session_readiness.pop(bearer_token, None)
             if not authenticated:
                 return JSONResponse(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -6491,7 +7256,7 @@ def create_app(
             if record.expires_at <= now:
                 browser_readiness_receipts.pop(receipt, None)
         for session_token, expires_at in tuple(browser_sessions.items()):
-            if expires_at <= now:
+            if expires_at + BROWSER_SESSION_REFRESH_GRACE <= now:
                 browser_sessions.pop(session_token, None)
                 browser_session_readiness.pop(session_token, None)
         handoff_ticket = secrets.token_urlsafe(48)
@@ -6569,8 +7334,9 @@ def create_app(
                 detail="invalid, expired, or already consumed browser handoff ticket",
             )
         for token, expires_at in tuple(browser_sessions.items()):
-            if expires_at <= now:
+            if expires_at + BROWSER_SESSION_REFRESH_GRACE <= now:
                 browser_sessions.pop(token, None)
+                browser_session_readiness.pop(token, None)
         session_token = secrets.token_urlsafe(48)
         expires_at = now + BROWSER_SESSION_TTL
         browser_sessions[session_token] = expires_at
@@ -6601,6 +7367,7 @@ def create_app(
         ):
             if supplied_token:
                 browser_sessions.pop(supplied_token, None)
+                browser_session_readiness.pop(supplied_token, None)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="invalid or irrecoverably expired ControlStudio browser session",
@@ -6868,8 +7635,11 @@ def create_app(
                     "선택한 PID와 프로젝트 정체성이 검증되었습니다."
                     if selected_pid_identity_verified
                     else (
-                        "ControlStudio가 연 정확한 XG5000 PID에 읽기 전용 "
-                        "프로젝트 세션이 연결되었습니다. 변경 권한은 닫혀 있습니다."
+                        ("Host가 관리하는 작업본에 native LD 부분 수정이 준비됐습니다. "
+                         "영구 오프라인 수정 권한은 요청별로 선택합니다."
+                         if _native_ld_edit_ready(active_session, active_workspace)
+                         else "ControlStudio가 연 정확한 XG5000 PID에 읽기 전용 "
+                              "프로젝트 세션이 연결되었습니다. 변경 권한은 닫혀 있습니다.")
                         if selected_pid_read_ready
                         else (
                             "XG5000 창은 연결됐지만 프로젝트가 선택한 PID에서 "
@@ -6907,6 +7677,7 @@ def create_app(
                 ),
                 session_verified=selected_pid_identity_verified,
                 read_ready=selected_pid_read_ready,
+                native_ld_edit_ready=bool(mcp_status.status == "ready" and _native_ld_edit_ready(active_session, active_workspace)),
                 offline_candidate_eligible=offline_candidate_eligible,
                 target_workspace_id=(
                     engineering_target[0] if engineering_target is not None else None
@@ -6962,7 +7733,7 @@ def create_app(
                         else str(active_session["session_id"])
                     ),
                     display_name=(
-                        Path(active_project_path).name if active_project_path else "XG5000 프로젝트"
+                        _local_workspace_display_name(active_workspace, active_project_path)
                     ),
                     source="local",
                     revision=(
@@ -7109,6 +7880,27 @@ def create_app(
             database="ready" if database_ready else "unavailable",
             static_ui="ready" if (config.static_dir / "index.html").is_file() else "unavailable",
         )
+
+    @app.get("/api/v1/project-tools/connection")
+    async def project_tools_connection_v1() -> dict[str, str | int]:
+        return mcp.project_tools_connection_status()
+
+    @app.post("/api/v1/project-tools/reconnect", status_code=status.HTTP_202_ACCEPTED)
+    async def reconnect_project_tools_v1(
+        _csrf: None = Depends(require_browser_csrf),
+    ) -> dict[str, str | int]:
+        # Admission and connection scheduling are atomic with normal run submission.
+        async with run_submission_lock:
+            if mcp.status.status != "ready":
+                if any(not task.done() for task in run_tasks.values()) or active_change_executions:
+                    raise HTTPException(status_code=409, detail="작업이 진행 중이어서 연결을 복구할 수 없습니다. 작업이 끝난 뒤 다시 확인해 주세요.")
+                if store.active_target_operation_lease() is not None:
+                    raise HTTPException(status_code=409, detail="작업 대상 연결이 진행 중입니다. 해당 작업이 끝난 뒤 다시 확인해 주세요.")
+            try:
+                mcp.request_reconnect()
+            except MCPTransportError as exc:
+                raise HTTPException(status_code=503, detail="앱 종료 중에는 연결을 복구할 수 없습니다.") from exc
+            return mcp.project_tools_connection_status()
 
     @app.get("/api/v1/status", response_model=HostStatusV1)
     async def status_v1() -> HostStatusV1:
@@ -7569,10 +8361,10 @@ def create_app(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=("ControlStudio cannot exit while a change transaction is active"),
                 )
-            recovery_authority = store.selected_target_recovery_authority()
+            store.selected_target_recovery_authority()
             pass
             pass
-            target_operation = store.active_target_operation_lease()
+            store.active_target_operation_lease()
             pass
             shutdown_callback = app.state.request_shutdown
             if not callable(shutdown_callback):
@@ -7604,10 +8396,10 @@ def create_app(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="ControlStudio cannot restart while a change transaction is active",
             )
-        recovery_authority = store.selected_target_recovery_authority()
+        store.selected_target_recovery_authority()
         pass
         pass
-        target_operation = store.active_target_operation_lease()
+        store.active_target_operation_lease()
         pass
 
     @app.post(
@@ -7683,11 +8475,14 @@ def create_app(
 
     @app.get("/api/v1/bootstrap", response_model=BootstrapV1)
     async def bootstrap_v1(request: Request) -> BootstrapV1:
+        # Capture the replay boundary before reading snapshot state so events
+        # committed during snapshot construction remain in the live stream.
+        snapshot_sequence = store.latest_event_sequence()
         bootstrap = BootstrapV1(
             status=current_status_v1(),
             csrf_token=browser_csrf_token(request),
             client_session_id=str(uuid.uuid4()),
-            last_event_sequence=store.latest_event_sequence(),
+            last_event_sequence=snapshot_sequence,
         )
         bearer = request.headers.get("authorization", "")
         session_token = bearer[7:] if bearer.startswith("Bearer ") else ""
@@ -7790,7 +8585,35 @@ def create_app(
             detail,
             project_plan_authority_digests=project_plan_authority_digests,
             engineering_mission=store.get_engineering_mission(detail.id),
+            native_completion_current_state=store.get_host_state(completion_state_key(detail.workspace_id, detail.revision_id)),
+            native_completion_saved_sha256=(active_workspace.get("working_copy", {}).get("current_sha256")
+                if isinstance(active_workspace, dict) and active_workspace.get("workspace_id") == detail.workspace_id
+                and active_workspace.get("revision_id") == detail.revision_id else None),
         )
+        latest_run = max(detail.runs, key=lambda item: item.created_at, default=None)
+        conversation.allow_simulator = bool(latest_run and latest_run.metadata.get("allow_simulator") is True)
+        scope = latest_run.metadata.get("change_request_scope") if latest_run else None
+        if scope in {"analysis_only", "offline_candidate_revision", "permanent_offline_revision"}:
+            conversation.request_scope = scope
+        try:
+            retained = await asyncio.to_thread(latest_native_checkpoint_summary, store, conversation_id)
+        except (AgentProtocolError, KeyError, TypeError, ValueError):
+            # A corrupt checkpoint must disable resume, not hide the public chat.
+            retained = None
+        if retained is not None:
+            source = store.get_run(retained["source_run_id"])
+            binding = retained["binding"]
+            source_message = next((item for item in detail.messages
+                if source is not None and item.id == source.request_message_id), None)
+            resumable = bool(_native_resume_latest_attempt_matches_checkpoint(
+                detail, source, source_message, latest_run, store)
+                and native_resume_source_state_allowed(detail, source)
+                and native_resume_target_matches_checkpoint(detail, source.id, binding))
+            conversation.native_execution = ConversationNativeExecutionV1(
+                source_run_id=source.id, request_message_id=source.request_message_id,
+                state=source.state.value.casefold(), resumable=resumable,
+                completed_tool_calls=retained["completed_tool_calls"],
+            )
         pass
         pass
         return conversation
@@ -7845,7 +8668,10 @@ def create_app(
         request_message_id: str,
         prompt: str,
     ) -> None:
+        nonlocal active_engineering_session, active_workspace
         settings: StoredModelConnection | None = None
+        native_execution_started = False
+        native_start_continuation = False
         workflow = "engineering"
         # This is assigned only by the current run's Host proposal callback.
         # It lets the sanitized failure response distinguish a rejected final
@@ -7883,6 +8709,18 @@ def create_app(
                 }
                 else "offline_native_reopen"
             )
+            native_resume_source = (request_message.metadata.get("resume_native_run_id")
+                if request_message is not None else None)
+            resume_checkpoint = None
+            if native_resume_source is not None:
+                # Admission reads source metadata only. Validate the full history
+                # before model/native work, and reuse this local result below.
+                resume_checkpoint = await asyncio.to_thread(
+                    _host_sqlite_boundary, "native_checkpoint_restore",
+                    latest_native_checkpoint, store, conversation_id)
+                if (not isinstance(resume_checkpoint, dict)
+                        or resume_checkpoint.get("source_run_id") != native_resume_source):
+                    raise AgentRunPreconditionError("재개할 native 요청과 보존된 이력이 다릅니다.")
             expected_engineering_target = (
                 current_engineering_conversation_target()
                 if workflow == "engineering"
@@ -7922,14 +8760,28 @@ def create_app(
                     raise AgentRunPreconditionError(
                         "the bound LS controller could not be revalidated"
                     ) from exc
+            recovery_source = (request_message.metadata.get('resume_native_run_id')
+                or request_message.metadata.get('workspace_recovery_source_run_id')) if request_message is not None else None
+            recovery_anchor = (pending_native_recovery_anchor(detail, recovery_source)
+                if workflow == 'engineering' and change_request_scope == 'permanent_offline_revision'
+                and verification_scope == 'offline_native_check_only' else None)
+            if _pending_recovery_conversation_target(stored_engineering_target,
+                    mcp.agent_session_identity_snapshot, recovery_anchor,
+                    file_only=(recovery_anchor is not None and recovery_workspace_only_binding(
+                        mcp.agent_session_identity_snapshot, recovery_anchor))):
+                # This is the durable owner identity, not an admission of a live frame.
+                # The native execution below remains restricted to the pending recovery.
+                expected_engineering_target = stored_engineering_target
             if (
                 workflow == "engineering"
                 and stored_engineering_target != expected_engineering_target
             ):
-                raise AgentRunPreconditionError(
-                    "이 대화가 생성된 XG5000 대상과 현재 대상이 다릅니다. "
-                    "현재 대상에서 새 엔지니어링 대화를 시작해 주세요."
+                store.append_event(
+                    conversation_id=conversation_id, run_id=run_id,
+                    event_type="run.admission_rejected",
+                    payload={"stage":"engineering_target_binding", "native_execution_started":False},
                 )
+                raise AgentRunPreconditionError(_ENGINEERING_TARGET_PRECONDITION_MESSAGE)
             if (
                 workflow == "engineering"
                 and expected_engineering_target is None
@@ -8097,7 +8949,10 @@ def create_app(
                 deepcopy(active_engineering_session)
                 if workflow == "engineering"
                 and not targetless_analysis_run
-                and _engineering_session_read_ready(active_engineering_session)
+                and (_engineering_session_read_ready(active_engineering_session)
+                     or (change_request_scope == "permanent_offline_revision"
+                         and verification_scope == "offline_native_check_only"
+                         and _native_ld_edit_ready(active_engineering_session, active_workspace)))
                 else None
             )
             if (
@@ -8106,6 +8961,1419 @@ def create_app(
                 and mcp.status.status != "ready"
             ):
                 raise AgentRunPreconditionError("MCP 안전 코어가 준비되지 않았습니다.")
+
+            preparation_run = workflow == "new_project_planning" and change_request_scope == "permanent_offline_revision"
+            if (workflow in {"engineering", "new_project_planning"} and change_request_scope == "permanent_offline_revision"
+                    and verification_scope == "offline_native_check_only" and not targetless_analysis_run):
+                # A direct user-authorized working-copy run owns one native loop;
+                # it does not turn its observations into a planning mission.
+                pending_anchor=(pending_native_recovery_anchor(detail,request_message.metadata.get('resume_native_run_id')
+                    or request_message.metadata.get('workspace_recovery_source_run_id'))
+                    if request_message is not None and not preparation_run else None)
+                if not preparation_run and pending_anchor is None and (not isinstance(knowledge_workspace_snapshot, dict)
+                        or not _native_ld_edit_ready(engineering_session_snapshot, knowledge_workspace_snapshot)):
+                    raise AgentRunPreconditionError("수정할 작업 사본의 편집 대상이 연결되지 않았습니다.")
+                target = pending_anchor if pending_anchor is not None else mcp.agent_session_identity_snapshot
+                preparation = None
+                if preparation_run:
+                    if mcp.status.status != "ready" or not isinstance(detail.project_brief, dict):
+                        raise AgentRunPreconditionError("신규 프로젝트 준비를 위한 MCP와 요구사항이 필요합니다.")
+                    from .native_project_preparation import validate_preparation_display_name
+                    preparation_key = f"native_project_preparation:{conversation_id}"
+                    preparation = store.get_host_state(preparation_key)
+                    if preparation is not None:
+                        validate_preparation_display_name(preparation["reservation"], detail.project_brief["project_name"])
+                    def preparation_target_identity(value: object) -> object:
+                        if not isinstance(value, dict):
+                            return value
+                        path = value.get("working_path") or value.get("project_path")
+                        return {
+                            **{key: value.get(key) for key in (
+                                "workspace_id", "revision_id", "source_kind", "source_sha256",
+                                "provenance_receipt_digest", "working_sha256")},
+                            "path": str(Path(path).resolve()).casefold() if isinstance(path, str) else None,
+                        }
+                    # A Host restart can leave the selected working copy file-only
+                    # while its previously owned editor remains open. Revalidate
+                    # that exact retained frame before using the existing saved
+                    # previous-project path for native preparation.
+                    if ((target is None or (isinstance(target, dict) and not any(
+                            target.get(k) is not None for k in ('pid', 'hwnd', 'session_id'))))
+                            and isinstance(active_workspace, dict)
+                            and not (isinstance(preparation, dict) and preparation.get('idle_frame_authority'))):
+                        retained = retained_native_workspace_binding(active_workspace)
+                        anchor = retained.get('session') if isinstance(retained, dict) else None
+                        workspace_binding = workspace_agent_binding(active_workspace)
+                        prior = preparation.get('initial_target') if isinstance(preparation, dict) else target
+                        same_workspace = (isinstance(prior, dict)
+                            and preparation_target_identity(prior) == preparation_target_identity(workspace_binding)
+                            and not any(prior.get(k) is not None for k in ('pid', 'hwnd', 'session_id')))
+                        same_workspace = same_workspace and (target is None or
+                            preparation_target_identity(target) == preparation_target_identity(workspace_binding))
+                        if same_workspace and isinstance(anchor, dict):
+                            created = _engineering_session_process_create_time(anchor)
+                            observed = await mcp.call_read_tool('xg5000.instances', {})
+                            instances = observed.get('instances', []) if isinstance(observed, dict) else []
+                            frame = preparation.get('frame') if isinstance(preparation, dict) else None
+                            frame_matches = (frame is None or (isinstance(frame, dict)
+                                and frame.get('pid') == anchor.get('pid') and frame.get('hwnd') == anchor.get('hwnd')
+                                and frame.get('expected_process_create_time') == created))
+                            if (len(instances) == 1 and isinstance(instances[0], dict) and created is not None
+                                    and instances[0].get('pid') == anchor.get('pid')
+                                    and instances[0].get('hwnd') == anchor.get('hwnd')
+                                    and instances[0].get('process_create_time') == created and frame_matches):
+                                if store.live_change_approval_transaction(mutation_scope=f"workspace:{workspace_binding['workspace_id']}",
+                                                                         now=datetime.now(timezone.utc)) is not None:
+                                    raise AgentRunPreconditionError("현재 작업 사본의 실행 중인 변경 거래를 먼저 종료해 주세요.")
+                                candidate = await revalidate_native_workspace_binding(_local_workspace_v1(active_workspace))
+                                if candidate is not None and _native_ld_edit_ready(candidate, active_workspace):
+                                    bind_engineering_session(candidate)
+                                    target = mcp.agent_session_identity_snapshot
+                                    if preparation is not None:
+                                        preparation['initial_target'] = deepcopy(target)
+                                        store.set_host_state(preparation_key, preparation)
+                    if preparation is None:
+                        if isinstance(target, dict) and all(target.get(key) for key in ("pid", "hwnd")):
+                            if not _native_ld_edit_ready(active_engineering_session, active_workspace):
+                                raise AgentRunPreconditionError("현재 창은 준비 권한이 결속된 작업 사본이 아닙니다. 원본 프로젝트는 그대로 유지합니다.")
+                            if store.live_change_approval_transaction(mutation_scope=f"workspace:{target['workspace_id']}",
+                                                                     now=datetime.now(timezone.utc)) is not None:
+                                raise AgentRunPreconditionError("현재 작업 사본의 실행 중인 변경 거래를 먼저 종료해 주세요.")
+                        observed = await mcp.call_read_tool("xg5000.instances", {})
+                        instances = observed.get("instances", []) if isinstance(observed, dict) else []
+                        if isinstance(target, dict) and all(target.get(key) for key in ("pid", "hwnd")):
+                            instances = [item for item in instances if all(item.get(key) == target[key] for key in ("pid", "hwnd"))]
+                            # Restored native authority retains its lifetime in
+                            # the revalidation anchor, just like other native
+                            # callers. A legacy partial identity is not that proof.
+                            created = _engineering_session_process_create_time(active_engineering_session)
+                            actual_created = instances[0].get("process_create_time") if len(instances) == 1 else None
+                            if (created is None or not isinstance(actual_created, (int, float))
+                                    or isinstance(actual_created, bool) or not math.isfinite(actual_created)
+                                    or abs(actual_created - created) >= 0.001):
+                                raise AgentRunPreconditionError("신규 프로젝트 준비 전 XG5000 프로세스가 변경되었습니다.")
+                        if len(instances) != 1 or not isinstance(instances[0].get("process_create_time"), (int, float)):
+                            raise AgentRunPreconditionError("신규 프로젝트를 준비할 XG5000 창을 하나 선택해 주세요.")
+                        frame = {key: instances[0][key] for key in ("pid", "hwnd")}
+                        frame["expected_process_create_time"] = instances[0]["process_create_time"]
+                        reservation = await mcp.call_workspace_tool("workspace.reserve_native", {
+                            "workspace_id": str(uuid.uuid4()), "revision_id": str(uuid.uuid4()),
+                            "project_name": "project",
+                            "display_name": detail.project_brief["project_name"]})
+                        preparation = {"reservation": reservation, "frame": frame, "initial_target": deepcopy(target)}
+                        store.set_host_state(preparation_key, preparation)
+                    initial_target = preparation["initial_target"]
+                    if (isinstance(initial_target, dict)
+                            and any(initial_target.get(key) is not None for key in ("session_id", "pid", "hwnd"))
+                            and active_engineering_session is None
+                            and (target is None or not all(target.get(key) for key in ("session_id", "pid", "hwnd")))):
+                        # A pending creation may have closed the former project.
+                        # Restore only its persisted preparation frame, never the
+                        # former editor/session capability or a project-open input.
+                        retained_binding = retained_native_workspace_binding(initial_target)
+                        retained = retained_binding.get("session") if isinstance(retained_binding, dict) else None
+                        frame = preparation["frame"]
+                        if (not isinstance(retained, dict)
+                                or any(retained.get(key) != frame.get(key) for key in ("pid", "hwnd"))
+                                or _engineering_session_process_create_time(retained) != frame.get("expected_process_create_time")
+                                or any(retained_binding.get(key) != initial_target.get(key) for key in ("workspace_id", "revision_id"))):
+                            raise AgentRunPreconditionError("보존한 신규 프로젝트 준비 프레임의 권한을 확인할 수 없습니다.")
+                        observed = await mcp.call_read_tool("xg5000.instances", {})
+                        instances = observed.get("instances", []) if isinstance(observed, dict) else []
+                        matches = [row for row in instances if row.get("pid") == frame["pid"] and row.get("hwnd") == frame["hwnd"]]
+                        if (len(matches) != 1 or matches[0].get("process_create_time") != frame["expected_process_create_time"]):
+                            raise AgentRunPreconditionError("재개할 신규 프로젝트 준비 창이 변경되었습니다.")
+                        if not preparation.get("idle_frame_authority"):
+                            frame.update(previous_project_path=retained["project_path"], previous_project_hash=retained["project_hash"])
+                        if isinstance(target, dict) and any(target.get(key) != initial_target.get(key) for key in ("workspace_id", "revision_id")):
+                            raise AgentRunPreconditionError("신규 준비 복원 중 작업 사본이 변경되었습니다.")
+                        preparation["initial_target"] = deepcopy(target)
+                        preparation["preparation_frame_restored"] = True
+                        initial_target = deepcopy(target)
+                        store.set_host_state(preparation_key, preparation)
+                    # A verified reconnect can renew the Host session id while
+                    # retaining the same workspace, revision, frame and file.
+                    # The CLI still checks the original process lifetime before
+                    # any creation input, including retained preparation retries.
+                    if preparation_target_identity(initial_target) != preparation_target_identity(target):
+                        raise AgentRunPreconditionError("신규 프로젝트 준비 중 초기 IDE 대상이 변경되었습니다.")
+                    if (isinstance(preparation["initial_target"], dict)
+                            and any(preparation["initial_target"].get(key) is not None for key in ("session_id", "pid", "hwnd"))
+                            and not preparation.get("idle_frame_authority")
+                            and not preparation.get("preparation_frame_restored")):
+                        # Agent identity intentionally omits the private saved
+                        # hash. Supply the previous working-copy proof from the
+                        # native-authorized Host session, including after retry.
+                        if not _native_ld_edit_ready(active_engineering_session, active_workspace):
+                            raise AgentRunPreconditionError("신규 작성 전에 현재 작업 사본을 다시 연결해 주세요.")
+                        previous_path = active_engineering_session.get("project_path")
+                        previous_hash = active_engineering_session.get("project_hash")
+                        initial_path = initial_target.get("working_path") or initial_target.get("project_path")
+                        frame = preparation["frame"]
+                        created = _engineering_session_process_create_time(active_engineering_session)
+                        if (any(active_engineering_session.get(key) != frame.get(key) for key in ("pid", "hwnd"))
+                                or created is None or abs(created - frame["expected_process_create_time"]) >= 0.001):
+                            raise AgentRunPreconditionError("신규 프로젝트 준비를 위해 연결한 XG5000 프레임이 변경되었습니다.")
+                        if (not isinstance(previous_path, str) or not isinstance(initial_path, str)
+                                or Path(previous_path).resolve() != Path(initial_path).resolve()
+                                or not isinstance(previous_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", previous_hash)):
+                            raise AgentRunPreconditionError("현재 작업 사본의 저장본 식별 정보가 불완전합니다.")
+                        preparation["frame"].update(previous_project_path=previous_path,
+                                                    previous_project_hash=previous_hash)
+                        # The durable reservation survives a reconnect; this
+                        # run must compare against the newly verified live
+                        # session snapshot, not its former static file binding.
+                        preparation["initial_target"] = deepcopy(target)
+                        store.set_host_state(preparation_key, preparation)
+                    target = {**preparation["reservation"], **preparation["frame"]}
+                if not preparation_run and (not isinstance(target, dict) or any(not target.get(field) for field in (
+                    "workspace_id", "revision_id", "session_id", "pid", "hwnd", "project_path"))):
+                    raise AgentRunPreconditionError("수정할 작업 사본의 Host 대상 결속이 불완전합니다.")
+                if not preparation_run and pending_anchor is None and (
+                    any(target.get(key) != knowledge_workspace_snapshot.get(key) for key in ("workspace_id", "revision_id"))
+                    or any(target.get(key) != engineering_session_snapshot.get(key) for key in ("session_id", "pid", "hwnd", "project_path"))
+                ):
+                    raise AgentRunPreconditionError("native 편집 대상이 이 대화의 검증된 작업 사본과 다릅니다.")
+                if store.live_change_approval_transaction(
+                    mutation_scope=f"workspace:{detail.workspace_id}", now=datetime.now(timezone.utc),
+                ) is not None:
+                    raise AgentRunPreconditionError("현재 작업 사본의 기존 변경 거래가 아직 종료되지 않았습니다.")
+                retained_mission = store.get_engineering_mission(conversation_id)
+                retained_change = (store.get_change_transaction(retained_mission.change_transaction_id)
+                    if retained_mission is not None and retained_mission.change_transaction_id is not None else None)
+                if retained_change is not None and retained_change.state is ChangeTransactionState.QUARANTINED:
+                    raise AgentRunPreconditionError("현재 작업 사본의 미확정 변경 복구가 먼저 필요합니다.")
+                binding = {key: target[key] for key in ("workspace_id", "revision_id", "project_path")}
+                index_key = f"native_ld_checkpoint_latest:{conversation_id}"
+                previous = (resume_checkpoint if native_resume_source is not None else
+                    await asyncio.to_thread(_host_sqlite_boundary, "native_checkpoint_restore",
+                                            latest_native_checkpoint, store, conversation_id))
+                resume_checkpoint = None  # Do not retain a second full-tree reference.
+                prior_run = store.get_run(previous.get("source_run_id", "")) if isinstance(previous, dict) else None
+                resume_source = request_message.metadata.get("resume_native_run_id") if request_message is not None else None
+                native_checkpoint = None
+                if previous is not None and previous.get("binding") == binding and prior_run is not None:
+                    if resume_source is not None:
+                        if (resume_source != prior_run.id or not native_resume_source_state_allowed(detail, prior_run)
+                                or not native_checkpoint_matches_request(previous["checkpoint"], prompt, binding)):
+                            raise AgentRunPreconditionError("재개할 native 요청과 보존된 이력이 다릅니다.")
+                        native_checkpoint = previous["checkpoint"]
+                    elif prior_run.state in {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}:
+                        native_checkpoint = (previous["checkpoint"]
+                            if native_checkpoint_matches_request(previous["checkpoint"], prompt, binding)
+                            and prior_run.state in {RunState.FAILED, RunState.CANCELLED}
+                            else await native_checkpoint_boundary(asyncio.to_thread(
+                                native_followup_checkpoint, previous, prompt, binding)))
+                elif resume_source is not None:
+                    raise AgentRunPreconditionError("재개할 native 작업 대상이 변경되었습니다.")
+                checkpoint_key = f"native_ld_checkpoint:{run_id}"
+                if native_checkpoint is not None:
+                    native_checkpoint = await native_checkpoint_boundary(asyncio.to_thread(
+                        validated_native_checkpoint_snapshot, native_checkpoint, decoded_json=False))
+                    checkpoint_digest = native_checkpoint.digest
+                    await native_checkpoint_boundary(asyncio.to_thread(
+                        _host_sqlite_boundary, "native_checkpoint_resume_persist", persist_native_checkpoint_with_index,
+                        store, checkpoint_key, index_key, binding,
+                        native_checkpoint, checkpoint_digest, source_run_id=run_id))
+
+                # The normalized resume checkpoint is independent; release the prior full tree.
+                del previous
+
+                raw_receipt_prefix = f"native_ld_receipt:{run_id}:"
+                raw_receipt_sequence = 0
+
+                def record_raw(name: str, arguments: dict[str, Any], result: Any) -> None:
+                    nonlocal raw_receipt_sequence
+                    if raw_receipt_sequence == 0:
+                        _host_sqlite_boundary("native_tool_receipt_persist", store.set_host_state, f"native_ld_receipts:{run_id}", {
+                            "schemaVersion": "2", "binding": binding,
+                            "storage": "ordered_private_host_state",
+                            "record_key_prefix": raw_receipt_prefix,
+                        })
+                    _host_sqlite_boundary("native_tool_receipt_persist", store.set_host_state, f"{raw_receipt_prefix}{raw_receipt_sequence:08d}", {
+                        "sequence": raw_receipt_sequence, "tool_name": name,
+                        "arguments": deepcopy(arguments), "result": deepcopy(result),
+                    })
+                    raw_receipt_sequence += 1
+
+                def record_process_diagnostic(observation):
+                    # Private, run-owned read-only artifact; never a native fact or model input.
+                    _host_sqlite_boundary('native_vendor_process_diagnostic_persist',store.set_host_state,
+                        f'native_vendor_process_lifecycle:{run_id}',{
+                            'schema':'controlstudio-native-vendor-process-artifact/v1',
+                            'conversation_id':conversation_id,'run_id':run_id,
+                            'observation':deepcopy(observation)})
+
+                def refresh_saved(receipt: dict[str, Any]) -> None:
+                    nonlocal active_workspace, active_engineering_session
+                    if not isinstance(active_workspace, dict) or not isinstance(active_engineering_session, dict):
+                        raise AgentRunPreconditionError("저장 관측 중 작업 대상이 변경되었습니다.")
+                    current = mcp.agent_session_identity_snapshot
+                    if current is None or any(current.get(key) != target.get(key) for key in (
+                        "workspace_id", "revision_id", "session_id", "pid", "hwnd", "project_path")):
+                        raise AgentRunPreconditionError("저장 관측 중 작업 대상이 변경되었습니다.")
+                    digest = receipt["sha256"]
+                    workspace, session = deepcopy(active_workspace), deepcopy(active_engineering_session)
+                    workspace["working_copy"]["current_sha256"] = digest
+                    workspace["working_copy"]["state"] = ("clean" if digest == workspace["working_copy"].get("baseline_sha256") else "modified")
+                    metadata = session.setdefault("metadata", {})
+                    old_saved = metadata.get("native_ld_saved_observation") or {}
+                    metadata["native_ld_saved_observation"] = {
+                        **{key: session[key] for key in ("session_id", "pid", "hwnd", "project_path")},
+                        "anchor_project_hash": old_saved.get("anchor_project_hash", session["project_hash"]),
+                        "current_project_hash": digest, "disk_receipt": deepcopy(receipt),
+                    }
+                    session["project_hash"] = digest
+                    host_evidence = metadata.get("native_ld_host_revalidation")
+                    if isinstance(host_evidence, dict):
+                        anchor = host_evidence["binding"]["session"]
+                        anchor_saved = deepcopy(metadata["native_ld_saved_observation"])
+                        anchor_saved["session_id"] = anchor["session_id"]
+                        anchor.setdefault("metadata", {})["native_ld_saved_observation"] = anchor_saved
+                        anchor["project_hash"] = digest
+                        host_evidence["observed"]["project_hash"] = digest
+                    active_workspace, active_engineering_session = workspace, session
+                    _host_sqlite_boundary("native_saved_binding_persist", store.set_host_state, "active_workspace", workspace)
+                    _host_sqlite_boundary("native_saved_binding_persist", update_native_workspace_binding, session)
+                    broker_binding = {**session, **workspace_agent_binding(workspace)}
+                    execution_broker.bind_agent_session(broker_binding)
+
+                pending_recovery_ui_identity=None
+                pending_recovery_ui_anchor=None
+                pending_recovery_projection_identity=None
+
+                def publish_workspace_recovery_scope(executor,state):
+                    """The pending operation owns its original frame until disposition."""
+                    nonlocal pending_recovery_ui_identity,pending_recovery_ui_anchor,pending_recovery_projection_identity
+                    pending=state['phase'] in {'close_pending','closed','launch_pending','launch_terminal'}
+                    executor.recovery_pending=pending
+                    executor.recovery_only=pending
+                    pending_recovery_ui_identity=None
+                    pending_recovery_ui_anchor=None
+                    pending_recovery_projection_identity=None
+                    if pending:
+                        anchor={**{k:executor.target[k] for k in
+                            ('workspace_id','revision_id','session_id','pid','hwnd','project_path')},
+                            'process_create_time':executor.expected_process_create_time}
+                        original=state.get('binding')
+                        if (isinstance(original,dict)
+                                and all(original.get(k)==anchor[k] for k in ('workspace_id','revision_id'))
+                                and _normalized_workspace_path(original.get('project_path'))==_normalized_workspace_path(anchor['project_path'])):
+                            pending_recovery_projection_identity={k:deepcopy(state[k]) for k in
+                                ('operation_id','source_run_id','binding','saved_sha256')}
+                            if (state['phase']=='close_pending' and all(original.get(k)==anchor[k]
+                                    for k in ('pid','hwnd','process_create_time'))):
+                                pending_recovery_ui_anchor=anchor
+                                pending_recovery_ui_identity=deepcopy(pending_recovery_projection_identity)
+
+                async def restore_pending_recovery_owner(executor):
+                    nonlocal active_engineering_session
+                    if preparation_run or native_checkpoint is None:
+                        return
+                    key=_native_workspace_recovery_state_key(conversation_id,
+                        executor.target['workspace_id'],executor.target['revision_id'])
+                    state=store.get_host_state(key)
+                    if not isinstance(state,dict) or state.get('phase') not in {
+                            'close_pending','closed','launch_pending','launch_terminal'}:
+                        return
+                    source=store.get_run(state.get('source_run_id',''))
+                    if (state.get('conversation_id')!=conversation_id or source is None
+                            or source.conversation_id!=conversation_id
+                            or source.state not in {RunState.FAILED,RunState.CANCELLED,RunState.COMPLETED}
+                            or source.metadata.get('change_request_scope')!='permanent_offline_revision'
+                            or source.metadata.get('verification_scope')!='offline_native_check_only'):
+                        raise AgentRunPreconditionError('Pending recovery owner is not a terminal request in this conversation')
+                    anchor=state.get('binding')
+                    if (not isinstance(anchor,dict) or not anchor.get('session_id')
+                            or any(type(anchor.get(k)) is not int or anchor[k]<=0 for k in ('pid','hwnd'))
+                            or type(anchor.get('process_create_time')) not in {int,float}
+                            or not math.isfinite(anchor['process_create_time']) or anchor['process_create_time']<=0
+                            or type(executor.expected_process_create_time) not in {int,float}
+                            or not math.isfinite(executor.expected_process_create_time) or executor.expected_process_create_time<=0
+                            or any(anchor.get(k)!=executor.target.get(k) for k in ('workspace_id','revision_id'))
+                            or _normalized_workspace_path(anchor.get('project_path'))!=_normalized_workspace_path(executor.target.get('project_path'))):
+                        raise AgentRunPreconditionError('Pending recovery original target differs from the restored request')
+                    original_generation=(all(anchor.get(k)==executor.target.get(k) for k in ('pid','hwnd'))
+                        and anchor['process_create_time']==executor.expected_process_create_time)
+                    recovery_source=(resume_source or (request_message.metadata.get('workspace_recovery_source_run_id')
+                        if request_message is not None else None))
+                    owns_recovery=(recovery_source is not None and prior_run is not None
+                        and recovery_source==prior_run.id
+                        and recovery_source_run_matches(prior_run.id,state['source_run_id'],conversation_id))
+                    if not owns_recovery:
+                        from .native_workspace_host import native_recovery_target_retired
+                        from .store import verified_owned_launch_retirement
+                        # A follow-up checkpoint carries conversation context, not
+                        # the old recovery's ownership. Keep terminal history exact;
+                        # admit only an independently bound replacement after both
+                        # the failed launch and its original frame have retired.
+                        if (state['phase']=='launch_terminal' and not original_generation
+                                and verified_owned_launch_retirement(state.get('terminal_failure')) is not None
+                                and admitted_native_workspace_generation(executor) is not None
+                                and native_recovery_target_retired(anchor,anchor['process_create_time'])):
+                            return
+                        raise AgentRunPreconditionError('Pending recovery requires its original request resume')
+                    if not _pending_native_recovery_saved_matches(anchor,executor.target['workspace_id'],
+                            executor.target['revision_id'],state.get('saved_sha256')):
+                        raise AgentRunPreconditionError('Pending recovery original target differs from the restored request')
+                    current=mcp.agent_session_identity_snapshot
+                    if recovery_workspace_only_binding(current,anchor) and not original_generation:
+                        raise AgentRunPreconditionError('Pending recovery replacement frame was not observed during restore')
+                    if not recovery_workspace_only_binding(current,anchor):
+                        if (current is not None and (not isinstance(current,dict)
+                                or any(current.get(k)!=executor.target.get(k) for k in
+                                    ('workspace_id','revision_id','session_id','pid','hwnd','project_path')))):
+                            raise AgentRunPreconditionError('Pending recovery current target differs from the restored request')
+                        observed=await mcp.call_read_tool('xg5000.instances',{})
+                        rows=observed.get('instances') if isinstance(observed,dict) else None
+                        if (not isinstance(rows,list) or any(not isinstance(row,dict)
+                                or type(row.get('pid')) is not int or type(row.get('hwnd')) is not int for row in rows)):
+                            raise AgentRunPreconditionError('Pending recovery instances were not observed during restore')
+                        matches=[row for row in rows if isinstance(row,dict)
+                            and (row.get('pid')==executor.target['pid'] or row.get('hwnd')==executor.target['hwnd'])]
+                        if not matches:
+                            if not original_generation:
+                                raise AgentRunPreconditionError('Pending recovery replacement frame was not observed during restore')
+                            # Absence withdraws stale native readiness, not proof of
+                            # retirement. The existing recovery callback must still
+                            # inspect the original process/main before any reopen.
+                            active_engineering_session=None
+                            bind_agent_workspace_target(active_workspace)
+                        elif (len(matches)!=1 or matches[0].get('visible') is not True
+                                or any(matches[0].get(k)!=executor.target[k] for k in ('pid','hwnd'))
+                                or matches[0].get('process_create_time')!=executor.expected_process_create_time):
+                            raise AgentRunPreconditionError('Pending recovery live frame/lifetime changed during restore')
+                        elif original_generation:
+                            state['current_binding']={**deepcopy(executor.target),
+                                'process_create_time':executor.expected_process_create_time}
+                    original_source=state['source_run_id']
+                    if original_source!=run_id:
+                        state.setdefault('resumed_source_runs',[]).append(original_source)
+                        state['source_run_id']=run_id
+                    store.set_host_state(key,state)
+                    publish_workspace_recovery_scope(executor,state)
+
+                async def validate_pending_recovery_owned_ui(executor, *, require_live_frame=True):
+                    """Fresh read/cancel scope of the original close owner; never a binding."""
+                    identity=pending_recovery_ui_identity
+                    anchor=pending_recovery_ui_anchor
+                    if (not isinstance(identity,dict) or not isinstance(anchor,dict)
+                            or executor.recovery_only is not True or executor.recovery_pending is not True
+                            or mcp.status.status!='ready'):
+                        raise MCPToolError('Original pending close has no owned-UI scope')
+                    fields=('workspace_id','revision_id','session_id','pid','hwnd','project_path')
+                    if (any(executor.target.get(k)!=anchor.get(k) for k in fields)
+                            or executor.expected_process_create_time!=anchor['process_create_time']):
+                        raise MCPToolError('Original pending close target changed')
+                    key=_native_workspace_recovery_state_key(conversation_id,executor.target['workspace_id'],executor.target['revision_id'])
+                    def exact_state():
+                        state=store.get_host_state(key)
+                        return (isinstance(state,dict) and state.get('conversation_id')==conversation_id
+                            and state.get('phase')=='close_pending' and identity['source_run_id']==run_id
+                            and all(state.get(k)==v for k,v in identity.items()))
+                    def current_scope():
+                        current=mcp.agent_session_identity_snapshot
+                        return (recovery_workspace_only_binding(current,anchor)
+                            or isinstance(current,dict) and all(current.get(k)==executor.target[k] for k in fields)
+                            and current.get('project_hash')==identity['saved_sha256']
+                            and current.get('working_sha256')==identity['saved_sha256'])
+                    if not exact_state() or not current_scope():
+                        raise MCPToolError('Original pending close operation/source scope changed')
+                    if require_live_frame:
+                        observed=await mcp.call_read_tool('xg5000.instances',{})
+                        instances=observed.get('instances') if isinstance(observed,dict) else None
+                        candidates=([item for item in instances if isinstance(item,dict)
+                            and (item.get('pid')==anchor['pid'] or item.get('hwnd')==anchor['hwnd'])]
+                            if isinstance(instances,list) else [])
+                        if (len(candidates)!=1 or candidates[0].get('visible') is not True
+                                or any(type(candidates[0].get(k)) is not int for k in ('pid','hwnd'))
+                                or type(candidates[0].get('process_create_time')) not in {int,float}
+                                or any(candidates[0].get(k)!=anchor[k] for k in ('pid','hwnd','process_create_time'))):
+                            raise MCPToolError('Original pending close frame/lifetime was not freshly observed')
+                    workspace=_local_workspace_v1(active_workspace)
+                    checked=_local_workspace_v1(await mcp.call_workspace_tool('workspace.status',{'workspace_id':executor.target['workspace_id']}))
+                    saved=saved_project_observation(Path(workspace.working_copy.path))
+                    if (_workspace_resume_identity(checked)!=_workspace_resume_identity(workspace)
+                            or any(getattr(workspace,k)!=executor.target[k] for k in ('workspace_id','revision_id'))
+                            or _normalized_workspace_path(workspace.working_copy.path)!=_normalized_workspace_path(executor.target['project_path'])
+                            or checked.source.original_state!='unchanged'
+                            or checked.source.original_current_sha256!=checked.source.sha256
+                            or checked.working_copy.current_sha256!=identity['saved_sha256']
+                            or saved.get('stable_during_read') is not True or saved.get('sha256')!=identity['saved_sha256']
+                            or not exact_state() or not current_scope()):
+                        raise MCPToolError('Original pending close workspace/saved identity changed')
+                    return deepcopy(identity)
+
+                def current_workspace_recovery(executor, *, rebound=False):
+                    state=store.get_host_state(_native_workspace_recovery_state_key(conversation_id,
+                        executor.target['workspace_id'],executor.target['revision_id']))
+                    if not isinstance(state,dict) or state.get('conversation_id')!=conversation_id:
+                        return None
+                    phase=state.get('phase')
+                    if state.get('source_run_id')!=run_id:
+                        # A completed recovery can survive an exact checkpoint
+                        # resume. Reuse its current observation only; do not
+                        # transfer or rewrite the prior operation/history.
+                        recovery_source=(resume_source or (request_message.metadata.get('workspace_recovery_source_run_id')
+                            if request_message is not None else None))
+                        if (phase!='rebound' or native_checkpoint is None or prior_run is None
+                                or recovery_source!=prior_run.id
+                                or not recovery_source_run_matches(prior_run.id,state.get('source_run_id'),conversation_id)):
+                            return None
+                    if phase not in {'save_pending','save_terminal','saved','close_pending','closed','launch_pending','launch_terminal','rebound'}:
+                        return None
+                    current=mcp.agent_session_identity_snapshot
+                    pending_projection=(phase in {'close_pending','closed','launch_pending','launch_terminal'}
+                        and executor.recovery_only and executor.recovery_pending
+                        and isinstance(pending_recovery_projection_identity,dict))
+                    file_only=(pending_projection and recovery_workspace_only_binding(current,state['binding']))
+                    identity=(state.get('new_binding') if phase=='rebound' else state.get('current_binding') or state.get('binding'))
+                    physical=('workspace_id','revision_id','pid','hwnd','project_path')
+                    if pending_projection:
+                        if (not isinstance(pending_recovery_projection_identity,dict)
+                                or any(state.get(k)!=v for k,v in pending_recovery_projection_identity.items())):
+                            return None
+                        original=state['binding']
+                        if any(original.get(k)!=executor.target.get(k) for k in ('pid','hwnd')) or original.get('process_create_time')!=executor.expected_process_create_time:
+                            if (any(original.get(k)!=executor.target.get(k) for k in ('workspace_id','revision_id'))
+                                    or _normalized_workspace_path(original.get('project_path'))!=_normalized_workspace_path(executor.target.get('project_path'))
+                                    or not _pending_native_recovery_saved_matches(original,executor.target['workspace_id'],
+                                        executor.target['revision_id'],state.get('saved_sha256'))):
+                                return None
+                            return {'schema_version':'1','provenance':'host_current_recovery_state/v1',
+                                'operation_id':state['operation_id'],'phase':phase,
+                                'recovery_only':True,'native_binding_available':False}
+                        if phase=='close_pending' or file_only:
+                            # Reuse the producer's same-physical/saved proof. An
+                            # exact file-only view keeps its original anchor.
+                            identity=_pending_native_recovery_target_anchor(state,
+                                executor.target['workspace_id'],executor.target['revision_id'])
+                        elif not _pending_native_recovery_saved_matches(state['binding'],
+                                executor.target['workspace_id'],executor.target['revision_id'],state.get('saved_sha256')):
+                            return None
+                        original=state.get('binding')
+                        if (not isinstance(identity,dict) or not isinstance(original,dict)
+                                or any(identity.get(k)!=original.get(k) for k in physical)
+                                or identity.get('process_create_time')!=original.get('process_create_time')):
+                            return None
+                    fields=physical if file_only else (*physical,'session_id')
+                    if (pending_projection and not file_only and current is not None
+                            and (not isinstance(current,dict) or any(current.get(k)!=executor.target.get(k) for k in fields))):
+                        return None
+                    if (not isinstance(identity,dict) or any(identity.get(k)!=executor.target.get(k) for k in fields)
+                            or identity.get('process_create_time')!=executor.expected_process_create_time
+                            or not isinstance(state.get('operation_id'),str) or not state['operation_id'].strip()):
+                        return None
+                    available=(not file_only and isinstance(current,dict) and all(current.get(k)==executor.target.get(k) for k in fields)
+                        and _engineering_session_process_create_time(active_engineering_session)==executor.expected_process_create_time
+                        and (_engineering_session_identity_verified(active_engineering_session)
+                             or _native_ld_edit_ready(active_engineering_session,active_workspace)))
+                    if phase=='rebound' and not available:
+                        return None
+                    return {'schema_version':'1','provenance':'host_current_recovery_state/v1',
+                        'operation_id':state['operation_id'],'phase':phase,
+                        'recovery_only':True if file_only else False if rebound else executor.recovery_only,'native_binding_available':bool(available)}
+
+                def admitted_native_workspace_generation(executor):
+                    """Admission identity only; no foreground or continuing-liveness proof.
+
+                    A normal verified reconnect can replace a failed recovery's
+                    old frame without changing that operation or its unknown
+                    outcomes. Bind the current generation to existing Host proof.
+                    """
+                    if executor.recovery_only is not False or executor.recovery_pending is not False:
+                        return None
+                    current=mcp.agent_session_identity_snapshot
+                    retained=retained_native_workspace_binding(active_workspace)
+                    session=active_engineering_session
+                    if (mcp.status.status!='ready' or not isinstance(current,dict)
+                            or not isinstance(retained,dict) or not isinstance(session,dict)):
+                        return None
+                    anchor=retained.get('session')
+                    target=executor.target
+                    fields=('workspace_id','revision_id','session_id','pid','hwnd','project_path')
+                    if (not isinstance(anchor,dict) or not isinstance(target,dict)
+                            or any(not isinstance(target.get(k),str) or not target[k].strip()
+                                   for k in ('workspace_id','revision_id','session_id','project_path'))
+                            or any(type(target.get(k)) is not int or target[k]<=0 for k in ('pid','hwnd'))
+                            or any(current.get(k)!=target[k] for k in fields)
+                            or any(session.get(k)!=target[k] for k in ('session_id','pid','hwnd','project_path'))
+                            or any(anchor.get(k)!=target[k] for k in ('pid','hwnd','project_path'))):
+                        return None
+                    if anchor.get('session_id')!=target['session_id']:
+                        # Normal same-live revalidation preserves the original
+                        # proven anchor while renewing only the Host session.
+                        metadata=session.get('metadata')
+                        evidence=metadata.get('native_ld_host_revalidation') if isinstance(metadata,dict) else None
+                        if (not isinstance(evidence,dict) or evidence.get('binding')!=retained
+                                or not _host_native_binding_ready(session,active_workspace)):
+                            return None
+                    created=executor.expected_process_create_time
+                    if (type(created) not in {int,float} or not math.isfinite(created) or created<=0
+                            or _engineering_session_process_create_time(session)!=created
+                            or _engineering_session_process_create_time(anchor)!=created):
+                        return None
+                    try:
+                        workspace=_local_workspace_v1(active_workspace)
+                        expected=workspace_agent_binding(workspace)
+                        if (any(expected.get(k)!=target[k] or retained.get(k)!=target[k]
+                                for k in ('workspace_id','revision_id'))
+                                or any(current.get(k)!=value for k,value in expected.items())
+                                or workspace.source.original_state!='unchanged'
+                                or workspace.source.original_current_sha256!=workspace.source.sha256
+                                or _normalized_workspace_path(workspace.working_copy.path)
+                                   !=_normalized_workspace_path(target['project_path'])
+                                or any(value.get('project_hash')!=workspace.working_copy.current_sha256
+                                       for value in (session,anchor,current))
+                                or not all(_engineering_session_identity_verified(value)
+                                           or _native_ld_edit_ready(value,active_workspace)
+                                           for value in (session,anchor))):
+                            return None
+                        return native_admission_generation(target, created)
+                    except (KeyError,OSError,RuntimeError,TypeError,ValueError):
+                        return None
+
+                async def pending_recovery_idle(executor, ui_identity):
+                    identity=await validate_pending_recovery_owned_ui(executor)
+                    observed=await executor._execute('native_editor',{'action':'observe'},persist_observation=False)
+                    scene=observed.get('observation',{})
+                    if (observed.get('ok') is not True or observed.get('read_only') is not True
+                            or observed.get('action_attempted') is not False or observed.get('error') or observed.get('failure')
+                            or observed.get('input_state_unknown') is True or not isinstance(scene,dict)
+                            or scene.get('owned_modals') != []
+                            or scene.get('observation_phase') is not None or not isinstance(scene.get('controls'),list)
+                            or not isinstance(scene.get('native_status'),dict) or scene['native_status'].get('error')):
+                        return None
+                    import ctypes
+                    from ctypes import wintypes
+                    user=ctypes.WinDLL('user32',use_last_error=True)
+                    for name in ('IsWindowVisible','IsWindowEnabled'):
+                        function=getattr(user,name);function.argtypes=[wintypes.HWND];function.restype=wintypes.BOOL
+                    if (not user.IsWindowVisible(identity['binding']['hwnd'])
+                            or not user.IsWindowEnabled(identity['binding']['hwnd'])
+                            or user.IsWindowVisible(ui_identity['hwnd'])):
+                        return None
+                    if await validate_pending_recovery_owned_ui(executor) != identity:
+                        raise MCPToolError('Pending recovery idle frame changed')
+                    return observed
+
+                async def wait_workspace_recovery(executor, previous_result, *, prior_ui_identity=None, defer_only=False):
+                    """Continue this operation only after original-owner evidence changes."""
+                    from .native_recovery_wait import (
+                        RecoveryMaterialChange,
+                        RecoveryWaitScopeChanged,
+                        completed_owned_cancel,
+                        recovery_continuation,
+                        response_input_unknown,
+                        restored_cancel_receipt,
+                        undelivered_close_reservation,
+                        wait_for_recovery_change,
+                    )
+                    from .native_workspace_host import native_recovery_target_retired
+                    key=_native_workspace_recovery_state_key(conversation_id,
+                        executor.target['workspace_id'],executor.target['revision_id'])
+                    state=store.get_host_state(key)
+                    if not isinstance(state,dict) or state.get('phase')!='close_pending':
+                        return previous_result
+                    if pending_recovery_ui_identity is None and current_workspace_recovery(executor) is not None:
+                        # A replacement candidate has no original-frame modal
+                        # authority. Its real recover callback owns retirement.
+                        return previous_result
+                    # No different operation can be adopted by an idle waiter.
+                    identity={**deepcopy(pending_recovery_ui_identity or {}), 'phase':'close_pending'}
+                    if (identity.get('operation_id')!=state.get('operation_id')
+                            or identity.get('source_run_id')!=run_id
+                            or not isinstance(identity.get('binding'),dict)):
+                        raise MCPToolError('Pending recovery has no exact wait owner')
+                    original=deepcopy(identity['binding'])
+                    barrier_scope={k:deepcopy(identity[k]) for k in ('operation_id','binding','saved_sha256')}
+                    if defer_only:
+                        if not isinstance(prior_ui_identity,dict):
+                            raise MCPToolError('Pending UI response has no original issued identity')
+                        after_response=await validate_pending_recovery_owned_ui(executor,require_live_frame=False)
+                        if {**after_response,'phase':'close_pending'}!=identity:
+                            raise MCPToolError('Pending UI response wait owner changed')
+                        # Return the original response unchanged, including its
+                        # unknown. The next real recovery callback owns the wait.
+                        state['owned_ui_response_wait']={'scope':barrier_scope,
+                            'ui_identity':deepcopy(prior_ui_identity),
+                            'input_state_unknown':response_input_unknown(previous_result),
+                            'completed_cancel':completed_owned_cancel(previous_result,prior_ui_identity),
+                            'response_result':deepcopy(previous_result)}
+                        prior_reconsideration=state.get('close_reconsideration')
+                        if (isinstance(prior_reconsideration,dict) and prior_reconsideration.get('consumed') is True
+                                and prior_reconsideration.get('ui_identity')!=prior_ui_identity):
+                            state.pop('close_reconsideration')
+                        store.set_host_state(key,state)
+                        result={**previous_result,
+                            'current_workspace_recovery':current_workspace_recovery(executor),
+                            'current_workspace_continuation':recovery_continuation(identity,state='physical_wait')}
+                        executor.record_raw('recover_workspace',{},result)
+                        return result
+                    barrier=state.get('owned_ui_response_wait')
+                    if barrier is not None:
+                        if (not isinstance(barrier,dict) or barrier.get('scope')!=barrier_scope
+                                or not isinstance(barrier.get('ui_identity'),dict)
+                                or type(barrier.get('input_state_unknown')) is not bool):
+                            raise MCPToolError('Pending UI response belongs to another recovery scope')
+                        prior_ui_identity=deepcopy(barrier['ui_identity'])
+                        if not barrier['input_state_unknown'] and 'completed_cancel' not in barrier:
+                            original_run=prior_ui_identity.get('pending_recovery_identity',{}).get('source_run_id')
+                            if original_run in [state['source_run_id'],*state.get('resumed_source_runs',[])]:
+                                header=store.get_host_state(f'native_ld_receipts:{original_run}')
+                                if (isinstance(header,dict) and all(header.get('binding',{}).get(k)==original[k]
+                                        for k in ('workspace_id','revision_id','project_path'))):
+                                    restored=restored_cancel_receipt(store.recent_native_receipts(original_run),
+                                        prior_ui_identity,barrier_scope)
+                                    if restored is not None:
+                                        restored_response,receipt_ref=restored
+                                        barrier.update(completed_cancel=True,response_result=restored_response,
+                                            response_receipt_ref=receipt_ref)
+                                        store.set_host_state(key,state)
+                    prior_ui_unresolved=(isinstance(barrier,dict) and barrier['input_state_unknown'])
+                    unresolved_ui_absent=False
+                    async def validate_scope():
+                        actual=await validate_pending_recovery_owned_ui(executor,require_live_frame=False)
+                        return {**actual,'phase':'close_pending'}
+                    async def observe_change():
+                        nonlocal unresolved_ui_absent
+                        if native_recovery_target_retired(original,original['process_create_time']):
+                            return RecoveryMaterialChange('original_retired')
+                        reservation=state.get('close_reconsideration')
+                        undelivered=undelivered_close_reservation(state,barrier_scope)
+                        ready_reservation=(isinstance(reservation,dict) and reservation.get('scope')==barrier_scope
+                            and reservation.get('consumed') is False and reservation.get('ui_identity')==prior_ui_identity
+                            and completed_owned_cancel(reservation.get('response_result',{}),prior_ui_identity))
+                        if (isinstance(barrier,dict) and barrier.get('completed_cancel') is True
+                                and (not isinstance(reservation,dict) or undelivered is not None or ready_reservation)):
+                            idle=await pending_recovery_idle(executor,prior_ui_identity)
+                            if idle is not None:
+                                if isinstance(reservation,dict):
+                                    if undelivered is not None:
+                                        reservation['consumed']=False
+                                        reservation.setdefault('released_failure_digests',[]).append(undelivered)
+                                else:
+                                    state['close_reconsideration']={'scope':barrier_scope,'consumed':False,
+                                        'ui_identity':deepcopy(prior_ui_identity),
+                                        'response_result':deepcopy(barrier['response_result'])}
+                                store.set_host_state(key,state)
+                                return RecoveryMaterialChange('owned_modal_completed',idle)
+                        try:
+                            observed=await executor._execute('native_editor',{'action':'observe'},
+                                persist_observation=False)
+                        except Exception:
+                            # A failed read is not retirement. Only the existing
+                            # exact original lifetime/main predicate can prove it.
+                            if native_recovery_target_retired(original,original['process_create_time']):
+                                return RecoveryMaterialChange('original_retired')
+                            raise
+                        if native_recovery_target_retired(original,original['process_create_time']):
+                            return RecoveryMaterialChange('original_retired')
+                        scene=observed.get('observation',{}) if isinstance(observed,dict) else {}
+                        modals=scene.get('owned_modals') if isinstance(scene,dict) else None
+                        if (not isinstance(observed,dict) or observed.get('ok') is not True
+                                or observed.get('error') or observed.get('failure')
+                                or observed.get('input_state_unknown') is True):
+                            # Backend failures keep their existing raw record and
+                            # stop observation. They are never retirement evidence.
+                            raise MCPToolError('Pending recovery observation did not complete')
+                        if prior_ui_unresolved and not unresolved_ui_absent:
+                            if not isinstance(modals,list):
+                                return None
+                            # Public results deliberately omit HWND. The current
+                            # scene's Host-private issued ledger owns that identity.
+                            current_ui=[executor.owned_ui.get(item.get('ui_ref'))
+                                if isinstance(item,dict) else None for item in modals]
+                            if (any(not isinstance(item,dict) for item in current_ui)
+                                    or any(item.get('hwnd')==prior_ui_identity.get('hwnd') for item in current_ui)):
+                                return None  # A newly minted ref never replays this unknown response.
+                            unresolved_ui_absent=True
+                        issued=[item for item in modals or [] if isinstance(item,dict)
+                            and item.get('ui_kind')=='modal' and item.get('enabled') is True
+                            and item.get('ui_ref') in executor.owned_ui
+                            and executor.owned_ui[item['ui_ref']].get('pending_recovery_identity')
+                                ==pending_recovery_ui_identity
+                            and item.get('allowed_responses')==['cancel']]
+                        if (observed.get('ok') is True and observed.get('read_only') is True
+                                and observed.get('action_attempted') is False and issued):
+                            return RecoveryMaterialChange('owned_modal',observed)
+                        return None
+                    # Intermediate state is durable diagnostic truth, not a
+                    # completed model tool result and never native authority.
+                    waiting={**previous_result,
+                        'current_workspace_continuation':recovery_continuation(identity,state='physical_wait')}
+                    executor.record_raw('recover_workspace',{},waiting)
+                    try:
+                        change=await wait_for_recovery_change(identity,
+                            validate_scope=validate_scope,observe_change=observe_change)
+                    except RecoveryWaitScopeChanged as error:
+                        raise MCPToolError('Pending recovery wait scope changed') from error
+                    if change.kind in {'owned_modal','owned_modal_completed'}:
+                        # Idle duplicates remain ephemeral. Persist exactly the
+                        # real capability-bearing observation that wakes the model.
+                        executor.record_raw('native_editor',{'action':'observe'},change.observation)
+                        result={**previous_result,
+                            'current_workspace_recovery':current_workspace_recovery(executor),
+                            'pending_owned_ui':change.observation,
+                            'current_workspace_continuation':recovery_continuation(
+                                identity,state='ready',route_tool_name=('respond_owned_ui'
+                                    if change.kind=='owned_modal' else 'recover_workspace'))}
+                    else:
+                        # The existing state machine observes closed and may
+                        # continue its original reopen once. It never repeats close.
+                        result=await native_checkpoint_boundary(executor._execute('recover_workspace',{}))
+                    executor.record_raw('recover_workspace',{},result)
+                    return result
+
+                async def recover_native_workspace(executor: Any) -> dict[str, Any]:
+                    result=await recover_native_workspace_operation(executor)
+                    current=current_workspace_recovery(executor,rebound=result.get('ok') is True and result.get('rebound') is True)
+                    # Managed recovery can publish or clear the native binding
+                    # without a Web action. Notify the existing typed-status
+                    # consumer once after this joined operation has settled.
+                    store.append_event(event_type="host.status", conversation_id=conversation_id, run_id=run_id,
+                        payload=current_status_v1().model_dump(mode="json", by_alias=True))
+                    generation = (admitted_native_workspace_generation(executor)
+                        if result.get('ok') is True and result.get('rebound') is True
+                        and isinstance(current, dict) and current.get('phase') == 'rebound'
+                        and current.get('operation_id') == result.get('operation_id')
+                        and current.get('native_binding_available') is True
+                        and current.get('recovery_only') is False else None)
+                    return {**result,**({'current_workspace_recovery':current} if current is not None else {}),
+                        **({'native_binding_generation':generation} if generation is not None else {})}
+
+                async def recover_native_workspace_operation(executor: Any) -> dict[str, Any]:
+                    """Same-run serialized manager operation; external active-run guard stays intact."""
+                    nonlocal target, active_workspace, active_engineering_session
+                    from controlstudio_contracts.native_failure import (
+                        build_native_failure,
+                        validate_native_failure,
+                    )
+
+                    from .native_workspace_host import native_recovery_target_retired
+                    old=deepcopy(executor.target)
+                    key=_native_workspace_recovery_state_key(conversation_id,old['workspace_id'],old['revision_id'])
+                    state=store.get_host_state(key)
+                    operation_selected=False
+                    prior_generation_operation=None
+                    anchor={**{k:old[k] for k in ('workspace_id','revision_id','session_id','pid','hwnd','project_path')},
+                            'process_create_time':executor.expected_process_create_time}
+                    def persist():
+                        store.set_host_state(key,state)
+                        publish_workspace_recovery_scope(executor,state)
+                    def pending(reason):
+                        return {'ok':False,'rebound':False,'phase':state['phase'],
+                            'error':{'kind':'workspace_recovery_pending','message':reason},
+                            'input_state_unknown':True,'automatic_replay':False,
+                            'current_request_input_attempted':False,'prior_operation_outcome':'unknown',
+                            'next_action':'Observe actual owned UI or the original late-open outcome; never repeat close/open blindly.'}
+                    def same_generation(left,right):
+                        return (all(left.get(k)==right.get(k) for k in ('workspace_id','revision_id','pid','hwnd','project_path'))
+                            and left.get('process_create_time')==right.get('process_create_time'))
+                    def scoped_generation_binding(value):
+                        return (isinstance(value,dict) and set(value)==set(anchor)
+                            and all(isinstance(value.get(k),str) and value[k].strip()
+                                    for k in ('workspace_id','revision_id','session_id','project_path'))
+                            and all(type(value.get(k)) is int and value[k]>0 for k in ('pid','hwnd'))
+                            and type(value.get('process_create_time')) in {int,float}
+                            and math.isfinite(value['process_create_time']) and value['process_create_time']>0
+                            and all(value[k]==anchor[k] for k in ('workspace_id','revision_id'))
+                            and _normalized_workspace_path(value['project_path'])==_normalized_workspace_path(anchor['project_path']))
+                    def archive():
+                        previous=deepcopy(state)
+                        history=previous.pop('completed_operations',[])
+                        if not isinstance(history,list) or any(not isinstance(item,dict) or 'completed_operations' in item for item in history):
+                            raise MCPToolError('Workspace recovery operation history is invalid')
+                        return [*history,previous]
+                    def known_no_input(failure):
+                        return (isinstance(failure,dict) and failure.get('input_state_unknown') is False
+                                and (failure.get('dispatch_state') in {'not_attempted','not_delivered'}
+                                     or failure.get('action_attempted') is False))
+                    def launch_retired(failure):
+                        import math
+                        proof=failure.get('details',{}).get('launch_retirement') if isinstance(failure,dict) else None
+                        return (isinstance(proof,dict) and proof.get('schema')=='controlstudio-launch-retirement/v1'
+                            and proof.get('terminal') is True and proof.get('retired_verified') is True
+                            and proof.get('launched_identity_observed') is True
+                            and type(proof.get('launched_pid')) is int and proof['launched_pid']>0
+                            and set(proof)=={'schema','launched_identity_observed','launched_pid','process_create_time','terminal',
+                                'retired_verified','observation_method','retirement_state','cleanup_effect','automatic_replay'}
+                            and type(proof.get('process_create_time')) in {int,float}
+                            and math.isfinite(proof['process_create_time']) and proof['process_create_time']>0
+                            and proof.get('retirement_state') in {'absent','different_lifetime'}
+                            and proof.get('observation_method')=='psutil_exact_identity_after_existing_cleanup/v1'
+                            and proof.get('automatic_replay') is False)
+                    try:
+                        if (type(anchor['process_create_time']) not in {int,float}
+                                or not math.isfinite(anchor['process_create_time']) or anchor['process_create_time']<=0):
+                            raise MCPToolError('Workspace recovery requires an exact finite process lifetime')
+                        # Operation outcome and native input ownership are separate.
+                        # A new independently admitted generation can retire the
+                        # previous owner's authority without settling its history.
+                        if state is not None and (not isinstance(state,dict) or not scoped_generation_binding(state.get('binding'))
+                                or state.get('conversation_id')!=conversation_id
+                                or state.get('phase') not in {'save_pending','save_terminal','saved','close_pending','closed','launch_pending','launch_terminal','rebound'}
+                                or not isinstance(state.get('operation_id'),str) or not state['operation_id'].strip()
+                                or state.get('phase')=='rebound' and not scoped_generation_binding(state.get('new_binding'))):
+                            raise MCPToolError('Workspace recovery state is invalid')
+                        current=mcp.agent_session_identity_snapshot
+                        pending_phase=state is not None and state.get('phase') in {'close_pending','closed','launch_pending','launch_terminal'}
+                        # The effective owner follows the completed rebound, not
+                        # the original frame. This handoff applies before every
+                        # phase continuation; a new session alone never qualifies.
+                        previous=(state.get('new_binding') if state is not None and state['phase']=='rebound'
+                            else state['binding'] if state is not None else None)
+                        foreign_generation=(state is not None
+                            and any(previous[k]!=anchor[k] for k in ('pid','hwnd','process_create_time')))
+                        if (state is not None and state['phase']!='rebound' and state['binding']!=anchor
+                                and same_generation(state['binding'],anchor)
+                                and isinstance(current,dict) and current.get('session_id')==old.get('session_id')
+                                and _engineering_session_process_create_time(active_engineering_session)==anchor['process_create_time']
+                                and _native_ld_edit_ready(active_engineering_session,active_workspace)):
+                            state['current_binding']=deepcopy(anchor);persist()
+                        exact_binding=(state is None or state['binding']==anchor
+                            or state.get('current_binding')==anchor and same_generation(state['binding'],anchor))
+                        if pending_phase and not foreign_generation and (not exact_binding or state.get('source_run_id')!=run_id):
+                            # A cold resume is authorized only by the existing
+                            # exact native checkpoint source/run validation.
+                            if (native_checkpoint is None or prior_run is None
+                                    or (resume_source!=prior_run.id and request_message.metadata.get('workspace_recovery_source_run_id')!=prior_run.id)
+                                    or (state.get('source_run_id')!=prior_run.id and not recovery_source_run_matches(prior_run.id,state.get('source_run_id'),conversation_id))
+                                    or not exact_binding):
+                                raise MCPToolError('Pending recovery has no exact same-run or resumed-run anchor')
+                            state['source_run_id']=run_id;persist()
+                        if not pending_phase or foreign_generation:
+                            executor._check_target()
+                        elif (current is not None and not recovery_workspace_only_binding(current,anchor)
+                                and any(current.get(k)!=old.get(k) for k in ('workspace_id','revision_id','session_id','pid','hwnd','project_path'))):
+                            raise MCPToolError('Pending recovery cannot adopt another workspace or working target')
+                        workspace=_local_workspace_v1(active_workspace)
+                        checked=_local_workspace_v1(await mcp.call_workspace_tool('workspace.status',{'workspace_id':old['workspace_id']}))
+                        if (_workspace_resume_stable_identity(checked)!=_workspace_resume_stable_identity(workspace)
+                                or checked.workspace_id!=old['workspace_id'] or checked.revision_id!=old['revision_id']
+                                or checked.source.original_state!='unchanged'
+                                or checked.source.original_current_sha256!=checked.source.sha256):
+                            raise MCPToolError('Workspace recovery must preserve the exact source and working identity')
+                        if state is None or isinstance(state, dict) and state.get('phase') == 'rebound':
+                            healthy = await _healthy_current_recovery(executor, state, anchor, workspace,
+                                admitted_native_workspace_generation(executor), revalidate_native_workspace_binding,
+                                admitted_native_workspace_generation)
+                            if healthy is not None:
+                                return healthy
+                        history=[]
+                        retained_candidate_session=None
+                        if pending_phase and foreign_generation and state.get('source_run_id')==run_id:
+                            if not native_recovery_target_retired(previous,previous['process_create_time']):
+                                return pending('The original recovery frame has not retired; the replacement remains a candidate only.')
+                            if not _pending_native_recovery_saved_matches(previous,old['workspace_id'],old['revision_id'],state['saved_sha256']):
+                                raise MCPToolError('Pending recovery saved identity changed before candidate revalidation')
+                            retained_candidate_session=await revalidate_native_workspace_binding(workspace)
+                            created=(_engineering_session_process_create_time(retained_candidate_session)
+                                if isinstance(retained_candidate_session,dict) else None)
+                            if (not isinstance(retained_candidate_session,dict) or created!=anchor['process_create_time']
+                                    or any(retained_candidate_session.get(k)!=old[k] for k in ('pid','hwnd','project_path'))
+                                    or retained_candidate_session.get('project_hash')!=state['saved_sha256']
+                                    or not (_engineering_session_identity_verified(retained_candidate_session)
+                                        or _native_ld_edit_ready(retained_candidate_session,active_workspace))):
+                                raise MCPToolError('Pending recovery replacement did not freshly revalidate its exact saved binding')
+                            # Only the original lifetime is closed. Keep its
+                            # operation and unknown history; adopt through the
+                            # existing retained-binding rebound below.
+                            state['phase']='closed';persist()
+                        elif foreign_generation:
+                            if pending_phase and (state['phase']!='launch_terminal'
+                                    or not launch_retired(state.get('terminal_failure'))):
+                                raise MCPToolError('Pending recovery has no exact same-run owner')
+                            if not native_recovery_target_retired(previous,previous['process_create_time']):
+                                raise MCPToolError('Previous recovery owner has not retired its exact process/main')
+                            # Reuse Host binding admission, but do not promote
+                            # its cached proof to continuing liveness. Observe
+                            # this exact current frame/lifetime and saved bytes
+                            # before choosing a NEW explicit operation.
+                            generation=admitted_native_workspace_generation(executor)
+                            if generation is None:
+                                raise MCPToolError('New recovery requires an independent current Host generation')
+                            observed=await mcp.call_read_tool('xg5000.instances',{})
+                            instances=observed.get('instances') if isinstance(observed,dict) else None
+                            candidates=([item for item in instances if isinstance(item,dict)
+                                and (item.get('pid')==anchor['pid'] or item.get('hwnd')==anchor['hwnd'])]
+                                if isinstance(instances,list) else [])
+                            if (len(candidates)!=1
+                                    or any(type(candidates[0].get(k)) is not int for k in ('pid','hwnd'))
+                                    or type(candidates[0].get('process_create_time')) not in {int,float}
+                                    or any(candidates[0].get(k)!=anchor[k]
+                                    for k in ('pid','hwnd','process_create_time')) or candidates[0].get('visible') is not True):
+                                raise MCPToolError('New recovery current frame/lifetime was not exactly observed')
+                            saved=saved_project_observation(Path(workspace.working_copy.path))
+                            executor._check_target()
+                            if (saved.get('stable_during_read') is not True
+                                    or saved.get('sha256')!=checked.working_copy.current_sha256
+                                    or admitted_native_workspace_generation(executor)!=generation):
+                                raise MCPToolError('New recovery current saved binding changed during observation')
+                            # Additive private durable evidence, ignored by all
+                            # current-authority projections. Preserve the ENTIRE
+                            # old operation (including unknown and completed
+                            # history); never archive unknown as completed.
+                            prior_generation_operation={'input_authority_retired_by':generation,
+                                'retired_owner':deepcopy(previous),'owner_retirement_observed':True,
+                                'operation':deepcopy(state)}
+                            state=None
+                        operation_selected=True
+                        if (state is not None and state['phase']=='saved' and exact_binding
+                                and state['saved_sha256']!=checked.working_copy.current_sha256
+                                and not state.get('close_result') and not state.get('close_attempt_history')
+                                and not state.get('close_reconsideration')):
+                            rejection=state.get('close_rejection')
+                            if isinstance(rejection,dict) and rejection.get('schema')=='controlstudio-native-failure/v1':
+                                rejected_close=validate_native_failure(rejection)
+                                rejected_details=rejected_close.get('details',{})
+                                if (known_no_input(rejected_details)
+                                        and rejected_details.get('action_attempted') is False
+                                        and rejected_details.get('source_closed') is False):
+                                    # A new explicit request owns a fresh save barrier.
+                                    # Keep the prior known rejection and its saved bytes
+                                    # exact; pending or ambiguous close never enters here.
+                                    history=archive();state=None
+                        if state is not None and state['phase'] in {'rebound','save_terminal'}:
+                            if state['phase']=='rebound' and state.get('new_binding')!=anchor:
+                                # Completed history grants no control over a new target.
+                                # This explicit request can start a NEW operation only
+                                # under the independent, current Host binding admission.
+                                if admitted_native_workspace_generation(executor) is None:
+                                    raise MCPToolError('Completed recovery cannot authorize another current target')
+                            elif state['phase']=='save_terminal' and not exact_binding:
+                                raise MCPToolError('Completed recovery cannot authorize another current target')
+                            history=archive();state=None
+                        if state is not None and state['phase']=='launch_terminal':
+                            if not launch_retired(state.get('terminal_failure')):
+                                return pending('The original launch has no exact terminal retirement proof.')
+                            # This is a NEW explicit model request, after the
+                            # preceding request recorded terminal failure.
+                            history=archive()
+                            state={'binding':anchor,'conversation_id':conversation_id,'saved_sha256':state['saved_sha256'],'phase':'closed',
+                                'source_run_id':run_id,'operation_id':str(uuid.uuid4()),'completed_operations':history}
+                            persist()
+                        if state is None:
+                            # Save/read are the existing bound primitives. An
+                            # ACK alone is never proof of a stably saved file.
+                            state={'binding':anchor,'conversation_id':conversation_id,'saved_sha256':workspace.working_copy.current_sha256,
+                                   'phase':'save_pending','source_run_id':run_id,'operation_id':str(uuid.uuid4()),
+                                   'completed_operations':history}
+                            if prior_generation_operation is not None:
+                                state['prior_generation_operation']=prior_generation_operation
+                            persist()
+                            save=await executor._execute('save_project',{})
+                            state['save_result']=save;persist()
+                            if save.get('ok') is not True or save.get('error') or save.get('failure'):
+                                # An unknown save is retained and never repeated.
+                                # Only an explicit known no-input result permits
+                                # a new save operation on a subsequent call.
+                                if known_no_input(save):state['phase']='save_terminal';persist()
+                                return {'ok':False,'phase':'save_pending','rebound':False,'save_result':save,'automatic_replay':False}
+                        if state['phase']=='save_pending':
+                            # The attempted save can change the mutable version even
+                            # when its UI receipt fails. Observe it afresh; never replay.
+                            checked=_local_workspace_v1(await mcp.call_workspace_tool('workspace.status',{'workspace_id':old['workspace_id']}))
+                            # Read stable disk without repeating an unknown save.
+                            # The normal close primitive independently refuses
+                            # dirty discard; disk read alone is not IDE equality.
+                            saved=await executor._execute('read_saved_project',{})
+                            if saved.get('stable_during_read') is not True:
+                                raise MCPToolError('Workspace recovery saved file was not stable')
+                            workspace=_local_workspace_v1(active_workspace)
+                            if (_workspace_resume_stable_identity(checked)!=_workspace_resume_stable_identity(workspace)
+                                    or checked.working_copy.current_sha256!=saved.get('sha256')
+                                    or workspace.working_copy.current_sha256!=saved.get('sha256')):
+                                raise MCPToolError('Workspace recovery saved lineage changed')
+                            state.update(saved_sha256=saved['sha256'],phase='saved',saved_result=saved)
+                            persist()
+                        if state['phase']!='saved' and state['saved_sha256']!=checked.working_copy.current_sha256:
+                            # workspace.status was observed before an actual
+                            # save; re-read after the existing lineage update.
+                            checked=_local_workspace_v1(await mcp.call_workspace_tool('workspace.status',{'workspace_id':old['workspace_id']}))
+                            if checked.working_copy.current_sha256!=state['saved_sha256']:
+                                raise MCPToolError('Saved working copy changed during recovery')
+                        if (retained_candidate_session is None and not (state['binding']==anchor
+                                or state.get('current_binding')==anchor and same_generation(state['binding'],anchor))):
+                            return pending('The recorded recovery belongs to another generation; it grants no current control authority.')
+                        reconsidered_close=False
+                        if state['phase']=='close_pending':
+                            from .native_recovery_wait import consume_close_reconsideration
+                            proof=state.get('close_reconsideration')
+                            scope={k:deepcopy(state[k]) for k in ('operation_id','binding','saved_sha256')}
+                            if (isinstance(proof,dict) and proof.get('scope')==scope and proof.get('consumed') is False
+                                    and await pending_recovery_idle(executor,proof['ui_identity']) is not None):
+                                reconsidered_close=consume_close_reconsideration(state,scope)
+                                if reconsidered_close:
+                                    state.setdefault('close_attempt_history',[]).append({
+                                        'close_result':deepcopy(state.get('close_result')),
+                                        'failure':deepcopy(state.get('last_failure')),
+                                        'reconsideration':deepcopy(proof)})
+                                    persist()
+                        if state['phase']=='saved' or reconsidered_close:
+                            saved=(saved_project_observation(Path(workspace.working_copy.path)) if reconsidered_close
+                                   else await executor._execute('read_saved_project',{}))
+                            if (saved.get('stable_during_read') is not True
+                                    or saved.get('sha256')!=state['saved_sha256']):
+                                raise MCPToolError('Saved working copy changed before normal close')
+                            workspace=_local_workspace_v1(active_workspace)
+                            state['phase']='close_pending';persist()
+                            close_attempted=False
+                            def mark_close():
+                                nonlocal close_attempted
+                                close_attempted=True
+                            close=await _close_existing_workspace_for_fresh_reopen(workspace,deepcopy(active_engineering_session),
+                                timeout_seconds=30.0,return_recovery_outcome=True,before_dispatch=mark_close)
+                            state['close_result']=deepcopy(close);persist()
+                            if close.get('source_closed') is False:
+                                state['phase']='saved';persist()
+                                return {'ok':False,'rebound':False,'phase':'saved','close_result':close,
+                                    'input_state_unknown':False,'automatic_replay':False,
+                                    'next_action':'The normal close preserved unsaved edits. Save or resolve the actual owned UI before a new recover request.'}
+                        if state['phase']=='close_pending':
+                            if not native_recovery_target_retired(state['binding'],state['binding']['process_create_time']):
+                                if current is None:
+                                    # Revalidate exactly the original live frame
+                                    # read-only; never reopen or repeat close.
+                                    reconciled=await _reconcile_late_workspace_open(mcp,workspace,bind_session=bind_engineering_session,
+                                        timeout_seconds=3.0,expected_frame=state['binding'])
+                                    if reconciled is not None:
+                                        _,session=reconciled
+                                        new=mcp.agent_session_identity_snapshot
+                                        created=_engineering_session_process_create_time(session)
+                                        if (not isinstance(new,dict) or created!=state['binding']['process_create_time']
+                                                or not same_generation(state['binding'],{**new,'process_create_time':created})
+                                                or not _native_ld_edit_ready(session,workspace.model_dump(mode='json'))):
+                                            raise MCPToolError('Original pending frame did not revalidate exactly')
+                                        target=deepcopy(new);executor.target=deepcopy(new);executor.expected_process_create_time=created
+                                        state['current_binding']={**new,'process_create_time':created};persist()
+                                        executor.owned_ui.clear();executor.variable_comments.clear();executor.check_results.clear()
+                                        return {**pending('The original live frame was freshly revalidated; observe and explicitly respond to its owned modal.'),
+                                            'old_target_revalidated':True,'operation_id':state['operation_id']}
+                                return pending('The original normal close has not retired its exact process/main; fresh owned modal handling is required.')
+                            state['phase']='closed';persist()
+                        def record_launch_pending(observed):
+                            if all(k in observed for k in ('pid','hwnd','process_create_time')):
+                                state['launch_pending_frame']={k:observed[k] for k in ('pid','hwnd','process_create_time')}
+                                state['launch_operation_id']=observed['launch_operation_id']
+                            if observed.get('state')=='original_retired':
+                                state['phase']='launch_terminal'
+                                state['terminal_failure']={'details':{'launch_retirement':observed.get('launch_retirement')}}
+                            persist()
+                        if state['phase']=='closed':
+                            # A Host restart loses current readiness, not a separate
+                            # retained, owned native frame. Use the same exact live
+                            # revalidation as normal Web resume before launching.
+                            # Pending close/launch operations never enter this path.
+                            reused=(retained_candidate_session if retained_candidate_session is not None
+                                else await revalidate_native_workspace_binding(workspace))
+                            if reused is not None:
+                                session=bind_engineering_session(reused)
+                                new=mcp.agent_session_identity_snapshot
+                                created=_engineering_session_process_create_time(session)
+                                if (not isinstance(new,dict) or created is None or not math.isfinite(created) or created<=0
+                                        or any(new.get(k)!=old.get(k) for k in ('workspace_id','revision_id','project_path'))
+                                        or any(new.get(k)!=session.get(k) for k in ('session_id','pid','hwnd','project_path'))
+                                        or not (_engineering_session_identity_verified(session)
+                                            or _native_ld_edit_ready(session,workspace.model_dump(mode='json')))):
+                                    raise MCPToolError('Retained workspace recovery did not revalidate its exact native target')
+                                target=deepcopy(new);executor.target=deepcopy(new);executor.expected_process_create_time=created
+                                state.update(phase='rebound',rebound_kind='retained_native_binding_revalidated',
+                                    new_binding={**{k:new[k] for k in ('workspace_id','revision_id','session_id','pid','hwnd','project_path')},
+                                                 'process_create_time':created})
+                                persist()
+                                return {'ok':True,'rebound':True,'phase':'rebound','workspace_id':old['workspace_id'],
+                                    'revision_id':old['revision_id'],'saved_sha256':state['saved_sha256'],
+                                    'operation_id':state['operation_id'],'retained_target_revalidated':True,
+                                    'current_request_input_attempted':False,'launch_attempted':False,
+                                    'source_preserved':True,'loaded_authority_inherited':False,
+                                    'requires_fresh_program_observation':True,'automatic_replay':False,
+                                    'prior_unknown_preserved':True}
+                            state['phase']='launch_pending';persist()
+                            active_engineering_session=None
+                            execution_broker.clear_agent_session()
+                            # One controlled launch only. Unknown outcomes keep
+                            # launch_pending; later requests reconcile read-only.
+                            launch,session=await open_workspace_in_xg5000(workspace,timeout_seconds=120.0,require_controlled_launch=True,
+                                binding_wait_identity={'operation_id':state['operation_id'],'source_run_id':state['source_run_id']},
+                                binding_wait_record=record_launch_pending)
+                        elif state['phase']=='launch_pending':
+                            launch,session=await open_workspace_in_xg5000(workspace,timeout_seconds=120.0,require_controlled_launch=True,
+                                binding_wait_identity={'operation_id':state['operation_id'],'source_run_id':state['source_run_id'],'reconcile_only':True},
+                                expected_pending_frame=state.get('launch_pending_frame'), binding_wait_record=record_launch_pending)
+                        else:
+                            return pending('The original recovery stage requires actual inspection before another operation.')
+                        new=mcp.agent_session_identity_snapshot
+                        created=_engineering_session_process_create_time(session)
+                        if (not isinstance(new,dict) or created is None or not math.isfinite(created) or created<=anchor['process_create_time']
+                                or any(new.get(k)!=old.get(k) for k in ('workspace_id','revision_id','project_path'))
+                                or not (_engineering_session_identity_verified(session) or _native_ld_edit_ready(session,workspace.model_dump(mode='json')))):
+                            raise MCPToolError('Workspace recovery did not prove a fresh exact working-copy target')
+                        target=deepcopy(new);executor.target=deepcopy(new);executor.expected_process_create_time=created
+                        state.update(phase='rebound',new_binding={**{k:new[k] for k in ('workspace_id','revision_id','session_id','pid','hwnd','project_path')},'process_create_time':created})
+                        persist()
+                        return {'ok':True,'rebound':True,'phase':'rebound','workspace_id':old['workspace_id'],
+                            'revision_id':old['revision_id'],'saved_sha256':state['saved_sha256'],
+                            'operation_id':state['operation_id'],
+                            'source_preserved':True,
+                            'normal_close_verified':(isinstance(state.get('close_result'),dict)
+                                and state['close_result'].get('source_closed') is True),
+                            'source_retirement_observed':True,'fresh_target_verified':True,
+                            'loaded_authority_inherited':False,'requires_fresh_program_observation':True,
+                            'automatic_replay':False,'prior_unknown_preserved':True}
+                    except Exception as error:
+                        details={'phase':state.get('phase') if isinstance(state,dict) else 'preflight',
+                                 'automatic_replay':False,'input_state_unknown':isinstance(state,dict) and state.get('phase') in {'save_pending','close_pending','launch_pending'}}
+                        cause=error
+                        for _ in range(4):
+                            payload=getattr(cause,'mcp_error_payload',None)
+                            if isinstance(payload,dict) and isinstance(payload.get('error'),dict) and 'nativeFailure' in payload['error']:
+                                details['failure']=validate_native_failure(payload['error']['nativeFailure'])
+                                break
+                            cause=getattr(cause,'__cause__',None)
+                            if cause is None:break
+                        failure=details.get('failure')
+                        failure_details=failure.get('details',{}) if isinstance(failure,dict) else {}
+                        if operation_selected and isinstance(state,dict) and state['phase']=='save_pending':
+                            state['save_failure']=deepcopy(failure or {'message':str(error)})
+                            if known_no_input(failure_details):state['phase']='save_terminal';details['input_state_unknown']=False
+                            persist()
+                        dirty_preserved=(isinstance(failure,dict) and failure.get('code')=='XG5000_SAFE_CLOSE_UNSAVED_CHANGES'
+                            and failure_details.get('operation')=='xg5000.reviewed_no_save_close'
+                            and failure_details.get('source_closed') is False
+                            and failure_details.get('discardUnsavedChanges') is False
+                            and failure_details.get('unsavedChangesDiscarded') is False
+                            and isinstance(failure_details.get('close'),dict)
+                            and failure_details['close'].get('close_action')=='unsaved_changes')
+                        if operation_selected and isinstance(state,dict) and state['phase']=='close_pending' and (known_no_input(failure_details) and not locals().get('reconsidered_close',False) or dirty_preserved):
+                            # No close was dispatched. Preserve the rejection,
+                            # and let a later explicit call recheck preconditions.
+                            state.update(phase='saved',close_rejection=failure);persist()
+                            details['input_state_unknown']=False
+                        elif operation_selected and isinstance(state,dict) and state['phase']=='close_pending' and not locals().get('close_attempted',True) and not locals().get('reconsidered_close',False):
+                            state.update(phase='saved',close_rejection={'message':str(error)});persist()
+                            details['input_state_unknown']=False
+                        if operation_selected and isinstance(state,dict) and state['phase']=='launch_pending' and isinstance(failure,dict):
+                            state['terminal_failure']=failure
+                            if launch_retired(failure):state['phase']='launch_terminal'
+                            persist()
+                        # Report the committed disposition, not the phase before
+                        # terminal retirement/no-input evidence was reconciled.
+                        if isinstance(state,dict):
+                            details['phase']=state['phase']
+                            details['input_state_unknown']=state['phase'] in {'save_pending','close_pending','launch_pending'}
+                        next_action='Inspect actual owned UI or the original close/open outcome; do not retry input blindly.'
+                        if details['phase']=='launch_terminal':
+                            next_action='The original launched process is verified retired. Inspect the recorded failure before deciding whether to explicitly request a new recovery; another recover_workspace call starts a new launch operation.'
+                        elif details['phase']=='launch_pending':
+                            next_action='The original launch outcome remains unresolved. On the same physical generation, observe owned UI or explicitly call recover_workspace only to reconcile that original operation; never replay its unknown input. If Host has independently rebound this workspace to a different physical generation, an explicit recover request may select a new operation only after Host freshly verifies the current frame/lifetime and saved identity. The prior operation and its unknown outcomes remain historical, without settlement or replay. A generation token or new session alone proves neither freshness nor permission; this guidance does not settle or authorize retry of an unknown simulator Start.'
+                        if operation_selected and isinstance(state,dict):state['last_failure']=deepcopy(details);persist()
+                        return {'ok':False,'rebound':False,**details,
+                            'error':{'nativeFailure':build_native_failure('workspace_recovery_failed',str(error),details),
+                                     'kind':'workspace_recovery_failed'},
+                            'next_action':next_action}
+
+                def current_native_process_create_time():
+                    # The MCP snapshot deliberately omits Host session proof.
+                    # Supply only this matching Host-owned session lifetime;
+                    # no foreground or continuing-liveness claim is made.
+                    current=mcp.agent_session_identity_snapshot
+                    session=active_engineering_session
+                    fields=('workspace_id','revision_id','session_id','pid','hwnd','project_path')
+                    if (not isinstance(current,dict) or not isinstance(session,dict)
+                            or any(current.get(k)!=target.get(k) for k in fields)
+                            or any(session.get(k)!=target.get(k) for k in ('session_id','pid','hwnd','project_path'))):
+                        return None
+                    return _engineering_session_process_create_time(session)
+
+                if preparation_run:
+                    from .native_project_preparation import NativeProjectPreparation
+
+                    async def prepared_target(result: dict[str, Any]) -> dict[str, Any]:
+                        nonlocal active_workspace, active_engineering_session, target
+                        workspace = _local_workspace_v1(result["workspace"])
+                        if not _native_ld_edit_ready(result["session"], result["workspace"]):
+                            raise AgentOutputContractError("Native preparation did not verify its editor/session")
+                        active_workspace = workspace.model_dump(mode="json")
+                        store.set_host_state("active_workspace", active_workspace)
+                        session = bind_engineering_session(result)
+                        store.bind_native_created_conversation(conversation_id=conversation_id, run_id=run_id,
+                            workspace_id=workspace.workspace_id, revision_id=workspace.revision_id,
+                            engineering_session_id=session["session_id"])
+                        target = mcp.agent_session_identity_snapshot
+                        store.append_event(event_type="host.status", conversation_id=conversation_id, run_id=run_id,
+                            payload=current_status_v1().model_dump(mode="json", by_alias=True))
+                        return target
+
+                    async def cancelled_preparation(result: dict[str, Any]) -> None:
+                        preparation["previous_reservation"] = deepcopy(preparation["reservation"])
+                        preparation["reservation"] = deepcopy(result["reservation"])
+                        preparation["frame"] = deepcopy(result["frame"])
+                        preparation["idle_frame_authority"] = True
+                        preparation["cancellation_result"] = deepcopy(result)
+                        binding["project_path"] = result["reservation"]["project_path"]
+                        store.set_host_state(preparation_key, preparation)
+
+                    owner = NativeProjectPreparation(gateway=mcp, reservation=preparation["reservation"],
+                        frame=preparation["frame"], initial_target=preparation["initial_target"], on_prepared=prepared_target,
+                        on_cancelled=cancelled_preparation, idle_frame_authority=preparation.get("idle_frame_authority") is True,
+                        current_target=lambda: mcp.agent_session_identity_snapshot,
+                        current_process_create_time=current_native_process_create_time,
+                        pending_recovery_owned_ui=validate_pending_recovery_owned_ui,
+                        wait_workspace_recovery=wait_workspace_recovery,
+                        record_raw=record_raw, refresh_saved=refresh_saved,
+                        record_process_diagnostic=record_process_diagnostic,
+                        recover_workspace=recover_native_workspace,
+                        current_recovery_admission=admitted_native_workspace_generation)
+                else:
+                    def recovery_current_target():
+                        current=mcp.agent_session_identity_snapshot
+                        # File-only binding preserves recovery/checkpoint ownership,
+                        # never the retired frame's native or owned-UI authority.
+                        if pending_anchor is not None and recovery_workspace_only_binding(current,pending_anchor):
+                            return None
+                        return current
+                    owner = NativeWorkspaceExecution(gateway=mcp, target=target,
+                        current_target=recovery_current_target,
+                        current_process_create_time=current_native_process_create_time,
+                        pending_recovery_owned_ui=validate_pending_recovery_owned_ui,
+                        wait_workspace_recovery=wait_workspace_recovery,
+                        record_raw=record_raw, refresh_saved=refresh_saved,
+                        record_process_diagnostic=record_process_diagnostic,
+                        recover_workspace=recover_native_workspace,
+                        current_recovery_admission=admitted_native_workspace_generation,
+                        captured_source={key: knowledge_workspace_snapshot.get("source", {}).get(key)
+                                         for key in ("captured_path", "sha256")})
+                owner.allow_simulator = bool(request_message is not None and request_message.metadata.get("allow_simulator") is True)
+                owner.expected_process_create_time = (preparation["frame"]["expected_process_create_time"] if preparation_run
+                    else pending_anchor['process_create_time'] if pending_anchor is not None
+                    else _engineering_session_process_create_time(engineering_session_snapshot))
+                await restore_pending_recovery_owner(owner)
+                recovery_generation=(admitted_native_workspace_generation(owner) if not preparation_run else None)
+                def completion_snapshot(fresh_saved: bool):
+                    # Identity/source binding, not a blanket process-live requirement.
+                    try:
+                        if owner.recovery_pending or owner.recovery_only:
+                            return None
+                        owner._check_target()
+                        created = current_native_process_create_time()
+                        if (type(created) not in {int, float} or not math.isfinite(created)
+                                or created != owner.expected_process_create_time
+                                or not isinstance(active_workspace, dict)
+                                or any(active_workspace.get(k) != owner.target.get(k) for k in ("workspace_id", "revision_id"))):
+                            return None
+                        working = active_workspace.get("working_copy", {})
+                        saved_sha = working.get("current_sha256")
+                        if (not isinstance(saved_sha, str) or re.fullmatch("[0-9a-f]{64}", saved_sha) is None
+                                or _normalized_workspace_path(working.get("path", "")) != _normalized_workspace_path(owner.target["project_path"])):
+                            return None
+                        if fresh_saved:
+                            saved = saved_project_observation(Path(owner.target["project_path"]))
+                            owner._check_target()
+                            if saved.get("stable_during_read") is not True or saved.get("sha256") != saved_sha:
+                                return None
+                        return {**{k: owner.target[k] for k in ("workspace_id", "revision_id", "pid", "hwnd")},
+                            "project_path": _normalized_workspace_path(owner.target["project_path"]),
+                            "process_create_time": created, "saved_sha256": saved_sha}
+                    except (MCPToolError, KeyError, TypeError, ValueError):
+                        return None
+                completion_users = [{"message_id": item.id, "content": item.content}
+                    for item in detail.messages if item.role is MessageRole.USER]
+                completion_goal = (detail.project_brief if detail.project_brief is not None else
+                    {"origin": "host_preserved_native_project_start_request"}
+                    if any(item.role is MessageRole.USER and isinstance(item.metadata.get("native_project_start"), dict)
+                           for item in detail.messages) else None)
+                owner.completion_ledger = NativeCompletionLedger(store=store, conversation_id=conversation_id,
+                    run_id=run_id, request_message_id=request_message_id, workspace_id=target["workspace_id"],
+                    revision_id=target["revision_id"], request_content=prompt, user_messages=completion_users,
+                    project_brief=completion_goal, snapshot=completion_snapshot,
+                    receipt_sequence=lambda: raw_receipt_sequence,
+                    allowed_runs={**{item.id: item.request_message_id for item in detail.runs if item.request_message_id},
+                                  run_id: request_message_id})
+                execution_broker.bind_native_run(conversation_id, run_id, owner)
+                native_execution_started = True
+
+                async def native_checkpoint_callback(checkpoint: dict[str, Any], digest: str) -> None:
+                    getattr(owner,'check_checkpoint_target',owner._check_target)()
+                    if not native_checkpoint_matches_request(checkpoint, prompt, binding):
+                        raise AgentOutputContractError("Native checkpoint objective differs from its bound request")
+                    await native_checkpoint_boundary(asyncio.to_thread(
+                        _host_sqlite_boundary, "native_checkpoint_persist", persist_native_checkpoint_with_index,
+                        store, checkpoint_key, index_key, binding,
+                        checkpoint, digest, source_run_id=run_id))
+
+                async def native_event(event_type: str, payload: dict[str, Any]) -> None:
+                    if event_type != "tool.completion_preflight":
+                        _host_sqlite_boundary("native_event_persist", store.append_event,
+                            event_type=event_type, conversation_id=conversation_id, run_id=run_id, payload=payload)
+
+                async def native_token(delta: str) -> None:
+                    _host_sqlite_boundary("native_event_persist", store.append_event,
+                        event_type="agent.token", conversation_id=conversation_id, run_id=run_id, payload={"delta": delta})
+
+                async def native_progress(stage: str, elapsed: int) -> None:
+                    _host_sqlite_boundary("native_event_persist", store.append_event,
+                        event_type="agent.progress", conversation_id=conversation_id, run_id=run_id,
+                        payload={"stage": stage, "elapsedSeconds": elapsed})
+
+                recovery_state=(current_workspace_recovery(owner) if not preparation_run else None)
+                try:
+                    if owner.recovery_only and recovery_state is None:
+                        raise AgentRunPreconditionError("보존된 작업 사본 복구의 현재 상태를 확인할 수 없습니다.")
+                    native_engineering_sources = resolve_native_engineering_sources(detail, target)
+                    runtime = runtime_factory(settings, execution_broker)
+                    if hasattr(runtime, "bind_knowledge_snapshot"):
+                        async def native_knowledge_snapshot() -> list[dict[str, Any]]:
+                            return knowledge_store.agent_source_snapshot()
+                        runtime.bind_knowledge_snapshot(native_knowledge_snapshot)
+                    output = await runtime.run(prompt=prompt, history=history, conversation_id=conversation_id, run_id=run_id,
+                        trusted_context={"workflow": workflow, "change_request_scope": change_request_scope,
+                            "verification_scope": verification_scope, "native_ld_execution": {
+                                **({"completion_context": completion_context}
+                                   if (completion_context := owner.completion_ledger.context()) is not None else {}),
+                                "schema_version": "1", "workspace_id": target["workspace_id"], "revision_id": target["revision_id"],
+                                "engineering_sources": native_engineering_sources,
+                                # Opaque content-cache scope only. The Agent receives no
+                                # native target/path authority and each Host call rebinds.
+                                "restore_scope": hashlib.sha256(json.dumps([conversation_id, binding],
+                                    sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest(),
+                                "program_name": None, "transport": "responses" if settings.model == "gpt-6-luna" else "chat",
+                                **({"preparation": True} if preparation_run else {}),
+                                "workspace_recovery": True,
+                                **({"simulation": True} if owner.allow_simulator else {}),
+                                **({"workspace_recovery_generation":recovery_generation} if recovery_generation else {}),
+                                **({"current_workspace_recovery":recovery_state} if recovery_state is not None else {})}},
+                        native_checkpoint=native_checkpoint, on_native_checkpoint=native_checkpoint_callback,
+                        on_tool_event=native_event, on_token=native_token, on_progress=native_progress)
+                    getattr(owner,'check_checkpoint_target',owner._check_target)()
+                    if output.workflow != "native_ld_partial_edit" or any(getattr(output, key, None) is not None for key in (
+                        "engineering_mission", "digest", "cycle_disposition", "engineering_analysis", "approval_handoff",
+                        "plan_artifact", "plan_digest", "plan_status", "project_name")):
+                        raise AgentOutputContractError("Native run returned a legacy completion artifact")
+                    completion_review = owner.completion_ledger.evaluate(
+                        (output.native_request_disposition or {}).get("completion_assessment"),
+                        (output.native_request_disposition or {}).get("status"))
+                    message = store.append_message(conversation_id=conversation_id, role=MessageRole.ASSISTANT,
+                        content=output.content, metadata={"run_id": run_id, "status": "complete", "workflow": "engineering",
+                            "native_completion_review": completion_review,
+                            "native_ld_execution": True, "model": output.model,
+                            "input_tokens": output.input_tokens + request_message.metadata.get('native_project_start_usage', {}).get('input_tokens', 0),
+                            "output_tokens": output.output_tokens + request_message.metadata.get('native_project_start_usage', {}).get('output_tokens', 0),
+                            "native_request_disposition": output.native_request_disposition})
+                    store.append_event(event_type="agent.message", conversation_id=conversation_id, run_id=run_id,
+                                       payload={"message_id": message.id, "content": message.content})
+                    close_diagnostic=getattr(owner,'close_vendor_process_diagnostics',None)
+                    if close_diagnostic is not None:
+                        await native_checkpoint_boundary(close_diagnostic())
+                    store.update_run_state(run_id=run_id, state=RunState.COMPLETED)
+                finally:
+                    try:
+                        close_diagnostic=getattr(owner,'close_vendor_process_diagnostics',None)
+                        if close_diagnostic is not None:
+                            await native_checkpoint_boundary(close_diagnostic())
+                    finally:
+                        execution_broker.release_native_run(conversation_id, run_id)
+                return
 
             if workflow == "engineering":
                 store.expire_change_approvals(conversation_id=conversation_id)
@@ -8462,7 +10730,7 @@ def create_app(
                 terminal_candidate_reproposal_scope is not None
                 or terminal_candidate_reproposal_verification_scope is not None
             )
-            native_failure_step_id = (
+            (
                 bound_proposal_step_id(store, linked_change, engineering_mission_snapshot)
                 if linked_change is not None
                 else None
@@ -9092,6 +11360,11 @@ def create_app(
                         evidence_context=evidence_context,
                         simulator_target_status=simulator_target_status,
                     )
+                if tool_name == "search_engineering_knowledge":
+                    safe_payload.update(activity_label="설비 자료·명령 매뉴얼 조회", activity_role="자료 조사")
+                    count = payload.get("knowledge_result_count")
+                    if event_type == "tool.completed" and type(count) is int and 0 <= count <= 50:
+                        safe_payload["activity_result"] = f"출처가 있는 자료 {count}건을 조회했습니다."
                 if event_type == "tool.completed":
                     evidence = _agent_tool_evidence_ref(
                         conversation_id=conversation_id,
@@ -9644,7 +11917,8 @@ def create_app(
                             {}
                         ),
                         **(
-                            {"targetless_analysis": True}
+                            {"targetless_analysis": True, "project_start_available": bool(
+                                request_message is not None and request_message.role is MessageRole.USER)}
                             if targetless_analysis_run
                             else {}
                         ),
@@ -9718,6 +11992,23 @@ def create_app(
                     None if analysis_completion_run else persist_mission_checkpoint
                 ),
             )
+            if getattr(output, 'native_project_start', None) is not None:
+                if (not targetless_analysis_run or workflow != 'engineering'
+                        or request_message is None or request_message.role is not MessageRole.USER):
+                    raise AgentOutputContractError('New-project start is outside its original unbound request')
+                handoff = validated_native_project_start(output.native_project_start)
+                brief = ProjectBriefV1(project_name=handoff['project_name'],
+                    machine_purpose='Original user request ' + request_message_id + '; preserved verbatim in this conversation.').model_dump()
+                await asyncio.sleep(0)  # Cancellation before durable consumption creates nothing.
+                store.consume_unbound_project_start(conversation_id=conversation_id, run_id=run_id,
+                    request_message_id=request_message_id, prompt=prompt, handoff=handoff, project_brief=brief,
+                    usage={'input_tokens': output.input_tokens, 'output_tokens': output.output_tokens},
+                    public_plan=output.content)
+                await asyncio.sleep(0)  # A consumed-but-interrupted request is not automatically replayed.
+                native_start_continuation = True
+                await execute_agent_run(conversation_id=conversation_id, run_id=run_id,
+                    request_message_id=request_message_id, prompt=prompt)
+                return
             if getattr(output, "approval_handoff", None) is not None:
                 transaction = (
                     store.get_change_transaction(proposed_change_authority[0])
@@ -9832,7 +12123,9 @@ def create_app(
                     "planning run returned engineering mission state"
                 )
             plan_revision: dict[str, Any] | None = None
-            if workflow == "new_project_planning":
+            if workflow == "new_project_planning" and (
+                output.plan_artifact is not None or output.plan_digest is not None
+            ):
                 try:
                     current_plan_artifact = validate_project_plan_artifact(
                         output.plan_artifact,
@@ -9889,6 +12182,8 @@ def create_app(
                         current_artifact=current_plan_artifact,
                     )
                     ProjectPlanRevisionDeltaV1.model_validate(plan_revision)
+            elif workflow == "new_project_planning" and output.plan_status == "ready_for_review":
+                raise AgentOutputContractError("An executable review requires a project plan artifact")
             engineering_analysis, engineering_analysis_digest = (
                 (None, None)
                 if analysis_completion_run
@@ -10042,9 +12337,13 @@ def create_app(
             )
             store.update_run_state(run_id=run_id, state=RunState.COMPLETED)
         except asyncio.CancelledError:
-            store.update_run_state(run_id=run_id, state=RunState.CANCELLED)
+            if not native_start_continuation:
+                store.update_run_state(run_id=run_id, state=RunState.CANCELLED)
             raise
         except Exception as exc:  # noqa: BLE001 - sanitize every provider/runtime failure
+            host_failure_location = None
+            if native_start_continuation:
+                raise  # The delegated phase exclusively owns its terminal state/evidence. Runs are never reissued.
             retained_direct_transaction = (
                 store.get_change_transaction(proposed_change_authority[0])
                 if proposed_change_authority is not None
@@ -10067,6 +12366,7 @@ def create_app(
                 }
             )
             if isinstance(exc, AgentRunPreconditionError):
+                host_failure_location = safe_host_failure_location(exc, native_execution_started=native_execution_started)
                 logger.warning("agent run %s failed a product precondition", run_id)
                 user_message = str(exc)
                 error_code = "runtime_precondition"
@@ -10218,11 +12518,12 @@ def create_app(
                 else:
                     logger.error(
                         "agent run %s failed in the private runtime "
-                        "(stage=%s, exception_kind=%s, reason_code=%s)",
+                        "(stage=%s, exception_kind=%s, reason_code=%s, provider_safe=%s)",
                         run_id,
                         diagnostic.stage,
                         diagnostic.exception_kind,
                         diagnostic.reason_code,
+                        provider_failure_detail(diagnostic) or "unavailable",
                     )
                     user_message = _agent_runtime_user_message(diagnostic)
                     error_code = f"agent_runtime_{diagnostic.reason_code}"
@@ -10232,6 +12533,23 @@ def create_app(
                         f"exceptionKind={diagnostic.exception_kind}; "
                         f"reasonCode={diagnostic.reason_code}."
                     )
+            elif isinstance(exc,AgentSidecarCrashed):
+                sidecar_diagnostic=sidecar_failure_diagnostic(exc)
+                logger.error("agent run %s failed (type=AgentSidecarCrashed, sidecar_safe=%s, private_detail_suppressed=true)",
+                    run_id,sidecar_failure_detail(sidecar_diagnostic) if sidecar_diagnostic is not None else 'unavailable')
+                user_message = "에이전트 실행 프로세스와 통신을 완료하지 못했습니다. 저장된 작업은 유지됩니다."
+                error_code = type(exc).__name__
+                error_detail = "Agent dependency request failed; provider detail was suppressed (AgentSidecarCrashed)."
+            elif _safe_host_sqlite_failure(exc) is not None:
+                sqlite_diagnostic = _safe_host_sqlite_failure(exc)
+                try:
+                    logger.error("agent run %s failed (host_sqlite_diagnostic=%s, detail_suppressed=true)",
+                                 run_id, _host_sqlite_failure_detail(sqlite_diagnostic))
+                except Exception:
+                    pass
+                user_message = "앱의 실행 기록 처리 중 오류가 발생했습니다."
+                error_code = "host_sqlite"
+                error_detail = "Host local SQLite operation failed; private detail was suppressed."
             else:
                 raw_detail = str(exc)
                 credential_material_detected = (
@@ -10250,10 +12568,11 @@ def create_app(
                         else "suppressed"
                     ),
                 )
-                user_message = "에이전트 실행에 실패했습니다. 모델 연결과 MCP 상태를 확인해 주세요."
+                host_failure_location = safe_host_failure_location(exc, native_execution_started=native_execution_started)
+                user_message = "앱이 요청을 준비하거나 실행하는 중 오류가 발생했습니다. 저장된 작업은 유지됩니다."
                 error_code = type(exc).__name__
                 error_detail = (
-                    "Agent dependency request failed; provider detail was suppressed "
+                    "Host request processing failed; private detail was suppressed "
                     f"({type(exc).__name__})."
                 )
             if retained_direct_change_outcome and not isinstance(
@@ -10269,6 +12588,27 @@ def create_app(
                     " A canonical terminal direct change transaction was retained; "
                     "its durable receipt remains authoritative."
                 )
+            if native_execution_started:
+                user_message = "에이전트 실행이 완료되지 않았습니다. 이미 수행한 native 입력과 관측은 그대로 보존되어 있습니다."
+                error_detail = "Native owner did not complete; actual dispatched inputs, observations and completed checkpoint prefix remain retained."
+            sidecar_diagnostic=sidecar_failure_diagnostic(exc)
+            if sidecar_diagnostic is not None:
+                error_detail += " Safe sidecar diagnostic: " + sidecar_failure_detail(sidecar_diagnostic)
+            sqlite_diagnostic = _safe_host_sqlite_failure(exc)
+            if sqlite_diagnostic is not None:
+                error_detail += " " + _host_sqlite_failure_detail(sqlite_diagnostic)
+            if native_execution_started and isinstance(exc, AgentRuntimeError) and exc.diagnostic is not None:
+                diagnostic = exc.diagnostic
+                error_detail += (
+                    " Safe runtime diagnostic: "
+                    f"stage={diagnostic.stage}; exceptionKind={diagnostic.exception_kind}; "
+                    f"reasonCode={diagnostic.reason_code}."
+                )
+                provider_detail = provider_failure_detail(diagnostic)
+                if provider_detail:
+                    error_detail += " " + provider_detail + "."
+            if host_failure_location is not None:
+                error_detail += host_failure_location_detail(host_failure_location)
             store.append_message(
                 conversation_id=conversation_id,
                 role=MessageRole.ASSISTANT,
@@ -10295,6 +12635,136 @@ def create_app(
     ) -> None:
         if existing_run.conversation_id != conversation_id:
             raise HTTPException(status_code=409, detail="operationId belongs to another conversation")
+        if existing_run.metadata.get("resume_native_run_id") != body.resume_native_run_id:
+            raise HTTPException(status_code=409, detail="operationId belongs to a different native resume request")
+        # A renewed local profile session may explicitly resume the same source.
+        # Exact conversation, source and execution scope must still match.
+        if body.resume_native_run_id is not None and (
+            existing_run.metadata.get("change_request_scope") != body.change_request_scope
+            or existing_run.metadata.get("verification_scope") != body.verification_scope
+            or existing_run.metadata.get("allow_simulator", False) != body.allow_simulator
+        ):
+            raise HTTPException(status_code=409, detail="native resume replay authority differs")
+
+    def recovery_source_run_matches(source_run_id: str, recorded_run_id: str, conversation_id: str) -> bool:
+        # Checkpoint and small recovery state use separate durable writes.
+        # Interrupted handoff is recoverable through exact server-validated
+        # resume ancestry; this does not adopt an unrelated follow-up request.
+        visited=set()
+        while source_run_id and source_run_id not in visited:
+            visited.add(source_run_id)
+            source=store.get_run(source_run_id)
+            if (source is None or source.conversation_id!=conversation_id
+                    or source.state not in {RunState.FAILED,RunState.CANCELLED,RunState.COMPLETED}
+                    or source.metadata.get('change_request_scope')!='permanent_offline_revision'
+                    or source.metadata.get('verification_scope')!='offline_native_check_only'):
+                return False
+            resume_parent=source.metadata.get('resume_native_run_id')
+            recovery_parent=source.metadata.get('workspace_recovery_source_run_id')
+            if (any(parent is not None and (not isinstance(parent,str) or not parent) for parent in (resume_parent,recovery_parent))
+                    or resume_parent is not None and recovery_parent is not None and resume_parent!=recovery_parent):
+                return False
+            if source_run_id==recorded_run_id:return True
+            source_run_id=resume_parent or recovery_parent
+        return False
+
+    def recovery_workspace_only_binding(current: object, anchor: dict[str, Any]) -> bool:
+        """Exact file-only workspace identity, solely for a preserved recovery owner."""
+        if not isinstance(current,dict):
+            return False
+        try:
+            expected=workspace_agent_binding(active_workspace)
+            # Exact keys exclude partial native identities, including null fields.
+            return (set(current)==set(expected) and current==expected
+                and all(expected.get(k)==anchor.get(k) for k in ('workspace_id','revision_id'))
+                and _normalized_workspace_path(expected['working_path'])==_normalized_workspace_path(anchor['project_path']))
+        except (ValueError,TypeError,KeyError,OSError):
+            return False
+
+    def _pending_native_recovery_saved_matches(anchor,workspace_id,revision_id,saved_sha256):
+        """The existing stable source/working proof; no session or native authority."""
+        try:
+            workspace=_local_workspace_v1(active_workspace)
+            observed=saved_project_observation(Path(workspace.working_copy.path))
+            if (workspace.workspace_id!=workspace_id or workspace.revision_id!=revision_id
+                    or workspace.source.original_state!='unchanged'
+                    or workspace.source.original_current_sha256!=workspace.source.sha256
+                    or _normalized_workspace_path(workspace.working_copy.path)!=_normalized_workspace_path(anchor['project_path'])
+                    or workspace.working_copy.current_sha256!=saved_sha256
+                    or observed.get('stable_during_read') is not True
+                    or observed.get('sha256')!=saved_sha256):
+                return False
+        except (ValueError,TypeError,KeyError,OSError):
+            return False
+        return True
+
+    def _pending_native_recovery_target_anchor(state, workspace_id, revision_id):
+        """Read-only target proof shared by pending resume and its bootstrap view."""
+        if not isinstance(state,dict):
+            return None
+        anchor=state.get('binding')
+        if (not isinstance(anchor,dict) or anchor.get('workspace_id')!=workspace_id
+                or anchor.get('revision_id')!=revision_id or not anchor.get('session_id')
+                or type(anchor.get('pid')) is not int or anchor['pid']<=0
+                or type(anchor.get('hwnd')) is not int or anchor['hwnd']<=0
+                or type(anchor.get('process_create_time')) not in {int,float}
+                or not math.isfinite(anchor['process_create_time']) or anchor['process_create_time']<=0):
+            return None
+        current=mcp.agent_session_identity_snapshot
+        revalidated=False
+        if current is not None and not recovery_workspace_only_binding(current,anchor) and any(current.get(k)!=anchor.get(k) for k in
+                ('workspace_id','revision_id','session_id','pid','hwnd','project_path')):
+            # A new session ID is not a new physical generation. Accept only
+            # the existing normal fresh file/lifetime revalidation contract.
+            revalidated=(state['phase']=='close_pending'
+                and all(current.get(k)==anchor.get(k) for k in ('workspace_id','revision_id','pid','hwnd','project_path'))
+                and _engineering_session_process_create_time(active_engineering_session)==anchor['process_create_time']
+                and _native_ld_edit_ready(active_engineering_session,active_workspace))
+            if not revalidated:return None
+        if not _pending_native_recovery_saved_matches(anchor,workspace_id,revision_id,state.get('saved_sha256')):
+            return None
+        return {**deepcopy(current),'process_create_time':anchor['process_create_time']} if revalidated else deepcopy(anchor)
+
+    def pending_native_recovery_anchor(detail: Any, source_run_id: str | None) -> dict[str, Any] | None:
+        """Preserved interrupted recovery only; never a general edit binding."""
+        if not source_run_id or not detail.workspace_id or not detail.revision_id:
+            return None
+        source=store.get_run(source_run_id)
+        state=store.get_host_state(_native_workspace_recovery_state_key(detail.id,detail.workspace_id,detail.revision_id))
+        if (source is None or source.conversation_id!=detail.id or source.state not in {RunState.FAILED,RunState.CANCELLED,RunState.COMPLETED}
+                or not isinstance(state,dict) or state.get('conversation_id')!=detail.id
+                or (state.get('source_run_id')!=source_run_id and not recovery_source_run_matches(source_run_id,state.get('source_run_id'),detail.id))
+                or not isinstance(state.get('operation_id'),str)
+                or state.get('phase') not in {'close_pending','closed','launch_pending','launch_terminal'}):
+            return None
+        return _pending_native_recovery_target_anchor(state,detail.workspace_id,detail.revision_id)
+
+    def native_resume_source_state_allowed(detail: Any, source: Any) -> bool:
+        """Completed replies may resume only their still-pending managed recovery."""
+        return bool(source is not None and (
+            source.state in {RunState.FAILED, RunState.CANCELLED}
+            or (source.state is RunState.COMPLETED
+                and source.metadata.get("change_request_scope") == "permanent_offline_revision"
+                and source.metadata.get("verification_scope") == "offline_native_check_only"
+                and pending_native_recovery_anchor(detail, source.id) is not None)))
+
+    def native_resume_target_matches_checkpoint(detail: Any, source_run_id: str, binding: object) -> bool:
+        """Shared Web/submission target gate; file-only requires its recovery owner."""
+        current = mcp.agent_session_identity_snapshot
+        preparation = store.get_host_state(f"native_project_preparation:{detail.id}")
+        if (detail.workflow == "new_project_planning" and isinstance(preparation, dict)
+                and preparation.get("initial_target") == current
+                and _native_checkpoint_target_matches(preparation.get("reservation"), binding)):
+            return True
+        if _native_checkpoint_target_matches(current, binding):
+            return True
+        anchor = pending_native_recovery_anchor(detail, source_run_id)
+        return bool(anchor is not None
+            and _native_checkpoint_target_matches(anchor, binding)
+            # An unresolved managed launch clears current native readiness.
+            # Its validated owner can resume recovery without admitting a frame.
+            and (current is None or (recovery_workspace_only_binding(current, anchor)
+                and _native_checkpoint_target_matches(current, binding, file_only=True))))
 
     @app.post(
         "/api/v1/conversations/{conversation_id}/messages",
@@ -10339,7 +12809,7 @@ def create_app(
                 )
             effective_change_request_scope: str | None = None
             effective_verification_scope = "offline_native_reopen"
-            if body.workflow == "engineering":
+            if body.workflow == "engineering" or body.change_request_scope == "permanent_offline_revision":
                 effective_change_request_scope = body.change_request_scope or "analysis_only"
                 effective_verification_scope = body.verification_scope
             offline_operand_mission = (
@@ -10360,9 +12830,43 @@ def create_app(
                 if (body.workflow == "new_project_planning" and body.project_brief is not None)
                 else body.content
             )
+            if body.workflow == "new_project_planning" and body.change_request_scope == "permanent_offline_revision" and body.project_brief is not None:
+                authoritative_content = authoritative_content.removesuffix(_LEGACY_PROJECT_BRIEF_FOOTER) + (
+                    "자료와 요구사항을 확인한 뒤 새 프로젝트와 첫 LD 프로그램을 준비하고, 같은 대화에서 "
+                    "LD 작성·검사·저장까지 진행해 주세요. 준비에 필요한 조건이 불명확하면 질문해 주세요."
+                )
             detail = store.get_conversation(conversation_id)
             if detail is None:
                 raise HTTPException(status_code=404, detail="conversation not found")
+            # Record the current authenticated actor on the new run while
+            # preserving the original actor and interrupted source history.
+            if body.resume_native_run_id is not None:
+                retained = await asyncio.to_thread(latest_native_checkpoint_summary, store, conversation_id)
+                retained_source = retained["source_run_id"] if retained is not None else None
+                source = store.get_run(body.resume_native_run_id)
+                source_message = next((item for item in detail.messages
+                    if source is not None and item.id == source.request_message_id), None)
+                latest_run = max(detail.runs, key=lambda item: item.created_at, default=None)
+                if (retained_source != body.resume_native_run_id
+                        or source is None or source.conversation_id != conversation_id
+                        or not native_resume_source_state_allowed(detail, source)
+                        or not _native_resume_latest_attempt_matches_checkpoint(detail, source, source_message, latest_run, store)
+                        or not native_resume_target_matches_checkpoint(detail, source.id, retained["binding"])
+                        or source_message is None or source_message.content != body.content
+                        or source.metadata.get("change_request_scope") != "permanent_offline_revision"
+                        or source.metadata.get("verification_scope") != "offline_native_check_only"):
+                    raise HTTPException(status_code=409, detail="native resume does not match the latest interrupted request")
+            # An authenticated explicit ordinary follow-up can also continue
+            # a naturally completed, still-pending managed recovery. It is not
+            # an implicit replay or a general targetless edit permission.
+            recovery_source=body.resume_native_run_id
+            if recovery_source is None:
+                latest=max(detail.runs,key=lambda item:item.created_at,default=None)
+                if latest is not None and latest.state is RunState.COMPLETED:
+                    recovery_source=latest.id
+            recovery_anchor=(pending_native_recovery_anchor(detail,recovery_source)
+                if (effective_change_request_scope=='permanent_offline_revision'
+                    and effective_verification_scope=='offline_native_check_only') else None)
             targetless_engineering_conversation = bool(
                 detail.workflow == "engineering"
                 and detail.workspace_id is None
@@ -10396,7 +12900,7 @@ def create_app(
                         status_code=status.HTTP_409_CONFLICT,
                         detail="the bound LS controller could not be revalidated",
                     ) from exc
-            if detail.workflow == "engineering":
+            if detail.workflow == "engineering" and effective_change_request_scope != "permanent_offline_revision":
                 terminal_mission = store.get_engineering_mission(conversation_id)
                 if terminal_mission is not None:
                     try:
@@ -10431,10 +12935,28 @@ def create_app(
                                 "start a new engineering conversation for a new objective"
                             ),
                         )
+            # A fresh recovery anchor already proved the same physical frame,
+            # lifetime and saved source. Bind its ephemeral session through the
+            # same durable-target/mission checks used for ordinary submission.
+            # Exact file-only recovery may bind only its server-owned conversation
+            # identity. The native anchor and recovery-only capabilities stay intact.
+            recovery_session_target = (current_engineering_conversation_target()
+                if recovery_anchor is not None else None)
+            recovery_file_only_revalidated = bool(recovery_anchor is not None
+                and recovery_session_target == (
+                    detail.workspace_id, detail.revision_id,
+                    _workspace_engineering_conversation_session_id(detail.workspace_id, detail.revision_id))
+                and recovery_workspace_only_binding(mcp.agent_session_identity_snapshot, recovery_anchor))
+            recovery_session_revalidated = bool(recovery_anchor is not None
+                and recovery_session_target is not None
+                and (recovery_file_only_revalidated
+                    or recovery_session_target == tuple(recovery_anchor.get(key)
+                        for key in ("workspace_id", "revision_id", "session_id"))))
             if (
                 detail.workflow == "engineering"
                 and not targetless_engineering_conversation
                 and not engineering_conversation_matches_current_target(detail)
+                and (recovery_anchor is None or recovery_session_revalidated)
             ):
                 current_target = current_engineering_conversation_target()
                 mission = store.get_engineering_mission(conversation_id)
@@ -10444,6 +12966,7 @@ def create_app(
                     and current_target[:2]
                     == (detail.workspace_id, detail.revision_id)
                     and not current_target[0].startswith("controller-ls:")
+                    and (recovery_anchor is None or current_target == recovery_session_target)
                 )
                 if durable_target_matches:
                     assert current_target is not None
@@ -10491,7 +13014,14 @@ def create_app(
             if (
                 detail.workflow == "engineering"
                 and effective_change_request_scope != "analysis_only"
-                and not offline_mutation_ready()
+                and recovery_anchor is None
+                and not (
+                    bool(mcp.status.status == "ready"
+                         and _native_ld_edit_ready(active_engineering_session, active_workspace))
+                    if (effective_change_request_scope == "permanent_offline_revision"
+                        and effective_verification_scope == "offline_native_check_only")
+                    else offline_mutation_ready()
+                )
             ):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
@@ -10517,6 +13047,10 @@ def create_app(
                         {
                             "change_request_scope": effective_change_request_scope,
                             "verification_scope": effective_verification_scope,
+                            "allow_simulator": body.allow_simulator,
+                            "actor_id": _request_actor_id(request),
+                            **({"resume_native_run_id": body.resume_native_run_id, "native_resume_admission_version": 1} if body.resume_native_run_id else {}),
+                            **({"workspace_recovery_source_run_id":recovery_source} if recovery_anchor is not None else {}),
                             **(
                                 {"offline_operand_mission": offline_operand_mission}
                                 if offline_operand_mission is not None
@@ -10531,6 +13065,9 @@ def create_app(
                         "actor_id": _request_actor_id(request),
                         "workflow": body.workflow,
                         "structured_project_brief": body.project_brief is not None,
+                        "allow_simulator": body.allow_simulator,
+                        **({"resume_native_run_id": body.resume_native_run_id} if body.resume_native_run_id else {}),
+                            **({"workspace_recovery_source_run_id":recovery_source} if recovery_anchor is not None else {}),
                         **({}),
                         **({}),
                         **({"project_brief": project_brief} if project_brief is not None else {}),
@@ -10541,7 +13078,7 @@ def create_app(
                         ),
                         **(
                             {"verification_scope": effective_verification_scope}
-                            if body.workflow == "engineering"
+                            if effective_change_request_scope is not None
                             else {}
                         ),
                         **(
@@ -10623,6 +13160,28 @@ def create_app(
                 operation_id=body.operation_id,
                 state=run.state.value.casefold(),
             )
+
+    @app.post(
+        "/api/v1/conversations/{conversation_id}/native-execution/resume",
+        response_model=SendMessageResponseV1,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def resume_native_execution_v1(
+        conversation_id: str, body: NativeExecutionResumeRequestV1, request: Request,
+    ) -> SendMessageResponseV1:
+        source = store.get_run(body.source_run_id)
+        detail = store.get_conversation(conversation_id)
+        original = next((item for item in detail.messages if source is not None
+                         and item.id == source.request_message_id), None) if detail is not None else None
+        if source is None or source.conversation_id != conversation_id or original is None:
+            raise HTTPException(status_code=409, detail="native resume source is unavailable")
+        # All target, scope, idempotency, active-run and scheduling checks use
+        # the same submission path as the original request.
+        return await send_message_v1(conversation_id, SendMessageRequestV1(
+            content=original.content, operation_id=body.operation_id, workflow=detail.workflow,
+            change_request_scope="permanent_offline_revision", verification_scope="offline_native_check_only",
+            resume_native_run_id=body.source_run_id, allow_simulator=body.allow_simulator,
+        ), request)
 
     @app.post(
         "/api/v1/conversations/{conversation_id}/engineering-mission/reverify-blocked-step",
@@ -10902,14 +13461,14 @@ def create_app(
                 ) from exc
 
             pass
-            exact_operand_reproposal_permitted = bool(
+            bool(
                 change_outcome_transaction_id is not None
                 and _expired_exact_operand_reproposal_callback_permitted(
                     mission_snapshot,
                     change_outcome_projection(linked_change),
                 )
             )
-            native_failure_step_id = (
+            (
                 bound_proposal_step_id(store, linked_change, mission_snapshot)
                 if linked_change is not None
                 else None
@@ -11743,7 +14302,7 @@ def create_app(
                 error_detail=verification.error_detail,
             )
             assert finished is not None
-            identity_refreshed = await refresh_terminal_change_identity(
+            await refresh_terminal_change_identity(
                 finished,
                 retain_engineering_session=True,
             )
@@ -11779,6 +14338,66 @@ def create_app(
             pass
         return response
 
+
+    @app.post(
+        "/api/v1/xg5000/close-idle-instance",
+        response_model=CloseIdleXG5000InstanceResponseV1,
+    )
+    async def close_idle_xg5000_window_v1(
+        body: CloseIdleXG5000RequestV1,
+        request: Request,
+        _csrf: None = Depends(require_browser_csrf),
+        _target_lease: None = Depends(target_switch_lease),
+    ) -> CloseIdleXG5000InstanceResponseV1:
+        """Close one user-selected blank window while preserving the selected target."""
+        if active_change_executions:
+            raise HTTPException(status_code=409, detail="작업이 진행 중이어서 빈 창을 닫을 수 없습니다.")
+        session = active_engineering_session
+        if (isinstance(session, dict) and session.get("pid") == body.pid
+                and session.get("hwnd") == body.hwnd):
+            raise HTTPException(status_code=409, detail="현재 연결된 작업 창은 빈 창 정리로 닫을 수 없습니다.")
+        arguments = {
+            "pid": body.pid, "hwnd": body.hwnd,
+            "process_create_time": body.process_create_time,
+            "confirm_idle_close": True, "timeout_seconds": body.timeout_seconds,
+        }
+        try:
+            # Keep started managed input joined before the dependency releases
+            # its operation lease, including a cancelled HTTP waiter.
+            raw = await native_checkpoint_boundary(mcp.call_workspace_tool("xg5000.close_idle_instance", arguments))
+            if not isinstance(raw, dict):
+                raise TypeError("MCP idle-instance close receipt is not an object")
+            digest = _canonical_json_digest(raw)
+            outcome = (_close_idle_xg5000_instance_attention(raw, receipt_digest=digest)
+                if raw.get("status") == "needs_attention"
+                else _close_idle_xg5000_instance_response(raw, receipt_digest=digest))
+            binding = outcome.idle_binding
+            if (binding.get("pid") != body.pid or binding.get("hwnd") != body.hwnd
+                    or type(binding.get("process_create_time")) not in (int, float)
+                    or not math.isfinite(binding["process_create_time"])
+                    or abs(binding["process_create_time"] - body.process_create_time) >= 0.001
+                    or not isinstance(binding.get("executable"), str) or not binding["executable"]):
+                raise ValueError("MCP idle-instance close receipt binding does not match")
+            attention = isinstance(outcome, CloseIdleXG5000InstanceAttentionV1)
+            store.append_event(
+                event_type=("xg5000.idle_instance_close_needs_attention" if attention else "xg5000.idle_instance_closed"),
+                payload={"actorId": _request_actor_id(request), "idleBinding": dict(binding),
+                    "receiptDigest": outcome.receipt_digest, "closeAction": outcome.close_action,
+                    "noSavePromptClicked": False, "processTerminated": False},
+            )
+            if attention:
+                raise HTTPException(status_code=409, detail={
+                    "code": "idle_xg5000_needs_attention",
+                    "message": "빈 창 닫기 결과를 확인하지 못했습니다. 창 목록을 다시 확인해 주세요.",
+                    "attentionReason": outcome.attention_reason,
+                    "processExited": False, "processTerminated": False,
+                })
+            return outcome
+        except MCPToolError as exc:
+            raise HTTPException(status_code=409,
+                detail="빈 창 닫기 결과를 확인하지 못했습니다. 창 목록을 다시 확인해 주세요.") from exc
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=502, detail="닫기 응답을 검증하지 못했습니다. 창 목록을 다시 확인해 주세요.") from exc
 
     @app.post(
         "/api/v1/change-transactions/{transaction_id}/close-idle-instance",
@@ -12265,6 +14884,9 @@ def create_app(
                     return
                 if await request.is_disconnected():
                     return
+                if events:
+                    await asyncio.sleep(0)
+                    continue
                 if time.monotonic() - last_output >= config.event_heartbeat_seconds:
                     last_output = time.monotonic()
                     yield ": keep-alive\n\n"
@@ -12352,6 +14974,11 @@ def create_app(
                 model=candidate.model,
                 timeout_seconds=candidate.timeout_seconds,
                 reasoning_effort=candidate.reasoning_effort,
+                **(
+                    {"client_input_limit_tokens": candidate.client_input_limit_tokens}
+                    if "client_input_limit_tokens" in body.model_fields_set
+                    else {}
+                ),
                 api_key=candidate.secrets.api_key,
                 custom_headers=candidate.secrets.custom_headers,
                 capability_verified_at=result.tested_at,
@@ -12528,6 +15155,9 @@ def create_app(
         if selected_path is None:
             return KnowledgeImportResultV1(selected=False)
 
+        return await import_knowledge_file(Path(selected_path), body)
+
+    async def import_knowledge_file(selected_path: Path, body: ImportKnowledgeRequestV1) -> KnowledgeImportResultV1:
         try:
             report = await asyncio.to_thread(
                 extract_local_knowledge_document,
@@ -12622,6 +15252,36 @@ def create_app(
             low_text_pages=list(report.low_text_pages),
         )
 
+    @app.post("/api/v1/knowledge/import-file", response_model=KnowledgeImportResultV1)
+    async def import_uploaded_knowledge_v1(
+        request: Request, file_name: str = Query(alias="fileName", min_length=1, max_length=255),
+        _csrf: None = Depends(require_browser_csrf),
+    ) -> KnowledgeImportResultV1:
+        # A browser File is content, never a Host-selected filesystem path.
+        if (Path(file_name).name != file_name or any(c in file_name for c in '/\\:')
+                or any(ord(c) < 32 for c in file_name) or file_name.endswith((".", " "))
+                or Path(file_name).suffix.casefold() not in SUPPORTED_KNOWLEDGE_SUFFIXES
+                or re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", file_name)):
+            raise HTTPException(status_code=422, detail="Unsupported document filename")
+        metadata = dict(request.query_params)
+        metadata.pop("fileName", None)
+        try:
+            body = ImportKnowledgeRequestV1.model_validate(metadata)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail="Invalid document applicability") from exc
+        with tempfile.TemporaryDirectory(prefix="controlstudio-knowledge-") as temporary:
+            path = Path(temporary) / file_name
+            size = 0
+            with path.open("xb") as output:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > MAX_KNOWLEDGE_FILE_BYTES:
+                        raise HTTPException(status_code=413, detail="Document exceeds the 100 MB import limit")
+                    output.write(chunk)
+            if size == 0:
+                raise HTTPException(status_code=422, detail="Document is empty")
+            return await import_knowledge_file(path, body)
+
     @app.post(
         "/api/v1/knowledge/memories",
         response_model=KnowledgeSourceV1,
@@ -12714,8 +15374,140 @@ def create_app(
             raise HTTPException(status_code=404, detail="knowledge source not found")
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-    def bind_engineering_session(result: Any) -> dict[str, Any]:
-        nonlocal active_engineering_session
+    def record_workspace_attach_failure(
+        workspace: LocalWorkspaceV1,
+        pid: int,
+        hwnd: int,
+        result: Any,
+        *,
+        phase: str,
+    ) -> None:
+        session = result.get("session", result) if isinstance(result, dict) else {}
+        store.append_event(
+            event_type="workspace.attach_unverified",
+            payload={
+                "workspace_id": workspace.workspace_id,
+                "revision_id": workspace.revision_id,
+                "pid": pid,
+                "hwnd": hwnd,
+                "phase": phase,
+                "strong_identity_diagnostic": _safe_identity_diagnostic(
+                    session if isinstance(session, dict) else {}
+                ),
+            },
+        )
+
+    async def revalidate_native_workspace_binding(workspace: LocalWorkspaceV1) -> dict[str, Any] | None:
+        """Reconnect native-only authority; never recover cached MCP/COM readiness."""
+        binding = retained_native_workspace_binding(workspace.model_dump(mode="json"))
+        if not isinstance(binding, dict):
+            return None
+        anchor = binding.get("session")
+        current_workspace = workspace.model_dump(mode="json")
+        if (not isinstance(anchor, dict)
+                or any(binding.get(key) != current_workspace.get(key) for key in ("workspace_id", "revision_id"))):
+            # A candidate for another workspace must not retire the selected anchor.
+            return None
+        pid, hwnd = anchor.get("pid"), anchor.get("hwnd")
+        created = _engineering_session_process_create_time(anchor)
+
+        async def exact_instance() -> dict[str, Any] | None:
+            result = await mcp.call_read_tool("xg5000.instances", {})
+            instances = result.get("instances") if isinstance(result, dict) else None
+            if not isinstance(instances, list):
+                raise MCPToolError("Native target instances were not observed")
+            candidates = [item for item in instances if isinstance(item, dict)
+                          and (item.get("pid") == pid or item.get("hwnd") == hwnd)]
+            if not candidates:
+                return None
+            if (len(candidates) != 1 or candidates[0].get("pid") != pid
+                    or candidates[0].get("hwnd") != hwnd or candidates[0].get("visible") is not True):
+                raise MCPToolError("The retained native target was not exactly observed")
+            lifetime = candidates[0].get("process_create_time")
+            if (created is None or type(lifetime) not in {int, float}
+                    or not math.isfinite(lifetime) or abs(lifetime - created) >= 0.001):
+                raise MCPToolError("The retained native process lifetime changed")
+            return candidates[0]
+
+        phase = "exact_instance"
+        try:
+            if await exact_instance() is None:
+                update_native_workspace_binding(closed_target=(pid, hwnd), closed_process_create_time=created)
+                return None
+            # A fresh strong attach proves the current saved identity independently
+            # of the old cache; the native-only fallback still requires its lineage.
+            phase = "stable_working_file"
+            before = saved_project_observation(Path(workspace.working_copy.path))
+            if before.get("stable_during_read") is not True or before.get("sha256") != workspace.working_copy.current_sha256:
+                raise MCPToolError("The native working file was not stably observed")
+            phase = "strong_attach"
+            attached = await mcp.call_read_tool("xg5000.attach", {
+                "pid": pid, "hwnd": hwnd, "access_profile": "analysis",
+                "workspace_id": workspace.workspace_id,
+                "project_path": workspace.working_copy.path,
+                "project_hash": workspace.working_copy.current_sha256,
+            })
+            validated = _validated_engineering_session_result(attached, pid=pid, hwnd=hwnd,
+                project_path=workspace.working_copy.path, project_hash=workspace.working_copy.current_sha256)
+            if validated is not None:
+                phase = "strong_attach_stability"
+                if (await exact_instance() is None
+                        or _engineering_session_process_create_time(validated) is None
+                        or abs(_engineering_session_process_create_time(validated) - created) >= 0.001):
+                    raise MCPToolError("The native target changed during strong revalidation")
+                after = saved_project_observation(Path(workspace.working_copy.path))
+                if (after.get("stable_during_read") is not True
+                        or any(after.get(key) != before.get(key) for key in ("sha256", "size", "mtime_ns"))):
+                    raise MCPToolError("The working file changed during strong revalidation")
+                return validated
+            record_workspace_attach_failure(workspace, pid, hwnd, attached, phase="native_binding_revalidation")
+            raw_session = attached.get("session", attached) if isinstance(attached, dict) else {}
+            diagnostic = _safe_identity_diagnostic(raw_session if isinstance(raw_session, dict) else {})
+            # This is the observed save-after-file-use-loss boundary, not a
+            # blanket exemption for any failed identity predicate.
+            if (diagnostic.get("native_file_stage") != "file_use"
+                    or diagnostic.get("native_file_code") != "SELECTED_PID_FILE_USE_NOT_OBSERVED"):
+                raise MCPToolError("Native target title/path/hash revalidation did not pass")
+            phase = "retained_native_lineage"
+            if not _native_ld_edit_ready(anchor, current_workspace):
+                raise MCPToolError("The retained native workspace/hash lineage differs")
+            phase = "native_only_observation"
+            observed_session = _engineering_session_v1(raw_session)
+            raw = await mcp.call_workspace_tool("xg5000.editor", {"action": "observe", "pid": pid, "hwnd": hwnd})
+            scene = raw.get("observation") if isinstance(raw, dict) else None
+            if (not isinstance(raw, dict) or raw.get("ok") is not True or not isinstance(scene, dict)
+                    or scene.get("pid") != pid or scene.get("hwnd") != hwnd or scene.get("main_hwnd") != hwnd):
+                raise MCPToolError("The exact native editor was not observed")
+            if await exact_instance() is None:
+                raise MCPToolError("The native target disappeared during revalidation")
+            after = saved_project_observation(Path(workspace.working_copy.path))
+            if (after.get("stable_during_read") is not True
+                    or any(after.get(key) != before.get(key) for key in ("sha256", "size", "mtime_ns"))):
+                raise MCPToolError("The working file changed during native revalidation")
+            session_id = str(uuid.uuid4())
+            metadata = {"project_identity_assurance": "unverified",
+                        "native_ld_host_revalidation": {"binding": binding, "observed": {
+                            "method": "same_live_native_observe", "pid": pid, "hwnd": hwnd,
+                            "main_hwnd": hwnd, "process_create_time": created,
+                            "project_path": anchor["project_path"], "project_hash": anchor["project_hash"],
+                        }}}
+            saved = anchor.get("metadata", {}).get("native_ld_saved_observation")
+            if isinstance(saved, dict):
+                metadata["native_ld_saved_observation"] = {**deepcopy(saved), "session_id": session_id}
+            return {"session_id": session_id, "pid": pid, "hwnd": hwnd,
+                    "stage": observed_session.stage,
+                    "project_path": anchor["project_path"], "project_hash": anchor["project_hash"],
+                    "plc_policy": "read_only_unverified", "metadata": metadata}
+        except (MCPToolError, OSError, ValueError) as exc:
+            store.append_event(event_type="workspace.native_binding_revalidation_failed", payload={
+                "workspace_id": workspace.workspace_id, "revision_id": workspace.revision_id,
+                "phase": phase, "exception_kind": type(exc).__name__,
+            })
+            raise HTTPException(status_code=409,
+                detail="기존 native 편집 대상을 재검증하지 못했습니다. 작업 사본과 기존 창은 보존했습니다.") from exc
+
+    def workspace_candidate_session(result: Any) -> dict[str, Any]:
+        """Validate a staged result without selecting it or inheriting old authority."""
         if not isinstance(result, dict):
             raise HTTPException(
                 status_code=502,
@@ -12728,7 +15520,11 @@ def create_app(
                 status_code=502,
                 detail="MCP attach result is missing verified identity fields",
             )
-        active_engineering_session = dict(session)
+        return dict(session)
+
+    def bind_engineering_session(result: Any) -> dict[str, Any]:
+        nonlocal active_engineering_session
+        candidate = workspace_candidate_session(result)
         workspace = active_workspace
         working_copy = workspace.get("working_copy") if isinstance(workspace, dict) else None
         bound_workspace_id: str | None = None
@@ -12739,21 +15535,29 @@ def create_app(
                 str(Path(str(working_copy.get("path") or "")).resolve())
             )
             == os.path.normcase(
-                str(Path(str(active_engineering_session.get("project_path") or "")).resolve())
+                str(Path(str(candidate.get("project_path") or "")).resolve())
             )
             and str(working_copy.get("current_sha256") or "").casefold()
-            == str(active_engineering_session.get("project_hash") or "").casefold()
+            == str(candidate.get("project_hash") or "").casefold()
         ):
             bound_workspace_id = str(workspace["workspace_id"])
-        if _engineering_session_read_ready(active_engineering_session):
-            broker_session = dict(active_engineering_session)
+        broker_session = None
+        if (_engineering_session_read_ready(candidate)
+                or _native_ld_edit_ready(candidate, workspace)):
+            broker_session = dict(candidate)
             if bound_workspace_id is not None:
                 broker_session.update(workspace_agent_binding(workspace))
+        # Validate the complete projection before any mandatory publication.
+        # Retained lineage remains evidence; live readiness is published only
+        # after its required persistence and broker binding both succeed.
+        update_native_workspace_binding(candidate)
+        if broker_session is not None:
             execution_broker.bind_agent_session(broker_session)
         elif bound_workspace_id is not None:
             bind_agent_workspace_target(workspace)
         else:
             execution_broker.clear_agent_session()
+        active_engineering_session = candidate
         return active_engineering_session
 
     def require_engineering_read_target() -> dict[str, Any]:
@@ -12817,6 +15621,150 @@ def create_app(
                 else "XG5000 MCP에서 engineering 작업을 완료하지 못했습니다."
             ),
         )
+
+    def current_native_program_scope() -> dict[str, Any] | None:
+        if not _native_ld_edit_ready(active_engineering_session, active_workspace):
+            return None
+        session = deepcopy(active_engineering_session)
+        binding = workspace_agent_binding(active_workspace)
+        identity = mcp.agent_session_identity_snapshot
+        created = _engineering_session_process_create_time(session)
+        selected = {**binding, **{key: session[key] for key in
+            ('session_id', 'pid', 'hwnd', 'project_path', 'project_hash')}}
+        if (not isinstance(identity, dict) or any(identity.get(key) != value for key, value in selected.items())
+                or type(created) not in (int, float) or not math.isfinite(created) or created <= 0):
+            raise HTTPException(status_code=409, detail="현재 작업 사본의 프로그램 대상을 확인하지 못했습니다.")
+        selected['process_create_time'] = created
+        digest = hashlib.sha256(json.dumps(selected, ensure_ascii=False, sort_keys=True,
+            separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
+        return {'binding': binding, 'identity': identity, 'created': created, 'digest': digest}
+
+    def assert_native_program_scope(scope: dict[str, Any]) -> None:
+        current = current_native_program_scope()
+        if current != scope:
+            raise HTTPException(status_code=409, detail="프로그램 목록의 작업 대상이 바뀌었습니다. 목록을 새로 확인해 주세요.")
+
+    def native_workspace_programs_from_mcp(raw: Any, scope: dict[str, Any]) -> list[EngineeringProgramV1]:
+        binding = scope['binding']
+        index = raw.get('structure_index') if isinstance(raw, dict) else None
+        project = index.get('project_binding') if isinstance(index, dict) else None
+        source = project.get('source_receipt') if isinstance(project, dict) else None
+        sections = index.get('sections') if isinstance(index, dict) else None
+        units = sections.get('code_units') if isinstance(sections, dict) else None
+        coverage = units.get('coverage') if isinstance(units, dict) else None
+        items = units.get('items') if isinstance(units, dict) else None
+        catalog = raw.get('program_catalog') if isinstance(raw, dict) else None
+        def digest(value):
+            return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
+        if (not isinstance(raw, dict) or raw.get('operation') != 'workspace.structure_index'
+                or raw.get('schema_version') != '1.0' or raw.get('schema') != 'xg5000.workspace-structure-index/1.0'
+                or raw.get('workspace_binding') != binding
+                or raw.get('receipt_digest') != digest({k:v for k,v in raw.items() if k not in {'operation','schema_version','receipt_digest'}})
+                or not isinstance(index, dict) or index.get('schema') != 'xg5000.project.structure-index/1.0'
+                or index.get('read_only') is not True or index.get('status') not in {'complete','partial'}
+                or index.get('index_digest') != digest({k:v for k,v in index.items() if k != 'index_digest'})
+                or not isinstance(project, dict) or project.get('project_sha256') != binding['working_sha256']
+                or os.path.normcase(str(Path(str(project.get('project_path') or '')).resolve()))
+                   != os.path.normcase(str(Path(binding['working_path']).resolve()))
+                or not isinstance(source, dict) or source.get('observed') is not True
+                or source.get('project_sha256') != binding['working_sha256']
+                or not isinstance(items, list) or not isinstance(coverage, dict)
+                or any(type(coverage.get(k)) is not int for k in ('count','total','returned','offset','limit'))
+                or coverage['offset'] != 0 or coverage['limit'] != 500
+                or coverage['returned'] != len(items) or coverage['count'] != len(items) or coverage['total'] != len(items)
+                or len(items) > 500 or coverage.get('truncated') is not False or coverage.get('next_offset') is not None
+                or not isinstance(catalog, dict) or catalog.get('complete') is not True or catalog.get('read_only') is not True
+                or catalog.get('live_editor_catalog') is not False
+                or catalog.get('catalog_source') != 'sha_bound_project_structure_index'
+                or catalog.get('project_sha256') != binding['working_sha256'] or not isinstance(catalog.get('programs'), list)
+                or type(catalog.get('program_count')) is not int or catalog['program_count'] != len(catalog['programs'])):
+            raise ValueError('The complete saved program catalog does not match its current workspace proof')
+        programs = [engineering_program_from_mcp(item) for item in catalog['programs']]
+        names = [item.get('name') for item in items if isinstance(item, dict)
+            and item.get('code_unit_type') == 'Program' and item.get('language') == 'LD'
+            and isinstance(item.get('name'), str) and item['name'].strip()]
+        if ([p.name for p in programs] != sorted(names, key=str.casefold)
+                or any(p.language != 'LD' for p in programs)
+                or len({p.name.casefold() for p in programs}) != len(programs)
+                or len({p.program_id for p in programs}) != len(programs)):
+            raise ValueError('The saved program catalog identities are incomplete or ambiguous')
+        return programs
+
+    async def read_current_native_programs(scope: dict[str, Any]) -> list[EngineeringProgramV1]:
+        assert_native_program_scope(scope)
+        raw = await mcp.call_read_tool('workspace.structure_index', {'offset': 0, 'limit': 500})
+        assert_native_program_scope(scope)
+        try:
+            return native_workspace_programs_from_mcp(raw, scope)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=502, detail="저장된 프로그램 목록의 완전한 근거를 확인하지 못했습니다.") from exc
+
+    async def admit_native_program_ui(scope: dict[str, Any]) -> None:
+        assert_native_program_scope(scope)
+        target = scope['identity']
+        saved = await asyncio.to_thread(saved_project_observation, Path(target['project_path']))
+        instances = await mcp.call_read_tool('xg5000.instances', {})
+        candidates = [item for item in instances.get('instances', []) if isinstance(item, dict)
+            and (item.get('pid') == target['pid'] or item.get('hwnd') == target['hwnd'])] if isinstance(instances, dict) else []
+        if (saved.get('stable_during_read') is not True or saved.get('sha256') != scope['binding']['working_sha256']
+                or len(candidates) != 1 or candidates[0].get('pid') != target['pid']
+                or candidates[0].get('hwnd') != target['hwnd'] or candidates[0].get('visible') is not True
+                or type(candidates[0].get('process_create_time')) not in (int, float)
+                or candidates[0]['process_create_time'] != scope['created']):
+            raise HTTPException(status_code=409, detail="프로그램을 열 현재 XG5000 작업 대상을 확인하지 못했습니다.")
+        assert_native_program_scope(scope)
+
+    async def open_current_native_program(scope: dict[str, Any], program: EngineeringProgramV1) -> EngineeringProgramFocusV1:
+        operation_id = uuid.uuid4().hex
+        actual = []
+        def record(name, arguments, value):
+            actual.append(deepcopy(value))
+            store.set_host_state('native_program_ui_receipt:' + operation_id, {
+                'schema_version': '1', 'action': 'open_program', 'catalog_binding_digest': scope['digest'],
+                'tool_name': name, 'arguments': deepcopy(arguments), 'result': deepcopy(value)})
+        def current_target():
+            current = current_native_program_scope()
+            return current['identity'] if current == scope else None
+        def reject_save(_receipt):
+            raise MCPToolError('Program UI opening cannot save or rotate a binding')
+        owner = NativeWorkspaceExecution(gateway=mcp, target=scope['identity'], current_target=current_target,
+            current_process_create_time=lambda: scope['created'] if current_target() is not None else None,
+            expected_process_create_time=scope['created'], record_raw=record, refresh_saved=reject_save,
+            program_open_binding={
+                'workspace_id': scope['binding']['workspace_id'], 'revision_id': scope['binding']['revision_id'],
+                'project_path': scope['identity']['project_path'], 'project_sha256': scope['binding']['working_sha256'],
+                'process_create_time': scope['created']})
+        result = await execution_broker.open_native_ui_program(owner, program.name,
+            admission=lambda: admit_native_program_ui(scope))
+        assert_native_program_scope(scope)
+        raw = actual[-1] if actual and isinstance(actual[-1], dict) else {}
+        opened = raw.get('program_activation')
+        scene = raw.get('observation')
+        active = opened.get('program') if isinstance(opened, dict) else None
+        editor = opened.get('editor') if isinstance(opened, dict) else None
+        activation = opened.get('activation') if isinstance(opened, dict) else None
+        file_binding = raw.get('program_open_file_binding')
+        target = scope['identity']
+        if (not isinstance(result, dict) or result.get('ok') is not True or result.get('input_state_unknown') is not False
+                or result.get('error') or raw.get('ok') is not True or raw.get('read_only') is not True
+                or not isinstance(file_binding, dict) or file_binding.get('verified') is not True
+                or file_binding.get('before_verified') is not True or file_binding.get('after_verified') is not True
+                or not isinstance(opened, dict) or opened.get('verified') is not True or opened.get('exact_program_active') is not True
+                or opened.get('pid') != target['pid'] or opened.get('hwnd') != target['hwnd'] or opened.get('program_name') != program.name
+                or not isinstance(active, dict) or active.get('name') != program.name or active.get('mdi_hwnd') != opened.get('mdi_hwnd')
+                or not isinstance(editor, dict) or type(editor.get('hwnd')) is not int or editor['hwnd'] <= 0
+                or active.get('editor_hwnd') != editor['hwnd'] or not isinstance(activation, dict)
+                or activation.get('verified') is not True or activation.get('active_after') != editor['hwnd']
+                or not isinstance(scene, dict) or scene.get('pid') != target['pid'] or scene.get('hwnd') != target['hwnd']
+                or scene.get('main_hwnd') != target['hwnd'] or scene.get('target_is_foreground') is not True
+                or scene.get('foreground_hwnd') != target['hwnd'] or scene.get('foreground_pid') != target['pid']):
+            from .native_execution_results import native_result_event
+            raise HTTPException(status_code=409, detail={
+                'message': '프로그램 열기를 확인하지 못했습니다. 현재 XG5000 상태를 확인해 주세요.',
+                'scope_verified': True, 'activation_verified': False, 'native_result': native_result_event('native_editor',
+                    {'action': 'open_program', 'program_name': program.name}, result)['native_result']})
+        return EngineeringProgramFocusV1(verified=True, read_only=True, project_unchanged=True, program=program)
 
     async def focus_exact_native_location(
         *,
@@ -12896,8 +15844,14 @@ def create_app(
         response_model=EngineeringProgramsV1,
     )
     async def list_engineering_programs_v1() -> EngineeringProgramsV1:
-        require_engineering_read_target()
+        scope = current_native_program_scope()
+        if scope is None:
+            require_engineering_read_target()
         try:
+            if scope is not None:
+                programs = await read_current_native_programs(scope)
+                return EngineeringProgramsV1(programs=programs, catalog_binding_digest=scope['digest'],
+                    catalog_source='saved_working_copy')
             raw_result = await mcp.call_read_tool(
                 "project.list_programs",
                 {"limit": 500},
@@ -13024,7 +15978,13 @@ def create_app(
         body: EngineeringProgramFocusRequestV1 | None = None,
         _csrf: None = Depends(require_browser_csrf),
     ) -> EngineeringProgramFocusV1:
-        require_engineering_read_target()
+        scope = current_native_program_scope()
+        if scope is None:
+            require_engineering_read_target()
+            if body is not None and body.catalog_binding_digest is not None:
+                raise HTTPException(status_code=409, detail="프로그램 목록의 작업 대상이 바뀌었습니다. 목록을 새로 확인해 주세요.")
+        elif body is None or body.catalog_binding_digest != scope['digest']:
+            raise HTTPException(status_code=409, detail="현재 작업 사본의 프로그램 목록을 먼저 새로 확인해 주세요.")
         normalized_program_id = program_id.strip()
         if (
             normalized_program_id != program_id
@@ -13039,6 +15999,12 @@ def create_app(
                 detail="program_id is invalid",
             )
         try:
+            if scope is not None:
+                programs = await read_current_native_programs(scope)
+                matches = [item for item in programs if item.program_id == normalized_program_id]
+                if len(matches) != 1:
+                    raise HTTPException(status_code=409, detail="선택한 프로그램이 현재 저장본의 목록과 다릅니다.")
+                return await open_current_native_program(scope, matches[0])
             params = {"program_id": normalized_program_id}
             if body is not None:
                 params["display_intent"] = body.display_intent
@@ -13205,46 +16171,222 @@ def create_app(
             expected_payload_sha256=str(binding["payloadSha256"]),
         )
 
-    async def open_workspace_in_xg5000(
-        workspace: LocalWorkspaceV1,
-        *,
-        timeout_seconds: float,
-        independent_from_pid: int | None = None,
-        require_controlled_launch: bool = False,
-    ) -> tuple[XG5000ProjectLaunchV1, dict[str, Any] | None]:
-        nonlocal active_engineering_session
-        open_arguments: dict[str, Any] = {
-            "workspace_id": workspace.workspace_id,
-            "expected_working_hash": workspace.working_copy.current_sha256,
-            "timeout_seconds": timeout_seconds,
-        }
-        if independent_from_pid is not None:
-            open_arguments["independent_from_pid"] = independent_from_pid
+    @asynccontextmanager
+    async def join_owned_workspace_launch(workspace, open_arguments, *, binding_wait_identity=None,
+                                          expected_pending_frame=None, record_physical_pending=None):
+        from .native_recovery_wait import (
+            OwnedLaunchMaterialChange,
+            RecoveryWaitScopeChanged,
+            wait_for_owned_launch_binding,
+        )
+        request_context = launch_wait_request_context.get()
+        own_lease = False
+        if request_context is not None:
+            operation_id = request_context['operation_id']
+            holder = request_context['holder_token']
+            original_recovery = request_context.get('recovery')
+            source_run_id = original_recovery['source_run_id'] if original_recovery is not None else None
+            if original_recovery is not None:
+                expected_pending_frame = original_recovery['frame']
+        elif isinstance(binding_wait_identity, dict):
+            operation_id = binding_wait_identity['operation_id']
+            source_run_id = binding_wait_identity['source_run_id']
+            if binding_wait_identity.get('reconcile_only'):
+                previous_wait = store.get_host_state(f"owned_launch_wait_operation:{operation_id}")
+                original_owner = previous_wait.get('owner') if isinstance(previous_wait, dict) else None
+                original_scope = original_owner.get('scope') if isinstance(original_owner, dict) else None
+                if not isinstance(original_scope, dict):
+                    raise MCPToolError('Original launch has no durable Host owner')
+                expected_scope = {
+                    'target_lease_id': original_scope.get('target_lease_id'),
+                    'operation_id': operation_id, 'workspace_id': workspace.workspace_id,
+                    'revision_id': workspace.revision_id,
+                    'project_path': str(Path(workspace.working_copy.path).resolve()),
+                    'project_hash': workspace.working_copy.current_sha256.casefold(),
+                    'source_run_id': original_scope.get('source_run_id')}
+                if original_owner != {'owner_ref': _canonical_json_digest(expected_scope), 'scope': expected_scope}:
+                    raise MCPToolError('Original launch scope differs from this request')
+                # Resume transfers the recovery callback, not the original
+                # native launch/lease identity. Reclaim that exact parked lease.
+                source_run_id = original_scope['source_run_id']
+            holder = str(uuid.uuid4())
+            store.acquire_target_operation_lease(operation_id=operation_id, owner_kind='workspace_resume',
+                holder_token=holder, target_identity={'operation_id':operation_id,'source_run_id':source_run_id,
+                    'workspace_id':workspace.workspace_id,'revision_id':workspace.revision_id,
+                    'project_path':_normalized_workspace_path(workspace.working_copy.path),
+                    'project_hash':workspace.working_copy.current_sha256})
+            own_lease = True
+        else:
+            # Existing callers without a durable Host owner retain old cleanup.
+            yield await mcp.call_workspace_tool('xg5000.open_project', open_arguments), lambda: None
+            return
+        state = None
+        request_failed = False
         try:
-            raw_launch = await mcp.call_workspace_tool(
-                "xg5000.open_project",
-                open_arguments,
-            )
-        except MCPToolError as exc:
-            logger.warning(
-                "XG5000 could not open the verified workspace working copy: %s",
-                exc,
-            )
-            if not require_controlled_launch:
-                reconciled = await _reconcile_late_workspace_open(
-                    mcp,
-                    workspace,
-                    bind_session=bind_engineering_session,
-                )
-                if reconciled is not None:
-                    return reconciled
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "working copy는 보존되어 있습니다. XG5000 열기를 완료하지 못했습니다. "
-                    f"진단: {type(exc).__name__}: {exc}"
-                ),
-            ) from exc
+            target_lease=store.active_target_operation_lease()
+            if not isinstance(target_lease,dict) or target_lease.get('operation_id')!=operation_id or target_lease.get('holder_token')!=holder:
+                raise MCPToolError('Original launch has no current Host owner')
+            exclusion_lease_id = target_lease['id']
+            scope={'target_lease_id':target_lease['id'],'operation_id':operation_id,'workspace_id':workspace.workspace_id,
+                'revision_id':workspace.revision_id,'project_path':str(Path(workspace.working_copy.path).resolve()),
+                'project_hash':workspace.working_copy.current_sha256.casefold(),'source_run_id':source_run_id}
+            owner={'owner_ref':_canonical_json_digest(scope),'scope':scope}
+            key=f"owned_launch_wait_operation:{operation_id}"
+            previous=store.get_host_state(key)
+            retirement_only = False
+            if isinstance(previous, dict) and previous.get('state') == 'ready' and request_context is not None:
+                prior_owner = previous.get('owner')
+                prior_scope = prior_owner.get('scope') if isinstance(prior_owner, dict) else None
+                if (isinstance(prior_scope, dict)
+                        and prior_owner.get('owner_ref') == _canonical_json_digest(prior_scope)
+                        and prior_scope.get('operation_id') == operation_id
+                        and prior_scope.get('source_run_id') is None
+                        and isinstance(previous.get('exclusion_lease_id'), str)
+                        and previous['exclusion_lease_id'] != exclusion_lease_id):
+                    # Admission completed and its request lease was released.
+                    # A new HTTP lease starts a new native launch generation,
+                    # even when route/body and the saved file are unchanged.
+                    previous = None
+            if previous is not None and (not isinstance(previous,dict) or previous.get('owner')!=owner):
+                if isinstance(previous,dict) and previous.get('state') in {'original_retired','not_started'}:
+                    previous=None
+                elif isinstance(previous,dict):
+                    # The original native generation is immutable until retired.
+                    # A new request mutex may only reobserve the same business scope.
+                    native_owner = previous.get('owner')
+                    native_scope = native_owner.get('scope') if isinstance(native_owner,dict) else None
+                    if (not isinstance(native_scope,dict) or set(native_scope)!=set(scope)
+                            or native_owner.get('owner_ref')!=_canonical_json_digest(native_scope)
+                            or any(native_scope[k]!=v for k,v in scope.items()
+                                   if k not in {'target_lease_id','project_hash'})):
+                        raise MCPToolError('Original launch scope differs from this request')
+                    if native_scope['project_hash'] != scope['project_hash']:
+                        if request_context is None:
+                            raise MCPToolError('Original launch scope differs from this request')
+                        # The immutable saved scope can still identify its retired
+                        # process. It cannot admit a binding for a changed file.
+                        retirement_only = True
+                    owner=deepcopy(native_owner)
+                else:
+                    raise MCPToolError('Original launch wait scope differs from this request')
+            state=deepcopy(previous) if previous is not None else {'owner':owner,'state':'reserved','pending':None}
+            state['exclusion_lease_id'] = exclusion_lease_id
+            def persist_wait():
+                store.set_host_state(f"owned_launch_wait:{owner['owner_ref']}",state)
+                store.set_host_state(key,state)
+            persist_wait()
+            force_observe=previous is not None or bool(binding_wait_identity and binding_wait_identity.get('reconcile_only'))
+            first=True
+
+            async def validate_scope():
+                store.heartbeat_target_operation_lease(operation_id=operation_id,holder_token=holder)
+                lease=store.active_target_operation_lease()
+                saved=store.get_host_state(key)
+                if (not isinstance(lease,dict) or lease.get('operation_id')!=operation_id
+                        or lease.get('holder_token')!=holder or lease.get('id')!=exclusion_lease_id or not isinstance(saved,dict) or saved.get('owner')!=owner):
+                    raise RecoveryWaitScopeChanged('Original launch wait owner changed')
+                return owner
+
+            async def disconnected():
+                return shutdown_event.is_set() or (request_context is not None
+                    and await request_context['request'].is_disconnected())
+
+            def record_pending(observed):
+                if expected_pending_frame is not None and any(observed.get(k)!=expected_pending_frame.get(k)
+                        for k in ('pid','hwnd','process_create_time')):
+                    raise RecoveryWaitScopeChanged('Original pending launch frame changed')
+                state.update(state=observed['state'],pending=deepcopy(observed))
+                persist_wait()
+                if record_physical_pending is not None:
+                    record_physical_pending(observed)
+
+            async def observe():
+                nonlocal first
+                pending=state.get('pending') or {}
+                action='observe' if force_observe or not first else 'launch'
+                now=datetime.now(timezone.utc)
+                claims={'owner':owner,'action':action,'lease_ref':pending.get('lease_ref'),
+                    'launch_operation_id':pending.get('launch_operation_id'),
+                    'issued_at':now.isoformat(),'expires_at':(now+timedelta(minutes=2)).isoformat()}
+                meta={'controlstudio/launch-binding-wait':mcp.sign_mutation_authorization(claims)}
+                arguments=dict(open_arguments)
+                if retirement_only:
+                    arguments['expected_working_hash'] = owner['scope']['project_hash']
+                if action=='observe':arguments['timeout_seconds']=LATE_WORKSPACE_RECONCILE_SECONDS
+                first=False
+                return await mcp.call_workspace_tool('xg5000.open_project',arguments,private_meta=meta)
+            try:
+                result=await wait_for_owned_launch_binding(owner,validate_scope=validate_scope,
+                    observe_binding=observe,record_pending=record_pending,request_disconnected=disconnected)
+                if retirement_only:
+                    raise MCPToolError('Original launch saved scope changed; only its retirement may be reconciled')
+                frame=state.get('pending') or expected_pending_frame
+                if isinstance(frame,dict) and all(k in frame for k in ('pid','hwnd','process_create_time')):
+                    instance=result.get('instance')
+                    if (not isinstance(instance,dict) or result.get('launch_pid')!=frame['pid']
+                            or instance.get('hwnd')!=frame['hwnd'] or result.get('process_create_time')!=frame['process_create_time']):
+                        raise RecoveryWaitScopeChanged('Original launch completion frame changed')
+                # A native binding receipt is not yet the common Open's validated
+                # attach/admission. Keep ownership through that caller's await.
+                state.update(state='binding_ready');persist_wait()
+                def admitted():
+                    state.update(state='ready');persist_wait()
+                yield result, admitted
+            except OwnedLaunchMaterialChange as change:
+                material=change.observation['state']
+                raise HTTPException(status_code=409,detail={
+                    'kind':'workspace_recovery_pending','phase':'launch_pending',
+                    'operation_id':operation_id,'material_state':material,
+                    'native_binding_available':False,'automatic_replay':False,
+                    'message':'XG5000 대화상자 또는 원래 실행 상태를 확인한 뒤 같은 작업에 다시 연결하세요.'}) from change
+            except asyncio.CancelledError:
+                # Navigation/tab disconnect and existing run cancellation park this
+                # same operation. Neither returns native authority or kills the GUI.
+                state.update(state='not_started' if first and not force_observe else 'parked');persist_wait()
+                raise
+            except Exception as error:
+                # The backend can return exact retirement as a structured
+                # failure before any pending-frame observation was available.
+                # Retain that terminal proof instead of parking a dead launch.
+                from .store import verified_owned_launch_retirement
+                cause=error
+                for _ in range(4):
+                    payload=getattr(cause,'mcp_error_payload',None)
+                    rejection=payload.get('error') if isinstance(payload,dict) else None
+                    failure=rejection.get('nativeFailure') if isinstance(rejection,dict) else None
+                    proof=verified_owned_launch_retirement(failure)
+                    frame=state.get('pending')
+                    if proof is not None and (frame is None or isinstance(frame,dict)
+                            and frame.get('pid')==proof['launched_pid']
+                            and frame.get('process_create_time')==proof['process_create_time']):
+                        state.update(state='original_retired',terminal_failure=deepcopy(failure));persist_wait()
+                        break
+                    cause=getattr(cause,'__cause__',None)
+                    if cause is None:break
+                if state.get('state')!='original_retired':
+                    state.update(state='parked');persist_wait()
+                raise
+        except BaseException:
+            request_failed = True
+            raise
+        finally:
+            if own_lease:
+                try:
+                    if state is None or owned_launch_wait_requires_park(state):
+                        store.park_target_operation_lease(operation_id=operation_id,holder_token=holder,
+                            reason='owned_launch_binding_wait_requires_read_only_rejoin')
+                    else:
+                        store.release_target_operation_lease(operation_id=operation_id,holder_token=holder,
+                            reason='owned_launch_binding_wait_finished')
+                except Exception:
+                    if not request_failed:
+                        raise
+                    logger.warning('Owned launch lease finalization failed; original request failure preserved')
+
+    async def complete_workspace_launch(workspace, raw_launch, *, independent_from_pid,
+                                        require_controlled_launch, candidate_only):
+        nonlocal active_engineering_session
+        accept_session = workspace_candidate_session if candidate_only else bind_engineering_session
         if not isinstance(raw_launch, dict):
             raise HTTPException(
                 status_code=502,
@@ -13292,6 +16434,10 @@ def create_app(
                     project_hash=workspace.working_copy.current_sha256,
                 )
                 if validated is None:
+                    record_workspace_attach_failure(
+                        workspace, requested_pid, requested_hwnd, attached,
+                        phase="workspace_launch",
+                    )
                     logger.warning(
                         "verified workspace launch attach returned a mismatched or "
                         "non-read-ready session for pid=%s hwnd=%s",
@@ -13299,14 +16445,11 @@ def create_app(
                         requested_hwnd,
                     )
                 else:
-                    session = bind_engineering_session(validated)
+                    session = accept_session(validated)
         if require_controlled_launch:
-            # A fresh reopen is the only path that may turn a read-only
-            # existing-process observation into the ordinary engineering
-            # target.  Do not accept a late/weak attach here: the MCP launch
-            # receipt must have been consumed by this exact attach and the
-            # resulting session must satisfy the existing mutation identity
-            # contract.
+            # Keep the exact fresh-launch receipt boundary. Native LD working-
+            # copy capability is distinct from legacy engineering approval;
+            # neither accepts a late/weak attach or promotes the other's proof.
             launch_instance_pid = (
                 int(launch.instance["pid"])
                 if isinstance(launch.instance, dict)
@@ -13335,9 +16478,12 @@ def create_app(
                     and launch_instance_pid == independent_from_pid
                 )
                 or session is None
-                or not _engineering_session_identity_verified(session)
+                or not (
+                    _engineering_session_identity_verified(session)
+                    or _native_ld_edit_ready(session, workspace.model_dump(mode="json"))
+                )
             ):
-                if session is not None:
+                if session is not None and not candidate_only:
                     active_engineering_session = None
                     execution_broker.clear_agent_session()
                 raise HTTPException(
@@ -13349,12 +16495,67 @@ def create_app(
                 )
         return launch, session
 
+    async def open_workspace_in_xg5000(
+        workspace: LocalWorkspaceV1,
+        *,
+        timeout_seconds: float,
+        independent_from_pid: int | None = None,
+        require_controlled_launch: bool = False,
+        candidate_only: bool = False,
+        binding_wait_identity: dict[str, Any] | None = None,
+        expected_pending_frame: dict[str, Any] | None = None,
+        binding_wait_record: Callable | None = None,
+    ) -> tuple[XG5000ProjectLaunchV1, dict[str, Any] | None]:
+        accept_session = workspace_candidate_session if candidate_only else bind_engineering_session
+        owned_wait = launch_wait_request_context.get() is not None or binding_wait_identity is not None
+        open_arguments: dict[str, Any] = {
+            "workspace_id": workspace.workspace_id,
+            "expected_working_hash": workspace.working_copy.current_sha256,
+            "timeout_seconds": timeout_seconds,
+        }
+        if independent_from_pid is not None:
+            open_arguments["independent_from_pid"] = independent_from_pid
+        try:
+            async with join_owned_workspace_launch(workspace, open_arguments,
+                    binding_wait_identity=binding_wait_identity, expected_pending_frame=expected_pending_frame,
+                    record_physical_pending=binding_wait_record) as (raw_launch, admitted):
+                completed = await complete_workspace_launch(workspace, raw_launch,
+                    independent_from_pid=independent_from_pid,
+                    require_controlled_launch=require_controlled_launch, candidate_only=candidate_only)
+                if (completed[0].verified is True and completed[1] is not None
+                        and (_engineering_session_identity_verified(completed[1])
+                             or _native_ld_edit_ready(completed[1], workspace.model_dump(mode="json")))):
+                    admitted()
+                return completed
+        except MCPToolError as exc:
+            logger.warning(
+                "XG5000 could not open the verified workspace working copy: %s",
+                exc,
+            )
+            if not require_controlled_launch and not owned_wait:
+                reconciled = await _reconcile_late_workspace_open(
+                    mcp,
+                    workspace,
+                    bind_session=accept_session,
+                )
+                if reconciled is not None:
+                    return reconciled
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "working copy는 보존되어 있습니다. XG5000 열기를 완료하지 못했습니다. "
+                    f"진단: {type(exc).__name__}: {exc}"
+                ),
+            ) from exc
+
     async def _close_existing_workspace_for_fresh_reopen(
         workspace: LocalWorkspaceV1,
         session: dict[str, Any],
         *,
         timeout_seconds: float,
-    ) -> None:
+        return_recovery_outcome: bool = False,
+        before_dispatch: Callable | None = None,
+    ) -> dict[str, Any] | None:
         """Close one weak existing-process observation without discarding edits."""
 
         working_path = workspace.working_copy.path
@@ -13407,6 +16608,8 @@ def create_app(
         if isinstance(session.get("session_id"), str) and session["session_id"]:
             close_arguments["session_id"] = session["session_id"]
         try:
+            if before_dispatch is not None:
+                before_dispatch()
             raw_close = await mcp.call_workspace_tool(
                 "xg5000.reviewed_no_save_close",
                 close_arguments,
@@ -13428,6 +16631,10 @@ def create_app(
                 raw_close.get("discardUnsavedChanges") is False
                 and raw_close.get("unsavedChangesDiscarded") is False
             ):
+                if return_recovery_outcome:
+                    # This is an authoritative completed refusal, not a new
+                    # close authority. No dirty content was discarded.
+                    return deepcopy(raw_close)
                 raise HTTPException(
                     status_code=409,
                     detail=(
@@ -13451,6 +16658,12 @@ def create_app(
             },
             require_no_discard=True,
         )
+        update_native_workspace_binding(closed_target=(pid, hwnd), closed_process_create_time=process_create_time)
+        if return_recovery_outcome:
+            # The recovery owner persists this verified close prefix before its
+            # exact original PID/lifetime/main retirement gate. A global desktop
+            # inventory is neither that proof nor another close-input outcome.
+            return deepcopy(raw_close)
         try:
             observed = await mcp.call_read_tool("xg5000.instances", {})
         except MCPToolError as exc:
@@ -13466,6 +16679,8 @@ def create_app(
                 status_code=409,
                 detail="기존 XG5000 프로세스가 아직 닫히지 않아 새로 열지 않았습니다.",
             )
+
+        return deepcopy(raw_close) if return_recovery_outcome else None
 
     @app.post(
         "/api/v1/files/select-xg5000-project",
@@ -13530,30 +16745,40 @@ def create_app(
             timeout_seconds=body.timeout_seconds,
         )
 
+    def select_local_workspace(
+        workspace: LocalWorkspaceV1,
+        session: dict[str, Any] | None,
+    ) -> None:
+        """Commit one already-validated selection without closing either IDE."""
+        nonlocal active_engineering_session, active_workspace
+        active_engineering_session = None
+        execution_broker.clear_agent_session()
+        active_workspace = workspace.model_dump(mode="json")
+        store.set_host_state("active_workspace", active_workspace)
+        clear_ls_controller_target()
+        if session is None:
+            bind_agent_workspace_target(workspace)
+        else:
+            bind_engineering_session(session)
+
     async def activate_local_workspace(
         workspace: LocalWorkspaceV1,
         *,
         open_in_xg5000: bool,
         timeout_seconds: float,
     ) -> OpenLocalWorkspaceResponseV1:
-        nonlocal active_engineering_session, active_workspace
-        # The new workspace is now the selected target. Drop any session bound
-        # to the previous workspace before exposing the new identity, including
-        # when the following XG5000 launch or attach fails.
-        active_engineering_session = None
-        execution_broker.clear_agent_session()
-        active_workspace = workspace.model_dump(mode="json")
-        store.set_host_state("active_workspace", active_workspace)
-        clear_ls_controller_target()
-        bind_agent_workspace_target(workspace)
-
+        # Launch/attach is a candidate until the existing controlled proof passes.
+        # Failure or cancellation leaves the previous selection and session intact.
         launch: XG5000ProjectLaunchV1 | None = None
         session: dict[str, Any] | None = None
         if open_in_xg5000:
             launch, session = await open_workspace_in_xg5000(
                 workspace,
                 timeout_seconds=timeout_seconds,
+                require_controlled_launch=True,
+                candidate_only=True,
             )
+        select_local_workspace(workspace, session)
 
         store.append_event(
             event_type="workspace.opened",
@@ -13576,7 +16801,7 @@ def create_app(
         return OpenLocalWorkspaceResponseV1(
             workspace=workspace,
             launch=launch,
-            session=session,
+            session=_engineering_session_v1(session) if session is not None else None,
         )
 
 
@@ -13586,10 +16811,37 @@ def create_app(
         *,
         timeout_seconds: float,
         force_fresh: bool = False,
+        candidate_only: bool = False,
     ) -> tuple[XG5000ProjectLaunchV1 | None, dict[str, Any]]:
         nonlocal active_engineering_session
+        accept_session = workspace_candidate_session if candidate_only else bind_engineering_session
+
+        if (candidate_only and isinstance(active_workspace, dict)
+                and (active_workspace.get('workspace_id'), active_workspace.get('revision_id'))
+                    != (workspace.workspace_id, workspace.revision_id)):
+            current_workspace = _local_workspace_v1(active_workspace)
+            current_session = await revalidate_native_workspace_binding(current_workspace)
+            if current_session is not None:
+                # Close only the freshly proven owned working copy. The existing
+                # safe-close helper preserves dirty/unknown buffers and must prove
+                # retirement before the requested workspace can be opened.
+                await _close_existing_workspace_for_fresh_reopen(
+                    current_workspace, current_session, timeout_seconds=timeout_seconds)
+                active_engineering_session = None
+                execution_broker.clear_agent_session()
+
+        def discard_unverified_session() -> None:
+            nonlocal active_engineering_session
+            if (isinstance(active_workspace, dict)
+                    and active_workspace.get("workspace_id") == workspace.workspace_id
+                    and active_workspace.get("revision_id") == workspace.revision_id):
+                active_engineering_session = None
+                execution_broker.clear_agent_session()
+
         reused_session: dict[str, Any] | None = None
-        if isinstance(cached_session, dict):
+        if not force_fresh:
+            reused_session = await revalidate_native_workspace_binding(workspace)
+        if reused_session is None and isinstance(cached_session, dict):
             raw_session_id = cached_session.get("session_id")
             raw_pid = cached_session.get("pid")
             raw_hwnd = cached_session.get("hwnd")
@@ -13600,50 +16852,68 @@ def create_app(
                 and isinstance(raw_hwnd, int)
                 and not isinstance(raw_hwnd, bool)
             ):
-                reused_session = await _revalidate_exact_engineering_session(
-                    mcp,
-                    session_id=raw_session_id,
-                    pid=raw_pid,
-                    hwnd=raw_hwnd,
-                    project_path=workspace.working_copy.path,
-                    project_hash=workspace.working_copy.current_sha256,
-                )
+                try:
+                    reused_session = await _revalidate_exact_engineering_session(
+                        mcp,
+                        session_id=raw_session_id,
+                        pid=raw_pid,
+                        hwnd=raw_hwnd,
+                        project_path=workspace.working_copy.path,
+                        project_hash=workspace.working_copy.current_sha256,
+                    )
+                except MCPToolError as exc:
+                    discard_unverified_session()
+                    raise HTTPException(
+                        status_code=409,
+                        detail="열려 있는 프로젝트를 재검증하지 못했습니다. 기존 창을 보존했습니다.",
+                    ) from exc
         if reused_session is None:
             if isinstance(cached_session, dict):
                 # A failed fresh read is unverified, not proof of process death.
                 # Do not retain cached readiness if candidate lookup then fails.
-                active_engineering_session = None
-                execution_broker.clear_agent_session()
+                discard_unverified_session()
             # Restart clears the in-memory session, not the user's XG5000
             # windows. Prove the existing file binding before opening another
             # copy; a stale caption or cached PID cannot authorize this reuse.
             try:
-                reused_session = await _find_existing_workspace_session(mcp, workspace)
+                reused_session = await _find_existing_workspace_session(
+                    mcp, workspace,
+                    on_unverified=lambda pid, hwnd, result: record_workspace_attach_failure(
+                        workspace, pid, hwnd, result, phase="existing_window",
+                    ),
+                )
             except MCPToolError as exc:
                 raise HTTPException(
                     status_code=409,
                     detail="열려 있는 프로젝트를 확인하지 못했습니다. 기존 창을 보존했습니다.",
                 ) from exc
+        if (reused_session is not None and not force_fresh
+                and not (_engineering_session_identity_verified(reused_session)
+                         or _native_ld_edit_ready(reused_session, workspace.model_dump(mode="json")))):
+            discard_unverified_session()
+            raise HTTPException(status_code=409,
+                detail="The existing editor binding was not verified; its memory buffer was preserved.")
         if reused_session is not None and (
-            force_fresh or not _engineering_session_identity_verified(reused_session)
+            force_fresh or not (
+                _engineering_session_identity_verified(reused_session)
+                or _native_ld_edit_ready(reused_session, workspace.model_dump(mode="json"))
+            )
         ):
-            # An existing process can be exactly bound for read-only analysis
-            # without carrying the one-shot controlled-launch proof required
-            # for ordinary engineering changes.  Preserve a dirty editor and
-            # only continue after the reviewed safe-close boundary proves that
-            # this exact PID is gone.
+            # Reuse freshly proven native working-copy identity without
+            # granting legacy engineering approval. Explicit force_fresh and
+            # genuinely weak bindings retain the reviewed safe-close boundary.
             previous_pid = int(reused_session["pid"])
             await _close_existing_workspace_for_fresh_reopen(
                 workspace,
                 reused_session,
                 timeout_seconds=timeout_seconds,
             )
-            active_engineering_session = None
-            execution_broker.clear_agent_session()
+            discard_unverified_session()
             launch, session = await open_workspace_in_xg5000(
                 workspace,
                 timeout_seconds=timeout_seconds,
                 require_controlled_launch=True,
+                candidate_only=candidate_only,
             )
             # The old process has already been closed, so it cannot be passed
             # as the launcher's ``independent_from_pid`` source (that CLI
@@ -13654,8 +16924,7 @@ def create_app(
                 launch.launch_pid == previous_pid
                 or (session is not None and session.get("pid") == previous_pid)
             ):
-                active_engineering_session = None
-                execution_broker.clear_agent_session()
+                discard_unverified_session()
                 raise HTTPException(
                     status_code=409,
                     detail=(
@@ -13664,15 +16933,28 @@ def create_app(
                     ),
                 )
         elif reused_session is not None:
-            session = bind_engineering_session(reused_session)
-            launch = None
+            request_context = launch_wait_request_context.get()
+            pending_launch = (store.get_host_state(
+                f"owned_launch_wait_operation:{request_context['operation_id']}")
+                if request_context is not None else None)
+            if owned_launch_wait_requires_park(pending_launch):
+                # A fresh attach does not finish an earlier delegated launch.
+                # Rejoin its exact durable owner through the read-only observe
+                # path, then let the common admission finish that same lease.
+                launch, session = await open_workspace_in_xg5000(
+                    workspace, timeout_seconds=timeout_seconds,
+                    require_controlled_launch=True, candidate_only=candidate_only,
+                )
+            else:
+                session = accept_session(reused_session)
+                launch = None
         else:
-            active_engineering_session = None
-            execution_broker.clear_agent_session()
+            discard_unverified_session()
             launch, session = await open_workspace_in_xg5000(
                 workspace,
                 timeout_seconds=timeout_seconds,
-                require_controlled_launch=force_fresh,
+                require_controlled_launch=force_fresh or candidate_only,
+                candidate_only=candidate_only,
             )
         if session is None:
             raise HTTPException(
@@ -13695,15 +16977,24 @@ def create_app(
         _target_lease: None = Depends(target_switch_lease),
     ) -> OpenLocalWorkspaceResponseV1:
         nonlocal active_engineering_session, active_workspace
-        persisted = active_workspace
-        if (
-            not isinstance(persisted, dict)
-            or str(persisted.get("workspace_id") or "") != workspace_id
-        ):
-            raise HTTPException(
-                status_code=404,
-                detail="the requested workspace is not the active persisted workspace",
-            )
+        persisted = (active_workspace if isinstance(active_workspace, dict)
+                     and active_workspace.get("workspace_id") == workspace_id else None)
+        revisions: set[str] = set()
+        if persisted is None:
+            # Only server-owned conversation metadata can introduce an old target.
+            # Neither a client-supplied path/session nor the current target's authority
+            # is transferred to the requested workspace.
+            offset = 0
+            while True:
+                conversations, total = store.list_conversations(limit=100, offset=offset)
+                revisions.update(item.revision_id for item in conversations
+                    if item.workspace_id == workspace_id and isinstance(item.revision_id, str))
+                offset += len(conversations)
+                if not conversations or offset >= total:
+                    break
+            if not revisions:
+                raise HTTPException(status_code=404,
+                    detail="the requested workspace has no retained conversation binding")
 
         # A resume never trusts a session from an earlier target operation. The
         # persisted workspace and current on-disk artifacts must be reverified
@@ -13711,21 +17002,39 @@ def create_app(
         # from the same MCP process proves its identity and process lifetime.
         cached_session = (
             dict(active_engineering_session)
-            if isinstance(active_engineering_session, dict)
+            if persisted is not None and isinstance(active_engineering_session, dict)
             else None
         )
         try:
-            persisted_workspace = _local_workspace_v1(persisted)
+            persisted_workspace = _local_workspace_v1(persisted) if persisted is not None else None
         except Exception as exc:
             raise HTTPException(
                 status_code=409,
                 detail="the active persisted workspace identity is invalid",
             ) from exc
         try:
+            readiness = await mcp.wait_until_ready(timeout_seconds=body.timeout_seconds)
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(status_code=503, detail=(
+                "XG5000 작업 도구가 아직 준비 중입니다. 잠시 후 연결 상태를 확인해 주세요."
+            )) from exc
+        except MCPTransportError as exc:
+            raise HTTPException(status_code=503, detail=(
+                "XG5000 작업 도구 연결 준비를 완료하지 못했습니다. 연결 상태를 확인해 주세요."
+            )) from exc
+        if readiness.status != "ready":
+            raise HTTPException(status_code=503, detail=(
+                "XG5000 작업 도구 연결이 준비되지 않았습니다. 연결 상태를 확인해 주세요."
+            ))
+        try:
             checked = await mcp.call_workspace_tool(
                 "workspace.status",
                 {"workspace_id": workspace_id},
             )
+        except MCPTransportError as exc:
+            raise HTTPException(status_code=503, detail=(
+                "XG5000 작업 도구와의 연결을 확인하지 못했습니다. 연결 상태를 확인해 주세요."
+            )) from exc
         except MCPToolError as exc:
             raise HTTPException(
                 status_code=409,
@@ -13753,7 +17062,10 @@ def create_app(
                     "명시적으로 선택해야 합니다."
                 ),
             )
-        if _workspace_resume_identity(workspace) != _workspace_resume_identity(persisted_workspace):
+        if (workspace.workspace_id != workspace_id
+                or (persisted_workspace is None and workspace.revision_id not in revisions)
+                or (persisted_workspace is not None
+                    and _workspace_resume_stable_identity(workspace) != _workspace_resume_stable_identity(persisted_workspace))):
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -13762,13 +17074,19 @@ def create_app(
                 ),
             )
 
-        active_workspace = workspace.model_dump(mode="json")
-        store.set_host_state("active_workspace", active_workspace)
-        clear_ls_controller_target()
-        bind_agent_workspace_target(workspace)
         launch, session = await resume_workspace_editor(
             workspace, cached_session, timeout_seconds=body.timeout_seconds,
+            candidate_only=True,
         )
+        # Recheck the same server-owned artifact after awaited editor verification.
+        # A changed artifact is not success and never triggers another launch here.
+        after = _local_workspace_v1(await mcp.call_workspace_tool(
+            "workspace.status", {"workspace_id": workspace_id}))
+        if _workspace_resume_identity(after) != _workspace_resume_identity(workspace):
+            raise HTTPException(status_code=409,
+                detail="The workspace changed during editor validation; selection was not changed.")
+        select_local_workspace(workspace, session)
+        complete_owned_launch_resume(workspace, session)
         store.append_event(
             event_type="workspace.resumed",
             payload={
@@ -13790,7 +17108,7 @@ def create_app(
         return OpenLocalWorkspaceResponseV1(
             workspace=workspace,
             launch=launch,
-            session=session,
+            session=_engineering_session_v1(session),
         )
 
     @app.get(
@@ -13822,6 +17140,7 @@ def create_app(
             if (
                 active_ls_controller is None
                 and not _engineering_session_read_ready(active_engineering_session)
+                and not _native_ld_edit_ready(active_engineering_session, active_workspace)
             ):
                 bind_agent_workspace_target(workspace)
         return workspace
@@ -13849,6 +17168,24 @@ def create_app(
                 detail="MCP returned an invalid workspace comparison",
             ) from exc
         return comparison
+
+    @app.post("/api/v1/xg5000/editor")
+    async def xg5000_editor_v1(
+        body: dict[str, Any],
+        _csrf: None = Depends(require_browser_csrf),
+    ) -> dict[str, Any]:
+        """Execute one explicit editor action through the existing elevated MCP."""
+        try:
+            return await mcp.call_workspace_tool("xg5000.editor", body)
+        except MCPToolRejectedError as exc:
+            # Keep the same validated native failure on the HTTP boundary.
+            # A readable message cannot replace the operation's evidence.
+            payload = exc.mcp_error_payload
+            detail = (payload if isinstance(payload, dict)
+                      and "nativeFailure" in payload.get("error", {}) else str(exc))
+            raise HTTPException(status_code=409, detail=detail) from exc
+        except MCPToolError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.get("/api/v1/xg5000/instances", response_model=XG5000InstancesV1)
     async def xg5000_instances_v1() -> XG5000InstancesV1:
@@ -14354,7 +17691,7 @@ def create_app(
         def parked_native_reopen_expectation() -> dict[str, str] | None:
             """Return only the durable fresh-reopen identity for a read attach."""
 
-            parked_lease = store.active_target_operation_lease()
+            store.active_target_operation_lease()
             return None
             operation = None
             if operation is None or not isinstance(operation.result, dict):
@@ -14469,6 +17806,24 @@ def create_app(
                 result.get("session")
                 if isinstance(result, dict) and isinstance(result.get("session"), dict)
                 else result
+            )
+            store.append_event(
+                event_type="workspace.attach_unverified",
+                payload={
+                    "workspace_id": arguments.get("workspace_id"),
+                    "revision_id": (
+                        active_workspace.get("revision_id")
+                        if isinstance(active_workspace, dict)
+                        and arguments.get("workspace_id") == active_workspace.get("workspace_id")
+                        else None
+                    ),
+                    "pid": body.pid,
+                    "hwnd": body.hwnd,
+                    "phase": "manual_exact_attach",
+                    "strong_identity_diagnostic": _safe_identity_diagnostic(
+                        raw_session if isinstance(raw_session, dict) else {}
+                    ),
+                },
             )
             metadata = raw_session.get("metadata") if isinstance(raw_session, dict) else None
             if (
@@ -14587,7 +17942,9 @@ def create_app(
             },
             require_no_discard=require_no_discard,
         )
-        recovery_authority = store.selected_target_recovery_authority()
+        update_native_workspace_binding(closed_target=(body.pid, body.hwnd),
+                                        closed_process_create_time=body.process_create_time)
+        store.selected_target_recovery_authority()
         pass
         store.append_event(
             event_type="xg5000.reviewed_no_save_closed",

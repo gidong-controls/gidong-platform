@@ -908,6 +908,18 @@ class KnowledgeStore:
             ).fetchall()
         return tuple(self._source_from_row(row) for row in rows)
 
+    def confirmed_sources_for_scope(self, *, scope: str, kinds) -> tuple[KnowledgeSource, ...]:
+        """Exact project applicability; no global fallback or post-limit filtering."""
+        normalized = sorted(self._normalize_kinds(kinds))
+        if not normalized:
+            return ()
+        placeholders = ','.join('?' for _ in normalized)
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM knowledge_sources WHERE scope = ? AND status = ? AND kind IN ({placeholders}) ORDER BY source_id",
+                (scope, KnowledgeStatus.CONFIRMED.value, *normalized)).fetchall()
+        return tuple(self._source_from_row(row) for row in rows)
+
     def agent_source_snapshot(self) -> list[dict[str, Any]]:
         """Return an explicit sanitized source snapshot for Agent-owned RAG.
 
@@ -961,6 +973,8 @@ class KnowledgeStore:
                     {
                         "reference": reference,
                         "source_id": source_id,
+                        "source_sha256": str(row["sha256"]),
+                        "source_revision": str(row["revision"]),
                         "content": _redact_sensitive_text(page["text"]),
                         "title": _redact_sensitive_text(str(row["title"])),
                         "kind": str(row["kind"]),

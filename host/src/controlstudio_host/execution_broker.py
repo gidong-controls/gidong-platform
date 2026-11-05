@@ -25,7 +25,14 @@ from controlstudio_contracts import (
 )
 
 from .agent_protocol import scrub_agent_tool_result
-from .api_models import EmptyNativeProgramSourceV1, LocalWorkspaceCompareV1, LSControllerObservationV1, LSControllerReadV1, LSControllerTraceV1, is_hardware_free_m_operand_target
+from .api_models import (
+    EmptyNativeProgramSourceV1,
+    LocalWorkspaceCompareV1,
+    LSControllerObservationV1,
+    LSControllerReadV1,
+    LSControllerTraceV1,
+    is_hardware_free_m_operand_target,
+)
 from .mcp_client import (
     AGENT_CONTROLLER_MCP_TOOLS,
     AGENT_TOOL_NAMES,
@@ -36,9 +43,11 @@ from .mcp_client import (
     MCPGateway,
     MCPStartupError,
     MCPToolError,
+    MCPToolPreflightError,
     MCPToolRejectedError,
     MCPTransportError,
 )
+
 pass
 from .structural_evidence import (
     STRUCTURAL_ANALYSIS_TOOL_COVERAGE,
@@ -47,6 +56,135 @@ from .structural_evidence import (
 )
 
 logger = logging.getLogger(__name__)
+
+_MCP_REJECTION_IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,119}\Z")
+_MCP_REJECTION_PUBLIC_MESSAGE = "MCP rejected this tool request; the typed diagnostic summary is retained."
+
+
+def mcp_rejection_projection(payload: Any) -> dict[str, Any] | None:
+    """Bounded diagnostic data from one validated rejection; never native authority."""
+    from .mcp_client import _exact_tool_error_payload
+    envelope = _exact_tool_error_payload(payload)
+    if envelope is None:
+        return None
+    def identifier(value):
+        return value if type(value) is str and _MCP_REJECTION_IDENTIFIER.fullmatch(value) else None
+    partial = False
+    nodes = 0
+    def message(value):
+        return _MCP_REJECTION_PUBLIC_MESSAGE
+    # Closed effect/phase fields only. Never visit stdout, environment, args,
+    # authority, raw captures or free-form text in native diagnostic details.
+    def details(value, depth=0):
+        nonlocal partial, nodes
+        nodes += 1
+        if depth > 8 or nodes > 64:
+            partial = True
+            return {}
+        if not isinstance(value, Mapping):
+            return {}
+        public = {}
+        for key in ('action_attempted', 'input_state_unknown', 'automatic_replay',
+                    'automatic_replay_allowed', 'read_only', 'creation_input_attempted',
+                    'native_edit_completed', 'completed', 'verified', 'post_read_completed',
+                    'handler_execution_verified', 'inspection_required', 'old_outcome_unknown',
+                    'complete_protocol_response_observed'):
+            if key in value and (value[key] is None or type(value[key]) is bool):
+                public[key] = value[key]
+        for key in ('phase', 'stage', 'operation', 'dispatch_state', 'outcome', 'source',
+                    'private_phase_protocol'):
+            if identifier(value.get(key)) is not None:
+                public[key] = value[key]
+        for key in ('timeout_seconds', 'timeout_ms', 'elapsed_seconds', 'elapsed_ms',
+                    'remaining_seconds', 'win32_error', 'input_events_inserted',
+                    'input_events_sent', 'completed_prefix_count', 'completed_count',
+                    'not_started_count', 'stdout_bytes', 'stderr_bytes'):
+            item = value.get(key)
+            if type(item) in (int, float) and 0 <= item <= 2**64-1:
+                public[key] = item
+        for key in ('receipt', 'row_input', 'batch', 'gui', 'field_input', 'activation',
+                    'check_result_activation', 'native_phase_failure', 'worker_observation'):
+            if isinstance(value.get(key), Mapping):
+                nested = details(value[key], depth + 1)
+                if nested:
+                    public[key] = nested
+        phases = value.get('private_phase_ns')
+        if isinstance(phases, Mapping):
+            known = ('startup', 'helper_entry', 'request_received', 'com_import_entry', 'COM',
+                     'bind', 'object_acquire_enter', 'object_acquire_exit', 'inventory', 'emit')
+            observed = {key: phases[key] for key in known if key in phases
+                        and type(phases[key]) is int and 0 <= phases[key] <= 2**64-1}
+            if observed:
+                public['private_phase_ns'] = observed
+        return scrub_agent_tool_result(public)
+    source = envelope['error']
+    error = {'type': identifier(source['type']) or 'MCPToolError', 'message': message(source['message'])}
+    if identifier(source.get('code')) is not None:
+        error['code'] = source['code']
+    native = source.get('nativeFailure')
+    if isinstance(native, Mapping):
+        native_public = {'schema': native['schema'], 'kind': identifier(native['kind']) or 'NativeFailure',
+                         'message': message(native['message']), 'details': details(native['details'])}
+        source_details = native['details']
+        public_details = native_public['details']
+        # Re-projecting the already bounded event must preserve its source hash.
+        prior_hash = source_details.get('diagnostic_message_sha256')
+        prior_bytes = source_details.get('diagnostic_message_bytes')
+        if (native['message'] == _MCP_REJECTION_PUBLIC_MESSAGE
+                and source_details.get('diagnostic_projection') is True
+                and type(prior_hash) is str and re.fullmatch(r'[0-9a-f]{64}', prior_hash)
+                and type(prior_bytes) is int and prior_bytes >= 0):
+            message_hash, message_bytes = prior_hash, prior_bytes
+        else:
+            encoded_message = native['message'].encode('utf-8')
+            message_hash, message_bytes = hashlib.sha256(encoded_message).hexdigest(), len(encoded_message)
+        # This is a diagnostic budget, never an operation or input permission cap.
+        if len(json.dumps(public_details, ensure_ascii=False).encode('utf-8')) > 16_384:
+            partial = True
+            public_details = {key: value for key, value in public_details.items()
+                              if value is None or type(value) in (bool, int, float, str)}
+        native_public['details'] = public_details
+        public_details.update(diagnostic_projection=True,
+                              diagnostic_partial=partial or source_details.get('diagnostic_partial') is True,
+                              diagnostic_message_sha256=message_hash,
+                              diagnostic_message_bytes=message_bytes)
+        if identifier(native.get('code')) is not None:
+            native_public['code'] = native['code']
+        error['nativeFailure'] = native_public
+    recovery = source.get('operationRecovery')
+    if isinstance(recovery, Mapping):
+        error['operationRecovery'] = dict(recovery)  # Already exact-validated by Gateway.
+    return {'schema_version': '1.0', 'status': 'error', 'error': error}
+
+
+def mcp_rejection_context(payload: Any) -> dict[str, str]:
+    """Use the existing bounded Agent failure fields; no new tool-result wire."""
+    rejection = mcp_rejection_projection(payload)
+    if rejection is None:
+        return {}
+    error = rejection['error']
+    native = error.get('nativeFailure', {})
+    facts = native.get('details', {})
+    context = {}
+    for code in (native.get('code'), error.get('code'), native.get('kind')):
+        if type(code) is str and re.fullmatch(r'[A-Za-z][A-Za-z0-9_.-]{0,79}', code):
+            context['reason_code'] = code
+            break
+    for phase in (facts.get('phase'), facts.get('stage')):
+        if type(phase) is str and re.fullmatch(r'[a-z][a-z0-9_]{0,79}', phase):
+            context['stage'] = phase
+            break
+    effects = []
+    for scope, value in (('native', facts), ('receipt', facts.get('receipt', {})),
+                         ('recovery', error.get('operationRecovery', {}))):
+        for key in ('action_attempted', 'input_state_unknown', 'automatic_replay', 'completed_prefix_count'):
+            if key in value:
+                item = value[key]
+                effects.append(scope + '.' + key + ' ' + ('unknown' if item is None else str(item).lower()))
+    prefix = ((native.get('kind') or error['type']) + '. ' + '; '.join(effects) + '. ') if effects else ''
+    context['failure_reason'] = (prefix + native.get('message', error['message']))[:500].rstrip()
+    return context
+
 
 ToolEventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 ToolCompletionGate = Callable[[dict[str, Any], Any], Awaitable[None]]
@@ -1327,6 +1465,35 @@ class MCPExecutionBroker:
         self._retained_hardware_contexts: dict[
             tuple[str, str], dict[str, dict[str, Any]]
         ] = {}
+        self._native_runs: dict[tuple[str, str], Any] = {}
+        self._native_ui_lock = asyncio.Lock()
+
+    def bind_native_run(self, conversation_id: str, run_id: str, owner: Any) -> None:
+        """Grant only this Host-selected run its native callback catalog."""
+        if self._native_ui_lock.locked():
+            raise MCPToolError("An explicit native program UI operation is still active")
+        self._native_runs[(conversation_id, run_id)] = owner
+
+    def release_native_run(self, conversation_id: str, run_id: str) -> None:
+        self._native_runs.pop((conversation_id, run_id), None)
+
+    async def open_native_ui_program(self, owner: Any, program_name: str, *, admission: Callable[[], Any]) -> Any:
+        """One explicit UI open through the existing native owner, never a model run."""
+        from .agent_protocol import native_checkpoint_boundary
+        async with self._native_ui_lock:
+            # This recheck and bind_native_run's inverse check share one event
+            # loop: no native run can enter while this UI owner holds admission.
+            if self._native_runs:
+                raise MCPToolError("An Agent native run owns the current editor")
+            await admission()
+            # Cancellation cannot release admission while dispatched native
+            # input is still running. Reuse the existing drain/join boundary.
+            result = await native_checkpoint_boundary(owner.execute('native_editor',
+                {'action': 'open_program', 'program_name': program_name}))
+            if (isinstance(result, dict) and result.get('ok') is True
+                    and result.get('input_state_unknown') is False and not result.get('error')):
+                await admission()
+            return result
 
     def bind_agent_session(self, session: dict[str, Any]) -> None:
         # A hardware-context digest is scoped to the exact MCP/XG5000 session.
@@ -1570,6 +1737,24 @@ class MCPExecutionBroker:
     async def agent_tool_catalog(
         self, *, conversation_id: str, run_id: str
     ) -> list[AgentToolDefinitionV1]:
+        native = self._native_runs.get((conversation_id, run_id))
+        if native is not None:
+            definitions = native.tool_catalog()
+            if getattr(native, "completion_ledger", None) is not None:
+                from controlstudio_contracts.native_completion import (
+                    COMPLETION_ASSESSMENT_SCHEMA,
+                    READ_COMPLETION_SOURCES_SCHEMA,
+                )
+                definitions = [*definitions, AgentToolDefinitionV1(tool_name="read_completion_sources",
+                    description="Read bounded historical completion-source identities from this conversation/workspace only. No native input or new observation; references are never editing authority.",
+                    parameters_json_schema=READ_COMPLETION_SOURCES_SCHEMA),
+                    AgentToolDefinitionV1(tool_name="finish_editor_request",
+                        description="Review proposed completion against the existing Host-bound evidence before the Agent ends its request. Read-only; no native input or new authority.",
+                        parameters_json_schema={"type": "object", "additionalProperties": False,
+                            "properties": {"status": {"enum": ["completed"]},
+                                "completion_assessment": COMPLETION_ASSESSMENT_SCHEMA},
+                            "required": ["status", "completion_assessment"]})]
+            return definitions
         controller_authorized = (
             await self._controller_preflight(conversation_id, run_id)
             if self._controller_preflight is not None
@@ -1608,6 +1793,143 @@ class MCPExecutionBroker:
         sink: ToolEventSink,
         completion_gate: ToolCompletionGate | None = None,
     ) -> Any:
+        native = self._native_runs.get((request.conversation_id, request.run_id))
+        if native is not None:
+            from .native_execution_results import (
+                _activity_presentation,
+                native_interrupted_event,
+                native_result_event,
+            )
+
+            event = self._event_payload(request)
+            action = request.arguments.get("action") if request.tool_name in {"native_editor", "simulator"} else request.tool_name
+            label, role = _activity_presentation(request.tool_name, action if isinstance(action, str) else "")
+            event.update(activity_label=label, activity_role=role)
+            await self._emit_event(sink, "tool.started", event)
+            terminal_emission_started = False
+            try:
+                if request.tool_name == 'execute_simulation_scenario':
+                    # This is pure argument validation: do not open a pending
+                    # native-input ledger entry until the full plan is valid.
+                    from .native_workspace_host import (
+                        _simulation_lifecycle_plan,
+                        _validated_simulation_scenario,
+                    )
+                    preflight_error = None
+                    try:
+                        steps = _validated_simulation_scenario(request.arguments)
+                        lifecycle = {action: {} for action, flag in (
+                            ('run', 'run_before'), ('stop', 'stop_after'), ('end', 'end_after'))
+                            if request.arguments.get(flag) is True}
+                        _simulation_lifecycle_plan(steps, lifecycle)
+                    except MCPToolPreflightError as error:
+                        preflight_error = error
+                    except MCPToolError as error:
+                        preflight_error = MCPToolPreflightError('SIMULATOR_SCENARIO_ARGUMENTS_INVALID', str(error),
+                            details={})
+                    if preflight_error is not None:
+                        result = preflight_error.as_result()
+                        if completion_gate is not None:
+                            await completion_gate(dict(event), result)
+                        projected = native_result_event(request.tool_name, request.arguments, result)
+                        terminal_emission_started = True
+                        await self._emit_event(sink, 'tool.failed', {**event, **projected,
+                            'failure_kind': 'native_result', 'failure_reason': projected['activity_result']})
+                        return result
+                completion = getattr(native, "completion_ledger", None)
+                if completion is not None and request.tool_name == "read_completion_sources":
+                    result = completion.read_sources(request.arguments)
+                elif completion is not None and request.tool_name == "finish_editor_request":
+                    if (set(request.arguments) != {"status", "completion_assessment"}
+                            or request.arguments.get("status") not in {"completed", "blocked"}):
+                        raise ValueError("invalid_completion_review_arguments")
+                    review = completion.evaluate(request.arguments["completion_assessment"], request.arguments["status"])
+                    result = {"ok": True, "read_only": True, "action_attempted": False,
+                        "input_state_unknown": False, "completion_review": {
+                            key: value for key, value in (review or {}).items()
+                            if key in {"accepted", "status", "scope", "basis", "reason_code", "evidence_lookup", "field_error"}}}
+                else:
+                    if completion is not None:
+                        completion.before(request.tool_name, request.arguments, request.tool_call_id or request.request_id)
+                    from .native_workspace_host import (
+                        _native_admission_snapshot,
+                        _preserved_native_admission,
+                        _without_host_binding_admission,
+                    )
+                    admission_before = _native_admission_snapshot(native)
+                    generation_reader = (getattr(native, 'current_recovery_admission', None)
+                        if request.tool_name in {'simulator', 'execute_simulation_scenario'} else None)
+                    generation_before = generation_reader(native) if generation_reader is not None else None
+                    try:
+                        contextual_execute = getattr(native, 'execute_with_diagnostic_context', None)
+                        if contextual_execute is None:
+                            result = await native.execute(request.tool_name, request.arguments)
+                        else:
+                            result = await contextual_execute(request.tool_name, request.arguments, {
+                                'conversation_id':request.conversation_id,'run_id':request.run_id,
+                                'request_id':request.request_id,'call_id':request.tool_call_id})
+                    except MCPToolPreflightError as error:
+                        # This typed argument guard owns a known no-input result.
+                        # Use the ordinary native failure transport and ledger;
+                        # it must not create an interrupted-input recovery debt.
+                        result = error.as_result()
+                    except BaseException:
+                        if completion is not None:
+                            completion.interrupted()
+                        raise
+                    # Native diagnostics cannot mint Host proof. Bind this
+                    # callback's known outcome to unchanged prior Host admission.
+                    result = _without_host_binding_admission(result)
+                    admission = _preserved_native_admission(result, admission_before,
+                        _native_admission_snapshot(native), request.tool_call_id)
+                    if admission is not None:
+                        result['host_binding_admission'] = admission
+                    if completion is not None:
+                        generation_after = generation_reader(native) if generation_reader is not None else None
+                        result = completion.record(request.tool_name, request.arguments, result,
+                            request.tool_call_id or request.request_id,
+                            admitted_generation=generation_after if generation_after == generation_before else None)
+                if completion_gate is not None:
+                    await completion_gate(dict(event), result)
+                projected = native_result_event(request.tool_name, request.arguments, result)
+                outcome = projected["native_result"]["state"]
+                terminal_emission_started = True
+                await self._emit_event(sink, "tool.failed" if outcome in {"failed", "partial", "unknown", "unavailable"} else "tool.completed",
+                                      {**event, **projected,
+                                       **({"failure_kind": "native_result", "failure_reason": projected["activity_result"]}
+                                          if outcome in {"failed", "partial", "unknown", "unavailable"} else {})})
+                return result
+            except asyncio.CancelledError:
+                if not terminal_emission_started:
+                    terminal_emission_started = True
+                    projected = native_interrupted_event(request.tool_name, request.arguments, "cancelled")
+                    await self._emit_event(sink, "tool.failed", {**event, **projected, "failure_kind": "cancelled",
+                                                               "failure_reason": projected["activity_result"]})
+                raise
+            except MCPTransportError:
+                if not terminal_emission_started:
+                    terminal_emission_started = True
+                    projected = native_interrupted_event(request.tool_name, request.arguments, "transport")
+                    await self._emit_event(sink, "tool.failed", {**event, **projected, "failure_kind": "transport",
+                                                               "failure_reason": projected["activity_result"]})
+                raise
+            except MCPToolError:
+                if not terminal_emission_started:
+                    terminal_emission_started = True
+                    await self._emit_failure(sink, request, "host_policy")
+                raise
+            except Exception as error:
+                if not terminal_emission_started:
+                    terminal_emission_started = True
+                    try:
+                        # Host callback status only. Do not replace a known native
+                        # result or infer new input/unknown facts from this error.
+                        await self._emit_failure(sink, request, "tool_error")
+                    except Exception as emission_error:
+                        # Preserve both failures without retrying a possibly
+                        # committed event or replacing the original callback error.
+                        raise error from emission_error
+                raise
         raw_name = AGENT_TOOL_NAMES.get(request.tool_name)
         if raw_name is None:
             raise MCPToolError("Agent requested an unknown external tool")
@@ -1750,7 +2072,8 @@ class MCPExecutionBroker:
         except MCPTransportError:
             await self._emit_failure(sink, request, "transport")
             raise
-        except MCPToolRejectedError:
+        except MCPToolRejectedError as exc:
+            rejection = mcp_rejection_projection(exc.mcp_error_payload)
             logger.warning(
                 "Agent tool rejected by MCP (tool=%s, reason=tool_error)",
                 raw_name,
@@ -1759,6 +2082,7 @@ class MCPExecutionBroker:
                 sink,
                 request,
                 "tool_error",
+                mcp_rejection=rejection,
             )
             raise
         except MCPToolError:
@@ -5219,6 +5543,8 @@ class MCPExecutionBroker:
         sink: ToolEventSink,
         request: ExternalToolRequestV1,
         failure_kind: str,
+        *,
+        mcp_rejection: dict[str, Any] | None = None,
     ) -> None:
         ExternalToolResultV1(
             request_id=request.request_id,
@@ -5240,6 +5566,8 @@ class MCPExecutionBroker:
                 "도구 실행을 완료하지 못했습니다.",
             ),
         }
+        if mcp_rejection is not None:
+            payload["mcp_rejection"] = mcp_rejection
         await self._emit_event(sink, "tool.failed", payload)
 
     @staticmethod

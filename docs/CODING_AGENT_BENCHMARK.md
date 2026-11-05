@@ -1,10 +1,15 @@
 # Coding-agent and PLC engineering benchmark
 
-## 2026-09-19 최신 비교와 설계 적용
+개발 기준: [PRD](../PRD.md)와 [구현 계획 §4·§5](AGENT_PRODUCT_PLAN.md).
+아래는 날짜별 외부 조사 기록이다. 현재 채택은 source-bound 지도·참조 편집·native
+순차 실행·실제 결과에 따른 모델 판단이며, 옛 D1~D8이나 새 평가 프레임워크를
+다시 구현하는 작업 목록이 아니다.
+
+## 2026-09-19 비교와 당시 설계 의견
 
 [총괄 설계·공식 웹 벤치마킹](reviews/PLC_AGENT_ARCHITECTURE_2026-09-19.md)에서 이번에 실제로
 연 Codex/Claude Code 공식 자료, OpenHands/mini-SWE-agent 공개 구현, CODESYS MCP 도구 명세와
-현재 ControlStudio의 차이를 비교했다. 다음 구현은 그 문서의 D1~D8과 구조 시험을 따른다.
+당시 ControlStudio의 차이를 비교했다. D1~D8과 구조 시험 의견은 그 시점의 기록이다.
 외부 자료를 읽은 것을 제품 실기 검증으로 취급하지 않는다.
 
 ## 아래는 2026-09-08에 정리한 과거 조사 기록

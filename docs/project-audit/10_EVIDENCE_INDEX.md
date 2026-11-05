@@ -94,16 +94,6 @@ CLI의 로컬 폴더명과 remote 이름은 다르다. 최종 감사 검사에�
 
 포괄 `rg`는 권한 없는 temp/artifacts 경고가 있었다. 이후 추적 파일 및 명시한 소스/문서 디렉터리로 좁혔다. 모든 디스크나 모든 삭제된 임시 파일을 조사했다는 주장은 하지 않는다. 테스트·빌드·모델 호출·DB 읽기/쓰기·배포·설치·삭제는 이번 감사에서 실행하지 않았다. 문서 링크/일관성 검사는 아래 완료 검증에 별도 기록한다.
 
-## 지시 파일·에이전트 설정 감사
-
-발견 결과: 사용자 전역 AGENTS는 빈 파일, 전역 override 없음. 작업 루트부터 상위 경로의 AGENTS/override에 유효 내용 없음. 네 저장소의 tracked AGENTS/override/CLAUDE/GEMINI/`.instructions.md` 및 프로젝트 `.codex/config.toml` 없음. 무시된 권한 거부 temp 디렉터리까지 부재를 증명한 것은 아니다.
-
-전역 config에서 확인한 기본값은 `model=gpt-5.6-sol`, `model_reasoning_effort=high`, 이 작업 루트의 trust는 trusted다. `project_doc_max_bytes`, fallback filenames, model_instructions_file 별도 지정은 해당 검색에서 없었다. 이는 저장 기본값이며 현재 주 세션 모델/주입 내용을 확정하는 자료가 아니다. 이번 하위 감사자는 사용자 지시대로 Sol medium 3개, 읽기 전용이었다. B/D는 한 작업자, E/지시 감사는 주 에이전트가 담당했다.
-
-공식 [AGENTS 발견 규칙](https://learn.chatgpt.com/docs/agent-configuration/agents-md)에 따르면 전역/프로젝트 각 경로에서 override가 우선하고 가까운 경로의 지시가 뒤에 결합되며 기본 총량 한도가 있다. [설정 우선순위](https://learn.chatgpt.com/docs/config-file/config-basic)는 명령 재정의·신뢰 프로젝트·선택 프로필·사용자 기본값 등을 구별한다. 확인일2026-09-20. 따라서 **현재 발견한 AGENTS 충돌이 정체 원인이라는 근거는 없다.** 앱/세션이 실제 주입한 전체 로그를 재구성하지 못했으므로 “활성 지시를 전부 복원했다”고 하지 않는다.
-
-이번 감사는 최신 사용자 audit-only 범위를 따른다. 이전 “계속 완성하라”는 구현 지시를 계속 실행할 권한으로 쓰지 않는다. 긴 HANDOFF는 자동 AGENTS가 아니라 명시적으로 읽는 자료이며, 457,548byte/5천행 이상이라 최신 결정 찾기와 맥락 비용이 크다. 파일 크기가 AGENTS 기본 한도를 넘는다고 실제 잘림을 입증한 것은 아니다. 새 시작점은 짧은 현재 상태+백로그 링크, 과거는 그대로 보존한다.
-
 ## Finding 연결
 
 | Finding | 주 근거 | 상태 / 신뢰도 |
@@ -123,43 +113,3 @@ CLI의 로컬 폴더명과 remote 이름은 다르다. 최종 감사 검사에�
 | AF-13 IR/native 외부 변경 일치 경계 | E06,E07,이전 반대 검토R4 | 설계 위험 / 중간; 손실 사고 미입증 |
 | AF-14 release/CLI/라이선스 미완료 | E03,E19 | 일부 코드·미결 문서 확인됨 / 높음 |
 | AF-15 성능/복구 인수 범위 부족 | E11,E12,E17 | 측정 부족 / 중간; 성능 결함 단정 아님 |
-
-## 감사 완료 검증
-
-2026-09-20 주 감사자의 **최초 감사 종료 시점** 검증. 아래 수치와 상태는 그 시점 기록이며 후속 문서 변경은 아래 별도 절에 기록한다. 제품 행동 테스트를 새로 통과했다는 의미가 아니다.
-
-| 검사 | 방법 / 결과 |
-|---|---|
-| 필수 산출물 | PowerShell 파일 존재 검사 exit0; 00~10 필수11개 모두 존재 |
-| 요구 추적 | PRD의 정규식 ID 추출27개 전부 요구 표 A/B에 각각1회, 사용자 추가6개; 총33개 |
-| 평가/판정 범위 | 품질24영역, 원인A~P 16분류, 핵심 질문12개, 감사 완료 조건17개 명시 |
-| Finding | 03/05 상세 카드15개, 고유 ID15개, evidence 연결 표15개 |
-| 작업 필드 | 24개 카드의 우선순위/크기·문제/근거/결과·포함/제외·모듈·선행/후속·병렬·완료/검증·rollback·사용자 결정 존재 검사 exit0 |
-| 작업 규모/수 | P0=5/P1=14/P2=3/P3=2; L/XL 없음, 미정의 RB ID 없음 |
-| 의존성 | 카드의 선행 조건을 명시 graph로 옮겨 위상 정렬,24개 모두 정렬됨; 순환 없음. 최종 인수 gate와 초기 실행 선행 조건은 구분 |
-| 로컬 링크 | 새 패킷37개 + 수정한 handoff/계획/인덱스의 새 시작 절24개, 합계61개 경로 존재; 깨진 링크0. 과거 보존 절 전체의 외부 URL 생존 검사는 아님 |
-| 문서 형식 | 새11개 파일 표 열 수/행말 공백 검사 exit0, 오류0 |
-| Git diff | 정확한 네 repo에서 `git -c safe.directory=<repo> -C <repo> diff --check`, 각 exit0. Platform CRLF 전환 경고는 있음, 파일을 변환하지 않음 |
-| HEAD/변경 범위 | E01의 네 HEAD/브랜치 동일. Platform tracked 변경은 최초와 같은 docs4개, 새 audit11개. 다른3개 repo clean. 루트 HANDOFF는 non-Git 문서로 갱신 |
-| 사용자 작업 보존 | 기존 review3개 SHA-256이 E01과 일치. 초기 CODING_AGENT_BENCHMARK 변경은 그대로 두고 이번에 편집하지 않음 |
-| 제품 코드 표본 | 아래4개 SHA-256 최초/최종 일치. tracked source diff 없음 |
-| 수행하지 않은 것 | 테스트 suite/빌드/모델·native 기동/DB 변경/의존성/삭제/배포/commit/push/외부 이슈 생성/새 구현 없음 |
-
-표본 hash:
-
-| 파일 | SHA-256 |
-|---|---|
-| `gidong-platform/host/src/controlstudio_host/model_connection.py` | `ED81C12CFAA178EDF7EEE45CD7441113CD26A7F360BDB048AA20B83BADA0611C` |
-| `gidong-platform/.github/workflows/quality.yml` | `63A3C46F712F87B9C6C22634155E323B922CB909BE80A174169B2A43C357BC08` |
-| `gidong-agent/src/controlstudio_agent/runtime.py` | `CE92ED33225BA5CDDA8804D392382C0859349490992C11E45A6404C2C7FC4D67` |
-| `gidong-agent/tests/test_workspace_stable_workbench.py` | `91A45806894D9841FBE7890899472B8210A316FA330E5773EDB9A1B455DC3EB9` |
-
-최종 status에도 기존 pytest 임시 디렉터리 권한 경고가 있어 그 내부는 미확인이다. 이것을 해소하려 권한을 변경하거나 삭제하지 않았다. 원격 중복/PR/CI, 현재 UI/native 실행, 과거 전체 formal Goal에 관한 한계도 그대로 남는다. 이 한계를 숨기지 않은 상태에서 **감사 문서·복구 백로그·핸드오프 작성 Goal만 종료**한다. 백로그를 실행하기 위한 제품 구현 Goal은 별도다.
-
-## 후속 지시 반영 — 구조 결함 제거를 필수화
-
-사용자: “애매하게 남기지 말고 구조적으로 문제 있는 것은 확실히 쳐내게.” 기존 E04~E10 근거를 바꾸지 않고, 07에 SC-01~06의 제거 대상/대체 구조/잔존 금지/완료 증거를 명시했다. 08/09 및 HANDOFF/계획/인덱스에 같은 종료 조건을 연결했다. RB-06/07/08/10/11을 P0로 올려 현재24개 작업은 **P0 10/P1 9/P2 3/P3 2**다. 최초 감사의 우선순위 수치는 위에 역사 기록으로 보존했다.
-
-미입증 통합·실기 상태를 확인됨으로 바꾸지 않았다. 특히 SC-03은 수정 source의 실제 적용·시험 연결을 요구하며, immutable resume을 삭제하거나 이미 receipt 위조 사고가 있었다고 주장하지 않는다. 기존 데이터·권한·vendor legality 보호와 결함 코드 보존을 분리했다. 현재 요청도 문서 수정에 한정하며 프로덕션 코드는 수정하지 않는다.
-
-후속 검사: SC 항목6개, 작업24개와 우선순위10/9/3/2 일치. 감사 문서의 로컬 링크40개와 fragment, 표 열 수/행말 공백 오류0. Platform `git diff --check` exit0, tracked 변경은 기존 docs4개뿐이다. model_connection.py/quality.yml/runtime.py의 hash도 위 기준과 일치했다. 새 native/모델/테스트 suite 실행은 없으며, 필수 제거의 **구현 완료**를 주장하지 않는다.

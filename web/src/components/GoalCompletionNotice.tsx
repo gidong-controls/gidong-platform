@@ -7,7 +7,6 @@ export interface GoalCompletionNoticeProps {
 
 interface GoalCompletionCopy {
   label: string;
-  detail: string;
 }
 
 function completionCopy(
@@ -17,20 +16,24 @@ function completionCopy(
     case "phase_complete":
       return {
         label: "계획 단계 완료",
-        detail:
-          "전체 목표 완료가 아닙니다. 프로젝트 생성·저장·재열기·검증이 남아 있습니다.",
       };
+    case "request_complete":
+      return { label: "요청한 작업 완료" };
     case "goal_complete":
+      if (completion.basis === "native_project_goal_assessed") {
+        return { label: "프로젝트 목표 완료" };
+      }
       return {
         label: "전체 목표 완료",
-        detail: "Host가 최종 목표의 완료 근거를 확인했습니다.",
       };
     case "blocked":
       return {
-        label: "목표 진행 중단",
-        detail: "완료 근거가 없어 전체 목표 완료로 표시하지 않습니다.",
+        label: "작업 중단",
       };
     case "not_claimed":
+      if (completion.basis === "native_request_needs_user") {
+        return { label: "필요한 정보 대기" };
+      }
       return null;
   }
 }
@@ -50,12 +53,11 @@ export function GoalCompletionNotice({
   return (
     <aside
       className={`goal-completion-notice goal-completion-notice--${completion.status}`}
-      aria-label="전체 목표 상태"
+      aria-label={completion.status === "goal_complete" ? "전체 목표 상태" : "현재 요청 상태"}
       aria-live="polite"
       data-goal-completion-status={completion.status}
     >
       <strong>{copy.label}</strong>
-      <span>{copy.detail}</span>
     </aside>
   );
 }

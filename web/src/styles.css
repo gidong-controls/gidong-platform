@@ -259,6 +259,125 @@ select {
   }
 }
 
+/* Compact embedded webviews need room for the transcript as well as controls.
+   Scope this to short, narrow chat screens so the desktop layout stays intact. */
+@media (max-width: 860px) and (max-height: 600px) {
+  .app-shell--conversation .mobile-new-work-button {
+    display: none;
+  }
+
+  .app-shell--conversation > .main-content {
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  .app-shell--conversation .workspace-grid > .target-proof-bar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 8px;
+    padding: 5px 10px;
+    max-height: 26dvh;
+  }
+
+  .app-shell--conversation .target-proof-name {
+    min-width: 0;
+  }
+
+  .app-shell--conversation .target-proof-name .eyebrow {
+    display: none;
+  }
+
+  .app-shell--conversation .target-proof-name strong {
+    font-size: 12px;
+  }
+
+  .app-shell--conversation .project-context-details > summary {
+    min-height: 30px;
+    padding: 6px 0;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .app-shell--conversation .project-context-details[open],
+  .app-shell--conversation .target-proof-bar > .workspace-reconnect {
+    grid-column: 1 / -1;
+  }
+
+  .app-shell--conversation .conversation-header {
+    gap: 4px;
+    padding: 5px 10px;
+  }
+
+  .app-shell--conversation .conversation-header > div:first-child {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+
+  .app-shell--conversation .conversation-header > div:first-child > div {
+    min-width: 0;
+  }
+
+  .app-shell--conversation .conversation-header h2 {
+    overflow: hidden;
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-shell--conversation .run-controls {
+    gap: 4px;
+    justify-content: flex-start;
+  }
+
+  .app-shell--conversation .insight-toggles button,
+  .app-shell--conversation .conversation-permissions > button {
+    min-height: 30px;
+    padding: 4px 7px;
+    font-size: 11px;
+  }
+
+  .app-shell--conversation .conversation-body {
+    padding: 12px 10px;
+  }
+
+  .app-shell--conversation .composer {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px;
+    align-items: end;
+    padding: 6px 8px;
+  }
+
+  .app-shell--conversation .composer textarea {
+    height: 48px;
+    min-height: 48px;
+    max-height: min(90px, 20dvh);
+    padding: 7px 9px;
+    border-radius: 5px;
+    font-size: 13px;
+  }
+
+  .app-shell--conversation .composer-footer {
+    min-height: 48px;
+    padding: 0;
+    background: transparent;
+    border: 0;
+  }
+
+  .app-shell--conversation .composer-footer > span {
+    display: none;
+  }
+
+  .app-shell--conversation .composer-footer .send-button {
+    min-width: 36px;
+    height: 36px;
+  }
+
+  .app-shell--conversation .conversation-latest {
+    right: 10px;
+    bottom: 72px;
+  }
+}
+
 .app-header {
   position: sticky;
   z-index: 20;
@@ -482,6 +601,11 @@ select {
 
 .header-advanced-options .header-advanced-menu .connection-button > span {
   display: inline-block;
+}
+
+.header-advanced-options .header-advanced-menu .header-mobile-knowledge-button,
+.header-advanced-options .header-advanced-menu .header-mobile-new-work-button {
+  display: none;
 }
 
 .header-history-button,
@@ -1961,6 +2085,16 @@ select {
   padding: 10px 16px;
   background: #fbfcf7;
   border-bottom: 1px solid var(--line);
+}
+
+.project-plan-simulation {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  color: var(--ink-strong);
+  font-size: 13px;
 }
 
 .project-plan-context-toggle {
@@ -4260,6 +4394,11 @@ select {
 
   .header-text-button {
     display: none;
+  }
+
+  .header-advanced-options .header-advanced-menu .header-mobile-knowledge-button,
+  .header-advanced-options .header-advanced-menu .header-mobile-new-work-button {
+    display: flex;
   }
 
   .header-history-button,

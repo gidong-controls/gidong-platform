@@ -1,5 +1,8 @@
 # XG5000 제어 및 LD 분석 기술 명세
 
+현행 계약 갱신: 2026-10-11. 제품 요구사항은 [PRD](../PRD.md), 구현 순서와
+실제 호출자는 [구현 계획 §4·§5](AGENT_PRODUCT_PLAN.md)를 따른다.
+
 대상 환경: Windows 11, XG5000 V4.81 및 V4.82.1, XG-SIM
 
 이 문서는 첫 provider adapter의 기술 명세다. 초기 LS 제품에서 XG5000은
@@ -7,18 +10,22 @@
 래더 IDE로 복제하지 않는다. ControlStudio는 분석 근거와 프로그램·네트워크
 위치를 구조화해 표시하고 XG5000의 해당 위치를 연다.
 
-화면에 원하는 래더가 보인다는 사실은 변경 성공 증거가 아니다. 성공 판정은
-native payload·artifact hash, 구조 diff, 프로그램 검사, 저장·독립 재열기,
-XG-SIM 또는 controller readback처럼 adapter가 반환한 독립 증거를 사용한다.
+선정 구조의 대형 LD 읽기·부분 편집·보존·저장·재개 타당성은 인수됐다.
+도구가 실행한 입력, 현재 LD 관측, 저장 파일, 프로그램 검사와 기능 시험은 각각
+별개의 결과다. 모델은 요청과 실제 결과에 필요한 관측·검사·저장을 선택한다.
 
 ## 1. 결론
 
 XG5000은 공개된 범용 자동화 API만으로 모든 편집 기능을 제공하지 않는다.
-현재 adapter 제어는 다음 세 계층을 조합한다.
+선정 경로는 다음 세 계층을 조합한다.
 
-절대 화면좌표는 최후 수단으로만 사용한다. 기본 식별자는 PID/HWND, 창 클래스,
-컨트롤 ID, MDI 부모 관계이며 좌표를 사용할 때도 확인된 자식 컨트롤 내부의
-상대 위치만 사용한다.
+1. 실제 `XG5000LADDER` 캡처를 보관하고 작은 구조 지도·정확한 상세 조회를 제공한다.
+2. 모델이 캡처에 속한 요소·행·포트 참조와 변경 순서를 선택한다.
+3. CLI가 native 커서·Find/Go To·편집 명령·입력창으로 실행하고 실제 결과를 돌려준다.
+
+LD 셀의 고정 화소·스크롤 계산은 이 경로에 없다. XG의 논리 행·셀과 native record
+좌표는 실행기 내부 선택 수단이며 공통 요소 ID가 아니다. 창·입력창은 PID/HWND,
+컨트롤 ID와 부모 관계로 다룬다. 모델은 LD 참조와 변경 내용을 지정한다.
 
 XG5000 UI 자동화는 XG5000과 같은 로그인 사용자·interactive desktop·권한
 수준에서만 수행한다. 잠금 화면, Session 0, 다른 RDP 세션 또는 integrity
@@ -62,8 +69,9 @@ XG5000 실행 파일이 없는 planning/controller-observe 전용 환경만 기�
   - `17`: RST
   - `33`: 응용명령
 
-구현은 비공개 `gidong-plc-mcp` 저장소의
-`src/xg5000_control/ladder.py`에 있다.
+현재 생산 읽기·디코더는 `controlstudio-xg5000-cli`의
+`src/controlstudio_xg5000_cli/vendor/live/read_ld.py`, `vendor/ladder.py`,
+`vendor/ladder_graph.py`가 소유한다. MCP의 동명 모듈은 호환 코드와 구분한다.
 해석하지 않은 배선 토큰도 각 행의 `raw_tokens`에 보존한다.
 
 ### 현재 해석 범위
@@ -76,13 +84,35 @@ XG5000 실행 파일이 없는 planning/controller-observe 전용 환경만 기�
 application instruction이 있으면 network/rung을 `partial`로 표시하며 모든 런을
 완전한 불리언 식으로 변환했다고 주장하지 않는다.
 
+## 3. 모델 도구와 부분 편집
+
+Agent의 새 service catalog는 `references` 인터페이스를 사용한다. 캡처의
+`result_id` 또는 `capture_step`+`program_name`에 `eN`/`rN`과 관측한 named port를
+결합한다. 참조는 관측 당시의 배치이며 행 이동 뒤 현재 위치로 자동 재해석하지 않는다.
+
+`edit_contact`, `remove_wire`, `remove_element`, `insert_contact_after`,
+`insert_contact_on_wire`, `connect_ports`는 typed `editor_apply_edits.entries`로
+제공한다. 한 항목 변경도 같은 batch 계약이다. 명령 편집·직렬/병렬 선삽입·행 삭제는
+standalone이고, 작성에는 `insert_rung_before`, `populate_rung_at`, `insert_terminal_at`을 쓴다.
+지원 동작·인자와 과거 대화 catalog의 구분은 구현 계획 §4에 있다.
+
+batch는 비원자 순차 실행이다. 완료 prefix, 실패/결과불명 항목과 미시작 suffix를
+모델에 반환하며 입력 완료만으로 회로 기능을 판정하지 않는다. 모델이 그 결과를 받아
+추가 읽기·수정·저장·마무리를 결정한다. `connect_ports`는 현재 직선/한 번 꺾이는 배선이다.
+
+`query_ld_snapshot`/`read_tool_result`는 보관된 관측의 조회로 추가 GUI 읽기를 하지 않는다.
+현행 공개 `editor_read_ld_rows`는 full capture를 얻은 뒤 지정 행을 투영한다.
+CLI 내부 `ld_cursor.read_ld_rows`의 실제 range Copy와 동작 비용을 혼동하지 않는다.
+캡처와 실제 입력 결과·도구 이력은 다음 모델 호출 전에 보존하고 checkpoint로 재개한다.
+
 ## 4. 프로그램 검사와 저장
 
-- XG5000의 공식 `프로그램 검사` 명령 사용
-- 성공 문구와 오류 개수 0을 모두 확인
-- MDI 편집기 닫기로 프로젝트 모델에 변경 반영
-- 저장 전후 프로젝트 SHA-256 기록
-- 별도 XG5000 프로세스에서 재열기 후 readback
+native 도구 `editor_program_check`는 검사 명령을 호출해 옵션 창을 연다. 이것만으로
+검사가 끝난 것은 아니다. 모델이 실제 창을 처리하고 `editor_read_check`로 결과 pane의
+오류/경고를 관찰한다. 별도 compatibility CLI `program-check`의 완전 검사 계약과 구분한다.
+`save_project`는 연결된 실제 작업본을 저장하고, `read_saved_project`는 저장 파일을
+관측한다. 현재 편집 buffer 읽기, 저장 파일 관측과 독립 재열기는 서로 다른 근거다.
+일반 편집마다 MDI 닫기·전체 읽기·새 프로세스 재열기·SIM을 강제하지 않는다.
 
 경고는 오류와 구분해 기록한다. 경고가 있으면 통과 여부와 별개로 개수와 메시지를
 증거에 남긴다.
@@ -90,6 +120,18 @@ application instruction이 있으면 network/rung을 `partial`로 표시하며 �
 ## 5. XG-SIM
 
 프로그램 다운로드와 런타임 메모리 쓰기는 다른 작업이다.
+현재 MCP에는 `sim.start/write_program/run/runtime_proof/stop` primitive가 있다.
+CLI의 `sim-target-status`는 관찰 도구이며 SIM 실행 전체가 CLI로 추출된 상태는 아니다.
+현행 native reference service catalog에도 SIM은 아직 연결되지 않았다.
+
+다음 구현은 실제 입력·출력·실패를 같은 대화의 모델에 돌려주고, 모델이 부분 수정한
+작업본의 적용·저장·readback과 그 버전의 재시험을 연결한다. 실패 원인이나 정답 회로를
+장비별 실행기에 넣지 않는다. 런타임 입력 변경과 STOP/원복의 실제 결과도 반환한다.
+
+### 기존 Host trial 경로의 호환 계약
+
+아래는 기존 trial의 저장·복구 규칙이다. 새 native 대화의 고정 단계표나 모든 요청의
+Keep 의무로 사용하지 않는다.
 
 1. XG-SIM 시작
 2. XimUtil 연결로 서버 준비 확인
@@ -118,13 +160,19 @@ XimUtil 정보:
 | bitness | x86 in-process COM |
 | 브리지 | `gidong-plc-mcp/src/xg5000_control/live/xgsim_bridge_x86.cs` |
 
-## 6. 제한된 제품 작업 경로
+## 6. 별도 호환·관찰 경로
 
-현재 production MCP manifest는 52개 tool을 노출한다. 아래 read/analyze 경로가
-추가됐다는 사실은 실제 PLC write·run edit·force·mode·download가 활성화됐다는
-뜻이 아니다.
+실제 도구 표면은 현재 MCP `tools/list`와 Host의 세션별 catalog를 따른다.
+아래 기존 설계 compiler·한 operand 거래·COM save 경로는 선정한 native 참조 편집
+대화와 별개다. 그 제한이나 전체 프로젝트 재읽기 절차를 일반 LD 편집에 이식하지 않는다.
+물리 PLC write·run edit·force·mode·download 권한은 별도 범위다.
 
-### 6.1 네이티브 신규 프로젝트
+### 6.1 과거 native design v2 build 계약
+
+이 절은 기존 compiler가 사용한 timer/restart 규칙의 기록이다. 현재 신규 target 준비는
+다음 구현 항목이며 `workspace.open_native`는 기존 파일을 작업본으로 여는 기능이다.
+신규 작성은 모델이 현재 CPU·I/O·timer parameter와 사용자 운전 조건을 조사하고 일반
+LD 작성 도구로 설계하는 경로로 연결한다. 아래 compiler를 기본 설계자로 복원하지 않는다.
 
 새 프로젝트의 timer area parameter는 변경하지 않는다. 따라서
 [LS XGK/XGB Instructions Manual V2.2](https://www.ls-electric.com/upload/customer/download/f46ceeb8-094e-4a41-b623-7c9a60c7880b/XGK_XGB_Instructions_Manual_Eng_V2.2.pdf)의 기본
@@ -140,9 +188,9 @@ recovery 조건에 `startAll` 중 적어도 한 조건의 반대 상태를 명�
 않는다. `continuous`는 사용자가 연속 반복 운전을 명시적으로 검토한 경우에만
 허용한다. 이 정책과 모든 STEP 완료 조건은 계획 검토 화면에 그대로 표시된다.
 
-### 6.2 오프라인 한 operand transaction
+### 6.2 기존 오프라인 한 operand transaction
 
-제품 Host는 동일 길이 LD operand 한 개에 한해 exact target·plan digest·
+이 호환 거래에서 제품 Host는 동일 길이 LD operand 한 개에 한해 exact target·plan digest·
 만료 사용자 승인과 MCP 일회성 HMAC authorization을 결합한다. MCP는
 snapshot·backup·plan·apply·diff·XG5000 check·save checkpoint와 프로젝트
 범위 durable lease를 기록한다.
@@ -264,7 +312,11 @@ containers. Truncated or unsupported structure data is reported as partial; a
 file hash mismatch is never promoted to identical because the visible structure
 happened to match.
 
-### 6.4 XG5000 project identity 보증
+### 6.4 기존 controlled-launch/COM-save의 identity 계약
+
+아래 보증과 미인수 표현은 이 별도 경로의 범위다. 현재 native owner에 연결한
+LD 편집·저장·재개 타당성과 혼동하지 않는다. 선정 경로는 Host의 작업본·IDE binding과
+native 명령 결과를 사용하며, COM/ROT 확보가 LD 편집의 선행 조건이 아니다.
 
 기본 보증은 XG5000 0개 상태에서 ControlStudio가 새로 실행한 정확한 PID/HWND,
 process creation time, native Open, exact title과 working-copy path/hash를 같은 MCP
@@ -289,5 +341,6 @@ normal session에서의 acceptance evidence가 아직 없으므로 production �
 - V4.81과 V4.82.1의 UI 구조 차이는 런타임 profile과 readback으로 구분하며,
   문서의 버전 목록을 필수 최소 버전으로 간주하지 않는다.
 - 일부 대화상자는 64비트 Python에서 텍스트가 깨지므로 컨트롤 ID fallback이 필요하다.
-- LD 전용 형식은 공식 공개 사양이 아니므로 관찰되지 않은 요소는 보수적으로 거부해야 한다.
+- LD 전용 형식은 공식 공개 사양이 아니다. 미해석 자료는 보존하고, 해당 자료의 해석을
+  필요로 하는 미지원 변경과 이미 지원하는 다른 요소의 변경을 구분한다.
 - 프로그램의 기계적 의미는 I/O 주석이나 전장 도면이 없으면 주소 기준까지만 확정 가능하다.

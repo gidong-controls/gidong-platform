@@ -3,10 +3,13 @@ param(
     [switch]$NoOpen,
     [switch]$Web,
     [switch]$WebUrl,
-    [string]$ProfileRoot
+    [switch]$WebDev,
+    [string]$ProfileRoot,
+    [string]$WebHandoffFile
 )
 
 $ErrorActionPreference = 'Stop'
+if ($WebHandoffFile) { $WebUrl = $true }
 if ((@($NoOpen, $Web, $WebUrl) | Where-Object { $_ }).Count -gt 1) {
     throw 'Specify only one of -NoOpen, -Web, or -WebUrl.'
 }
@@ -91,9 +94,53 @@ $env:CONTROLSTUDIO_AGENT_COMMAND = $agentCommand
 $env:CONTROLSTUDIO_MCP_COMMAND = $mcp
 $env:CONTROLSTUDIO_XG5000_CLI_COMMAND = $xg5000Cli
 
+if ($WebDev) {
+    $webRoot = Join-Path $platform 'web'
+    $viteEntry = Join-Path $webRoot 'node_modules\vite\bin\vite.js'
+    $node = (Get-Command node.exe -ErrorAction Stop).Source
+    if (-not (Test-Path -LiteralPath $viteEntry -PathType Leaf)) {
+        throw 'Install web dependencies with npm ci before starting -WebDev.'
+    }
+    $listeners = @(Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction SilentlyContinue)
+    if ($listeners.Count -gt 0) {
+        foreach ($listener in $listeners) {
+            $viteProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)"
+            $commandLine = [string]$viteProcess.CommandLine
+            if (-not $viteProcess -or
+                $viteProcess.ExecutablePath -ne $node -or
+                $commandLine.Replace('/', '\').IndexOf($webRoot, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
+                $commandLine.Replace('/', '\') -notmatch 'vite\\bin\\vite\.js') {
+                throw 'Port 5173 belongs to another process. Stop that process or use the built web UI.'
+            }
+        }
+    } else {
+        $logRoot = Join-Path $webRoot '.controlstudio-dev'
+        New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
+        $viteProcess = Start-Process -FilePath $node -ArgumentList @(('"' + $viteEntry + '"')) `
+            -WorkingDirectory $webRoot -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput (Join-Path $logRoot 'vite.stdout.log') `
+            -RedirectStandardError (Join-Path $logRoot 'vite.stderr.log')
+        $deadline = [DateTime]::UtcNow.AddSeconds(30)
+        $response = $null
+        do {
+            $viteProcess.Refresh()
+            if ($viteProcess.HasExited) { throw 'The development web server did not start. Check web/.controlstudio-dev logs.' }
+            try {
+                $response = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:5173/@vite/client' -TimeoutSec 2
+                if ($response.StatusCode -eq 200) { break }
+            } catch {}
+            Start-Sleep -Milliseconds 200
+        } while ([DateTime]::UtcNow -lt $deadline)
+        if (-not $response -or $response.StatusCode -ne 200) { throw 'The development web server did not become ready on port 5173.' }
+    }
+    if (-not ($NoOpen -or $Web -or $WebUrl)) { $Web = $true }
+}
+
 $arguments = @('--no-config')
 if ($NoOpen) { $arguments += '--no-open' }
 if ($Web) { $arguments += '--web' }
 if ($WebUrl) { $arguments += '--web-url' }
+if ($WebHandoffFile) { $arguments += @('--web-url-file', ([IO.Path]::GetFullPath($WebHandoffFile))) }
+if ($WebDev -and -not $NoOpen) { $arguments += '--development-web' }
 & $launcher @arguments
 exit $LASTEXITCODE

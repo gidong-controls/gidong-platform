@@ -1,6 +1,6 @@
 # Agent 실행과 작업 재개
 
-최종 갱신: 2026-09-08. 이 파일명은 기존 링크 호환을 위해 유지한다.
+최종 갱신: 2026-10-11. 이 파일명은 기존 링크 호환을 위해 유지한다.
 새 mission 엔진을 만드는 계획은 없다. [PRD](../PRD.md)와
 [구현 계획](AGENT_PRODUCT_PLAN.md)이 현재 방향이다.
 
@@ -9,6 +9,8 @@
 기존 모델 호출, tool request/result, Host continuation, checkpoint, event stream을
 재사용한다. Agent는 실제 도구 결과를 보고 다음 도구 또는 최종 답변을 선택한다.
 Host는 실행을 중계하고 대화·실행 기록을 보존한다. MCP/CLI가 벤더 동작을 수행한다.
+기존 작업본에는 native owner·sidecar·broker·참조 도구·checkpoint 왕복이 구현돼 있다.
+새 service catalog와 복원된 과거 catalog를 구분하며 완료한 도구 결과를 재사용한다.
 
 모델의 해석과 도구로 관측한 사실은 구분한다. 아직 확인하지 못한 진단 가설은 그렇게
 설명하면 되며, 사용자가 설명을 요청했는데 모든 가설을 검증할 때까지 대화를 막지 않는다.
@@ -22,8 +24,9 @@ Host는 실행을 중계하고 대화·실행 기록을 보존한다. MCP/CLI가
 - 일반 설명의 완료까지 observation membership·open hypothesis·mission gate로 묶는 규칙.
 - 정상 실행마다 사용자가 별도 작업 패널·승인·Keep를 운영하게 하는 UI 연결.
 
-이는 현재 코드 조사에 근거한 수정 계획이다. 문서를 바꿨다고 런타임 분기가 제거된 것은 아니다.
-정확한 함수와 우선순위는 구현 계획의 Agent/Host 표를 따른다.
+남은 활성 연결은 targetless planning의 반환/Host 검증, 신규 준비·조사 도구, Web의
+후속 scope·native 재개·실제 결과 표시다. 정확한 함수와 우선순위는 구현 계획 §4·§5를
+따른다. 위 과거 mission 규칙을 native owner에 새로 붙이지 않는다.
 
 ## 중단·재개
 

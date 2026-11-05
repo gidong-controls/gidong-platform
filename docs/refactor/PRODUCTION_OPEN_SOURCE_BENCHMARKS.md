@@ -1,6 +1,11 @@
 # Production open-source benchmarks
 
-이 문서는 유명한 프로젝트를 나열하는 목록이 아니다. ControlStudio의 실제 위험에 대응하는 검증된 제품 패턴만 비교하고, 채택할 불변식과 의도적으로 제외할 범위를 고정한다.
+기록 상태: 2026-08~09 외부 비교 자료. 현재 개발은 [PRD](../../PRD.md)와
+[구현 계획 §4·§5](../AGENT_PRODUCT_PLAN.md)의 실제 선정 계약·작업 순서를 따른다.
+아래 프레임워크·compiler·평가·배포 후보를 모두 도입하거나 새 acceptance gate를
+채팅/LD 개발의 선행 조건으로 추가하는 지시가 아니다.
+
+이 문서는 당시 ControlStudio 위험과 제품 패턴을 비교하고 채택 의견을 기록한 자료다.
 
 벤치마크 포함 기준은 세 가지다.
 
@@ -126,16 +131,6 @@ XG5000/XG-SIM/PLC 조합의 실기 acceptance다. 앞 단계 통과를 뒤 단�
 - 외부 Authenticode production signer와 immutable artifact registry
 - signed build provenance/SBOM 및 updater
 - 실제 PLC에서의 restore/compare와 download authority
-
-벤치마크로부터 추가된 바로 다음 acceptance 순서는 다음과 같다.
-
-1. fake model/MCP 기반 Agent resume·approval·unknown-tool-outcome 회귀 suite
-2. XG5000 runtime fingerprint별 disposable scratch A→B→A certification
-3. clean Windows에서 beta install→upgrade→rollback→uninstall과 production 데이터 비간섭
-4. packaged artifact SBOM, 외부 Authenticode, signed provenance, updater rollback 방어
-5. 실제 controller restore/compare 후에만 download authority 설계
-
-새 프레임워크 도입은 이 목록의 미해결 acceptance gate를 현재 코드보다 더 작고 명확하게 닫을 때만 허용한다. 이름값 때문에 Temporal, LangGraph, OpenTelemetry, Dagger를 통째로 넣지 않는다.
 
 ## 2026-08-13 실제 구현 검증 반영
 

@@ -1,6 +1,12 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
+const developmentHost = "http://127.0.0.1:8767";
+const developmentWebOrigins = new Set([
+  "http://127.0.0.1:5173",
+  "http://localhost:5173",
+]);
+
 export default defineConfig({
   plugins: [
     react(),
@@ -36,6 +42,22 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 5173,
     strictPort: true,
+    proxy: {
+      "/api": {
+        target: developmentHost,
+        changeOrigin: true,
+        configure(proxy) {
+          proxy.on("proxyReq", (forwarded, request) => {
+            // Only this local development page may use the proxy's Host
+            // origin. Keep unrelated origins intact for the Host to reject.
+            if (typeof request.headers.origin === "string"
+                && developmentWebOrigins.has(request.headers.origin)) {
+              forwarded.setHeader("Origin", developmentHost);
+            }
+          });
+        },
+      },
+    },
   },
   preview: {
     host: "127.0.0.1",

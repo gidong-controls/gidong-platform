@@ -166,6 +166,64 @@
         }
       }
     },
+    "/api/v1/project-tools/connection": {
+      "get": {
+        "summary": "Project Tools Connection V1",
+        "operationId": "project_tools_connection_v1_api_v1_project_tools_connection_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "type": "object",
+                  "title": "Response Project Tools Connection V1 Api V1 Project Tools Connection Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/project-tools/reconnect": {
+      "post": {
+        "summary": "Reconnect Project Tools V1",
+        "operationId": "reconnect_project_tools_v1_api_v1_project_tools_reconnect_post",
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "type": "object",
+                  "title": "Response Reconnect Project Tools V1 Api V1 Project Tools Reconnect Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/status": {
       "get": {
         "summary": "Status V1",
@@ -651,6 +709,55 @@
         }
       }
     },
+    "/api/v1/conversations/{conversation_id}/native-execution/resume": {
+      "post": {
+        "summary": "Resume Native Execution V1",
+        "operationId": "resume_native_execution_v1_api_v1_conversations__conversation_id__native_execution_resume_post",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Conversation Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeExecutionResumeRequestV1"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendMessageResponseV1"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/conversations/{conversation_id}/engineering-mission/reverify-blocked-step": {
       "post": {
         "summary": "Reverify Blocked Engineering Mission Step V1",
@@ -1085,6 +1192,45 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ChangeExecutionResponseV1"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/xg5000/close-idle-instance": {
+      "post": {
+        "summary": "Close Idle Xg5000 Window V1",
+        "description": "Close one user-selected blank window while preserving the selected target.",
+        "operationId": "close_idle_xg5000_window_v1_api_v1_xg5000_close_idle_instance_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloseIdleXG5000RequestV1"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CloseIdleXG5000InstanceResponseV1"
                 }
               }
             }
@@ -1636,6 +1782,47 @@
         }
       }
     },
+    "/api/v1/knowledge/import-file": {
+      "post": {
+        "summary": "Import Uploaded Knowledge V1",
+        "operationId": "import_uploaded_knowledge_v1_api_v1_knowledge_import_file_post",
+        "parameters": [
+          {
+            "name": "fileName",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "title": "Filename"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeImportResultV1"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/knowledge/memories": {
       "post": {
         "summary": "Propose Knowledge Memory V1",
@@ -2073,6 +2260,49 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LocalWorkspaceCompareV1"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/xg5000/editor": {
+      "post": {
+        "summary": "Xg5000 Editor V1",
+        "description": "Execute one explicit editor action through the existing elevated MCP.",
+        "operationId": "xg5000_editor_v1_api_v1_xg5000_editor_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Body"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Xg5000 Editor V1 Api V1 Xg5000 Editor Post"
                 }
               }
             }
@@ -3382,6 +3612,47 @@
         ],
         "title": "CloseIdleXG5000InstanceResponseV1"
       },
+      "CloseIdleXG5000RequestV1": {
+        "properties": {
+          "pid": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Pid"
+          },
+          "hwnd": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Hwnd"
+          },
+          "processCreateTime": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Processcreatetime"
+          },
+          "confirmIdleClose": {
+            "type": "boolean",
+            "const": true,
+            "title": "Confirmidleclose"
+          },
+          "timeoutSeconds": {
+            "type": "number",
+            "maximum": 15.0,
+            "minimum": 0.1,
+            "title": "Timeoutseconds",
+            "default": 12
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "pid",
+          "hwnd",
+          "processCreateTime",
+          "confirmIdleClose"
+        ],
+        "title": "CloseIdleXG5000RequestV1",
+        "description": "Explicit standalone close of one exact blank instance; no change contract."
+      },
       "ConfirmKnowledgeMemoryRequestV1": {
         "properties": {
           "expectedRevision": {
@@ -3969,6 +4240,7 @@
               "not_claimed",
               "phase_complete",
               "goal_complete",
+              "request_complete",
               "blocked"
             ],
             "title": "Status"
@@ -3994,7 +4266,12 @@
               "engineering_cycle_budget_exhausted",
               "engineering_objective_achieved",
               "engineering_blocked",
-              "invalid_engineering_mission"
+              "invalid_engineering_mission",
+              "native_request_blocked",
+              "native_request_needs_user",
+              "native_completion_unverified",
+              "native_request_assessed",
+              "native_project_goal_assessed"
             ],
             "title": "Basis"
           },
@@ -4114,6 +4391,30 @@
               }
             ],
             "title": "Runid"
+          },
+          "runState": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "idle",
+                  "analyzing",
+                  "waiting_for_user",
+                  "waiting_for_approval",
+                  "approved_pending_execution",
+                  "executing",
+                  "verifying",
+                  "completed",
+                  "cancelled",
+                  "failed",
+                  "quarantined"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runstate"
           },
           "operationId": {
             "anyOf": [
@@ -4251,6 +4552,47 @@
           "createdAt"
         ],
         "title": "ConversationMessageV1"
+      },
+      "ConversationNativeExecutionV1": {
+        "properties": {
+          "sourceRunId": {
+            "type": "string",
+            "title": "Sourcerunid"
+          },
+          "requestMessageId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestmessageid"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "resumable": {
+            "type": "boolean",
+            "title": "Resumable"
+          },
+          "completedToolCalls": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Completedtoolcalls"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "sourceRunId",
+          "state",
+          "resumable",
+          "completedToolCalls"
+        ],
+        "title": "ConversationNativeExecutionV1"
       },
       "ConversationNativeProjectV1": {
         "properties": {
@@ -4442,6 +4784,37 @@
                 "type": "null"
               }
             ]
+          },
+          "nativeExecution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConversationNativeExecutionV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requestScope": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "analysis_only",
+                  "offline_candidate_revision",
+                  "permanent_offline_revision"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestscope"
+          },
+          "allowSimulator": {
+            "type": "boolean",
+            "title": "Allowsimulator",
+            "default": false
           },
           "goalCompletion": {
             "$ref": "#/components/schemas/ConversationCompletionV1"
@@ -5743,6 +6116,18 @@
             "type": "string",
             "const": "LD",
             "title": "Displayintent"
+          },
+          "catalogBindingDigest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalogbindingdigest"
           }
         },
         "additionalProperties": false,
@@ -5829,6 +6214,30 @@
             },
             "type": "array",
             "title": "Programs"
+          },
+          "catalogBindingDigest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalogbindingdigest"
+          },
+          "catalogSource": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "saved_working_copy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalogsource"
           }
         },
         "additionalProperties": false,
@@ -6271,6 +6680,11 @@
           "readReady": {
             "type": "boolean",
             "title": "Readready",
+            "default": false
+          },
+          "nativeLdEditReady": {
+            "type": "boolean",
+            "title": "Nativeldeditready",
             "default": false
           },
           "offlineCandidateEligible": {
@@ -8220,6 +8634,19 @@
       },
       "LocalWorkspaceSourceV1": {
         "properties": {
+          "displayName": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Displayname"
+          },
           "originalPath": {
             "type": "string",
             "title": "Originalpath"
@@ -8311,6 +8738,9 @@
               },
               {
                 "$ref": "#/components/schemas/NewBuildWorkspaceProvenanceV1"
+              },
+              {
+                "$ref": "#/components/schemas/NativeCreationWorkspaceProvenanceV1"
               },
               {
                 "type": "null"
@@ -8617,6 +9047,19 @@
             ],
             "title": "Reasoningeffort"
           },
+          "clientInputLimitTokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 9007199254740991.0,
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clientinputlimittokens"
+          },
           "hasApiKey": {
             "type": "boolean",
             "title": "Hasapikey"
@@ -8660,12 +9103,91 @@
         ],
         "title": "ModelSettingsV1"
       },
+      "NativeCreationWorkspaceProvenanceV1": {
+        "properties": {
+          "schema": {
+            "type": "string",
+            "const": "controlstudio-native-creation-provenance/v1",
+            "title": "Schema"
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^[0-9a-f-]{36}$",
+            "title": "Workspaceid"
+          },
+          "creationReceiptDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Creationreceiptdigest"
+          },
+          "savedProjectSha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Savedprojectsha256"
+          },
+          "receiptDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Receiptdigest"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "schema",
+          "workspaceId",
+          "creationReceiptDigest",
+          "savedProjectSha256",
+          "receiptDigest"
+        ],
+        "title": "NativeCreationWorkspaceProvenanceV1"
+      },
+      "NativeExecutionResumeRequestV1": {
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 8,
+            "title": "Operationid"
+          },
+          "sourceRunId": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Sourcerunid"
+          },
+          "allowSimulator": {
+            "type": "boolean",
+            "title": "Allowsimulator",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "operationId",
+          "sourceRunId"
+        ],
+        "title": "NativeExecutionResumeRequestV1"
+      },
       "NewBuildWorkspaceProvenanceV1": {
         "properties": {
           "schema": {
             "type": "string",
             "const": "controlstudio-new-build-workspace-provenance/v1",
             "title": "Schema"
+          },
+          "nativeProjectId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f-]{36}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nativeprojectid"
           },
           "reviewedPlanDigest": {
             "type": "string",
@@ -11385,6 +11907,19 @@
             ],
             "title": "Reasoningeffort"
           },
+          "clientInputLimitTokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 9007199254740991.0,
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clientinputlimittokens"
+          },
           "externalModelConsent": {
             "type": "boolean",
             "title": "Externalmodelconsent",
@@ -11471,6 +12006,24 @@
                 "type": "null"
               }
             ]
+          },
+          "resumeNativeRunId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resumenativerunid"
+          },
+          "allowSimulator": {
+            "type": "boolean",
+            "title": "Allowsimulator",
+            "default": false
           }
         },
         "additionalProperties": false,

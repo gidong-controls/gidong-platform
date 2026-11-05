@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 _HOST_CHILD_ARGUMENT = "--controlstudio-internal-host"
+_RESTART_HELPER_ARGUMENT = "--controlstudio-internal-restart-helper"
 _CONTRACT_NAMES = {
     "api_contract",
     "event_contract",
@@ -64,12 +65,13 @@ def _configure_installed_product() -> None:
         for item in components
         if isinstance(item, dict) and isinstance(item.get("id"), str)
     }
-    if set(by_id) != {"platform", "agent", "plc-mcp"}:
+    if set(by_id) != {"platform", "agent", "plc-mcp", "xg5000-cli"} or len(components) != len(by_id):
         raise RuntimeError("installed ControlStudio component set is incomplete")
     paths = {
         "platform": executable,
         "agent": runtime / "controlstudio-agent.exe",
         "plc-mcp": runtime / "controlstudio-plc-mcp.exe",
+        "xg5000-cli": runtime / "controlstudio-xg5000-cli.exe",
     }
     for component_id, path in paths.items():
         record = by_id[component_id]
@@ -101,6 +103,7 @@ def _configure_installed_product() -> None:
         )
     os.environ["CONTROLSTUDIO_AGENT_COMMAND"] = f'"{paths["agent"]}"'
     os.environ["CONTROLSTUDIO_MCP_COMMAND"] = str(paths["plc-mcp"])
+    os.environ["CONTROLSTUDIO_XG5000_CLI_COMMAND"] = f'"{paths["xg5000-cli"]}"'
     os.environ["CONTROLSTUDIO_PRODUCT_BOM"] = str(bom_path)
     os.environ["CONTROLSTUDIO_RELEASE_CHANNEL"] = release_channel
     os.environ["CONTROLSTUDIO_PRODUCT_RELEASE"] = product_release
@@ -114,6 +117,25 @@ if getattr(sys, "frozen", False):
     os.environ["CONTROLSTUDIO_WEB_DIST"] = str(bundled_web)
 
 _configure_installed_product()
+
+if (
+    _HOST_CHILD_ARGUMENT in sys.argv[1:]
+    and _RESTART_HELPER_ARGUMENT in sys.argv[1:]
+):
+    # Ambiguous private modes must not reach either the Host or the launcher.
+    raise SystemExit(2)
+
+if _RESTART_HELPER_ARGUMENT in sys.argv[1:]:
+    sys.argv = [
+        sys.argv[0],
+        *(item for item in sys.argv[1:] if item != _RESTART_HELPER_ARGUMENT),
+    ]
+    # A static import also makes this fixed helper part of the frozen archive.
+    # Its existing parent wait, port release and inherited-privilege Host path
+    # remain the same as the source Python module entry.
+    from controlstudio_host.restart_helper import main as restart_helper_main
+
+    raise SystemExit(restart_helper_main())
 
 if _HOST_CHILD_ARGUMENT in sys.argv[1:]:
     # The public Platform is a single executable. The launcher starts the same

@@ -20,6 +20,7 @@ interface ModelSettingsForm {
   apiKey: string;
   timeoutSeconds: number;
   reasoningEffort: ModelReasoningEffort | "";
+  clientInputLimitTokens: string;
   externalModelConsent: boolean;
   insecureHttpConsent: boolean;
   newHeaderName: string;
@@ -32,6 +33,7 @@ const DEFAULT_FORM: ModelSettingsForm = {
   apiKey: "",
   timeoutSeconds: 60,
   reasoningEffort: "",
+  clientInputLimitTokens: "",
   externalModelConsent: false,
   insecureHttpConsent: false,
   newHeaderName: "",
@@ -136,6 +138,7 @@ export function ModelSettingsDialog({
             apiKey: "",
             timeoutSeconds: settings.timeoutSeconds,
             reasoningEffort: settings.reasoningEffort ?? "",
+            clientInputLimitTokens: settings.clientInputLimitTokens == null ? "" : String(settings.clientInputLimitTokens),
             externalModelConsent: false,
             insecureHttpConsent: false,
             newHeaderName: "",
@@ -180,6 +183,7 @@ export function ModelSettingsDialog({
   const isValid =
     Boolean(form.baseUrl.trim() && form.model.trim()) &&
     !headerPartiallyEntered &&
+    (form.clientInputLimitTokens === "" || (/^[1-9]\d*$/.test(form.clientInputLimitTokens) && Number.isSafeInteger(Number(form.clientInputLimitTokens)))) &&
     (!externalEndpoint || form.externalModelConsent) &&
     (!insecureExternalHttp || form.insecureHttpConsent);
   const unavailableReason = !hostReady
@@ -198,6 +202,7 @@ export function ModelSettingsDialog({
         : undefined,
       timeoutSeconds: form.timeoutSeconds,
       reasoningEffort: form.reasoningEffort || null,
+      clientInputLimitTokens: form.clientInputLimitTokens === "" ? null : Number(form.clientInputLimitTokens),
       externalModelConsent: form.externalModelConsent,
       insecureHttpConsent: form.insecureHttpConsent,
     };
@@ -395,6 +400,19 @@ export function ModelSettingsDialog({
               <span>초</span>
             </span>
           </label>
+
+          <details className="field full-field">
+            <summary>고급 설정</summary>
+            <label className="field">
+              <span className="field-label">작업 요청 입력 한도</span>
+              <input type="number" min={1} max={Number.MAX_SAFE_INTEGER} step={1} placeholder="Auto"
+                value={form.clientInputLimitTokens}
+                onChange={(event) => setForm((current) => ({...current, clientInputLimitTokens: event.target.value}))} />
+              <span className="field-hint">
+                작업의 도구 정보와 대화 전체를 포함한 추정 입력 토큰 한도입니다. 모델 고유 용량과 별개이며 빈칸은 Auto입니다.
+              </span>
+            </label>
+          </details>
 
           <div className="field full-field">
             <span className="field-label">저장된 사용자 지정 헤더</span>
