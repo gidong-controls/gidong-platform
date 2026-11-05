@@ -223,7 +223,6 @@ NATIVE_INPUT_EFFECT_CONTRACT_VERSION = '1'
 # navigation/selection/cleanup. Non-program-mutation and read_only are separate.
 _NATIVE_INPUT_EFFECTS = MappingProxyType({
     ('native_editor', 'observe'): NativeInputEffect.NO_NATIVE_INPUT,
-    ('simulator', 'observe'): NativeInputEffect.NO_NATIVE_INPUT,
 })
 _NATIVE_INPUT_AGENT_ALIASES = MappingProxyType({'editor_observe': ('native_editor', 'observe')})
 
