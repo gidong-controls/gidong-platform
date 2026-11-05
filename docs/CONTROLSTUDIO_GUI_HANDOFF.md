@@ -484,8 +484,9 @@ runtime truth, 실제 field wiring 또는 프로그램 이름에서 추정한 �
 
 UI는 실행 성공을 추정하지 않는다. Host와 MCP가 반환한 target identity,
 operation 상태, exact native readback과 evidence receipt를 그대로 표시하며,
-입력 완료·현재 관측·저장·기능 시험을 구분해 표시한다. 현재 native 이벤트는 이름·상태
-위주라 실제 batch prefix/unknown·관측·저장 결과의 공개 요약 투영이 추가로 필요하다.
+입력 완료·현재 관측·저장·기능 시험을 구분해 표시한다. Host는 native 결과에서 완료
+prefix·unknown·미시작 범위와 관측·저장 여부를 공개 요약으로 투영하고, Web은 작업 과정의
+상세에 표시한다. 이 요약은 입력·관측의 범위이며 전체 설비 동작의 합격을 대신하지 않는다.
 
 Web은 permanent 요청 범위를 후속 대화에 유지하며, 보존된 native 실행에는 별도의
 이어가기 버튼이 연결돼 있다. 신규 생성 요청도 `new_project_planning`과

@@ -58,6 +58,7 @@ public dialogue의 폐기 계산은 합성 200개 메시지·본문 240만 문�
 - run `2593e373-5ae6-43d9-ba59-adc73570765d`: 10:28:08.413Z→10:30:52.693Z, COMPLETED, 164.280초. 공식 개발 Launcher→Host 8767→source Agent/MCP/CLI→기존 XG5000 작업본 경로다. 새 설치본을 만들거나 설치 EXE를 바꾸지 않았다. 선택된 개발 Agent interpreter에서 두 수정 모듈이 현재 checkout의 `gidong-agent/src`에서 로드되는 것을 확인했다.
 - 현재 요청의 provider 기록 4회/48.058초, 준비 1.130초. Host의 저장본 조회 1회/1.005초, SIM scenario 1회/52.722초. checkpoint 5회/0.657초 중 transfer 검증 0.322초·callback 보존 0.335초. 나머지 시간을 이 국소 최적화의 이득으로 해석하지 않는다.
 - 8단계 모두 완료·기대값 일치·미시작 suffix 0·unknown 없음. 실제 출력 P0010/P0011 ON을 읽고 STOP 입력 후 둘 다 OFF를 읽었다. 마지막 시험 입력 P0000–P000C와 출력 P0010/P0011/P0012 OFF를 확인했다. 테스트 입력만 쓰며 펌프 출력 P0010/P0011에 값을 강제로 쓰지 않았다.
+- 실제 Web의 작업 과정 상세에서 `시나리오 8단계 중 8단계 실행 완료`를 확인했다. Host `native_execution_results.py`의 `activity_result/native_result` 생성→Web `App.tsx`의 `activity_result` 표시를 대조해, GUI 문서에 남아 있던 공개 요약 미구현 주장도 교정했다.
 - STOP과 END를 모두 실제 완료했다. END는 `ended=true`, `current_session_inactive_verified=true`, `simulator_control_action_attempted=true`, `input_state_unknown=false`다. 이번 시나리오는 wrapper도 `ok=true`이고 종료 실패를 남기지 않았다.
 - 실제 모델은 같은 Terra/medium, 기존 입력 한도 유지. 추가 LD 수정은 없었으며 최종 파일 5368B/SHA `906e82ddd23a465b9de669bd1551f76e397132893f5b1fd6238900a86e427aba`, 안정 읽기와 동일 canonical source `e5bccc2b438bcbf76fa2aad280effd0f634ecce1a3a9e329383714299e64651a`를 확인했다.
 - 두 실행은 모델 선택과 IDE 복구 상태가 다르다. **493.631초→164.280초를 코드 최적화의 성능 개선율로 제시하지 않는다.** 실제 동작 보존을 검증했고, 변경 자체의 CPU 비용은 위의 제한된 비교로 제시한다. 이 요청의 지식 검색도 0회이므로 검색 캐시의 실사용 효과를 주장하지 않는다.
