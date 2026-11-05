@@ -33,10 +33,11 @@
 모델 출력이나 검색 문서가 사용자 권한을 임의로 넓힐 수는 없다.
 
 기존 작업본의 native 수정·저장 대화는 Host·Agent·broker에 이미 연결돼 있다.
-다음 구현은 신규 대상 준비·자료 조사와 일반 Web 제출을 이 경로에 연결하는 것이다.
-현재 planning의 문자열 응답/Host plan-artifact 검증 불일치, Web 후속 요청의 scope reset,
-mission 전용 재개와 실제 native 결과 요약 표시를 함께 정리한다. 정확한 producer/consumer와
-완료 조건은 구현 계획 §4·§5에 있다. UI 버튼을 숨기거나 기존 루프를 새로 만드는 작업이 아니다.
+현재 신규 대상 준비와 일반 Web 제출도 이 경로에 연결돼 있다. Web은 신규 생성 요청을
+`new_project_planning + permanent_offline_revision + offline_native_check_only`로 보내고,
+후속 permanent 요청 범위를 유지한다. 중단된 native 실행은 mission 재개와 별도로
+보존된 checkpoint에서 이어간다. 단계별 담당 경계와 완료 조건은
+[구현 계획](AGENT_PRODUCT_PLAN.md), 실제 인수 범위는 [HANDOFF](../../HANDOFF.md)를 따른다.
 
 대상 확인, 작업 사본 보호, 잘못된 대상에 쓰기 방지, 변경 여부 불명확 시 중복 실행 방지는
 도구 내부에 유지한다. 실패한 작업 사본의 추가 변경을 제한하더라도 일반 대화·문서 분석·

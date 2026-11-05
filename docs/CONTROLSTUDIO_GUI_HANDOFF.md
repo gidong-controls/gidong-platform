@@ -13,7 +13,7 @@
 [ENGINEERING_COLLABORATION_WORKFLOWS.md](ENGINEERING_COLLABORATION_WORKFLOWS.md)를
 따른다.
 
-현재 구현·개발 우선순위는 [AGENT_PRODUCT_PLAN.md §4·§5](AGENT_PRODUCT_PLAN.md)를
+현재 구현·개발 우선순위는 [구현 계획의 단계별 완료 조건](AGENT_PRODUCT_PLAN.md)을
 따른다. 아래 화면 기능 목록에는 기존 거래 UI도 포함되며 정상 native 대화의 필수
 단계가 아니다. 실제 사용자 작업과 저장본 결과를 같은 대화에서 표시하는 것이 기준이다.
 
@@ -487,17 +487,16 @@ operation 상태, exact native readback과 evidence receipt를 그대로 표시�
 입력 완료·현재 관측·저장·기능 시험을 구분해 표시한다. 현재 native 이벤트는 이름·상태
 위주라 실제 batch prefix/unknown·관측·저장 결과의 공개 요약 투영이 추가로 필요하다.
 
-Web은 permanent 요청 후 scope를 `review_before_apply`로 되돌려 평범한 후속 요청이
-legacy 후보 경로로 들어갈 수 있고, 현재 재개 버튼도 mission 전용이다. 요청 범위 유지와
-native checkpoint 재개를 신규 준비/일반 Web 패키지에서 함께 연결한다.
-이전 native project 생성 panel/API의 존재를 현재 구현으로 간주하지 않는다.
-현재 신규 생성·프로그램 준비는 [구현 계획 §5](AGENT_PRODUCT_PLAN.md)의 개발 계약에
-따라 구현할 기능이다.
+Web은 permanent 요청 범위를 후속 대화에 유지하며, 보존된 native 실행에는 별도의
+이어가기 버튼이 연결돼 있다. 신규 생성 요청도 `new_project_planning`과
+`permanent_offline_revision`으로 제출되어 Host의 준비 실행을 거쳐 native 대화로 이어진다.
+구현 순서와 완료 조건은 [구현 계획의 단계별 표](AGENT_PRODUCT_PLAN.md), 실제 설치·실행
+인수 범위는 [HANDOFF](../../HANDOFF.md)를 따른다.
 
-설치 프로그램과 서명된 배포물, 원격 접근, 기기 pairing, PLC에서 프로젝트
-복원, 강한 online identity·controller-native scan trace, 실제 PLC write/run edit/force/mode/download,
-일반 Web 요청부터 신규 프로젝트·LD 제작을 완성하는 제품 연결은 아직 남아 있다.
-직접 native LD 작성·부분 편집 타당성의 인수와 이 제품 통합의 완료를 구분한다.
+배포물 서명, 원격 접근, 기기 pairing, PLC에서 프로젝트
+복원, 강한 online identity·controller-native scan trace, 실제 PLC write/run edit/force/mode/download
+등은 별도 인수 범위다. 설치·일반 Web 신규 제작의 실행 근거는 HANDOFF에 기록하며,
+개별 프로젝트의 인수를 제품 전체 완료로 확대하지 않는다.
 
 기존 `xg5000_control.gui` Tkinter 개발·진단 콘솔은 제품 실행 경로가 아니어서
 제거했다. 제품 UI는 Platform Web과 Host API만 사용하며, 문서가 추가됐다는

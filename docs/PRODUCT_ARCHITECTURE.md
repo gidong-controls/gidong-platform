@@ -205,12 +205,11 @@ crash reconciliation은 해당 journal을 기준으로 한다. 이를 모든 nat
 
 ## 패키징·실기 범위
 
-공식 Platform/Agent/MCP는 세 core service artifact로 각각 빌드한다. 별도 vendor CLI
-repository는 이관된 명령에 독립 executable/process 경계를 제공하지만, 아직 모든 native
-backend의 독립 artifact·release lifecycle을 의미하지는 않는다. 현재 BOM은 세 core
-artifact의 version, SHA-256, 여섯 contract version, signature metadata를 정확히
-결속한다. 별도 CLI artifact를 BOM·Launcher release verification에 포함하는 통합은
-아직 pending이다. unsigned/development HMAC artifact는 production 배포물이 아니다.
+공식 Platform/Agent/MCP/XG5000 CLI는 네 executable artifact로 각각 빌드한다. 현재
+BOM은 네 component의 version, SHA-256, 여섯 contract version, signature metadata를
+정확히 결속한다. Launcher는 네 실행 파일을 검증하고 검증된 CLI 경로를 Host 실행 환경에
+전달한다. 이는 향후 모든 vendor backend의 독립 배포 완료를 뜻하지 않는다.
+unsigned/development HMAC artifact는 production 배포물이 아니다.
 
 오프라인 native 편집은 결속한 작업 사본에서 실행하고 실제 입력·오류·관측·저장 결과를
 반환한다. XG-SIM은 모델이 선택하는 별도 도구이며 매 편집의 선행 조건이 아니다.

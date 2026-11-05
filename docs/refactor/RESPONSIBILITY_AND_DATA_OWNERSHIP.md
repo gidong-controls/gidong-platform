@@ -52,8 +52,9 @@ offline_native_check_only` 분기에서 이미 연결돼 있다. Host가 descrip
 도구 실행에 전달한다. 후보만 요청하면 적용하지 않는다. 새로운 범위나 되돌리기 어려운
 작업에 필요한 추가 확인과 기존 범위의 반복 승인 요청을 구분한다. 정상 대화·읽기는
 변경 거래/Keep/복구의 선행 조건을 갖지 않는다. 실제 전환 파일은
-[구현 계획의 실행·변경 경계·§5](../AGENT_PRODUCT_PLAN.md)를 따른다. 현재 Web의 scope reset과
-mission 전용 재개 버튼은 native 후속 요청·재개로 연결할 잔여다.
+[구현 계획의 단계별 담당 경계와 완료 조건](../AGENT_PRODUCT_PLAN.md)을 따른다. 현재 Web은
+permanent 요청 범위를 후속 대화에 유지하며 native checkpoint 재개를 별도 버튼으로
+Host에 요청한다. 기존 mission 재개는 legacy 거래의 별도 경로다.
 
 아래는 **현재 legacy mutation 구현의 내부 계약**이다. 호환 경로를 다룰 때 참조하되
 모든 요청에 새 사용자 승인 화면을 요구하라는 제품 지시로 사용하지 않는다.
