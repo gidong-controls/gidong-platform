@@ -26,13 +26,7 @@ class ProjectPlanSnapshot:
 
 
 def calculate_project_plan_digest(artifact: dict[str, Any]) -> str:
-    canonical = json.dumps(
-        artifact,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    return hashlib.sha256(canonical).hexdigest()
+    return _canonical_digest(artifact)
 
 
 def _canonical_digest(value: Any) -> str:

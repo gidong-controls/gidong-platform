@@ -5,8 +5,8 @@ and launches `ControlStudio.exe`. Agent, PLC MCP, and the XG5000 CLI are private
 runtime processes. The four-artifact
 portable directory exists only as the immutable release assembly and
 black-box validation input. This packaging does not install from source paths
-at runtime and intentionally does not claim a production signature. See
-`../docs/refactor/PACKAGING.md` for the release procedure and security limits.
+at runtime and intentionally does not claim a production signature. Internal
+release procedures and verification records are maintained separately.
 
 `python packaging/scripts/build_bom.py` creates a canonical BOM; `verify_bom.py`
 verifies it; and `assemble_portable.py` creates the portable distribution.

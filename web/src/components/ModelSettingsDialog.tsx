@@ -236,7 +236,7 @@ export function ModelSettingsDialog({
         newHeaderName: "",
         newHeaderValue: "",
       }));
-      setNotice("모델 연결 설정을 Development 프로필에 저장했습니다.");
+      setNotice("모델 연결 설정을 현재 프로필에 저장했습니다.");
       onSaved();
     } catch (error) {
       setNotice(errorMessage(error));
@@ -356,7 +356,7 @@ export function ModelSettingsDialog({
             />
             <span className="field-hint">
               {hasSavedApiKey
-                ? "Development 모델 프로필에 키가 저장되어 있습니다. 값은 표시하지 않습니다."
+                ? "현재 모델 프로필에 키가 저장되어 있습니다. 값은 표시하지 않습니다."
                 : "저장된 API 키가 없습니다."}
             </span>
           </label>
@@ -426,8 +426,7 @@ export function ModelSettingsDialog({
               <span className="field-hint">저장된 사용자 지정 헤더가 없습니다.</span>
             )}
             <span className="field-hint">
-              보안을 위해 헤더 이름만 표시하며 저장된 값은 Host 밖으로 나오지
-              않습니다.
+              저장된 헤더 값은 설정 화면에 다시 표시하지 않습니다. 모델 연결과 요청에 사용합니다.
             </span>
           </div>
 

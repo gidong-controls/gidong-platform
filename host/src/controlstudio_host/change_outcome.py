@@ -55,8 +55,6 @@ def change_outcome_projection(transaction: ChangeTransaction) -> dict[str, Any]:
             if diagnostic is not None:
                 observation = ProgramCheckFailureObservationV1.model_validate(diagnostic)
                 unsigned["programCheckFailure"] = observation.model_dump(mode="json", by_alias=True)
-        verification.get("simulation_receipt") if isinstance(verification, dict) else None
-        pass
     outcome_digest = _digest(unsigned)
     return {
         **unsigned,

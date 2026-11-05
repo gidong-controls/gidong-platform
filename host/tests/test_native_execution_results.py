@@ -2,6 +2,43 @@ from controlstudio_host.native_execution_results import native_result_event, nat
 from controlstudio_host.native_project_preparation import public_preparation_failure
 
 
+def _run_agent_fixture(script, *, python, environment, payload=""):
+    """Allow bounded SDK preparation, then retain the original 60s work budget."""
+    import os
+    import queue
+    import subprocess
+    import tempfile
+    import threading
+
+    marker = "CONTROLSTUDIO_TEST_IMPORT_READY"
+    prefix = (
+        "import sys\nimport controlstudio_agent.native_workspace\n"
+        "import controlstudio_agent.working_history\n"
+        f"print({marker!r}, flush=True)\nsys.stdin.readline()\n"
+    )
+    command = [str(python), "-B", "-c", prefix + script]
+    with tempfile.TemporaryFile(mode="w+b") as errors:
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=errors, text=True, encoding="utf-8",
+            env={**environment, "PYTHONIOENCODING": "utf-8"},
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        ready = queue.Queue(maxsize=1)
+        reader = threading.Thread(target=lambda: ready.put(process.stdout.readline()), daemon=True)
+        reader.start()
+        try:
+            assert ready.get(timeout=90).strip() == marker, "Agent SDK did not become ready"
+            reader.join(timeout=5)
+            output, _ = process.communicate(input="\n" + payload, timeout=60)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+            reader.join(timeout=5)
+        errors.seek(0)
+        return subprocess.CompletedProcess(command, process.returncode, output,
+            errors.read().decode("utf-8", errors="replace"))
+
+
 def test_completion_sources_empty_allowed_run_has_no_support():
     from types import SimpleNamespace
     import pytest
@@ -102,7 +139,6 @@ def test_saved_timer_configuration_uses_exact_hardware_context(monkeypatch, tmp_
     import hashlib
     import json
     from pathlib import Path
-    from types import SimpleNamespace
     from xml.etree import ElementTree
     from controlstudio_host import native_workspace_host as host
 
@@ -248,7 +284,8 @@ def test_precontrol_end_navigation_unknown_has_current_bound_continuation(monkey
 
     def dispatch(pid, hwnd, *, preflight, before_input, navigation, **kwargs):
         assert journal['state'] == 'end_outcome_unknown'
-        assert kwargs['expected_process_create_time'] == 3.0 and kwargs['preclosed_control'] is True
+        assert kwargs['expected_process_create_time'] == 3.0
+        assert kwargs['prepared_menu']['popup_hwnd'] == 3
         preflight(); before_input()
         navigation['control_action_attempted'] = True
         controls.append((pid, hwnd))
@@ -257,6 +294,9 @@ def test_precontrol_end_navigation_unknown_has_current_bound_continuation(monkey
     monkeypatch.setattr(uia_read_session, 'MsaaReadSession', ReadSession)
     monkeypatch.setattr(cli, '_saved', saved_read)
     monkeypatch.setattr(cli, '_frame', frame)
+    import win32gui
+    monkeypatch.setattr(win32gui, 'GetWindowRect', lambda hwnd: (0, 0, 800, 600))
+    monkeypatch.setattr(cli, 'observe_current_main_simulator_menu', lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, '_read_journal', lambda request: copy.deepcopy(journal))
     monkeypatch.setattr(cli, '_persist', persist)
     monkeypatch.setattr(cli, 'prepare_main_simulator_menu_observation', prepare)
@@ -317,7 +357,7 @@ def test_precontrol_end_navigation_unknown_has_current_bound_continuation(monkey
         fail_navigation[0] = False
         ended = await owner.execute_with_diagnostic_context('simulator', {'action': 'end'},
             {**context, 'call_id': 'fresh-end'})
-        assert ended['ok'] is True and ended['current_session_inactive_verified'] is True
+        assert ended['ok'] is True and ended['current_session_inactive_verified'] is True, ended
         assert controls == [(1, 2)] and fresh_directions == [(1, 2)]
         assert journal['state'] == 'ended' and failed['input_state_unknown'] is True
     asyncio.run(scenario())
@@ -571,6 +611,25 @@ def test_simulation_scenario_composes_requested_modes_without_replaying_unknown(
         row=ledger.read_sources({'run_id':'run'})['rows'][0]
         return ledger,store,sequence,returned,row,raw
 
+    # A validated scenario must not replace the receipt index used by the
+    # next row. Support references are independent of pagination boundaries.
+    legacy_request = {'loaded_sha256': result['batch']['loaded_sha256'],
+        'steps': arguments['steps'], 'stop_on_mismatch': True}
+    paged_ledger, paged_store, paged_sequence, _, _, _ = completion_sources(legacy_request, result)
+    end_arguments = {'action': 'end'}
+    end_result = {'ok': True, 'action': 'end', 'ended': True,
+        'current_session_inactive_verified': True, 'input_state_unknown': False,
+        'saved_project': {'sha256': sha, 'stable_during_read': True}}
+    paged_ledger.before('simulator', end_arguments, 'paged-end')
+    paged_store.set_host_state('native_ld_receipt:run:00000001', {
+        'sequence': 1, 'tool_name': 'simulator', 'arguments': end_arguments, 'result': end_result})
+    paged_sequence[0] = 2
+    issued_end = paged_ledger.record('simulator', end_arguments, end_result, 'paged-end')
+    separate = paged_ledger.read_sources({'run_id': 'run', 'offset': 1, 'limit': 1})['rows'][0]
+    combined = paged_ledger.read_sources({'run_id': 'run', 'offset': 0, 'limit': 2})['rows'][1]
+    assert separate['support_available'] is True and combined == separate
+    assert combined['completion_evidence_ref'] == issued_end['completion_evidence_ref']
+
     def assessment(ledger, refs):
         return {'schema_version':'1','scope':'request','requirement_ref':ledger.requirement_refs['request'],
             'criteria':[{'criterion':'model judges these actual observations','verdict':'met',
@@ -640,10 +699,9 @@ def test_simulation_scenario_composes_requested_modes_without_replaying_unknown(
             assert all(part['scope']=='finalization_only' and part['native_input_authority'] is False for part in parts)
             refs=[part['completion_evidence_ref'] for part in returned['completion_evidence_parts']]
             for ref in refs:ledger._verify_raw_refs(ledger._evidence(ref))
-            import subprocess, os, json
+            import os, json, sys
             from pathlib import Path
             root=Path(__file__).resolve().parents[3]
-            agent_python=root/'gidong-agent/.venv-dev/Scripts/python.exe'
             env={**os.environ, 'PYTHONPATH':os.pathsep.join((str(root/'gidong-agent/src'),
                 str(root/'gidong-platform/packages/python/controlstudio-contracts/src')))}
             script='''import sys,json,copy
@@ -659,8 +717,8 @@ def refs(value):
 assert refs(live)[:2]==data['refs']
 cold=owner(lambda event:None); cold.restore_records(copy.deepcopy(events)); assert refs(cold)[:2]==data['refs']
 '''
-            process=subprocess.run([str(agent_python),'-c',script],input=json.dumps(
-                {'arguments':arguments,'result':returned,'refs':refs}),text=True,env=env,capture_output=True,timeout=60)
+            process=_run_agent_fixture(script, python=sys.executable, environment=env,
+                payload=json.dumps({'arguments':arguments,'result':returned,'refs':refs}))
             assert process.returncode == 0, process.stderr
             assert ledger.evaluate(assessment(ledger,refs),'completed')['reason_code']=='current_generation_not_settled'
             # The separate cleanup obligation must settle before finalization;
@@ -1191,7 +1249,7 @@ def test_partial_batch_keeps_completed_prefix_and_unknown_suffix(monkeypatch):
         "unknownIndices": [2], "notStartedCount": 1, "postCaptureState": "failed"}
     assert "2건 입력 완료" in event["activity_result"]
     assert "secret" not in repr(event) and "pid" not in event["native_result"]
-    import ast, asyncio, json, os, subprocess
+    import ast, asyncio, json, os
     from pathlib import Path
     from types import SimpleNamespace
     from jsonschema import validate
@@ -1234,8 +1292,10 @@ print(json.dumps(asyncio.run(native._apply_edits(Owner(),values,step=1,secrets=[
 '''
     env = {**os.environ, 'PYTHONPATH': os.pathsep.join(str(root/path) for path in (
         'gidong-agent/src', 'gidong-platform/packages/python/controlstudio-contracts/src'))}
-    produced = subprocess.run([str(root/'gidong-agent/.venv/Scripts/python.exe'), '-B', '-c', script],
-        env=env, capture_output=True, text=True, timeout=60)
+    agent_python = root / 'gidong-agent/.venv-dev/Scripts/python.exe'
+    if not agent_python.is_file():
+        agent_python = root / 'gidong-agent/.venv/Scripts/python.exe'
+    produced = _run_agent_fixture(script, python=agent_python, environment=env)
     assert produced.returncode == 0, produced.stdout + produced.stderr
     request = json.loads(produced.stdout)
     validate(request['entries'], {key:value for key,value in specs[0].items() if key != 'name'})

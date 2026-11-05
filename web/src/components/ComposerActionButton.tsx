@@ -14,7 +14,7 @@ export function ComposerActionButton({
 }: ComposerActionButtonProps) {
   const label = running
     ? cancelBusy ? "중단 요청 중" : "작업 중단 요청"
-    : writeRequest ? "요청한 수정 실행 및 저장" : "메시지 보내기";
+    : "메시지 보내기";
   return (
     <button
       className="send-button"
@@ -26,7 +26,7 @@ export function ComposerActionButton({
       onClick={running ? onCancel : onSend}
     >
       {running ? <Icon name="stop" size={18} />
-        : writeRequest ? <span>수정·저장</span> : <Icon name="send" size={18} />}
+        : writeRequest ? <span>보내기</span> : <Icon name="send" size={18} />}
     </button>
   );
 }

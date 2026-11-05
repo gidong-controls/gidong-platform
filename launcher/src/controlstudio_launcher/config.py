@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 from dataclasses import dataclass, replace
@@ -33,8 +34,8 @@ class LauncherSettings:
     host_cwd: Path | None
     expected_host_build: str
     # Cold Python/Pydantic/MCP startup on Windows with real-time protection can
-    # exceed one minute. The launcher still verifies the exact Host identity
-    # throughout this bounded wait.
+    # exceed one minute. The launcher checks health during this bounded wait,
+    # then authenticates the ready Host before opening the UI.
     startup_timeout_seconds: float = 180.0
     probe_timeout_seconds: float = 1.0
     poll_interval_seconds: float = 0.2
@@ -191,6 +192,6 @@ def _validate_positive_number(value: object, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ConfigurationError(f"{field} must be a number")
     result = float(value)
-    if result <= 0 or result > 300:
+    if not math.isfinite(result) or result <= 0 or result > 300:
         raise ConfigurationError(f"{field} must be greater than 0 and at most 300")
     return result

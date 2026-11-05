@@ -270,7 +270,7 @@ def _main(
         return 3
     except HostStartError as exc:
         _report_error(
-            f"ControlStudio Host startup failed: {exc}",
+            f"ControlStudio 연결을 완료하지 못했습니다: {exc}",
             show_dialog=show_dialogs,
         )
         return 4

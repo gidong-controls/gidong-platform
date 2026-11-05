@@ -19,7 +19,7 @@ export class ProductErrorBoundary extends Component<
   }
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
-    console.error("ControlStudio UI failed safely.", error, info);
+    console.error("ControlStudio UI render failed.", error, info);
   }
 
   render(): ReactNode {
@@ -29,7 +29,7 @@ export class ProductErrorBoundary extends Component<
 
     return (
       <main className="fatal-error-screen" aria-labelledby="fatal-error-title">
-        <p className="eyebrow">CONTROLSTUDIO UI RECOVERY</p>
+        <p className="eyebrow">화면 복구</p>
         <h1 id="fatal-error-title">화면을 복구해야 합니다</h1>
         <p>
           Host와 진행 중인 작업은 자동으로 다시 실행하지 않습니다. 화면만 새로

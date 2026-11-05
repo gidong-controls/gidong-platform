@@ -81,7 +81,7 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 class HttpHealthProbe:
-    """Probe only the fixed, loopback ControlStudio health endpoint."""
+    """Probe the fixed loopback Host health, challenge and handoff endpoints."""
 
     def __init__(self, *, expected_build: str, timeout_seconds: float) -> None:
         self._expected_build = expected_build

@@ -261,12 +261,12 @@ export function ChangeRecoveryPanel({
           <Icon name={recovered ? "check" : "warning"} size={20} />
         </span>
         <div>
-          <p className="panel-kicker">RECOVERY ONLY</p>
+          <p className="panel-kicker">중단된 작업 확인</p>
           <h3 id="change-recovery-title">
             {recovered ? "격리 복구 증거" : "격리된 변경 상태 확인"}
           </h3>
           <p>
-            중단된 작업을 정리하고 변경 전 상태로 복구합니다.
+            중단된 작업의 상태와 복구 증거를 확인합니다.
           </p>
         </div>
       </header>
@@ -390,8 +390,7 @@ export function ChangeRecoveryPanel({
 
       {transaction.state === "quarantined" && !recoverySupported && (
         <p className="change-recovery-hold" role="alert">
-          알 수 없거나 잘못된 변경 계약에는 복구 명령을 보낼 수 없습니다. Host에서
-          planKind와 검증 범위를 다시 확인하세요.
+          변경 정보를 확인할 수 없어 복구를 실행할 수 없습니다. 상태를 새로고침한 뒤 다시 확인하세요.
         </p>
       )}
 

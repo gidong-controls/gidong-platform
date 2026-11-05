@@ -124,7 +124,7 @@ class ElevationReceiptStore:
     def _load(self) -> list[dict[str, Any]]:
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-            if raw.get("schema") != SCHEMA or not isinstance(raw.get("observations"), list):
+            if not isinstance(raw, dict) or raw.get("schema") != SCHEMA or not isinstance(raw.get("observations"), list):
                 return []
             return [item for item in raw["observations"] if isinstance(item, dict)]
         except (OSError, ValueError, json.JSONDecodeError):

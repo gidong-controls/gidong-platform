@@ -352,10 +352,9 @@ class KnowledgeStore:
         # durable source/page payloads; Agent owns all later chunking.
         with self._connection() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
-            try:
-                with connection:
-                    connection.executescript(
-                        """
+            with connection:
+                connection.executescript(
+                    """
                         CREATE TABLE IF NOT EXISTS knowledge_schema (
                             version INTEGER PRIMARY KEY,
                             applied_at TEXT NOT NULL
@@ -416,19 +415,15 @@ class KnowledgeStore:
                         );
 
                         """
-                    )
-                    self._migrate_legacy_chunks_to_source_payloads(connection)
-                    connection.execute(
-                        """
+                )
+                self._migrate_legacy_chunks_to_source_payloads(connection)
+                connection.execute(
+                    """
                         INSERT OR IGNORE INTO knowledge_schema(version, applied_at)
                         VALUES (?, ?)
                         """,
-                        (KNOWLEDGE_SCHEMA_VERSION, _utc_text(_utc_now())),
-                    )
-            finally:
-                # Transaction context already commits/rolls back; this keeps
-                # initialization errors transparent to the caller.
-                pass
+                    (KNOWLEDGE_SCHEMA_VERSION, _utc_text(_utc_now())),
+                )
             version_row = connection.execute(
                 "SELECT MAX(version) AS version FROM knowledge_schema"
             ).fetchone()
@@ -885,7 +880,7 @@ class KnowledgeStore:
         clauses: list[str] = []
         parameters: list[Any] = []
         normalized_kinds = self._normalize_kinds(kinds)
-        normalized_statuses = self._normalize_statuses(statuses, default_confirmed=False)
+        normalized_statuses = self._normalize_statuses(statuses)
         if normalized_kinds:
             placeholders = ",".join("?" for _ in normalized_kinds)
             clauses.append(f"kind IN ({placeholders})")
@@ -999,12 +994,12 @@ class KnowledgeStore:
         return sources
 
     def delete_source(self, source_id: str) -> bool:
-        """Archive a source while preserving prior citations and search audit.
+        """Archive a source while preserving its payload and prior citations.
 
         The public API retains its DELETE-shaped contract, but industrial
         evidence must remain reproducible after a user removes a source from
         active retrieval. Releasing ``external_key`` permits an intentional
-        re-import or a revised built-in pattern without erasing the old chunks.
+        re-import or a revised built-in pattern without erasing the old source.
         """
 
         source_id = _clean_required(source_id, "source_id", maximum=64)
@@ -1202,11 +1197,9 @@ class KnowledgeStore:
     @staticmethod
     def _normalize_statuses(
         values: Iterable[KnowledgeStatus | str] | None,
-        *,
-        default_confirmed: bool,
     ) -> tuple[str, ...]:
         if values is None:
-            return (KnowledgeStatus.CONFIRMED.value,) if default_confirmed else ()
+            return ()
         return tuple(dict.fromkeys(_status(value).value for value in values))
 
     @staticmethod

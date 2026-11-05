@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import argparse
-from email.parser import BytesParser
 import shutil
 import subprocess
 import sys
 import tempfile
 import zipfile
+from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
 
 REPOSITORY = Path(__file__).resolve().parents[2]

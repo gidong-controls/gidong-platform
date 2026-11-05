@@ -767,10 +767,10 @@ class NativeCompletionLedger:
                         and batch.get('not_started_count') == 0
                         and isinstance(children, list) and len(steps) == len(children))
                     if valid:
-                        for index, (step, child) in enumerate(zip(steps, children)):
+                        for child_index, (step, child) in enumerate(zip(steps, children)):
                             native = child.get('result') if isinstance(child, dict) else None
                             native_saved = native.get('saved_project') if isinstance(native, dict) else None
-                            native_ok = (isinstance(child, dict) and child.get('index') == index
+                            native_ok = (isinstance(child, dict) and child.get('index') == child_index
                                 and child.get('status') == 'completed' and child.get('native_execution_completed') is True
                                 and isinstance(native, dict) and native.get('ok') is True
                                 and not native.get('error') and not native.get('failure') and not _rung_unknown(native)

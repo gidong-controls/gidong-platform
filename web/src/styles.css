@@ -262,9 +262,6 @@ select {
 /* Compact embedded webviews need room for the transcript as well as controls.
    Scope this to short, narrow chat screens so the desktop layout stays intact. */
 @media (max-width: 860px) and (max-height: 600px) {
-  .app-shell--conversation .mobile-new-work-button {
-    display: none;
-  }
 
   .app-shell--conversation > .main-content {
     padding-top: 6px;
@@ -603,8 +600,7 @@ select {
   display: inline-block;
 }
 
-.header-advanced-options .header-advanced-menu .header-mobile-knowledge-button,
-.header-advanced-options .header-advanced-menu .header-mobile-new-work-button {
+.header-advanced-options .header-advanced-menu .header-mobile-knowledge-button {
   display: none;
 }
 
@@ -1011,9 +1007,6 @@ select {
   margin-bottom: 18px;
 }
 
-.mobile-new-work-button {
-  display: none;
-}
 
 .section-heading {
   display: flex;
@@ -1081,6 +1074,70 @@ select {
   border: 1px solid var(--line-strong);
   border-radius: 7px;
   box-shadow: var(--shadow-sm);
+}
+
+.secondary-review-entry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  color: var(--muted);
+}
+
+/* The work chooser is a compact pair of actions, not a project hero. */
+.start-section--chooser .section-heading {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.start-section--chooser .section-heading h1 {
+  font-size: 22px;
+  line-height: 1.25;
+}
+
+.start-section--chooser .section-heading > div:first-child > p:last-child {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.start-section--chooser .start-heading-actions {
+  width: auto;
+  flex-direction: row;
+}
+
+.start-section--chooser .start-heading-actions .button {
+  min-height: 44px;
+  padding: 0 9px;
+  white-space: nowrap;
+}
+
+.start-section--chooser .entry-card {
+  min-height: 0;
+  padding: 12px 14px;
+}
+
+.start-section--chooser .entry-card-top {
+  display: none;
+}
+
+.start-section--chooser .entry-copy {
+  margin-top: 0;
+}
+
+.start-section--chooser .entry-copy h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.start-section--chooser .entry-action {
+  padding-top: 9px;
+}
+
+.start-section--chooser .entry-button {
+  min-height: 44px;
 }
 
 .workspace-resume-card {
@@ -1622,79 +1679,15 @@ select {
   line-height: 1.6;
 }
 
-.project-flow-steps {
-  display: grid;
-  margin: 0;
-  padding: 0;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  list-style: none;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  overflow: hidden;
-}
 
-.project-flow-steps li {
-  position: relative;
-  display: grid;
-  min-height: 58px;
-  padding: 10px 12px 9px 42px;
-  align-content: center;
-  background: #f7f8f4;
-  border-right: 1px solid var(--line);
-}
 
-.project-flow-steps li:last-child {
-  border-right: 0;
-}
 
-.project-flow-steps li > span {
-  position: absolute;
-  top: 50%;
-  left: 12px;
-  display: grid;
-  width: 22px;
-  height: 22px;
-  color: #78817e;
-  background: white;
-  border: 1px solid var(--line-strong);
-  border-radius: 50%;
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 9px;
-  font-weight: 800;
-  place-items: center;
-  transform: translateY(-50%);
-}
 
-.project-flow-steps strong {
-  color: #4c5855;
-  font-size: 10px;
-}
 
-.project-flow-steps small {
-  margin-top: 2px;
-  color: #919996;
-  font-size: 8px;
-}
 
-.project-flow-steps .project-step-active {
-  background: var(--lime-soft);
-}
 
-.project-flow-steps .project-step-active > span {
-  color: var(--night);
-  background: var(--lime);
-  border-color: #b2d842;
-}
 
-.project-flow-steps .project-step-complete > span {
-  color: white;
-  background: var(--success);
-  border-color: var(--success);
-}
 
-.project-flow-steps .project-step-planned {
-  background: #f1f2ee;
-}
 
 .new-project-brief-form {
   display: grid;
@@ -4396,8 +4389,7 @@ select {
     display: none;
   }
 
-  .header-advanced-options .header-advanced-menu .header-mobile-knowledge-button,
-  .header-advanced-options .header-advanced-menu .header-mobile-new-work-button {
+  .header-advanced-options .header-advanced-menu .header-mobile-knowledge-button {
     display: flex;
   }
 
@@ -4415,26 +4407,18 @@ select {
     display: none;
   }
 
-  .mobile-new-work-button {
-    display: flex;
-    width: 100%;
-    min-height: 42px;
-    margin-bottom: 12px;
-    align-items: center;
-    justify-content: center;
-    gap: 7px;
-    color: #33423e;
-    background: var(--surface);
-    border: 1px solid var(--line-strong);
-    border-radius: 5px;
-    font-size: 11px;
-    font-weight: 700;
+  .header-new-conversation-button {
+    display: inline-flex;
+    width: auto;
+    padding: 0 10px;
+    gap: 6px;
   }
 
-  .mobile-new-work-button:disabled {
-    color: #9aa19f;
-    background: #eff1ec;
+  .header-new-conversation-button__label {
+    display: inline;
   }
+
+
 
   .system-status {
     width: 100%;
@@ -4565,17 +4549,8 @@ select {
     flex-wrap: wrap;
   }
 
-  .project-flow-steps {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 
-  .project-flow-steps li:nth-child(2) {
-    border-right: 0;
-  }
 
-  .project-flow-steps li:nth-child(-n + 2) {
-    border-bottom: 1px solid var(--line);
-  }
 
 }
 
@@ -4625,31 +4600,10 @@ select {
     justify-content: space-between;
   }
 
-  .project-plan-context .project-flow-steps {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
 
-  .project-plan-context .project-flow-steps li {
-    min-height: 64px;
-    padding: 7px 4px;
-    justify-items: center;
-    gap: 4px;
-    text-align: center;
-    border-bottom: 0;
-  }
 
-  .project-plan-context .project-flow-steps li > span {
-    position: static;
-    transform: none;
-  }
 
-  .project-plan-context .project-flow-steps small {
-    display: none;
-  }
 
-  .project-plan-context .project-flow-steps strong {
-    font-size: 11px;
-  }
 
   .brand-block {
     gap: 9px;

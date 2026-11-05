@@ -11,15 +11,15 @@ class ConfigurationError(LauncherError):
 
 
 class UnexpectedServiceError(LauncherError):
-    """The canonical port answered, but it was not the expected Host."""
+    """A fixed-loopback Host response or handoff did not meet the expected protocol."""
 
 
 class HostStartError(LauncherError):
-    """The Host could not be started or did not become ready."""
+    """The launcher could not complete Host startup or browser connection."""
 
 
 class ElevationError(HostStartError):
-    """The Host could not match the XG5000 execution integrity."""
+    """The validated Windows elevation handoff could not be completed."""
 
 
 class UiOpenError(LauncherError):

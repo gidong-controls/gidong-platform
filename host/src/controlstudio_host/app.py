@@ -201,25 +201,6 @@ from .execution_broker import (
     validate_workspace_compare_result,
 )
 from .failure_location import host_failure_location_detail, safe_host_failure_location
-from .native_completion import (
-    NativeCompletionLedger,
-    completion_review_current,
-    completion_state_key,
-)
-from .native_recovery_wait import owned_launch_wait_requires_park
-from .native_workspace_host import (
-    NativeWorkspaceExecution,
-    latest_native_checkpoint,
-    latest_native_checkpoint_summary,
-    native_admission_generation,
-    native_checkpoint_matches_request,
-    native_followup_checkpoint,
-    persist_native_checkpoint_with_index,
-    saved_project_observation,
-)
-
-pass
-pass
 from .knowledge import (
     ControlPatternSeed,
     KnowledgeConflict,
@@ -244,8 +225,6 @@ from .mcp_client import (
     MCPToolRejectedError,
     MCPTransportError,
 )
-
-pass
 from .model_connection import (
     MODEL_PROTOCOL,
     ModelConnectionRepository,
@@ -277,12 +256,22 @@ from .models import (
     RunState,
     StoredEvent,
 )
-
-pass
-pass
-pass
-pass
-pass
+from .native_completion import (
+    NativeCompletionLedger,
+    completion_review_current,
+    completion_state_key,
+)
+from .native_recovery_wait import owned_launch_wait_requires_park
+from .native_workspace_host import (
+    NativeWorkspaceExecution,
+    latest_native_checkpoint,
+    latest_native_checkpoint_summary,
+    native_admission_generation,
+    native_checkpoint_matches_request,
+    native_followup_checkpoint,
+    persist_native_checkpoint_with_index,
+    saved_project_observation,
+)
 from .project_planning import (
     build_project_plan_revision,
     calculate_project_brief_digest,
@@ -297,7 +286,6 @@ from .proposal_step_binding import (
     record_proposal_step_binding,
 )
 from .restart import RestartBootstrapError, RestartHandoff, consume_restart_handoff
-from .ssh_handoff import SshInteractiveHandoffJournal
 from .store import (
     ChangeStoreConflict,
     ConversationActiveRunConflict,
@@ -533,7 +521,12 @@ def _validate_reviewed_no_save_close_binding(
         or not isinstance(binding, dict)
         or binding.get("pid") != pid
         or binding.get("hwnd") != hwnd
-        or not isinstance(binding.get("process_create_time"), (int, float))
+        or type(binding.get("process_create_time")) not in {int, float}
+        or not math.isfinite(binding["process_create_time"])
+        or binding["process_create_time"] <= 0
+        or type(process_create_time) not in {int, float}
+        or not math.isfinite(process_create_time)
+        or process_create_time <= 0
         or abs(float(binding["process_create_time"]) - process_create_time) >= 0.001
         or (
             require_no_discard
@@ -1375,7 +1368,6 @@ _CHANGE_COVERAGE_MUST_BE_CONFIRMED = frozenset(
         "rollback",
     }
 )
-pass
 
 _LEGACY_PROJECT_BRIEF_LABELS = (
     ("project_name", "프로젝트 이름:"),
@@ -1628,7 +1620,7 @@ def _agent_knowledge_hit_v1(value: Any) -> KnowledgeSearchHitV1:
     )
     if any(not isinstance(value.get(field), str) or not value[field] for field in required_text):
         raise ValueError("Agent knowledge result is missing authoritative citation fields")
-    if not value["knowledge_ref"].startswith(f"knowledge://{value['source_id']}"):
+    if value["knowledge_ref"].partition("?")[0] != f"knowledge://{value['source_id']}":
         raise ValueError("Agent knowledge result citation is not canonical")
     optional_text = ("vendor", "product_family", "version", "language", "locator", "section")
     if any(
@@ -1731,26 +1723,15 @@ def _planning_message_display(content: str, value: Any) -> str:
         brief = ProjectBriefV1.model_validate(value)
     except (ValueError, TypeError):
         brief = None
-    if brief is None or content != _planning_prompt_from_brief(brief):
-        # Older messages did not store a per-message brief. Reconstruct only
-        # an exact round-trip of our own template, never from the latest brief.
-        body, marker, tail = content.rpartition("\n사용자가 첨부한 자료 ID: ")
-        attachment_text, separator, footer = tail.partition("\n\n")
-        if not marker or not separator or footer != _LEGACY_PROJECT_BRIEF_FOOTER:
-            return content
-        historical = _parse_legacy_project_brief(body + "\n\n" + footer)
-        if historical is None:
-            return content
-        try:
-            brief = ProjectBriefV1.model_validate({
-                **historical.model_dump(),
-                "attachment_source_ids": [] if attachment_text == _LEGACY_UNKNOWN_VALUE
-                else attachment_text.split(", "),
-            })
-        except ValueError:
-            return content
-        if _planning_prompt_from_brief(brief) != content:
-            return content
+    if brief is None:
+        return content
+    consultation = _planning_prompt_from_brief(brief)
+    creation = consultation.removesuffix(_LEGACY_PROJECT_BRIEF_FOOTER) + (
+        "자료와 요구사항을 확인한 뒤 새 프로젝트와 첫 LD 프로그램을 준비하고, 같은 대화에서 "
+        "LD 작성·검사·저장까지 진행해 주세요. 준비에 필요한 조건이 불명확하면 질문해 주세요."
+    )
+    if content not in {consultation, creation}:
+        return content
     sections = [f"{brief.project_name} 프로젝트를 만들고 싶습니다.", brief.machine_purpose]
     for label, text in (
         ("동작 순서", brief.sequence),
@@ -2077,7 +2058,6 @@ def _proposal_scopes_for_run(
 ) -> tuple[str, str]:
     """Separate ordinary run authority from the narrow terminal candidate path."""
 
-    pass
     return change_request_scope, verification_scope
 
 
@@ -2564,8 +2544,8 @@ def _conversation_completion_v1(
 
     ``RunState.COMPLETED`` means only that one Agent turn produced a durable
     response.  For planning, a ready/published revision is a completed design
-    phase that still needs the next product phase.  Only the already-validated
-    engineering mission terminal state can claim the user's goal complete.
+    phase that still needs the next product phase. Goal completion comes from
+    a current native completion review or a validated terminal engineering mission.
     """
 
     def digest_or_none(value: Any) -> str | None:
@@ -2737,7 +2717,7 @@ def _conversation_v1(
             content=(
                 _planning_message_display(
                     item.content,
-                    item.metadata.get("project_brief", detail.project_brief),
+                    item.metadata.get("project_brief"),
                 )
                 if item.role.value == "user" and item.metadata.get("structured_project_brief") is True
                 else item.content
@@ -3516,9 +3496,6 @@ def _parse_change_plan(value: Any) -> ChangePlanContract:
     plan_kind = value.get("planKind", value.get("plan_kind"))
     if plan_kind is None:
         return ChangePlanV1.model_validate(value)
-    pass
-    pass
-    pass
     raise ValueError(f"unsupported change plan kind: {plan_kind}")
 
 
@@ -4524,48 +4501,6 @@ def _planning_requirement_message_sources(
 
 
 
-async def _explicit_clean_reviewed_close_matches(
-    mcp: MCPGateway,
-    transaction: ChangeTransaction,
-    checkpoint: dict[str, Any],
-    workspace: dict[str, Any] | None,
-    request_body: dict[str, Any],
-) -> bool:
-    """Authorize only clean Close of an explicitly reviewed live window, not adoption."""
-    if not isinstance(workspace, dict):
-        return False
-    working = workspace.get("working_copy")
-    source = workspace.get("source")
-    if not isinstance(working, dict) or not isinstance(source, dict):
-        return False
-    pid, hwnd = request_body.get("pid"), request_body.get("hwnd")
-    created = request_body.get("processCreateTime", request_body.get("process_create_time"))
-    path = request_body.get("projectPath", request_body.get("project_path"))
-    digest = request_body.get("projectHash", request_body.get("project_hash"))
-    return False
-    try:
-        if not hmac.compare_digest(_sha256_file(Path(path)), digest):
-            return False
-        observed = await mcp.call_read_tool("xg5000.instances", {})
-    except (OSError, ValueError, MCPToolError):
-        return False
-    instances = observed.get("instances") if isinstance(observed, dict) else None
-    if not isinstance(instances, list) or any(not isinstance(item, dict) for item in instances):
-        return False
-    matches = [item for item in instances if item.get("pid") == pid or item.get("hwnd") == hwnd]
-    if len(matches) != 1:
-        return False
-    instance = matches[0]
-    lifetime = instance.get("process_create_time")
-    return (
-        type(instance.get("pid")) is int and instance["pid"] == pid
-        and type(instance.get("hwnd")) is int and instance["hwnd"] == hwnd
-        and instance.get("visible") is True
-        and type(lifetime) in {int, float} and math.isfinite(lifetime) and lifetime > 0
-        and abs(lifetime - created) < 0.001
-    )
-
-
 async def _reviewed_change_close_checkpoint(
     mcp: MCPGateway, transaction: ChangeTransaction | None,
 ) -> dict[str, Any] | None:
@@ -4826,7 +4761,7 @@ def _agent_runtime_user_message(diagnostic: AgentRuntimeDiagnostic) -> str:
     """Return the bounded user-facing message for a sidecar runtime diagnostic."""
 
     if diagnostic.exception_kind == "working_memory_validation":
-        return "이번 실행을 완료하지 못했습니다. 이미 수행한 변경과 대화는 보존되어 있습니다. ‘중단된 작업 이어가기’로 계속할 수 있습니다."
+        return "이번 실행을 완료하지 못했습니다. 대화와 실행 기록에서 현재 작업 상태를 확인해 주세요."
     if diagnostic.reason_code == "tool_call_budget":
         return "도구 호출 한도에 도달해 실행이 종료됐습니다."
     if diagnostic.reason_code.startswith("provider_http_"):
@@ -4870,7 +4805,6 @@ def create_app(
         store = store or HostStore(config.database_path)
         knowledge_store = knowledge_store or KnowledgeStore(config.knowledge_database_path)
         knowledge_store.seed_control_patterns(_builtin_control_pattern_seeds())
-    ssh_interactive_handoff_journal = SshInteractiveHandoffJournal(store)
     mcp = mcp or MCPGateway()
     execution_broker = MCPExecutionBroker(mcp)
     agent_supervisor = agent_supervisor or AgentSupervisor()
@@ -4926,17 +4860,11 @@ def create_app(
         mcp,
         checkpoint_callback=store.record_native_change_checkpoint,
     )
-    pass
-    pass
-    pass
-    pass
     run_tasks: dict[str, asyncio.Task[None]] = {}
     active_change_executions: set[str] = set()
-    pass
     # A single explicit native-test authority may dispatch at most one resume
     # attempt during its model run.  The entry is cleared with the run task;
     # a new user message is the only way to request a deliberate retest.
-    pass
     run_submission_lock = asyncio.Lock()
     file_dialog_lock = asyncio.Lock()
     browser_sessions: dict[str, datetime] = {}
@@ -5376,8 +5304,6 @@ def create_app(
             active_engineering_session = None
             execution_broker.clear_agent_session()
             return False
-        pass
-        pass
         try:
             expected_path = Path(transaction.target.project_path).resolve()
             active_path = Path(str(working_copy.get("path") or "")).resolve()
@@ -5435,7 +5361,6 @@ def create_app(
             execution_broker.clear_agent_session()
             return False
 
-        pass
 
         refreshed_workspace = dict(workspace)
         refreshed_working_copy = dict(working_copy)
@@ -5449,14 +5374,12 @@ def create_app(
         active_workspace = refreshed_workspace
         store.set_host_state("active_workspace", active_workspace)
 
-        pass
         terminal_check_only = bool(
             transaction.plan.get("verification_scope")
             == "offline_native_check_only"
             and transaction.state is ChangeTransactionState.COMPLETED
             and not False
         )
-        pass
         if terminal_check_only:
             try:
                 retained_session = await _rebind_recorded_change_session(
@@ -5508,7 +5431,6 @@ def create_app(
             broker_session.update(workspace_agent_binding(refreshed_workspace))
             execution_broker.bind_agent_session(broker_session)
             return True
-        pass
 
         # A generic recovered LD transaction can finish in the MCP session used
         # for rollback/save.  That session has a different identity from the
@@ -5533,15 +5455,10 @@ def create_app(
 
         session = active_engineering_session
         session_matches = (
-            (retain_engineering_session or False)
+            retain_engineering_session
             and isinstance(session, dict)
             and (
                 session.get("session_id") == transaction.runtime_target.engineering_session_id
-                or (
-                    False
-                    and str(session.get("project_hash") or "").casefold()
-                    == digest.casefold()
-                )
             )
             and session.get("pid") == transaction.runtime_target.engineering_process_id
             and session.get("hwnd") == transaction.runtime_target.engineering_window_handle
@@ -5666,16 +5583,12 @@ def create_app(
         """Serialize workspace/attach requests for their complete route lifetime."""
 
         holder_token = str(uuid.uuid4())
-        pass
         quarantined_reviewed_close = False
-        pass
         allowed_change_transaction_id: str | None = None
         try:
             raw_body = await request.json()
         except (json.JSONDecodeError, RuntimeError):
             raw_body = {}
-        pass
-        pass
         if request.url.path == "/api/v1/xg5000/reviewed-no-save-close":
             recovery_authority = store.selected_target_recovery_authority()
             if (
@@ -5699,20 +5612,6 @@ def create_app(
                     if isinstance(active_workspace, dict)
                     else None
                 )
-                prior_terminal_cleanup = False
-                explicit_clean_close = False
-                if (
-                    transaction is not None
-                    and isinstance(checkpoint, dict)
-                    and (checkpoint.get("pid"), checkpoint.get("hwnd"))
-                    != (requested_pid, requested_hwnd)
-                    and not False
-                ):
-                    prior_terminal_cleanup = await False
-                    if not prior_terminal_cleanup:
-                        explicit_clean_close = await _explicit_clean_reviewed_close_matches(
-                            mcp, transaction, checkpoint, active_workspace, raw_body,
-                        )
                 if (
                     transaction is None
                     or transaction.state is not ChangeTransactionState.QUARANTINED
@@ -5728,13 +5627,8 @@ def create_app(
                     or requested_hwnd is None
                     or isinstance(requested_hwnd, bool)
                     or not isinstance(requested_hwnd, int)
-                    or not (
-                        (checkpoint.get("pid") == requested_pid
-                         and checkpoint.get("hwnd") == requested_hwnd)
-                        or False
-                        or prior_terminal_cleanup
-                        or explicit_clean_close
-                    )
+                    or checkpoint.get("pid") != requested_pid
+                    or checkpoint.get("hwnd") != requested_hwnd
                     or workspace_id != transaction.target.workspace_id
                 ):
                     raise HTTPException(
@@ -5749,19 +5643,15 @@ def create_app(
                 request_identity = transaction.target.model_dump(mode="json")
                 allowed_change_transaction_id = transaction.id
                 quarantined_reviewed_close = True
-                request.state.prior_terminal_reviewed_close = prior_terminal_cleanup
-                request.state.explicit_clean_reviewed_close = explicit_clean_close
+                request.state.prior_terminal_reviewed_close = False
+                request.state.explicit_clean_reviewed_close = False
         elif request.url.path.endswith("/workspaces/open-local"):
             owner_kind = "workspace_open"
         elif request.url.path.endswith("/resume"):
             owner_kind = "workspace_resume"
         else:
             owner_kind = "engineering_attach"
-        if (
-            None is None
-            and not quarantined_reviewed_close
-            and None is None
-        ):
+        if not quarantined_reviewed_close:
             request_identity = {
                 "route": request.url.path,
                 "request": raw_body if isinstance(raw_body, dict) else {},
@@ -5804,8 +5694,6 @@ def create_app(
         finally:
             launch_wait_request_context.reset(request_token)
             if lease_acquired:
-                pass
-                pass
                 launch_wait = store.get_host_state(f"owned_launch_wait_operation:{operation_id}")
                 recovered = (store.get_host_state(original_recovery['recovery_key'])
                     if original_recovery is not None else None)
@@ -6932,7 +6820,6 @@ def create_app(
         store.mark_previous_instance_target_leases_stale()
         store.reconcile_interrupted_runs()
         store.reconcile_interrupted_change_transactions()
-        None
         store.reconcile_retired_owned_launch_target_lease()
         store.supersede_stale_target_lease_for_durable_change_recovery()
 
@@ -7119,24 +7006,13 @@ def create_app(
     )
     app.state.config = config
     app.state.store = store
-    app.state.ssh_interactive_handoff_journal = ssh_interactive_handoff_journal
     app.state.knowledge_store = knowledge_store
     app.state.mcp = mcp
     app.state.agent_supervisor = agent_supervisor
     app.state.model_repository = model_repository
     app.state.run_tasks = run_tasks
     app.state.change_executor = change_executor
-    pass
-    pass
-    pass
-    pass
-    pass
-    pass
-    pass
-    pass
     app.state.active_change_executions = active_change_executions
-    pass
-    pass
     app.state.request_shutdown = None
     app.state.request_restart = None
     app.state.shutdown_event = shutdown_event
@@ -7479,7 +7355,6 @@ def create_app(
             and _normalized_workspace_path(str(active_session.get("project_path") or ""))
             == _normalized_workspace_path(str(active_working_copy.get("path") or ""))
         )
-        pass
         restore_handoff_pending = False
         try:
             pending_restore = ControllerRestoreHandoffV1.model_validate(
@@ -7560,7 +7435,6 @@ def create_app(
                     "state": transaction.state.value.casefold(),
                     "kind": "change",
                 }
-        pass
         for transaction_id in active_change_executions:
             if active_operation is not None:
                 break
@@ -7598,8 +7472,6 @@ def create_app(
                     "state": run.state.value.casefold(),
                 }
                 break
-        pass
-        pass
         return HostStatusV1(
             release_channel=config.release_channel,
             product_release=config.product_release,
@@ -7783,8 +7655,8 @@ def create_app(
                     verification="real_runtime",
                     current_ready=agent_state == "ready",
                     detail=(
-                        "설비 요구사항을 구조화하고 검토 가능한 계획을 만드는 "
-                        "Pydantic AI 경로입니다. 네이티브 로직 생성과는 별도입니다."
+                        "입력한 요구사항을 대화에서 검토합니다. 새 프로젝트 작성은 "
+                        "별도로 선택한 요청 범위에서 진행하며 XG5000 작업 도구 연결이 필요합니다."
                     ),
                 ),
                 ProductFeatureStatusV1(
@@ -8362,10 +8234,7 @@ def create_app(
                     detail=("ControlStudio cannot exit while a change transaction is active"),
                 )
             store.selected_target_recovery_authority()
-            pass
-            pass
             store.active_target_operation_lease()
-            pass
             shutdown_callback = app.state.request_shutdown
             if not callable(shutdown_callback):
                 raise HTTPException(
@@ -8397,10 +8266,7 @@ def create_app(
                 detail="ControlStudio cannot restart while a change transaction is active",
             )
         store.selected_target_recovery_authority()
-        pass
-        pass
         store.active_target_operation_lease()
-        pass
 
     @app.post(
         "/api/v1/host/restart",
@@ -8442,7 +8308,16 @@ def create_app(
             receipt = secrets.token_urlsafe(32)
             handoff = RestartHandoff(receipt, session_token, expires_at)
             try:
-                restart_callback(handoff)
+                preparation = asyncio.create_task(asyncio.to_thread(restart_callback, handoff))
+                while True:
+                    try:
+                        await asyncio.shield(preparation)
+                        break
+                    except asyncio.CancelledError:
+                        # The fixed bootstrap may already have spawned. Join its
+                        # outcome before publishing receipt/shutdown ownership.
+                        if preparation.cancelled():
+                            raise
             except RestartBootstrapError as exc:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -8614,8 +8489,6 @@ def create_app(
                 state=source.state.value.casefold(), resumable=resumable,
                 completed_tool_calls=retained["completed_tool_calls"],
             )
-        pass
-        pass
         return conversation
 
     @app.post(
@@ -8791,7 +8664,6 @@ def create_app(
                     "the engineering run has no verified target binding"
                 )
             native_engineering_status_snapshot: dict[str, Any] | None = None
-            pass
             if workflow == "engineering" and detail.engineering_handoff is not None:
                 assert expected_engineering_target is not None
                 try:
@@ -8801,7 +8673,6 @@ def create_app(
                     # Readiness does not imply that the source passed its trial.
                     # Preserve diagnostics from this exact, validated handoff.
                     handoff = detail.engineering_handoff
-                    pass
                 except (ProjectPlanReviewConflict, ValueError) as exc:
                     logger.warning(
                         "native engineering handoff precondition failed: %s",
@@ -8871,29 +8742,33 @@ def create_app(
             planning_brief: dict[str, Any] | None = None
             planning_project_brief_digest: str | None = None
             planning_attachment_revision_digest: str | None = None
-            pass
-            pass
             planning_prior_design_failure: dict[str, Any] | None = None
             previous_plan_snapshot = None
             if workflow == "new_project_planning":
                 previous_plan_snapshot = latest_project_plan_snapshot(history)
-                planning_events: list[StoredEvent] = []
-                after_event_sequence = 0
-                while True:
-                    event_page = store.list_events(
-                        after_sequence=after_event_sequence,
-                        conversation_id=conversation_id,
-                        limit=250,
-                    )
-                    planning_events.extend(event_page)
-                    if len(event_page) < 250:
-                        break
-                    after_event_sequence = event_page[-1].sequence
-                planning_prior_design_failure = _prior_design_failure_observation(
-                    planning_events,
-                    conversation_id=conversation_id,
-                    current_run_id=run_id,
+                native_preparation_run = (
+                    change_request_scope == "permanent_offline_revision"
+                    and verification_scope == "offline_native_check_only"
+                    and not targetless_analysis_run
                 )
+                if not native_preparation_run:
+                    planning_events: list[StoredEvent] = []
+                    after_event_sequence = 0
+                    while True:
+                        event_page = store.list_events(
+                            after_sequence=after_event_sequence,
+                            conversation_id=conversation_id,
+                            limit=250,
+                        )
+                        planning_events.extend(event_page)
+                        if len(event_page) < 250:
+                            break
+                        after_event_sequence = event_page[-1].sequence
+                    planning_prior_design_failure = _prior_design_failure_observation(
+                        planning_events,
+                        conversation_id=conversation_id,
+                        current_run_id=run_id,
+                    )
                 if detail.project_brief is not None:
                     try:
                         planning_attachments = resolve_project_brief_attachments(
@@ -8906,8 +8781,6 @@ def create_app(
                     planning_project_brief_digest = calculate_project_brief_digest(
                         detail.project_brief
                     )
-                    pass
-                    pass
                     requirement_message_sources = (
                         _planning_requirement_message_sources(
                             detail.messages,
@@ -8922,7 +8795,6 @@ def create_app(
                     # Keep adoption/message provenance unchanged. Incomplete
                     # working citations stay available through design tools,
                     # not in the strict trusted-ready advisory handoff.
-                    pass
                     planning_brief = {
                         **detail.project_brief,
                         "attachments": planning_attachments,
@@ -8933,7 +8805,6 @@ def create_app(
                             planning_attachments
                         )
                     )
-                    pass
                 else:
                     raise AgentRunPreconditionError(
                         "legacy planning conversation has no Host-owned project brief; start a new plan"
@@ -10725,7 +10596,6 @@ def create_app(
                     rejected_reauthorized=rejected_change_reauthorized,
                 )
             )
-            pass
             terminal_candidate_reproposal_requested = bool(
                 terminal_candidate_reproposal_scope is not None
                 or terminal_candidate_reproposal_verification_scope is not None
@@ -10735,9 +10605,6 @@ def create_app(
                 if linked_change is not None
                 else None
             )
-            pass
-            pass
-            pass
             if (
                 terminal_candidate_reproposal_requested
                 and not False
@@ -11421,9 +11288,6 @@ def create_app(
                 else execution_broker
             )
             runtime = runtime_factory(settings, run_execution_broker)
-            pass
-            pass
-            pass
             bind_knowledge_snapshot = getattr(runtime, "bind_knowledge_snapshot", None)
             if callable(bind_knowledge_snapshot):
 
@@ -11441,7 +11305,6 @@ def create_app(
                 and proposal_change_request_scope == "offline_candidate_revision"
                 and target_live_change_transaction is None
             )
-            pass
             if (
                 callable(bind_change_planner)
                 and workflow == "engineering"
@@ -11453,11 +11316,6 @@ def create_app(
                         current_change_outcome,
                         rejected_reauthorized=rejected_change_reauthorized,
                     )
-                    or False
-                    or (
-                        False
-                        and False
-                    )
                 )
                 and proposal_change_request_scope != "analysis_only"
                 and isinstance(knowledge_workspace_snapshot, dict)
@@ -11468,8 +11326,6 @@ def create_app(
                 # planning operations. Execution, when explicitly requested by the
                 # permanent check-only scope, still performs the independent
                 # valid-bundle preflight below.
-                pass
-                pass
                 allowed_verification_scopes = _allowed_verification_scopes_for_run(
                     request_scope=proposal_change_request_scope,
                     verification_scope=proposal_verification_scope,
@@ -11533,7 +11389,6 @@ def create_app(
                             raise ValueError("unexpected proposal mission-step metadata")
                         _reject_private_change_plan_material(values)
                         plan_kind = values.get("plan_kind")
-                        pass
                         selected_proposal_verification_scope = (
                             _proposal_verification_scope_for_callback(
                                 plan_kind=plan_kind,
@@ -11542,8 +11397,6 @@ def create_app(
                                 allowed_scopes=allowed_verification_scopes,
                             )
                         )
-                        pass
-                        pass
                         if plan_kind is None:
                             if offline_operand_mission is not None:
                                 _require_offline_operand_mission_plan(
@@ -11617,7 +11470,6 @@ def create_app(
                             ) from exc
                         proposed_plan_data = plan.model_dump(mode="json")
                         stored_plan_data = stored_plan.model_dump(mode="json")
-                        pass
                         if (
                             existing_transaction.run_id != run_id
                             or existing_transaction.requested_by_actor_id
@@ -11865,7 +11717,6 @@ def create_app(
                                 "change_outcome": current_change_outcome,
                             }
                         )
-                    pass
                     return response
 
                 async def propose_change(**values: Any) -> dict[str, Any]:
@@ -13031,12 +12882,6 @@ def create_app(
                     ),
             )
             try:
-                pass
-                pass
-                pass
-                pass
-                pass
-                pass
                 request_message, run, created = store.create_user_message_and_run(
                     conversation_id=conversation_id,
                     content=authoritative_content,
@@ -13434,7 +13279,6 @@ def create_app(
             )
             if stored_candidate_scope is not None:
                 mission_scope, mission_verification_scope = stored_candidate_scope
-            pass
 
             current_target = current_engineering_conversation_target()
             if current_target is None:
@@ -13460,23 +13304,7 @@ def create_app(
                     detail=str(exc),
                 ) from exc
 
-            pass
-            bool(
-                change_outcome_transaction_id is not None
-                and _expired_exact_operand_reproposal_callback_permitted(
-                    mission_snapshot,
-                    change_outcome_projection(linked_change),
-                )
-            )
-            (
-                bound_proposal_step_id(store, linked_change, mission_snapshot)
-                if linked_change is not None
-                else None
-            )
-            pass
-            terminal_candidate_reproposal_permitted = bool(
-                False
-            )
+            terminal_candidate_reproposal_permitted = False
             continuation_scope = "analysis_only"
             continuation_verification_scope = "offline_native_reopen"
             continuation_prompt = (
@@ -13857,7 +13685,6 @@ def create_app(
                 payload_sha256=focused.payload_sha256,
             )
 
-        pass
 
         program_id = plan.target_program.program_id
         focused_program = await focus_engineering_program_v1(program_id, None)
@@ -14065,8 +13892,6 @@ def create_app(
                 raise ChangeExecutionPreconditionError(
                     "active workspace artifact differs from the approved artifact"
                 )
-            pass
-            pass
             if (
                 execution_target.engineering_session_id is None
                 or execution_target.engineering_process_id is None
@@ -14306,7 +14131,6 @@ def create_app(
                 finished,
                 retain_engineering_session=True,
             )
-            pass
             publish_change_event("change.transaction.updated", finished)
             store.append_event(
                 event_type="host.status",
@@ -14579,7 +14403,6 @@ def create_app(
         except TargetOperationLeaseConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         restoration_receipt: dict[str, Any] | None = None
-        pass
         prior_reconciliation = transaction.result.get("reconciliation")
         relaunch_evidence = (
             prior_reconciliation.get("recovery_target_relaunch")
@@ -17558,7 +17381,6 @@ def create_app(
         return completed
 
 
-    pass
 
 
 
@@ -17566,7 +17388,6 @@ def create_app(
 
 
 
-    pass
 
 
     @app.post(
@@ -17686,66 +17507,14 @@ def create_app(
             and isinstance(active_workspace.get("working_copy"), dict)
             else None
         )
-        pass
-
-        def parked_native_reopen_expectation() -> dict[str, str] | None:
-            """Return only the durable fresh-reopen identity for a read attach."""
-
-            store.active_target_operation_lease()
-            return None
-            operation = None
-            if operation is None or not isinstance(operation.result, dict):
-                return None
-            reopen = operation.result.get("reopenVerification")
-            registration = operation.result.get("workspaceRegistration")
-            if not isinstance(reopen, dict) or reopen.get("state") != "verified":
-                return None
-            session = reopen.get("session")
-            workspace = registration.get("workspace") if isinstance(registration, dict) else None
-            working = workspace.get("working_copy") if isinstance(workspace, dict) else None
-            if not (
-                isinstance(session, dict)
-                and session.get("pid") == body.pid
-                and session.get("hwnd") == body.hwnd
-                and isinstance(working, dict)
-                and isinstance(working.get("path"), str)
-                and isinstance(working.get("current_sha256"), str)
-            ):
-                return None
-            project_path = working["path"]
-            project_hash = working["current_sha256"]
-            try:
-                exact_path = _normalized_workspace_path(
-                    str(session.get("project_path") or "")
-                ) == _normalized_workspace_path(project_path)
-            except (OSError, RuntimeError, ValueError):
-                return None
-            if not (
-                exact_path
-                and str(session.get("project_hash") or "").casefold()
-                == project_hash.casefold()
-            ):
-                return None
-            return {"project_path": project_path, "project_hash": project_hash}
 
         arguments: dict[str, Any] = {
             "pid": body.pid,
             "hwnd": body.hwnd,
             "access_profile": "analysis",
         }
-        expectation = (
-            parked_native_reopen_expectation()
-            if (
-                not body.allow_unbound_existing_target
-                and body.project_path is None
-                and body.project_hash is None
-            )
-            else None
-        )
         if body.project_path:
             arguments["project_path"] = body.project_path
-        elif expectation is not None:
-            arguments["project_path"] = expectation["project_path"]
         elif (
             not body.allow_unbound_existing_target
             and working_copy
@@ -17754,8 +17523,6 @@ def create_app(
             arguments["project_path"] = working_copy["path"]
         if body.project_hash:
             arguments["project_hash"] = body.project_hash
-        elif expectation is not None:
-            arguments["project_hash"] = expectation["project_hash"]
         elif (
             not body.allow_unbound_existing_target
             and working_copy
@@ -17845,7 +17612,6 @@ def create_app(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=detail,
             )
-        pass
         clear_ls_controller_target()
         session = bind_engineering_session(validated)
         store.append_event(
@@ -17945,7 +17711,6 @@ def create_app(
         update_native_workspace_binding(closed_target=(body.pid, body.hwnd),
                                         closed_process_create_time=body.process_create_time)
         store.selected_target_recovery_authority()
-        pass
         store.append_event(
             event_type="xg5000.reviewed_no_save_closed",
             payload={

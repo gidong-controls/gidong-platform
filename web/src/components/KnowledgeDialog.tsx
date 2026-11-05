@@ -1032,8 +1032,9 @@ export function KnowledgeDialog({
                             required
                           />
                           <small className="knowledge-field-hint">
-                            이 문서는 현재 프로젝트의 참고 자료로만 자동
-                            검색됩니다. 제품군·버전 표시는 그대로 유지됩니다.
+                            이 문서는 현재 프로젝트의 참고 자료로 연결됩니다.
+                            전체 지식 검색에서는 다른 범위 자료와 함께 조회될 수 있습니다.
+                            제품군·버전 표시는 그대로 유지됩니다.
                           </small>
                         </label>
                       ) : null}
@@ -1156,9 +1157,9 @@ export function KnowledgeDialog({
                 <Icon name="shield" size={17} />
                 <span>
                   대화에서 자동 학습하지 않습니다. 모든 기억·선호는 제안으로
-                  저장되고, 사람이 확인한 뒤에만 검색 근거가 됩니다. 현장·팀
-                  범위는 현재 수동 검색·기록용이며 Agent가 자동 적용하지
-                  않습니다.
+                  저장되고, 사람이 확인한 뒤에만 검색 근거가 됩니다. Agent는
+                  확인된 기억·선호를 자료 검색에서 참고할 수 있으며, 저장만으로
+                  프로젝트의 동작 규칙이 바뀌지는 않습니다.
                 </span>
               </aside>
               <form
@@ -1267,13 +1268,13 @@ export function KnowledgeDialog({
                         />
                         {memoryForm.scope === "project" ? (
                           <small className="knowledge-field-hint">
-                            현재 열린 작업공간의 고유 ID에 연결된 기억만 자동
-                            적용됩니다.
+                            현재 작업공간의 고유 ID에 연결해 저장합니다.
+                            검색 결과를 이 프로젝트로만 제한하는 설정은 아닙니다.
                           </small>
                         ) : (
                           <small className="knowledge-field-hint">
-                            현장·팀 범위는 현재 Agent 자동 검색에 포함되지
-                            않습니다.
+                            현장·팀의 적용 범위를 기록합니다. 검색에서는
+                            다른 범위 자료와 함께 조회될 수 있습니다.
                           </small>
                         )}
                       </label>

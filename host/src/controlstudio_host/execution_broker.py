@@ -1,9 +1,8 @@
 """Platform-owned execution boundary for Agent Protocol requests.
 
-The broker exposes a serializable catalog only.  Pydantic AI toolsets and raw
-MCP clients are intentionally private to neither the Host nor the Agent
-protocol: the Host maps each proposal to its existing MCP gateway after it has
-bound the active run and target.
+The broker exposes a serializable catalog to the Agent. Model toolsets belong
+to the Agent runtime; the raw MCP client belongs to the Host gateway. The Host
+binds the active run and target before mapping a proposal to that gateway.
 """
 
 from __future__ import annotations
@@ -47,8 +46,6 @@ from .mcp_client import (
     MCPToolRejectedError,
     MCPTransportError,
 )
-
-pass
 from .structural_evidence import (
     STRUCTURAL_ANALYSIS_TOOL_COVERAGE,
     build_structural_evidence_contract,
@@ -308,9 +305,6 @@ _HARDWARE_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/()+ -]{0,127}$")
 _CONTROLLER_VARIABLE = re.compile(r"^%[A-Za-z][XxBbWwDdLl][A-Za-z0-9.]{0,13}$")
 _CONTROLLER_DATA_TYPES = frozenset({"BIT", "BYTE", "WORD", "DWORD", "LWORD"})
 _CONTROLLER_SCHEMA_VERSION = "1.0"
-_CONTROLLER_EVIDENCE_STRENGTH = (
-    "protocol_status_without_serial_or_project_digest"
-)
 _CONTROLLER_WRITE_AUTHORIZATION_REASON = (
     "FEnet status does not prove a controller serial number or the online "
     "project digest; this observation cannot authorize writes."
@@ -367,8 +361,6 @@ _AGENT_HARDWARE_BINDING_LIMIT = 64
 _AGENT_HARDWARE_CHANNEL_LIMIT = 16
 _AGENT_BLOCKER_LIMIT = 128
 _AGENT_SNAPSHOT_PROGRAM_LIMIT = 128
-pass
-pass
 _HARDWARE_CONTEXT_BINDING_PRECONDITION = (
     "project.hardware_context must be called before binding its digest"
 )
@@ -432,50 +424,6 @@ _SESSION_STAGES = (
     "RUNTIME_PROVED",
     "RESTORED",
     "STOPPED_UNVERIFIED",
-)
-_PRIVATE_HARDWARE_FACT_FIELDS = frozenset(
-    {
-        "artifact_dir",
-        "catalog_path",
-        "error",
-        "executable",
-        "hwnd",
-        "json_path",
-        "message",
-        "path",
-        "payload_path",
-        "pid",
-        "project_path",
-        "receipt_path",
-        "screenshot_path",
-        "session_id",
-    }
-)
-_SESSION_TARGETS = frozenset({"ENGINEERING_IDE", "LOCAL_VALIDATION"})
-_SESSION_PLC_POLICIES = frozenset(
-    {
-        "read_only_unverified",
-        "read_only_project_identity_verified",
-        "read_only_controlled_launch",
-        "unsafe_local_validation_enabled",
-        "read_only_terminal_change_rebind",
-        "offline_abort_recovery_only",
-        "offline_rollback_recovery_only",
-        "offline_change_authorized",
-    }
-)
-_SESSION_ACCESS_PROFILE_GRANTS = {
-    "analysis": ("read", "analyze"),
-    "simulation_operator": ("read", "analyze", "simulate"),
-    "offline_engineering": ("read", "analyze", "offline_mutate", "simulate"),
-}
-_SESSION_UNSUPPORTED_CAPABILITIES = ("direct_control", "online_modify")
-_SESSION_CAPABILITY_NAMES = frozenset({"analysis", "mutation", "simulation"})
-_SESSION_CAPABILITY_STATES = frozenset(
-    {"unavailable", "idle", "ready", "running", "error"}
-)
-_SESSION_IDENTITY_ASSURANCE = frozenset(
-    {"unverified", "strong_readback", "controlled_launch_read_only"}
 )
 
 
@@ -2216,7 +2164,6 @@ class MCPExecutionBroker:
                 expected_session_identity=expected_session_identity,
                 request_arguments=arguments,
             )
-        pass
         return build_structural_evidence_contract(
             raw_name,
             result,
@@ -2896,7 +2843,6 @@ class MCPExecutionBroker:
             )
         if raw_name == "program.change_target_analysis":
             return self._change_target_result_projection(evidence_contract)
-        pass
         if raw_name in AGENT_CONTROLLER_MCP_TOOLS:
             return self._controller_result_projection(
                 raw_name,
@@ -3408,18 +3354,12 @@ class MCPExecutionBroker:
         )
         programs = bound.get("programs")
         snapshot_id = bound.get("snapshot_id")
-        try:
-            canonical_snapshot_id = (
-                str(uuid.UUID(snapshot_id)) if isinstance(snapshot_id, str) else None
-            )
-        except ValueError:
-            canonical_snapshot_id = None
         if (
             bound.get("operation") != "project.snapshot"
             or bound.get("ok") is not True
             or bound.get("verified") is not True
             or bound.get("project_unchanged") is not True
-            or canonical_snapshot_id != snapshot_id
+            or not _is_canonical_uuid(snapshot_id)
             or not _is_canonical_uuid(bound.get("operation_id"))
             or not isinstance(programs, list)
             or len(programs) > 4_096
@@ -4628,40 +4568,6 @@ class MCPExecutionBroker:
                 raise MCPToolError("controller trace request window is invalid")
         return data_type, variables
 
-    @staticmethod
-    def _controller_value_projection(
-        value: Any,
-        *,
-        data_type: str,
-        expected_variable: str,
-    ) -> dict[str, Any]:
-        if not isinstance(value, Mapping) or set(value) != {
-            "variable",
-            "rawHex",
-            "unsignedValue",
-        }:
-            raise MCPToolError("controller value is invalid")
-        variable = value.get("variable")
-        raw_hex = value.get("rawHex")
-        unsigned_value = value.get("unsignedValue")
-        width = _CONTROLLER_DATA_TYPE_WIDTHS[data_type]
-        if (
-            not isinstance(variable, str)
-            or variable != expected_variable
-            or not isinstance(raw_hex, str)
-            or re.fullmatch(r"[0-9A-F]+", raw_hex) is None
-            or len(raw_hex) != width * 2
-            or isinstance(unsigned_value, bool)
-            or not isinstance(unsigned_value, int)
-            or unsigned_value
-            != int.from_bytes(bytes.fromhex(raw_hex), "little")
-        ):
-            raise MCPToolError("controller value encoding is invalid")
-        return {
-            "variable": expected_variable,
-            "rawHex": raw_hex,
-            "unsignedValue": unsigned_value,
-        }
 
 
     @classmethod
@@ -4800,14 +4706,6 @@ class MCPExecutionBroker:
         supplied_index_digest = result.get("index_digest")
         receipt_path = result.get("receipt_path")
         operation_id = result.get("operation_id")
-        try:
-            canonical_operation_id = (
-                str(uuid.UUID(operation_id))
-                if isinstance(operation_id, str)
-                else None
-            )
-        except ValueError:
-            canonical_operation_id = None
         if (
             result.get("operation") != "project.structure_index"
             or result.get("ok") is not True
@@ -4825,7 +4723,7 @@ class MCPExecutionBroker:
             or not isinstance(receipt_path, str)
             or not receipt_path
             or len(receipt_path) > 32_768
-            or canonical_operation_id != operation_id
+            or not _is_canonical_uuid(operation_id)
         ):
             raise MCPToolError("project structure index envelope binding is invalid")
         return build_structural_evidence_contract(

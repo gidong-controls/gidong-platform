@@ -50,7 +50,7 @@ export function ConversationPermissions({ scope, busy, canChange, onSelect, allo
         <span>저장한 작업 사본을 로컬 시뮬레이터에서 시험하고 필요하면 수정·재시험합니다.</span>
       </label>}
       {!canChange && <p>수정하려면 프로젝트의 작업 사본을 연결해 주세요.</p>}
-      <p>선택한 권한은 후속 요청에도 유지됩니다. 이 메뉴에서 언제든 변경할 수 있습니다.</p>
+      <p>선택한 권한은 후속 요청에도 유지됩니다. 진행 중인 작업이 끝나면 이 메뉴에서 바꿀 수 있습니다.</p>
     </div>}
   </div>;
 }

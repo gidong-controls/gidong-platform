@@ -307,7 +307,7 @@ const AGENT_PROGRESS_COPY: Record<string, string> = {
   native_restore_dialogue: "대화 이력을 복원하는 중입니다.",
   native_restore_dialogue_ready: "대화 이력을 복원했습니다.",
   native_ld_execution: "XG5000 작업을 진행하는 중입니다.",
-  native_work_plan: "변경 계획",
+  native_work_plan: "작업 계획",
   engineering_analysis: "PLC 분석을 구성하고 있습니다.",
   planning_narrative: "요구사항과 추가로 확인할 조건을 정리하고 있습니다.",
   planning_native_design: "프로그램의 동작 조건과 순서를 설계하고 있습니다.",
@@ -463,6 +463,7 @@ interface ReturnWorkspaceSnapshot {
   programCatalog: EngineeringProgramsResponse;
   programCatalogTargetKey: string;
   activePanel: "programs" | "evidence" | "activity" | null;
+  deferredChangeTransactionId: string | null;
 }
 
 interface EntryCardProps {
@@ -575,8 +576,7 @@ function storeConversationId(conversationId: string): void {
   try {
     window.localStorage.setItem(CONVERSATION_STORAGE_KEY, conversationId);
   } catch {
-    // The server still owns the conversation. A privacy-mode browser simply
-    // starts a new one next time.
+    // The server still owns the conversation; local selection persistence is unavailable.
   }
 }
 
@@ -1447,6 +1447,7 @@ function App() {
     useState<LocalWorkspaceCompare | null>(null);
   const [workspaceCompareBusy, setWorkspaceCompareBusy] = useState(false);
   const [workChooserOpen, setWorkChooserOpen] = useState(false);
+  const [workChooserStartsFresh, setWorkChooserStartsFresh] = useState(false);
   const [newProjectBriefOpen, setNewProjectBriefOpen] = useState(false);
   const [newProjectBriefIsNew, setNewProjectBriefIsNew] = useState(false);
   const [projectDocumentIntake, setProjectDocumentIntake] = useState<{ scopeKey: string; label: string } | undefined>(undefined);
@@ -3110,7 +3111,7 @@ function App() {
         }
       } else if (result.session) {
         setLocalProjectNotice(
-          "기존 XG5000 실행 창에서는 프로젝트 정체성을 확인하지 못해 분석을 시작하지 않았습니다. 해당 XG5000 창을 닫고 다시 시도하면 ControlStudio가 새 읽기 전용 창을 안전하게 엽니다.",
+          "프로젝트 연결을 확인하지 못했습니다. 열려 있는 XG5000 창과 프로젝트를 확인한 뒤 다시 연결해 주세요.",
         );
       } else if (result.launch?.windowDetected) {
         setLocalProjectNotice(
@@ -3119,7 +3120,7 @@ function App() {
       } else {
         applyHostStatus(nextStatus);
         setLocalProjectNotice(
-          "안전한 작업 복사본은 만들었습니다. XG5000 창을 확인한 뒤 실행 창 선택으로 연결해 주세요.",
+          "원본을 보존한 작업 사본을 만들었습니다. XG5000 창을 확인한 뒤 실행 창 선택으로 연결해 주세요.",
         );
       }
     } catch (error) {
@@ -4191,8 +4192,8 @@ function App() {
         <span className="shutdown-mark" aria-hidden="true">
           <Icon name="power" size={28} />
         </span>
-        <p className="eyebrow">CONTROLSTUDIO HOST STOPPED</p>
-        <h1 id="shutdown-complete-title">ControlStudio를 종료했습니다</h1>
+        <p className="eyebrow">종료 요청</p>
+        <h1 id="shutdown-complete-title">ControlStudio 종료를 요청했습니다</h1>
         <p>
           Host와 MCP 프로세스에 종료를 요청했습니다. 이 브라우저 또는 PWA 창은
           안전하게 닫아도 됩니다.
@@ -4252,14 +4253,18 @@ function App() {
     setConnectionMessage("새 프로젝트 계획을 닫았습니다.");
   };
 
+  const newWorkUnavailable = !hostReady || canCancelActiveRun || sending ||
+    changeBusy || missionStartBusy || missionResumeBusy || missionReverifyBusy ||
+    Boolean(activeChange && ["pending_approval", "approved", "executing", "verifying", "observing"].includes(activeChange.state));
   const openWorkChooser = () => {
+    if (newWorkUnavailable) return;
     if (activeChange) {
       setDeferredChangeTransactionId(activeChange.transactionId);
       setConnectionMessage(
         "확인이 필요한 이전 변경은 작업 기록에 보존했습니다. 새 작업을 시작할 수 있습니다.",
       );
     }
-    if (conversation?.workflow === "engineering") {
+    if (conversation) {
       returnWorkspaceRef.current = {
         conversation,
         evidence,
@@ -4267,6 +4272,7 @@ function App() {
         programCatalog,
         programCatalogTargetKey: programCatalogTargetRef.current,
         activePanel,
+        deferredChangeTransactionId,
       };
     }
     
@@ -4274,18 +4280,19 @@ function App() {
     setLocalProjectOpen(false);
     setInstancePickerOpen(false);
     setOnlineControllerOpen(false);
+    setWorkChooserStartsFresh(true);
     setWorkChooserOpen(true);
   };
 
   const openTargetlessAnalysis = async () => {
-    if (!hostReady || !engineeringAgentReady || canCancelActiveRun || sending) {
+    if (newWorkUnavailable || !engineeringAgentReady) {
       return;
     }
     setSending(true);
     setConnectionMessage("대상 없는 분석 대화를 준비하고 있습니다.");
     try {
       let selected = conversation;
-      if (!selected || !isUnboundEngineeringConversation(selected)) {
+      if (workChooserStartsFresh || !selected || !isUnboundEngineeringConversation(selected)) {
         selected = await startFreshConversation("PLC 일반 분석 대화", "none");
       }
       if (!selected || !isUnboundEngineeringConversation(selected)) {
@@ -4319,12 +4326,15 @@ function App() {
   };
 
   const returnToCurrentWork = () => {
-    
+    if (returnWorkspaceRef.current) {
+      setDeferredChangeTransactionId(returnWorkspaceRef.current.deferredChangeTransactionId);
+    }
     setNewProjectBriefOpen(false);
     setLocalProjectOpen(false);
     setInstancePickerOpen(false);
     setOnlineControllerOpen(false);
     setWorkChooserOpen(false);
+    setWorkChooserStartsFresh(false);
     returnWorkspaceRef.current = null;
     window.setTimeout(() => composerRef.current?.focus(), 0);
   };
@@ -4459,7 +4469,8 @@ function App() {
             planningConversationId,
           );
           acceptedByServer =
-            detail.workflow === "new_project_planning" &&
+            (detail.workflow === "new_project_planning" ||
+              (createProject && detail.workflow === "engineering")) &&
             projectBriefMatches(detail.projectBrief, brief) &&
             detail.messages.some(
               (item) =>
@@ -4472,6 +4483,13 @@ function App() {
             conversationIdRef.current = detail.conversationId;
             setConversation(detail);
             setNewProjectPlanning(planningSessionFromConversation(detail));
+            restoreConversationRun(detail, true);
+            setChangeRequestScope(createProject ? "permanent_offline_revision" : "review_before_apply");
+            setAllowSimulator(createProject && simulate);
+            if (intakeScopeKey) {
+              try { bindIntakeDraftConversation(localStorage, intakeScopeKey, detail.conversationId); }
+              catch { setCancelNotice("작성 요청은 접수됐지만 초안 복구 연결을 저장하지 못했습니다. 등록 자료는 보존합니다."); }
+            }
             setWorkChooserOpen(false);
             setNewProjectBriefIsNew(false);
             setNewProjectBriefOpen(false);
@@ -4493,7 +4511,7 @@ function App() {
               // The persisted message and SSE stream remain authoritative.
             }
             setConnectionMessage(
-              "응답 연결은 끊겼지만 서버가 계획 요청을 보관했습니다. 실행 상태를 다시 확인해 주세요.",
+              "응답 연결은 끊겼지만 서버가 작성 요청을 보관했습니다. 실행 상태를 다시 확인해 주세요.",
             );
           }
         } catch {
@@ -4537,7 +4555,7 @@ function App() {
       ? "analysis_only"
       : resolvedRequestScope;
     const conversationId = conversation?.conversationId;
-    if (!content || !conversationId || !canChat || sending || offlineCandidateBindingBusy) {
+    if (!content || !conversationId || !canChat || sending || offlineCandidateBindingBusy || selectedOfflineScopeUnavailable) {
       return;
     }
     const requestedChangeReady = requestScope === "permanent_offline_revision"
@@ -4980,8 +4998,7 @@ function App() {
       (!hasEngineeringTarget && !planningConversationActive));
   const showEntryChoices =
     !entryPanelOpen &&
-    !planningConversationActive &&
-    (workChooserOpen || !hasEngineeringTarget);
+    (workChooserOpen || (!planningConversationActive && !hasEngineeringTarget));
   
   
   
@@ -5077,8 +5094,6 @@ function App() {
           ? "오프라인 구조 분석"
          : status.workspace
            ? "프로젝트 확인 제한"
-           : planningConversationActive
-             ? "신규 설계 · 계획 단계"
             : targetlessAnalysisActive
               ? "대상 없는 읽기·분석"
               : "대상 선택 전";
@@ -5296,34 +5311,16 @@ function App() {
                 : "온라인 관찰"}
             </button>
           )}
-          {(hasEngineeringTarget || targetlessAnalysisActive) &&
-            !planningConversationActive && (
-            <button
-              className="header-text-button"
-              type="button"
-              disabled={canCancelActiveRun}
-              onClick={openWorkChooser}
-            >
-              새 작업
-            </button>
-          )}
           <button
             className="header-text-button header-new-conversation-button"
             type="button"
-            disabled={canCancelActiveRun || sending || !hostReady}
-            aria-label="새 대화"
-            title="새 대화 · 현재 기록은 보존됩니다"
-            onClick={() => {
-              setSending(true);
-              void startFreshConversation("새 대화", "none")
-                .catch(() => {
-                  setCancelNotice("새 대화를 열지 못했습니다. 작업 기록에서 기존 대화를 다시 열 수 있습니다.");
-                })
-                .finally(() => setSending(false));
-            }}
+            disabled={newWorkUnavailable}
+            aria-label="새 작업"
+            title="새 작업 선택 · 현재 기록은 보존됩니다"
+            onClick={openWorkChooser}
           >
             <Icon name="new" size={16} />
-            <span className="header-new-conversation-button__label">새 대화</span>
+            <span className="header-new-conversation-button__label">새 작업</span>
           </button>
           <button
             className="header-text-button header-history-button"
@@ -5351,17 +5348,6 @@ function App() {
               event.currentTarget.closest("details")?.removeAttribute("open");
             }
           }}>
-          {(hasEngineeringTarget || targetlessAnalysisActive) && !planningConversationActive && (
-            <button
-              className="header-text-button header-mobile-new-work-button"
-              type="button"
-              disabled={canCancelActiveRun}
-              onClick={openWorkChooser}
-            >
-              <Icon name="new" size={16} />
-              새 작업 시작
-            </button>
-          )}
           <button
             className="header-text-button header-mobile-knowledge-button"
             type="button"
@@ -5545,20 +5531,6 @@ function App() {
           </section>
         )}
 
-        {showAgentWorkspace &&
-          !planningConversationActive &&
-          !primaryChange && (
-            <button
-              className="mobile-new-work-button"
-              type="button"
-              disabled={canCancelActiveRun}
-              onClick={openWorkChooser}
-            >
-              <Icon name="new" size={16} />
-              새 작업 시작
-            </button>
-          )}
-
         {primaryChange && (
           <>
             <ChangeApprovalPanel
@@ -5591,21 +5563,18 @@ function App() {
         )}
 
         {showStartSection && !sessionRequired && (
-          <section className="start-section" aria-label="엔지니어링 시작">
+          <section className={`start-section ${showEntryChoices ? "start-section--chooser" : ""}`} aria-label="엔지니어링 시작">
             {showEntryChoices && (
               <>
                 <div className="section-heading">
                   <div>
-                    <h1 id="start-title">어디서 시작할까요?</h1>
+                    <h1 id="start-title">새 작업</h1>
                     <p>
-                      PLC 일반 질문을 바로 시작하거나, 새 설비의 요구사항과 기존
-                      프로젝트 분석으로 이어가세요.
+                      새 프로젝트를 만들거나 기존 프로젝트에서 작업하세요.
                     </p>
                   </div>
                   <div className="start-heading-actions">
-                    {(hasEngineeringTarget || targetlessAnalysisActive) &&
-                      workChooserOpen &&
-                      returnWorkspaceRef.current && (
+                    {conversation && workChooserOpen && (
                         <button
                           className="button secondary-button"
                           type="button"
@@ -5699,28 +5668,12 @@ function App() {
 
                 <div className="entry-grid">
                   <EntryCard
-                    icon="spark"
-                    title="대상 없이 질문"
-                    description="PLC 개념, 오류 원인과 설계 판단을 대화로 분석합니다. XG5000·PLC 도구와 변경 기능은 열지 않습니다."
-                    accent="blue"
-                    available={hostReady && engineeringAgentReady && !sending}
-                    actionLabel={sending ? "대화 준비 중…" : "분석 대화 시작"}
-                    unavailableReason={
-                      sending
-                        ? "대화 준비 중"
-                        : hostReady
-                          ? "엔지니어링 모델 연결 필요"
-                          : "Host 연결 필요"
-                    }
-                    onClick={() => void openTargetlessAnalysis()}
-                  />
-                  <EntryCard
                     icon="new"
                     title="새 프로젝트"
-                    description="어떤 설비를 만들지 알려 주세요. 동작 순서와 입출력을 정리하고 프로젝트 만들기를 준비합니다."
+                    description="설비 동작과 입출력 요구사항부터 정리합니다."
                     accent="lime"
-                    available={newProjectPlanningAvailable}
-                    actionLabel="요구사항부터 시작"
+                    available={newProjectPlanningAvailable && !newWorkUnavailable}
+                    actionLabel="요구사항 입력"
                     unavailableReason={
                       hostReady
                         ? status.agent.detail ?? "모델 기능 검사 필요"
@@ -5738,10 +5691,10 @@ function App() {
                   />
                   <EntryCard
                     icon="folder"
-                    title="기존 로컬 프로젝트"
-                    description="원본을 보존한 작업 복사본을 XG5000에서 열고 구조·디바이스·영향 범위를 분석합니다."
+                    title="기존 프로젝트 작업"
+                    description="원본을 보존한 작업 사본에서 분석·수정합니다."
                     accent="amber"
-                    available={localAnalysisAvailable}
+                    available={localAnalysisAvailable && !newWorkUnavailable}
                     actionLabel={
                       status.workspace ? "다른 프로젝트 열기" : "프로젝트 열기"
                     }
@@ -5760,6 +5713,21 @@ function App() {
                       setLocalProjectOpen(true);
                     }}
                   />
+                </div>
+
+                <div className="secondary-review-entry">
+                  <span>프로젝트 연결 없이 PLC 개념이나 설계를 검토할 수도 있습니다.</span>
+                  <button
+                    className="button secondary-button"
+                    type="button"
+                    disabled={newWorkUnavailable || !engineeringAgentReady}
+                    onClick={() => void openTargetlessAnalysis()}
+                  >
+                    {sending ? "검토 준비 중…" : "프로젝트 없이 검토"}
+                  </button>
+                  {(!hostReady || !engineeringAgentReady) && (
+                    <span>{hostReady ? "엔지니어링 모델 연결 필요" : "Host 연결 필요"}</span>
+                  )}
                 </div>
 
                 {recoveryAttachRequired && (
@@ -5850,7 +5818,7 @@ function App() {
             >
               <div className="instance-picker-heading">
                 <div>
-                  <p className="eyebrow">SOURCE-PRESERVING WORKSPACE</p>
+                  <p className="eyebrow">원본을 보존하는 작업 사본</p>
                   <h2 id="local-project-title">기존 로컬 프로젝트 열기</h2>
                 </div>
                 <button
@@ -6479,29 +6447,22 @@ function App() {
                   <h3>
                     {newProjectPlanning
                       ? "프로젝트 계획을 준비하고 있습니다"
-                      : "무엇을 확인할까요?"}
+                      : targetlessAnalysisActive ? "무엇을 검토할까요?" : "어떤 프로젝트 작업을 할까요?"}
                   </h3>
                   <p>
                     {newProjectPlanning
                       ? "설비 목적, 동작 순서, I/O, 모드, 인터록과 검증 방법을 분리해 검토 가능한 계획으로 만듭니다."
                       : targetlessAnalysisActive
                         ? "궁금한 PLC 개념이나 오류 메시지를 알려 주세요."
-                      : "설비 동작을 물어보거나, 확인하고 싶은 프로그램과 수정할 내용을 알려 주세요."}
+                      : "원하는 설비 동작이나 변경 목적, 작업 후 확인할 조건을 알려 주세요."}
                   </p>
-                  {!newProjectPlanning && (
+                  {!newProjectPlanning && targetlessAnalysisActive && (
                     <div className="prompt-suggestions" aria-label="질문 예시">
-                      {(targetlessAnalysisActive
-                        ? [
+                      {[
                             "PLC 스캔 주기를 설명해 줘",
                             "자기유지 회로의 동작 원리를 알려 줘",
                             "이 오류 메시지의 원인 후보를 정리해 줘",
-                          ]
-                        : [
-                            "프로젝트에 어떤 프로그램이 있는지 알려 줘",
-                            "M0320A가 사용된 위치를 찾아 줘",
-                            "초기동작 프로그램의 구조를 설명해 줘",
-                          ]
-                      ).map((suggestion) => (
+                          ].map((suggestion) => (
                         <button
                           key={suggestion}
                           type="button"

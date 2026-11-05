@@ -16,6 +16,10 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from controlstudio_contracts.native_ld_comparison import (
+    parse_comparison_expression as _parse_comparison_expression,
+)
+
 from .api_models import EmptyNativeProgramSourceV1
 from .mcp_client import MCPToolError
 
@@ -69,16 +73,6 @@ _DEVICE_TOKEN = re.compile(r"(?<![A-Z0-9.])([A-Z][A-Z0-9]*[0-9][A-Z0-9.]*)")
 _EXACT_DEVICE = re.compile(r"^[A-Z][A-Z0-9]*[0-9][A-Z0-9.]*$")
 _DIRECT_DATA_REGISTER = re.compile(r"^D(?P<index>[0-9]+)$")
 _DATA_LITERAL = re.compile(r"^(?:[+-]?[0-9]+|H[0-9A-F]+)$", re.IGNORECASE)
-_COMPARISON_RELATIONS = {
-    "=": "equal",
-    "<>": "not_equal",
-    ">": "greater_than",
-    "<": "less_than",
-    ">=": "greater_than_or_equal",
-    "<=": "less_than_or_equal",
-}
-_COMPARISON_DEVICE = re.compile(r"^[PMKFTCLD][0-9]+$")
-_COMPARISON_LITERAL = re.compile(r"^[+-]?[0-9]+$")
 _STATEFUL_ACTIONS = frozenset({"SET", "RST", "TON", "TOF", "CTR", "CTU", "CTD", "TRTG"})
 _DATA_TRANSFER_ACTIONS = frozenset({"MOV", "DMOV"})
 _DATA_TRANSFER_WIDTH_WORDS = {"MOV": 1, "DMOV": 2}
@@ -426,53 +420,9 @@ def _fact_without_fingerprint(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _comparison_expression(expression: str) -> dict[str, Any] | None:
-    """Independently parse one bounded signed XGK/XGB comparison expression."""
+    """Reparse raw comparison evidence with the shared bounded grammar."""
 
-    fields = expression.split(",")
-    if len(fields) != 3:
-        return None
-    instruction, lhs_text, rhs_text = (field.strip() for field in fields)
-    double_word = instruction.startswith("D")
-    relation = _COMPARISON_RELATIONS.get(
-        instruction[1:] if double_word else instruction
-    )
-    if relation is None or not lhs_text or not rhs_text:
-        return None
-    width_words = 2 if double_word else 1
-    data_type = "signed_32_bit" if double_word else "signed_16_bit"
-    minimum, maximum = (
-        (-2_147_483_648, 2_147_483_647)
-        if width_words == 2
-        else (-32_768, 32_767)
-    )
-
-    def operand(text: str) -> dict[str, Any] | None:
-        if _COMPARISON_DEVICE.fullmatch(text) is not None:
-            return {"kind": "device", "value": text}
-        if _COMPARISON_LITERAL.fullmatch(text) is None:
-            return None
-        value = int(text, 10)
-        if not minimum <= value <= maximum:
-            return None
-        return {"kind": "literal", "value": value}
-
-    lhs = operand(lhs_text)
-    rhs = operand(rhs_text)
-    if lhs is None or rhs is None:
-        return None
-    devices: list[str] = []
-    for item in (lhs, rhs):
-        if item["kind"] == "device" and item["value"] not in devices:
-            devices.append(item["value"])
-    return {
-        "instruction": instruction,
-        "relation": relation,
-        "data_type": data_type,
-        "width_words": width_words,
-        "lhs": lhs,
-        "rhs": rhs,
-        "devices": devices,
-    }
+    return _parse_comparison_expression(expression)
 
 
 def _validated_comparison(
@@ -480,7 +430,7 @@ def _validated_comparison(
     *,
     semantic_status: str,
 ) -> tuple[str, dict[str, Any]] | None:
-    """Validate one raw COMPARE condition against the Host-local grammar."""
+    """Reparse raw COMPARE evidence and independently verify producer metadata."""
 
     expression = _text(
         condition.get("expression"), "comparison expression", maximum=4_000
@@ -3654,8 +3604,8 @@ def _project_search_contract(
     if program_count != len(payloads):
         raise MCPToolError("project search program count disagrees with its payload scope")
     bound_programs = {
-        (str(item["programId"]), str(item["program"]))
-        for item in scope["payloadBindings"]
+        (item["program_id"].strip(), item["name"].strip())
+        for item in payloads
     }
 
     matches = _items(search.get("matches"), "project search matches")

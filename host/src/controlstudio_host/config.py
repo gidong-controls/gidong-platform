@@ -6,6 +6,7 @@ import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
+from urllib.parse import urlsplit
 
 
 def _default_data_dir() -> Path:
@@ -86,7 +87,19 @@ class HostConfig:
         canonical_origin = self.canonical_origin or f"http://localhost:{self.port}"
         if not canonical_origin.startswith(("http://localhost:", "http://127.0.0.1:")):
             raise ValueError("canonical_origin must use a loopback HTTP origin")
-        object.__setattr__(self, "canonical_origin", canonical_origin.rstrip("/"))
+        try:
+            parsed = urlsplit(canonical_origin)
+            origin_port = parsed.port
+            if (parsed.scheme != "http" or parsed.hostname not in {"localhost", "127.0.0.1"}
+                    or parsed.username is not None or parsed.password is not None
+                    or origin_port is None or not 1 <= origin_port <= 65535
+                    or parsed.path not in {"", "/"} or parsed.query or parsed.fragment
+                    or any(character.isspace() or ord(character) < 33 for character in canonical_origin)):
+                raise ValueError("invalid origin components")
+        except ValueError as exc:
+            raise ValueError("canonical_origin must use a loopback HTTP origin") from exc
+        authority = parsed.hostname + (f":{origin_port}" if origin_port != 80 else "")
+        object.__setattr__(self, "canonical_origin", f"http://{authority}")
         object.__setattr__(
             self,
             "database_path",

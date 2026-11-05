@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -164,6 +165,16 @@ class HostRestartController:
         )
 
     def schedule(self, handoff: RestartHandoff) -> None:
+        from .development_contracts import (
+            DevelopmentContractsError,
+            verify_source_development_contracts,
+        )
+
+        try:
+            verify_source_development_contracts(self._environment, self._executable)
+        except DevelopmentContractsError as error:
+            logging.getLogger(__name__).warning("Source-dev public contracts preflight refused: %s", error)
+            raise RestartBootstrapError(str(error)) from error
         environment = dict(self._environment)
         environment[RESTART_HANDOFF_ENVIRONMENT_VARIABLE] = handoff.encode()
         if getattr(sys, "frozen", False):

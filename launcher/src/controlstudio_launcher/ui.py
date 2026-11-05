@@ -574,7 +574,7 @@ class SystemUiOpener:
                     raise UiOpenError(
                         "ControlStudio opened but its app window ownership could not be verified"
                     ) from window_error
-                raise UiOpenError("ControlStudio did not produce exactly one foreground app window")
+                raise UiOpenError("ControlStudio did not produce exactly one verified app window")
             raise UiOpenError("could not start Microsoft Edge or Google Chrome")
 
         if not self._browser_open(url, new=1, autoraise=True):

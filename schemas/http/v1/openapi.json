@@ -8997,7 +8997,7 @@
           "status"
         ],
         "title": "ModelContextV1",
-        "description": "An explicit, provider-neutral context-capacity observation.\n\nThe Host may forward this projection when a trusted provider capability\nsource has actually measured the endpoint.  ``None`` is intentional: it\nmeans the endpoint's capacity is unknown, not that the product requirement\nhas been met.  The contract keeps the 200k input requirement explicit so\ncallers cannot silently substitute the currently observed 196608 window."
+        "description": "An explicit, provider-neutral context-capacity observation.\n\nThe Host may forward this projection when a trusted provider capability\nsource has actually measured the endpoint.  ``None`` is intentional: it\nmeans the endpoint's capacity is unknown. The v1 diagnostic retains its\nhistorical 200k comparison threshold; it does not establish a minimum\ncontext capacity for starting an engineering conversation."
       },
       "ModelSettingsV1": {
         "properties": {

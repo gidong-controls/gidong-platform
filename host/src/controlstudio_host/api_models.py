@@ -18,12 +18,9 @@ from pydantic import (
     StrictInt,
     computed_field,
     field_validator,
-    model_serializer,
     model_validator,
 )
 from pydantic_core import PydanticCustomError
-
-pass
 
 
 def _to_camel(value: str) -> str:
@@ -1694,7 +1691,6 @@ class EngineeringConversationHandoffV1(ApiModel):
     """
 
     schema_version: Literal["1"] = "1"
-    pass
     planning_conversation_id: str = Field(min_length=1, max_length=256)
     planning_message_id: str = Field(min_length=1, max_length=256)
     reviewed_plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -1726,7 +1722,6 @@ class EngineeringConversationHandoffV1(ApiModel):
 
 
 class ConversationNativeProjectV1(ApiModel):
-    pass
     state: Literal["allocated", "executing", "completed", "failed", "quarantined"]
     updated_at: datetime
 
@@ -1797,7 +1792,6 @@ class ConversationCreateV1(ApiModel):
     title: str | None = Field(default=None, min_length=1, max_length=200)
     workflow: Literal["engineering", "new_project_planning"] = "engineering"
     project_brief: ProjectBriefV1 | None = None
-    pass
     target_scope: Literal["current", "none"] = "current"
 
     @model_validator(mode="after")
@@ -1806,10 +1800,7 @@ class ConversationCreateV1(ApiModel):
             raise ValueError("projectBrief is required for new_project_planning")
         if self.workflow == "engineering" and self.project_brief is not None:
             raise ValueError("projectBrief is only valid for new_project_planning")
-        pass
-        if self.target_scope == "none" and (
-            self.workflow != "engineering" or None is not None
-        ):
+        if self.target_scope == "none" and self.workflow != "engineering":
             raise ValueError("targetScope none is only valid for general engineering analysis")
         return self
 
@@ -1836,15 +1827,8 @@ class SendMessageRequestV1(ApiModel):
     operation_id: str = Field(min_length=8, max_length=128)
     workflow: Literal["engineering", "new_project_planning"] = "engineering"
     project_brief: ProjectBriefV1 | None = None
-    # This is a typed, already reviewed native-create request supplied by the
-    # user-facing planning flow.  It is a forward reference because the native
-    # request model is declared later in this module; the model is rebuilt
-    # after that declaration below.  Host execution still revalidates review,
-    # actor, run and target authority separately.
-    pass
     # A reviewed test request is a separate authority.  Creating a native
     # project never grants the model permission to start XG-SIM.
-    pass
     change_request_scope: (
         Literal[
             "analysis_only",
@@ -1877,13 +1861,6 @@ class SendMessageRequestV1(ApiModel):
             self.change_request_scope != "permanent_offline_revision"
         ):
             raise ValueError("native resume requires the bound permanent offline request")
-        pass
-        pass
-        pass
-        pass
-        pass
-        pass
-        pass
         if self.workflow == "new_project_planning" and self.change_request_scope not in {None, "permanent_offline_revision"}:
             raise ValueError("planning accepts consultation or an explicit native creation request")
         if (
@@ -1892,7 +1869,6 @@ class SendMessageRequestV1(ApiModel):
             and self.change_request_scope != "permanent_offline_revision"
         ):
             raise ValueError("verificationScope is only valid for engineering messages")
-        pass
         if (
             self.verification_scope == "offline_native_check_only"
             and self.change_request_scope != "permanent_offline_revision"
@@ -2020,7 +1996,6 @@ class RunCancellationV1(ApiModel):
 
 
 VerificationScope = Literal["offline_native_check_only", "offline_native_reopen"]
-pass
 ChangeMode = Literal["offline_working_copy_revision"]
 ChangeRequestScope = Literal[
     "offline_candidate_revision",
@@ -2043,20 +2018,7 @@ OFFLINE_NATIVE_CHECK_ONLY_VALIDATION_STEPS = (
     "xg5000_program_check",
     "project_save",
 )
-pass
-pass
-pass
 # Historical public name remains the v1 contract for existing readers.
-pass
-pass
-pass
-pass
-pass
-pass
-pass
-pass
-pass
-pass
 
 ChangeCoverageArea = Literal[
     "target_identity",
@@ -2087,7 +2049,6 @@ REQUIRED_CHANGE_COVERAGE_AREAS = (
     "validation",
     "rollback",
 )
-pass
 
 
 class ChangeCoverageItemV1(ApiModel):
@@ -2624,15 +2585,6 @@ class ChangePlanV1(ApiModel):
             )
 
 
-pass
-pass
-pass
-
-pass
-pass
-pass
-pass
-pass
 
 
 
@@ -2641,14 +2593,7 @@ pass
 
 
 
-pass
-pass
-pass
-pass
-pass
-pass
-pass
-pass
+
 
 
 def _canonical_sha256(value: Any) -> str:
@@ -2662,126 +2607,14 @@ def _canonical_sha256(value: Any) -> str:
     ).hexdigest()
 
 
-CHANGE_ATTEMPT_IDENTITY_SCHEMA = "controlstudio-change-attempt-identity/v1"
-CHANGE_ATTEMPT_RESULT_SCHEMA = "controlstudio-change-attempt-result/v1"
 
 
-class ChangeAttemptIdentityV1(ApiModel):
-    """Immutable Host identity for one candidate/source execution attempt.
-
-    A conversation and working copy may survive a follow-up request, but the
-    source revision, candidate, or approved plan cannot silently reuse an old
-    native receipt.  ``attempt_id`` is deliberately derived from every input
-    below, so resume is stable only for the exact same attempt inputs.
-    """
-
-    schema_value: Literal["controlstudio-change-attempt-identity/v1"] = Field(
-        default=CHANGE_ATTEMPT_IDENTITY_SCHEMA,
-        alias="schema",
-    )
-    attempt_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    transaction_id: str = Field(min_length=1, max_length=256)
-    workspace_id: str = Field(min_length=1, max_length=256)
-    revision_id: str = Field(min_length=1, max_length=256)
-    source_artifact_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    working_artifact_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    candidate_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-    @model_serializer(mode="wrap")
-    def serialize_identity(self, handler: Any) -> dict[str, Any]:
-        serialized = handler(self)
-        if "schema_value" in serialized:
-            serialized["schema"] = serialized.pop("schema_value")
-        return serialized
-
-    @model_validator(mode="after")
-    def validate_attempt_digest(self) -> ChangeAttemptIdentityV1:
-        unsigned = self.model_dump(mode="json", exclude={"attempt_id"})
-        if self.attempt_id != _canonical_sha256(unsigned):
-            raise ValueError("change attempt identity digest is invalid")
-        return self
 
 
-def canonical_change_attempt_identity(
-    *,
-    transaction_id: str,
-    workspace_id: str,
-    revision_id: str,
-    source_artifact_hash: str,
-    working_artifact_hash: str,
-    candidate_digest: str,
-    plan_digest: str,
-) -> dict[str, Any]:
-    """Build and validate the one canonical attempt identity envelope."""
-
-    unsigned = {
-        "schema": CHANGE_ATTEMPT_IDENTITY_SCHEMA,
-        "transaction_id": transaction_id,
-        "workspace_id": workspace_id,
-        "revision_id": revision_id,
-        "source_artifact_hash": source_artifact_hash,
-        "working_artifact_hash": working_artifact_hash,
-        "candidate_digest": candidate_digest,
-        "plan_digest": plan_digest,
-    }
-    identity = {
-        **unsigned,
-        "attempt_id": _canonical_sha256(unsigned),
-    }
-    return ChangeAttemptIdentityV1.model_validate(identity).model_dump(mode="json")
 
 
-class ChangeAttemptResultV1(ApiModel):
-    """Host binding of native persistence/readback and the test receipt."""
-
-    schema_value: Literal["controlstudio-change-attempt-result/v1"] = Field(
-        default=CHANGE_ATTEMPT_RESULT_SCHEMA,
-        alias="schema",
-    )
-    attempt: ChangeAttemptIdentityV1
-    native_persisted_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    native_readback_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    test_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    binding_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-    @model_serializer(mode="wrap")
-    def serialize_result(self, handler: Any) -> dict[str, Any]:
-        serialized = handler(self)
-        if "schema_value" in serialized:
-            serialized["schema"] = serialized.pop("schema_value")
-        return serialized
-
-    @model_validator(mode="after")
-    def validate_result_digest(self) -> ChangeAttemptResultV1:
-        unsigned = self.model_dump(mode="json", exclude={"binding_digest"})
-        if self.binding_digest != _canonical_sha256(unsigned):
-            raise ValueError("change attempt result binding digest is invalid")
-        return self
 
 
-def canonical_change_attempt_result(
-    *,
-    attempt: ChangeAttemptIdentityV1 | dict[str, Any],
-    native_persisted_hash: str,
-    native_readback_hash: str,
-    test_receipt_digest: str,
-) -> dict[str, Any]:
-    """Build and validate the Host-side result binding for one attempt."""
-
-    normalized_attempt = ChangeAttemptIdentityV1.model_validate(attempt).model_dump(
-        mode="json"
-    )
-    unsigned = {
-        "schema": CHANGE_ATTEMPT_RESULT_SCHEMA,
-        "attempt": normalized_attempt,
-        "native_persisted_hash": native_persisted_hash,
-        "native_readback_hash": native_readback_hash,
-        "test_receipt_digest": test_receipt_digest,
-    }
-    return ChangeAttemptResultV1.model_validate(
-        {**unsigned, "binding_digest": _canonical_sha256(unsigned)}
-    ).model_dump(mode="json")
 
 
 
@@ -2822,14 +2655,12 @@ ProjectPlanNativeDesignV1.model_rebuild()
 
 
 
-pass
 
 
 
 
 
 
-pass
 
 
 
@@ -3069,9 +2900,9 @@ class ModelContextV1(ApiModel):
 
     The Host may forward this projection when a trusted provider capability
     source has actually measured the endpoint.  ``None`` is intentional: it
-    means the endpoint's capacity is unknown, not that the product requirement
-    has been met.  The contract keeps the 200k input requirement explicit so
-    callers cannot silently substitute the currently observed 196608 window.
+    means the endpoint's capacity is unknown. The v1 diagnostic retains its
+    historical 200k comparison threshold; it does not establish a minimum
+    context capacity for starting an engineering conversation.
     """
 
     detected_total_tokens: int | None = Field(default=None, ge=0, strict=True)
@@ -3362,33 +3193,6 @@ class ControllerRestoreHandoffV1(ApiModel):
         return self
 
 
-class ReviewedProjectPlanBindingV1(ApiModel):
-    schema_version: Literal["2"]
-    conversation_id: str = Field(min_length=1, max_length=256)
-    message_id: str = Field(min_length=1, max_length=256)
-    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    project_brief_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    attachment_revision_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    reviewed_section_ids: list[str] = Field(min_length=1, max_length=100)
-    reviewed_item_ids: list[str] = Field(min_length=1, max_length=100_000)
-
-    @field_validator("reviewed_section_ids")
-    @classmethod
-    def validate_reviewed_section_ids(cls, value: list[str]) -> list[str]:
-        if any(not item or len(item) > 200 for item in value):
-            raise ValueError("reviewedSectionIds contains an invalid section id")
-        if len(set(value)) != len(value):
-            raise ValueError("reviewedSectionIds must not contain duplicates")
-        return value
-
-    @field_validator("reviewed_item_ids")
-    @classmethod
-    def validate_reviewed_item_ids(cls, value: list[str]) -> list[str]:
-        if any(not item or len(item) > 2_000 for item in value):
-            raise ValueError("reviewedItemIds contains an invalid item id")
-        if len(set(value)) != len(value):
-            raise ValueError("reviewedItemIds must not contain duplicates")
-        return value
 
 
 
@@ -3409,10 +3213,6 @@ class ReviewedProjectPlanBindingV1(ApiModel):
 
 
 
-# ``SendMessageRequestV1`` is defined before these native request models so the
-# public message DTO can keep workflow models grouped with other message types.
-# Resolve all forward references only after the complete authority contract is
-# available.
 SendMessageRequestV1.model_rebuild()
 
 
@@ -3706,7 +3506,7 @@ class NewBuildWorkspaceProvenanceV1(ApiModel):
     receipt_schema: Literal[
         "controlstudio-new-build-workspace-provenance/v1"
     ] = Field(alias="schema")
-    # Compatibility reader for already captured legacy builds.
+    # Historical build receipts still require an explicit canonical native project ID.
     native_project_id: str | None = Field(default=None, pattern=r"^[0-9a-f-]{36}$")
     reviewed_plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     build_bundle_id: str = Field(pattern=r"^[0-9a-f]{64}$")

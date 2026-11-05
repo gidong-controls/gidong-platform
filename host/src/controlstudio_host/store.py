@@ -2008,200 +2008,6 @@ class HostStore:
         assert row is not None
         return self._conversation_from_row(row)
 
-    def create_engineering_handoff_conversation(
-        self,
-        *,
-        title: str | None,
-        native_project_id: str,
-        planning_conversation_id: str,
-        workspace_id: str,
-        revision_id: str,
-        engineering_session_id: str,
-        provenance: dict[str, Any],
-    ) -> tuple[Conversation, bool]:
-        """Create one immutable planning-to-engineering handoff conversation.
-
-        The native project id is the idempotency authority. Replays return the
-        exact same target-bound conversation only when every durable input is
-        unchanged.  The engineering session id is deliberately ephemeral: an
-        exact immutable workspace/revision/provenance replay may atomically
-        rebind it after the same protected copy is resumed in a new XG5000
-        process.  A planning conversation with a completed handoff becomes a
-        read-only lineage source.
-        """
-
-        if not all(
-            value.strip()
-            for value in (
-                None,
-                planning_conversation_id,
-                workspace_id,
-                revision_id,
-                engineering_session_id,
-            )
-        ):
-            raise ValueError("engineering handoff identity cannot be blank")
-        if provenance.get("nativeProjectId") != None or (
-            provenance.get("planningConversationId") != planning_conversation_id
-        ):
-            raise ValueError("engineering handoff provenance identity is invalid")
-
-        timestamp = _utc_now()
-        canonical_provenance = _json_dump(provenance)
-        with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            try:
-                existing = None
-                if existing is not None:
-                    if (
-                        existing["workflow"] != "engineering"
-                        or existing["lineage_planning_conversation_id"]
-                        != planning_conversation_id
-                        or existing["workspace_id"] != workspace_id
-                        or existing["revision_id"] != revision_id
-                        or str(existing["engineering_handoff_json"])
-                        != canonical_provenance
-                    ):
-                        raise ValueError(
-                            "native project handoff is already bound to different provenance"
-                        )
-                    prior_session_id = str(existing["engineering_session_id"] or "")
-                    if prior_session_id != engineering_session_id:
-                        cursor = connection.execute(
-                            """
-                            UPDATE conversations
-                            SET engineering_session_id = ?, updated_at = ?
-                            WHERE id = ?
-                              AND workflow = 'engineering'
-                              AND handoff_native_project_id = ?
-                              AND lineage_planning_conversation_id = ?
-                              AND workspace_id = ?
-                              AND revision_id = ?
-                              AND engineering_handoff_json = ?
-                              AND engineering_session_id = ?
-                            """,
-                            (
-                                engineering_session_id,
-                                timestamp,
-                                existing["id"],
-                                None,
-                                planning_conversation_id,
-                                workspace_id,
-                                revision_id,
-                                canonical_provenance,
-                                prior_session_id,
-                            ),
-                        )
-                        if cursor.rowcount != 1:
-                            raise ValueError(
-                                "engineering handoff changed during session rebind"
-                            )
-                        self._insert_event(
-                            connection,
-                            conversation_id=str(existing["id"]),
-                            event_type="conversation.engineering_session_rebound",
-                            payload={
-                                "native_project_id": None,
-                                "planning_conversation_id": planning_conversation_id,
-                                "workspace_id": workspace_id,
-                                "revision_id": revision_id,
-                                "project_sha256": provenance.get("projectSha256"),
-                                "previous_engineering_session_id": prior_session_id,
-                                "engineering_session_id": engineering_session_id,
-                            },
-                        )
-                        rebound = connection.execute(
-                            "SELECT * FROM conversations WHERE id = ?",
-                            (existing["id"],),
-                        ).fetchone()
-                        connection.commit()
-                        assert rebound is not None
-                        return self._conversation_from_row(rebound), False
-                    connection.rollback()
-                    return self._conversation_from_row(existing), False
-
-                planning = connection.execute(
-                    "SELECT workflow FROM conversations WHERE id = ?",
-                    (planning_conversation_id,),
-                ).fetchone()
-                if planning is None or planning["workflow"] != "new_project_planning":
-                    raise ValueError("engineering handoff planning conversation is invalid")
-                active_run = connection.execute(
-                    """
-                    SELECT 1 FROM runs
-                    WHERE conversation_id = ?
-                      AND state IN (
-                        'IDLE', 'ANALYZING', 'WAITING_FOR_USER',
-                        'WAITING_FOR_APPROVAL', 'APPROVED_PENDING_EXECUTION',
-                        'EXECUTING', 'VERIFYING'
-                      )
-                    LIMIT 1
-                    """,
-                    (planning_conversation_id,),
-                ).fetchone()
-                if active_run is not None:
-                    raise ValueError(
-                        "planning conversation still has an active run"
-                    )
-
-                conversation_id = str(uuid.uuid4())
-                connection.execute(
-                    """
-                    INSERT INTO conversations(
-                        id, title, workflow, project_brief_json,
-                        workspace_id, revision_id, engineering_session_id,
-                        handoff_native_project_id,
-                        lineage_planning_conversation_id,
-                        engineering_handoff_json,
-                        created_at, updated_at
-                    )
-                    VALUES (?, ?, 'engineering', '{}', ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        conversation_id,
-                        title,
-                        workspace_id,
-                        revision_id,
-                        engineering_session_id,
-                        None,
-                        planning_conversation_id,
-                        canonical_provenance,
-                        timestamp,
-                        timestamp,
-                    ),
-                )
-                self._insert_event(
-                    connection,
-                    conversation_id=conversation_id,
-                    event_type="conversation.created",
-                    payload={
-                        "conversation_id": conversation_id,
-                        "title": title,
-                        "workflow": "engineering",
-                        "target_bound": True,
-                        "native_project_id": None,
-                        "planning_conversation_id": planning_conversation_id,
-                    },
-                )
-                self._insert_event(
-                    connection,
-                    conversation_id=planning_conversation_id,
-                    event_type="conversation.engineering_handoff_created",
-                    payload={
-                        "engineering_conversation_id": conversation_id,
-                        "native_project_id": None,
-                    },
-                )
-                row = connection.execute(
-                    "SELECT * FROM conversations WHERE id = ?",
-                    (conversation_id,),
-                ).fetchone()
-                connection.commit()
-            except BaseException:
-                connection.rollback()
-                raise
-        assert row is not None
-        return self._conversation_from_row(row), True
 
     def list_conversations(
         self, *, limit: int = 50, offset: int = 0
@@ -2357,84 +2163,7 @@ class HostStore:
             except BaseException:
                 connection.rollback()
                 raise
-    def require_reviewed_project_plan(
-        self,
-        *,
-        conversation_id: str,
-        message_id: str,
-        plan_digest: str,
-        reviewed_section_ids: list[str],
-        reviewed_item_ids: list[str],
-        project_brief_digest: str,
-        attachment_revision_digest: str,
-        expected_handoff_native_project_id: str | None = None,
-    ) -> tuple[ProjectPlanReview, dict[str, Any]]:
-        """Re-read and prove the exact latest reviewed plan before creation."""
 
-        with self._connection() as connection:
-            # Serialize this authority read with handoff creation. Native allocation
-            # independently repeats the lineage check in its own write transaction,
-            # closing the gap between this review proof and operation allocation.
-            connection.execute("BEGIN IMMEDIATE")
-            conversation = connection.execute(
-                "SELECT workflow, project_brief_json FROM conversations WHERE id = ?",
-                (conversation_id,),
-            ).fetchone()
-            if conversation is None:
-                raise ProjectPlanReviewConflict(
-                    "reviewed project plan conversation was not found"
-                )
-            if conversation["workflow"] != "new_project_planning":
-                raise ProjectPlanReviewConflict(
-                    "native project creation requires a planning conversation"
-                )
-            current_brief = _json_load(str(conversation["project_brief_json"]))
-            if not current_brief:
-                raise ProjectPlanReviewConflict(
-                    "native project creation requires the current Host project brief"
-                )
-            try:
-                calculate_project_brief_digest(current_brief)
-            except (TypeError, ValueError) as exc:
-                raise ProjectPlanReviewConflict(
-                    "current project brief does not match the typed contract"
-                ) from exc
-            latest = connection.execute(
-                """
-                SELECT id, sequence, metadata_json
-                FROM messages
-                WHERE conversation_id = ?
-                  AND role = 'assistant'
-                  AND json_type(metadata_json, '$.plan_artifact') = 'object'
-                  AND json_type(metadata_json, '$.plan_digest') = 'text'
-                ORDER BY sequence DESC
-                LIMIT 1
-                """,
-                (conversation_id,),
-            ).fetchone()
-            if latest is None or latest["id"] != message_id:
-                raise ProjectPlanReviewConflict(
-                    "reviewed project plan is stale; review the latest plan"
-                )
-            metadata = _json_load(str(latest["metadata_json"]))
-            artifact = metadata.get("plan_artifact")
-            if not isinstance(artifact, dict):
-                raise ProjectPlanReviewConflict(
-                    "latest project plan artifact is invalid"
-                )
-            raise ProjectPlanReviewConflict(
-                "reviewed project plan digest or readiness no longer matches"
-            )
-
-    def get_engineering_handoff_conversation(
-        self,
-        native_project_id: str,
-    ) -> Conversation | None:
-        """Return the durable engineering handoff owned by a native operation."""
-
-        with self._connection():
-            row = None
-        return self._conversation_from_row(row) if row is not None else None
 
     def get_engineering_mission(
         self,
@@ -3810,7 +3539,7 @@ class HostStore:
                 error_detail = (
                     "Host restarted while execution outcome was uncertain."
                     if next_state == RunState.QUARANTINED.value
-                    else "Host restarted before this read-only run completed."
+                    else "Host restarted before this run completed."
                 )
                 connection.execute(
                     """
@@ -5309,7 +5038,6 @@ class HostStore:
     ) -> int:
         """Retain proven positive decisions; quarantine interrupted mutations."""
 
-        pass
 
         timestamp = _utc_text(now or datetime.now(timezone.utc))
         reconciled = 0
@@ -6081,7 +5809,6 @@ class HostStore:
                         "lease_state": str(target["state"]),
                         "source": "target_operation_lease",
                     }
-            pass
 
         candidates: list[dict[str, Any]] = [
             {

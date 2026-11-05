@@ -48,8 +48,8 @@ export function ProgramNavigatorPanel({
           <h2 id="program-navigator-title">XG5000 프로그램</h2>
           <p>
             {hasPrograms
-              ? `${programs.length}개 · 읽기 전용 세션`
-              : "읽기 전용 세션"}
+              ? `${programs.length}개 · 프로그램 목록`
+              : "프로그램 목록"}
           </p>
         </div>
         <button

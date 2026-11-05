@@ -61,9 +61,9 @@ _ALLOWED_CONTROLLER_NETWORKS = tuple(
     )
 )
 
-# The first product increment is deliberately read/analyze-only.  A tool missing
-# from this set cannot be offered to the model even if the MCP server advertises
-# it.  In particular, change, save, simulator-control, and direct-control tools stay out.
+# This catalog covers analysis, navigation and explicitly owned modal handling.
+# Project changes, saves and simulator control use separate Host/native routes;
+# advertising an MCP tool does not add it to this model-facing catalog.
 AGENT_TOOL_NAMES: dict[str, str] = {
     "get_xg5000_session_status": "xg5000.session_status",
     "get_simulator_target_status": "sim.target_status",
@@ -321,7 +321,7 @@ class MCPStartupError(RuntimeError):
 
 
 class MCPToolError(RuntimeError):
-    """A direct, read-only MCP call failed."""
+    """A Host-owned MCP call failed."""
 
 
 class MCPToolPreflightError(MCPToolError):
@@ -600,8 +600,8 @@ class MCPGateway:
     """Own one bundled MCP process and serialize every XG5000-facing call.
 
     The MCP server is launched without its unsafe validation flag.  The Host also
-    filters the tool surface before it reaches the model, giving two independent
-    barriers against accidental project mutation in this increment.
+    filters the model-facing catalog. Project mutation and native execution use
+    their separate Host-authorized routes rather than that analysis catalog.
     """
 
     def __init__(
@@ -614,9 +614,9 @@ class MCPGateway:
         startup_timeout_seconds: float = 60.0,
         authorization_secret: str | None = None,
     ) -> None:
-        # Deployments start a version-pinned MCP artifact from an explicit
-        # immutable path or PATH. Platform never discovers checkout-relative
-        # or sibling MCP source.
+        # An explicit command selects the installed MCP artifact. A Git
+        # development workspace may resolve its sibling installed console entry;
+        # otherwise the console entry is resolved through PATH.
         configured_command = command or os.environ.get("CONTROLSTUDIO_MCP_COMMAND")
         if configured_command is not None:
             self._command = configured_command
@@ -1268,10 +1268,9 @@ class MCPGateway:
     async def execute_agent_tool(
         self, name: str, arguments: dict[str, Any], *, session_identity: dict[str, Any] | None = None,
     ) -> Any:
-        """Execute an Agent-approved read through the Host-owned MCP client.
+        """Execute an allowed Agent tool through the Host-owned MCP client.
 
-        Unlike ``call_agent_tool`` this is used by the sidecar protocol bridge,
-        not Pydantic AI's in-process MCP toolset.  The method deliberately
+        The sidecar protocol bridge uses ``call_agent_tool`` here. This method
         unwraps the result only after the same identity/endpoint injection and
         serialized transport call have completed inside this gateway.
         """

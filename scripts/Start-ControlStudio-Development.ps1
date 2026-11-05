@@ -28,6 +28,7 @@ $agentPackagedPython = Join-Path $workspace 'gidong-agent\.venv\Scripts\python.e
 $agentExecutable = Join-Path $workspace 'gidong-agent\.venv\Scripts\controlstudio-agent.exe'
 $mcp = Join-Path $workspace 'gidong-plc-mcp\.venv\Scripts\controlstudio-plc-mcp.exe'
 $xg5000Cli = Join-Path $workspace 'controlstudio-xg5000-cli\.venv\Scripts\controlstudio-xg5000.exe'
+$launcherPython = Join-Path $platform 'launcher\.venv\Scripts\python.exe'
 
 if (Test-Path -LiteralPath $agentDevPython -PathType Leaf) {
     $agentRuntime = $agentDevPython
@@ -37,6 +38,19 @@ if (Test-Path -LiteralPath $agentDevPython -PathType Leaf) {
     $agentRuntime = $agentExecutable
     $agentCommand = '"' + $agentExecutable + '"'
     $agentImportPython = $agentPackagedPython
+}
+
+$env:CONTROLSTUDIO_RELEASE_CHANNEL = 'development'
+$env:CONTROLSTUDIO_PRODUCT_RELEASE = 'source-dev'
+$env:CONTROLSTUDIO_AGENT_COMMAND = $agentCommand
+$env:CONTROLSTUDIO_MCP_COMMAND = $mcp
+$env:CONTROLSTUDIO_XG5000_CLI_COMMAND = $xg5000Cli
+if (-not (Test-Path -LiteralPath $launcherPython -PathType Leaf)) {
+    throw "Platform development preflight interpreter is missing: $launcherPython"
+}
+& $launcherPython -E -B -m controlstudio_host.development_contracts
+if ($LASTEXITCODE -ne 0) {
+    throw 'Development public contracts differ from current source. Align the selected runtimes with the current public contracts wheel before launching.'
 }
 
 # Validate the exact interpreter selected above before the launcher can
@@ -85,14 +99,9 @@ foreach ($entry in @(
     }
 }
 
-$env:CONTROLSTUDIO_RELEASE_CHANNEL = 'development'
-$env:CONTROLSTUDIO_PRODUCT_RELEASE = 'source-dev'
 # Model endpoint, name, timeout, and credentials are intentionally inherited.
 # Host bootstrap uses an existing stored model profile when one is available;
 # an explicitly supplied environment override remains available to that Host.
-$env:CONTROLSTUDIO_AGENT_COMMAND = $agentCommand
-$env:CONTROLSTUDIO_MCP_COMMAND = $mcp
-$env:CONTROLSTUDIO_XG5000_CLI_COMMAND = $xg5000Cli
 
 if ($WebDev) {
     $webRoot = Join-Path $platform 'web'

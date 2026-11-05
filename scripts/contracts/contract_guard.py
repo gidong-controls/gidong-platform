@@ -77,7 +77,11 @@ def _required_properties(schema: dict[str, Any]) -> set[str]:
 
 
 def breaking_changes(previous: dict[str, Any], current: dict[str, Any]) -> list[str]:
-    """Detect removals/narrowing that must be a contract-major change."""
+    """Detect removed paths/operations/schemas and newly required fields.
+
+    Type, enum, and constraint compatibility still require review; this
+    structural check is not a complete OpenAPI compatibility analysis.
+    """
     problems: list[str] = []
     previous_paths = previous.get("paths", {})
     current_paths = current.get("paths", {})

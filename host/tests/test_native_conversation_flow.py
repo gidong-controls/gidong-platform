@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import httpx
 
 from controlstudio_contracts import ExternalToolRequestV1
-from controlstudio_host.agent_protocol import validated_native_checkpoint
+from controlstudio_host.agent_protocol import ValidatedNativeCheckpoint, validated_native_checkpoint
 from controlstudio_host.agent_runtime import AgentRunOutput
 from controlstudio_host.app import BROWSER_CSRF_PREFIX, create_app
 from controlstudio_host.config import HostConfig
@@ -279,11 +279,32 @@ def test_preparation_context_dispatch_uses_shared_lock_and_private_hook(monkeypa
                 if name == 'xg5000.editor':
                     assert request['action'] == 'observe'
                     return {'ok': True, 'read_only': True, 'observation': {}}
-                assert name == 'workspace.simulator' and request['action'] == 'read_devices'
-                return {'ok': True, 'action': 'read_devices', 'input_state_unknown': False,
+                assert name == 'workspace.simulator' and request['action'] == 'write_sequence'
+                assert request['sequence_control'] == {'fixture': 'owned-sequence'}
+                step, = request['sequence_steps']
+                assert step['action'] == 'read_devices'
+                result = {'ok': True, 'action': 'read_devices', 'input_state_unknown': False,
                     'saved_project': saved, 'loaded_sha256': saved['sha256'], 'trace': [{
                         'observed_at': 1234.0, 'transport': 'XGT_FENET_SIMULATOR', 'atomic_snapshot': False,
                         'devices': [{'area': 'M', 'bit': 10, 'value': False}]}]}
+                return {'ok': True, 'action': 'write_sequence', 'input_state_unknown': False,
+                    'batch': {'completed_prefix_count': 1, 'cancelled': False, 'children': [{
+                        'index': 0, 'case_label': step['case_label'], 'action': step['action'],
+                        'expected': step['expected'], 'status': 'completed', 'result': result}]}}
+
+        # This test owns only dispatch/lock context. Terminal authentication has
+        # separate sequence-control tests; its boundary double performs no IO.
+        from controlstudio_host import native_simulator_sequence_control
+        class SequenceControl:
+            control = {'fixture': 'owned-sequence'}
+            terminal_verified = True
+            def __init__(self, binding, steps):
+                assert guard.depth == 1 and binding['project_hash'] == saved['sha256']
+                assert len(steps) == 1 and steps[0]['action'] == 'read_devices'
+            def revoke(self): return True
+            def terminal_result(self, raw): return {**raw, '_sequence_terminal_proven': True}
+            def close(self): return True
+        monkeypatch.setattr(native_simulator_sequence_control, 'SimulatorSequenceControl', SequenceControl)
 
         async def prepared(result):
             current[0] = {**reservation, **result['session']}
@@ -405,14 +426,15 @@ def test_preparation_context_dispatch_uses_shared_lock_and_private_hook(monkeypa
             'stop_on_mismatch': True, 'steps': [{'case_label': 'read', 'action': 'read_devices',
                 'devices': [{'area': 'M', 'bit': 10}], 'expected': [{'area': 'M', 'bit': 10, 'value': False}]}]}, 'scenario')
         assert result['batch']['all_native_steps_completed'] and result['batch']['expectations_matched'], json.dumps(result)
-        assert ('simulator', {'expected_simulator_sha256': saved['sha256'], 'persist_observation': True}) in delegated
+        assert any(name == 'execute_simulation_scenario' for name, _ in delegated)
         before = list(gateway.calls)
         async with guard:
             with pytest.raises(MCPToolError, match='Only an owned pending-close read'):
                 await owner._execute('native_editor', {'action': 'observe'}, persist_observation=False)
         assert gateway.calls == before
         assert delegated[-1][1]['persist_observation'] is False
-        assert [context['call_id'] for context in contexts] == ['inspect-reserved', 'inspect-setup-failed', 'prepare', 'editor', 'scenario']
+        assert [context['call_id'] for context in contexts] == [
+            'inspect-reserved', 'inspect-setup-failed', 'prepare', 'prepare', 'editor', 'scenario']
         assert gateway.calls.count('workspace.prepare_native') == 1
 
     try:
@@ -425,6 +447,7 @@ class Gateway(MCPGateway):
     def __init__(self, root):
         super().__init__()
         self.root, self.creations = root, 0
+        self.display_names = {}
 
     @property
     def status(self):
@@ -436,6 +459,7 @@ class Gateway(MCPGateway):
 
     async def call_workspace_tool(self, name, arguments):
         if name == "workspace.reserve_native":
+            self.display_names[arguments["workspace_id"]] = arguments["display_name"]
             path = self.root / arguments["workspace_id"] / "working" / f"{arguments['project_name']}.xgwx"
             path.parent.mkdir(parents=True)
             return {**arguments, "schema_version": "1", "project_path": str(path)}
@@ -453,7 +477,8 @@ class Gateway(MCPGateway):
         provenance["receipt_digest"] = digest(provenance)
         workspace = {"workspace_id": arguments["workspace_id"], "revision_id": arguments["revision_id"],
             "source_kind": "new_build", "vendor": "ls", "engineering_system": "XG5000", "created_at": datetime.now(timezone.utc).isoformat(),
-            "source": {"original_path": str(path), "captured_path": str(captured), "sha256": saved_hash,
+            "source": {"display_name": self.display_names[arguments["workspace_id"]],
+                       "original_path": str(path), "captured_path": str(captured), "sha256": saved_hash,
                        "original_state": "unchanged", "original_current_sha256": saved_hash},
             "working_copy": {"path": str(path), "baseline_sha256": saved_hash, "current_sha256": saved_hash, "state": "clean"},
             "provenance": provenance}
@@ -484,7 +509,10 @@ class RuntimeFactory:
                 if native is None:
                     return AgentRunOutput(content="추가 설비 조건을 확인해 주세요.", model=settings.model,
                         workflow="new_project_planning", input_tokens=10, output_tokens=8)
-                checkpoint = kwargs.get("native_checkpoint") or {"schemaVersion": "1", "public_state": {
+                checkpoint = kwargs.get("native_checkpoint")
+                if type(checkpoint) is ValidatedNativeCheckpoint:
+                    checkpoint = json.loads(checkpoint.canonical_json)
+                checkpoint = checkpoint or {"schemaVersion": "1", "public_state": {
                     "model_prompt": json.dumps({"request": kwargs["prompt"], "binding": native}),
                     "completed_pairs": [], "records": []}, "private_state": {"transport_records": []}}
                 if native.get("preparation"):
@@ -592,6 +620,7 @@ def test_new_preparation_revalidates_retained_loaded_frame_after_restart(tmp_pat
         root.mkdir()
         source_gateway = Gateway(root / 'workspaces')
         old_id = str(uuid.uuid4())
+        source_gateway.display_names[old_id] = 'Old Project'
         (root / 'workspaces' / old_id / 'working').mkdir(parents=True)
         old = await source_gateway.call_workspace_tool('workspace.prepare_native', {
             'workspace_id': old_id, 'revision_id': str(uuid.uuid4()), 'project_name': 'old',
@@ -689,9 +718,28 @@ def test_creation_resume_and_followup_keep_one_conversation_and_completed_result
             other_headers = {"Authorization": "Bearer " + other_token,
                 "x-controlstudio-csrf": hmac.new(app.state.config.launch_token.encode(),
                     BROWSER_CSRF_PREFIX + other_token.encode(), hashlib.sha256).hexdigest()}
-            unauthorized_replay = await client.post(f"/api/v1/conversations/{conversation}/native-execution/resume",
+            before_replay = (await client.get(f"/api/v1/conversations/{conversation}")).json()
+            before_run_ids = [run.id for run in store.get_conversation(conversation).runs]
+            dispatch_count = len(factory.calls)
+            renewed_session_replay = await client.post(f"/api/v1/conversations/{conversation}/native-execution/resume",
                 json={"operationId": "resume-001", "sourceRunId": first.id}, headers=other_headers)
-            assert unauthorized_replay.status_code == 409
+            assert renewed_session_replay.status_code == 202
+            assert renewed_session_replay.json()["runId"] == resumed.json()["runId"]
+            changed_scope = await client.post(f"/api/v1/conversations/{conversation}/native-execution/resume",
+                json={"operationId": "resume-001", "sourceRunId": first.id, "allowSimulator": True}, headers=other_headers)
+            assert changed_scope.status_code == 409
+            changed_source = await client.post(f"/api/v1/conversations/{conversation}/native-execution/resume",
+                json={"operationId": "resume-001", "sourceRunId": resumed.json()["runId"]}, headers=other_headers)
+            assert changed_source.status_code == 409
+            unauthorized_replay = await client.post(f"/api/v1/conversations/{conversation}/native-execution/resume",
+                json={"operationId": "resume-001", "sourceRunId": first.id},
+                headers={**other_headers, "Authorization": "Bearer unauthenticated-session"})
+            assert unauthorized_replay.status_code == 401
+            await complete_runs(app)
+            after_replay = (await client.get(f"/api/v1/conversations/{conversation}")).json()
+            assert len(factory.calls) == dispatch_count and gateway.creations == 1
+            assert len(after_replay['messages']) == len(before_replay['messages'])
+            assert [run.id for run in store.get_conversation(conversation).runs] == before_run_ids
             followup = await client.post(f"/api/v1/conversations/{conversation}/messages", json={"content": "정지 조건을 보완해 주세요",
                 "operationId": "followup-001", "workflow": "engineering", "changeRequestScope": "permanent_offline_revision"})
             assert followup.status_code == 202, followup.text
@@ -704,7 +752,7 @@ def test_creation_resume_and_followup_keep_one_conversation_and_completed_result
             preparation = next(event for event in events if event.event_type == "tool.completed")
             assert preparation.payload["native_result"]["programName"] == "Main"
             assert "pid" not in preparation.payload["native_result"]
-            assert Path(gateway.agent_session_identity_snapshot["project_path"]).name == "Test_Project.xgwx"
+            assert Path(gateway.agent_session_identity_snapshot["project_path"]).name == "project.xgwx"
             assert store.get_conversation(conversation).project_brief["project_name"] == "Test Project"
             assert any(event.event_type == "host.status" and event.run_id == first.id for event in events)
     asyncio.run(scenario())

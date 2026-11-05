@@ -1027,8 +1027,6 @@ from .mcp_client import (
 )
 from .model_connection import StoredModelConnection
 from .models import Message, MessageRole
-
-pass
 from .structural_evidence import (
     STRUCTURAL_ANALYSIS_EVIDENCE_SCHEMA,
     STRUCTURAL_ANALYSIS_TOOL_COVERAGE,
@@ -1507,7 +1505,6 @@ _STRUCTURAL_ANALYSIS_TOOL_ALIASES = {
     for alias, raw_name in AGENT_TOOL_NAMES.items()
     if raw_name in STRUCTURAL_ANALYSIS_TOOL_COVERAGE
 }
-pass
 _READ_ONLY_RECOVERY_DESIGN_TOOL_NAMES = frozenset(
     {"design.inspect", "design.read", "design.search"}
 )
@@ -1895,9 +1892,9 @@ class AgentSupervisor:
         message_timeout_seconds: float = 600.0,
         pipe_drain_timeout_seconds: float = 5.0,
     ) -> None:
-        # A shipped Platform resolves the installed private artifact from PATH
-        # or an explicitly injected immutable artifact command. It never
-        # discovers a checkout-relative or sibling Agent source tree.
+        # An explicit argument or configured command selects the Agent entry.
+        # A Git development workspace may resolve its sibling installed console
+        # entry; otherwise the console entry is resolved through PATH.
         configured_command = _configured_agent_command()
         if command is not None:
             self._command = tuple(command)
@@ -3216,7 +3213,9 @@ class SubprocessAgentClient:
             attempt = _bounded_design_edit_attempt(request.arguments)
             if attempt is not None:
                 event_payload["edit_attempt"] = attempt
-        broker_owns_terminal_event = request.tool_name in catalog
+        broker_owns_terminal_event = (
+            request.tool_name in catalog and request.tool_name != "change.propose_offline"
+        )
         callback_terminal_event_recorded = False
 
         async def send_failure(
@@ -3323,13 +3322,56 @@ class SubprocessAgentClient:
                     reason_code="diagnostic_tool_not_allowed",
                 )
                 return
-            if request.tool_name in catalog:
+            if request.tool_name == "change.propose_offline":
+                if self._change_plan_callback is None or native_run:
+                    await send_failure("host_policy")
+                    return
+                await capture_event("tool.started", event_payload)
+                value = await self._change_plan_callback(**request.arguments)
+                outcome_state = str(value.get("state") or "") if isinstance(value, Mapping) else ""
+                completed_tool_result = _completed_tool_result_payload(
+                    request_id=request.request_id, raw_result=value,
+                    evidence_ref=None, transport_plan=completed_transport_plan,
+                )
+                if outcome_state in {"FAILED", "ROLLED_BACK"}:
+                    outcome = value.get("change_outcome") if isinstance(value.get("change_outcome"), Mapping) else {}
+                    preflight_failed = (
+                        outcome_state == "FAILED"
+                        and outcome.get("errorCode") == "change_preflight_failed_before_mutation"
+                    )
+                    # Preserve the terminal transaction in a completed protocol
+                    # reply even when the engineering activity failed.
+                    await capture_event("tool.failed", {
+                        **event_payload,
+                        "failure_kind": "tool_error",
+                        "failure_reason": (
+                            "변경 검증에 실패했으며 작업 사본을 원복했습니다."
+                            if outcome_state == "ROLLED_BACK" else
+                            "실행 사전조건을 충족하지 못해 작업 사본을 변경하지 않았습니다."
+                            if preflight_failed else
+                            "직접 변경 transaction이 실패 상태로 종료되었습니다."
+                        ),
+                        "reason_code": (
+                            "change_verification_rolled_back" if outcome_state == "ROLLED_BACK" else
+                            "change_preflight_failed_before_mutation" if preflight_failed else
+                            "change_execution_failed"
+                        ),
+                        "stage": "verification" if outcome_state == "ROLLED_BACK" else
+                                 "preflight" if preflight_failed else "execution",
+                    })
+                    callback_terminal_event_recorded = True
+                else:
+                    await capture_event("tool.completed", event_payload)
+            elif request.tool_name in catalog:
                 sink = capture_event
                 await self._broker.execute_external_tool_request(
                     request,
                     sink=sink,
                     completion_gate=validate_tool_completion,
                 )
+            else:
+                await send_failure("host_policy")
+                return
         except asyncio.CancelledError:
             await send_failure(
                 "cancelled",
@@ -3459,7 +3501,7 @@ def _model_context_payload(
 
     The Host deliberately does not probe ``/props`` or infer capacity from a
     model name.  A missing observation remains absent/unknown.  When a caller
-    supplies one, the full contract (including an insufficient 196608 window)
+    supplies one, the full contract (including values below its diagnostic threshold)
     is forwarded without truncating history or claiming support.
     """
 
@@ -3512,9 +3554,9 @@ def _configured_agent_command() -> tuple[str, ...] | None:
 def _monorepo_agent_command() -> tuple[str, ...] | None:
     """Resolve the Agent's installed console entry point for local development.
 
-    This intentionally does not import private Agent source or walk its source
-    tree.  A release installation has no adjacent development environment and
-    therefore falls through to the packaged command on ``PATH``.
+    This checks only a Git source workspace for a sibling installed console
+    entry; it does not import private Agent source. Without that workspace or
+    entry, it returns no development override. Installed BOM selection is separate.
     """
 
     platform_repository = Path(__file__).resolve().parents[3]
@@ -3545,10 +3587,8 @@ def _sidecar_environment() -> dict[str, str]:
 def _safe_history(history: Sequence[Message]) -> list[dict[str, Any]]:
     """Project retained history without silently dropping older messages.
 
-    Context admission belongs to the Agent's explicit ``model_context``
-    contract.  The previous fixed 180k tail budget could discard user history
-    before the sidecar observed it, and therefore could turn a 200k support
-    failure into an unreported partial request.
+    This projects user and assistant messages without a Host-side tail budget.
+    The Agent's model-context and working-history owners manage context admission.
     """
 
     retained_history: list[Message] = []

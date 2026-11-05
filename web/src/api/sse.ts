@@ -247,7 +247,7 @@ export class ControlStudioEventStream {
       this.onEvent(event);
     } catch {
       // The Host remains authoritative. Invalid frames are ignored and the
-      // next reconnect resumes from the last fully validated sequence.
+      // next reconnect resumes from the last accepted sequence.
     }
   }
 

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "controlstudio-host"
 version = "0.1.0"
 description = "Local server-authority host for the ControlStudio web client"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = "Apache-2.0"
 authors = [{name = "OpenAI"}]
 dependencies = [
@@ -36,4 +36,4 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"

@@ -34,37 +34,6 @@ const ATTACHMENT_KIND_LABELS: Record<
   project_document: "프로젝트 문서",
 };
 
-export function ProjectFlowStepper({
-  activeStep,
-}: {
-  activeStep: 1 | 2;
-}) {
-  const steps = [
-    { number: 1, label: "요구사항" },
-    { number: 2, label: "계획 검토" },
-  ] as const;
-
-  return (
-    <ol className="project-flow-steps" aria-label="새 프로젝트 진행 단계">
-      {steps.map((step) => (
-        <li
-          key={step.number}
-          className={[
-            step.number === activeStep ? "project-step-active" : "",
-            step.number < activeStep ? "project-step-complete" : "",
-          ]
-            .filter(Boolean)
-            .join(" ")}
-          aria-current={step.number === activeStep ? "step" : undefined}
-        >
-          <span>{step.number}</span>
-          <strong>{step.label}</strong>
-        </li>
-      ))}
-    </ol>
-  );
-}
-
 export function NewProjectBriefPanel({
   initialBrief,
   draftContext,
@@ -106,7 +75,7 @@ export function NewProjectBriefPanel({
   const attachmentScopeKey = intakeDraft?.scopeKey ?? "";
   const [createProject, setCreateProject] = useState(false);
   const [simulate, setSimulate] = useState(false);
-  const [attachmentSources, setAttachmentSources] = useState<KnowledgeSource[]>([]);
+  const [attachmentSourceSnapshot, setAttachmentSourceSnapshot] = useState<KnowledgeSource[]>([]);
   const [attachmentLoading, setAttachmentLoading] = useState(false);
   const [attachmentError, setAttachmentError] = useState("");
   const [attachmentRefresh, setAttachmentRefresh] = useState(0);
@@ -143,7 +112,7 @@ export function NewProjectBriefPanel({
     setSafetyAndInterlocks(draft.brief.safetyAndInterlocks); setOperatingModes(draft.brief.operatingModes);
     setPerformanceAndAcceptance(draft.brief.performanceAndAcceptance);
     setAttachmentSourceIds(draft.brief.attachmentSourceIds);
-    setCreateProject(false); setSimulate(false); setAttachmentSources([]);
+    setCreateProject(false); setSimulate(false); setAttachmentSourceSnapshot([]);
     setDraftOptions(listIntakeDrafts(localStorage, draftContext));
   };
   const chooseDraft = (scopeKey?: string) => {
@@ -168,11 +137,7 @@ export function NewProjectBriefPanel({
         limit: 200,
         signal: controller.signal,
       })
-      .then((page) => setAttachmentSources(page.items.filter((source) =>
-        source.kind !== "project_document" ||
-        source.scope === `project:${attachmentScopeKey}` ||
-        attachmentSourceIds.includes(source.sourceId),
-      )))
+      .then((page) => setAttachmentSourceSnapshot(page.items))
       .catch((error: unknown) => {
         if (!controller.signal.aborted) {
           setAttachmentError(
@@ -188,8 +153,13 @@ export function NewProjectBriefPanel({
         }
       });
     return () => controller.abort();
-  }, [attachmentRefresh, attachmentScopeKey, attachmentSourceIds, draftStorageError]);
+  }, [attachmentRefresh, attachmentScopeKey, draftStorageError]);
 
+  const attachmentSources = attachmentSourceSnapshot.filter((source) =>
+    source.kind !== "project_document" ||
+    source.scope === `project:${attachmentScopeKey}` ||
+    attachmentSourceIds.includes(source.sourceId),
+  );
   const availableAttachmentIds = new Set(
     attachmentSources.map((source) => source.sourceId),
   );
@@ -219,10 +189,6 @@ export function NewProjectBriefPanel({
           <Icon name="close" size={18} />
         </button>
       </div>
-
-      <ProjectFlowStepper
-        activeStep={1}
-      />
 
       <form
         className="new-project-brief-form"
@@ -527,7 +493,7 @@ export function NewProjectBriefPanel({
             type="submit"
             disabled={!briefReady}
           >
-            {busy ? "대화 준비 중…" : createProject ? "새 프로젝트 작성 시작" : "계획서 초안 만들기"}
+            {busy ? "대화 준비 중…" : createProject ? "새 프로젝트 작성 시작" : "요구사항 검토 요청"}
           </button>
         </div>
       </form>

@@ -4,12 +4,101 @@
   "title": "ControlStudio External Tool Result v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["protocol_version", "request_id", "tool_name", "status", "failure_kind"],
+  "required": [
+    "protocol_version",
+    "request_id",
+    "tool_name",
+    "status",
+    "failure_kind"
+  ],
   "properties": {
-    "protocol_version": {"const": "1.0"},
-    "request_id": {"type": "string", "minLength": 1},
-    "tool_name": {"type": "string", "minLength": 1},
-    "status": {"enum": ["completed", "failed"]},
-    "failure_kind": {"enum": ["tool_error", "host_policy", "cancelled", "transport", null]}
-  }
+    "protocol_version": {
+      "const": "1.0"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tool_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "completed",
+        "failed"
+      ]
+    },
+    "failure_kind": {
+      "enum": [
+        "tool_error",
+        "host_policy",
+        "cancelled",
+        "transport",
+        null
+      ]
+    },
+    "nativeFailure": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "kind",
+            "message",
+            "details"
+          ],
+          "properties": {
+            "schema": {
+              "const": "controlstudio-native-failure/v1"
+            },
+            "kind": {
+              "type": "string",
+              "minLength": 1
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1
+            },
+            "details": {
+              "type": "object"
+            },
+            "code": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional diagnostic envelope. The native failure transport also enforces strict JSON, byte and depth limits; this data grants no native input authority."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "nativeFailure"
+        ],
+        "properties": {
+          "nativeFailure": {
+            "type": "object"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "const": "failed"
+          },
+          "failure_kind": {
+            "const": "tool_error"
+          }
+        }
+      }
+    }
+  ]
 }

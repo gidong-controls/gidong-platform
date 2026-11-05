@@ -380,7 +380,7 @@ function TargetEvidenceReview({ plan }: { plan: ChangePlanV1 }) {
           </dd>
         </div>
         <div>
-          <dt>Analysis receipt</dt>
+          <dt>분석 근거</dt>
           <dd>
             <code>
               {digestLabel(
@@ -401,7 +401,7 @@ function TargetEvidenceReview({ plan }: { plan: ChangePlanV1 }) {
           </dd>
         </div>
         <div>
-          <dt>Hardware receipt</dt>
+          <dt>하드웨어 확인 근거</dt>
           <dd>
             <code>
               {digestLabel(
@@ -501,9 +501,8 @@ function hasExecutableChangeContract(legacyPlan: ChangePlanV1 | undefined): bool
         hardwareStatus[name] === "observed" &&
         hardwareBinding?.[`${name}_status`] === hardwareStatus[name],
     );
-  // An offline candidate is explicitly limited to the bound working copy. New
-  // chat requests use native reopen verification, while older stored contracts
-  // may carry check-only verification and remain recoverable. Its retained
+  // An offline candidate is explicitly limited to the bound working copy.
+  // The retained contract selects check-only or reopen verification. Its retained
   // hardware evidence must still be complete and digest-bound below, but signed
   // runtime blockers are displayed rather than treated as permission to reject
   // the offline-only contract. A permanent offline revision retains the
@@ -668,14 +667,13 @@ export function ChangeApprovalPanel({
               <Icon name="warning" size={20} />
             </span>
             <div>
-              <p className="panel-kicker">UNSUPPORTED CHANGE CONTRACT</p>
-              <h2 id="unsupported-change-title">변경 계약을 안전하게 표시할 수 없습니다</h2>
+              <p className="panel-kicker">변경 정보 확인 필요</p>
+              <h2 id="unsupported-change-title">변경 정보를 확인할 수 없습니다</h2>
             </div>
           </div>
         </header>
         <p className="change-notice change-error" role="alert">
-          Host가 알 수 없거나 잘못된 planKind를 반환했습니다. 승인, 실행 및 복구를
-          중단하고 계약을 다시 불러오세요.
+          변경 정보를 확인할 수 없어 승인·실행을 중지했습니다. 새로고침한 뒤 다시 확인하세요.
         </p>
         {notice && (
           <p className="change-notice" role="status">
@@ -690,7 +688,7 @@ export function ChangeApprovalPanel({
               disabled={busy}
               onClick={onRefresh}
             >
-              계약 다시 불러오기
+              변경 정보 새로고침
             </button>
           </div>
         </footer>
@@ -751,7 +749,7 @@ export function ChangeApprovalPanel({
         <span>
           변경 성격:{" "}
           {transaction.plan.requestScope === "offline_candidate_revision"
-            ? "사용자가 선택한 오프라인 후보 revision · 승인 뒤 작업 복사본에만 적용·저장 예정 · 실행 결과는 아직 없음"
+            ? "사용자가 선택한 오프라인 후보 revision · 승인된 변경을 작업 복사본에만 적용·저장하는 계약"
             : directCheckOnlyPlan
               ? "사용자가 명시한 작업 사본 수정 요청 · 1회 권한으로 구조 diff·Program Check·저장 실행 · 별도 승인 대기 없음"
               : "이전 계약 형식 · 실행 전 재검증 필요"}
@@ -937,7 +935,7 @@ export function ChangeApprovalPanel({
       {canExecuteApproved && !contractReady && (
         <p className="change-notice change-error" role="alert">
           승인 기록은 존재하지만 현재 Web이 검증한 계약과 일치하지 않아 실행을
-          차단했습니다. Host에서 계약을 다시 검증하세요.
+          차단했습니다. 상태를 새로고침한 뒤 다시 확인하세요.
         </p>
       )}
 
