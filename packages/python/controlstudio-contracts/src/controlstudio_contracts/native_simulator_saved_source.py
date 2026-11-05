@@ -16,6 +16,29 @@ import json
 import re
 import uuid
 from typing import Any
+from xml.etree import ElementTree
+
+
+def parse_project_xml(
+    xml_payload: bytes | bytearray,
+    *,
+    error_type: type[ValueError],
+    declaration_error_message: str,
+) -> ElementTree.Element:
+    """Parse supplied XML bytes without declarations; callers own IO and bounds."""
+
+    lowered_xml = xml_payload.lower()
+    if b"<!doctype" in lowered_xml or b"<!entity" in lowered_xml:
+        raise error_type(declaration_error_message)
+
+    class DeclarationRejectingTreeBuilder(ElementTree.TreeBuilder):
+        def doctype(self, name: str, pubid: str | None, system: str | None) -> None:
+            # XMLParser decodes the declared encoding before this callback.
+            raise error_type(declaration_error_message)
+
+    return ElementTree.fromstring(
+        xml_payload, parser=ElementTree.XMLParser(target=DeclarationRejectingTreeBuilder())
+    )
 
 
 def canonical_digest(value: Any) -> str:
