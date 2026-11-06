@@ -1,9 +1,9 @@
 # ControlStudio Contracts
 
 Public, versioned Python DTOs used at the Platform, Agent, and PLC MCP process
-boundaries. The package contains schemas and validation only; it contains no
-Agent prompts, retrieval policy, MCP transport, vendor adapter, credential, or
-execution implementation.
+boundaries. The package contains schemas, validation and shared evidence
+parsing/comparison helpers. Agent prompts, retrieval policy, MCP transport and
+vendor execution remain outside this package.
 
 The Platform-owned source of truth is `schemas/`.  Before changing a public
 HTTP model, run from the Platform checkout:

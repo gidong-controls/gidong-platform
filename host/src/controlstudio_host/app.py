@@ -17145,6 +17145,7 @@ def create_app(
                     "hwnd": body.hwnd,
                     "operation_id": body.operation_id,
                     "preflight_receipt_digest": preflight.receipt_digest,
+                    "preflight_observed_at": preflight.observed_at,
                     "profile_digest": preflight.surface_profile.profile_digest,
                     "timeout_seconds": body.timeout_seconds,
                 },

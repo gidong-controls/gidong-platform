@@ -142,6 +142,7 @@ export interface ReadLSControllerRequest {
 export interface LSControllerValue {
   variable: string;
   rawHex: string;
+  /** Beyond JS safe integers, use little-endian rawHex for exact unsigned display. */
   unsignedValue: number;
 }
 
@@ -171,6 +172,7 @@ export interface LSControllerTraceSample {
 
 export interface LSControllerTraceSummary {
   variable: string;
+  /** For exact 64-bit display, derive these values from the full raw sample bytes. */
   firstUnsignedValue: number;
   lastUnsignedValue: number;
   minimumUnsignedValue: number;
@@ -186,6 +188,7 @@ export interface LSControllerTraceTransition {
   observedAt: string;
   fromRawHex: string;
   toRawHex: string;
+  /** JSON numbers lose precision beyond JS safe integers; display from the raw bytes. */
   fromUnsignedValue: number;
   toUnsignedValue: number;
 }
@@ -719,9 +722,7 @@ export type SendMessageRequest = SendMessageRequestBase &
       }
     | {
         changeRequestScope: "offline_candidate_revision";
-        verificationScope?:
-          | "offline_native_reopen"
-          | "offline_native_reopen";
+        verificationScope?: "offline_native_reopen";
       }
     | {
         changeRequestScope: "permanent_offline_revision";
@@ -1318,7 +1319,6 @@ export interface CancelRunResponse {
 export type ChangeRiskLevel = "low" | "medium" | "high" | "critical";
 export type ChangeVerificationScope =
   | "offline_native_check_only"
-  | "offline_native_reopen"
   | "offline_native_reopen";
 export type ChangeMode = "offline_working_copy_revision";
 export type ChangeRequestScope =

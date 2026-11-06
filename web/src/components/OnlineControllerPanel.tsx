@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { hostApi, HostApiError } from "../api/client";
 import type {
   HostStatusResponse,
@@ -8,6 +8,7 @@ import type {
   LSControllerTrace,
 } from "../api/types";
 import { Icon } from "./Icon";
+import { controllerUnsignedTraceSummaries, formatControllerUnsignedValue, INCOMPLETE_CONTROLLER_TRACE } from "../controllerUnsignedValues";
 
 interface OnlineControllerPanelProps {
   status: HostStatusResponse;
@@ -56,6 +57,8 @@ export function OnlineControllerPanel({
   const [sampleCount, setSampleCount] = useState("10");
   const [intervalMs, setIntervalMs] = useState("500");
   const [traceResult, setTraceResult] = useState<LSControllerTrace | null>(null);
+  const traceUnsignedSummaries = useMemo(() => traceResult
+    ? controllerUnsignedTraceSummaries(traceResult) : null, [traceResult]);
 
   const requestedVariables = () =>
     variables
@@ -457,7 +460,7 @@ export function OnlineControllerPanel({
                       <td>
                         <code>{value.variable}</code>
                       </td>
-                      <td>{value.unsignedValue}</td>
+                      <td>{formatControllerUnsignedValue(value.rawHex, readResult.dataType)}</td>
                       <td>
                         <code>{value.rawHex}</code>
                       </td>
@@ -513,14 +516,15 @@ export function OnlineControllerPanel({
                   </tr>
                 </thead>
                 <tbody>
-                  {traceResult.summaries.map((summary) => (
-                    <tr key={summary.variable}>
+                  {traceResult.summaries.map((summary) => {
+                    const display = traceUnsignedSummaries?.get(summary.variable.toUpperCase());
+                    return <tr key={summary.variable}>
                       <td><code>{summary.variable}</code></td>
-                      <td>{summary.firstUnsignedValue} → {summary.lastUnsignedValue}</td>
-                      <td>{summary.minimumUnsignedValue} · {summary.maximumUnsignedValue}</td>
+                      <td>{display?.first ?? INCOMPLETE_CONTROLLER_TRACE} → {display?.last ?? INCOMPLETE_CONTROLLER_TRACE}</td>
+                      <td>{display?.minimum ?? INCOMPLETE_CONTROLLER_TRACE} · {display?.maximum ?? INCOMPLETE_CONTROLLER_TRACE}</td>
                       <td>{summary.changeCount}</td>
-                    </tr>
-                  ))}
+                    </tr>;
+                  })}
                 </tbody>
               </table>
               {traceResult.transitions.length > 0 && (
@@ -534,7 +538,7 @@ export function OnlineControllerPanel({
                       <li key={`${transition.variable}-${transition.toSample}-${index}`}>
                         <code>{transition.variable}</code>{" "}
                         sample {transition.fromSample}→{transition.toSample}:{" "}
-                        {transition.fromUnsignedValue}→{transition.toUnsignedValue}
+                        {formatControllerUnsignedValue(transition.fromRawHex, traceResult.dataType)}→{formatControllerUnsignedValue(transition.toRawHex, traceResult.dataType)}
                       </li>
                     ))}
                   </ol>

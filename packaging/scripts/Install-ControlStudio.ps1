@@ -431,15 +431,26 @@ try {
         }
         Invoke-ControlStudioInstalledUpdate -Root $installRoot -Staging $stagingRoot -Parent $installParent -HistoricalRoot $previousRoot -ExpectedBom $bom -RegistryValues $existingRegistration
     } else {
+        $freshInventory = @(Get-ControlStudioLayoutInventory -Root $stagingRoot)
+        $freshMoved = $false
         try {
-            Move-Item -LiteralPath $stagingRoot -Destination $installRoot
+            Move-ControlStudioInstallDirectory -SourceRoot $stagingRoot -DestinationRoot $installRoot -Parent $installParent
+            $freshMoved = $true
+            Assert-ControlStudioLayoutInventory -Root $installRoot -Expected $freshInventory
             $null = Assert-InstalledLayout -Root $installRoot -ExpectedBom $bom
             Set-ControlStudioUninstallRegistration -Root $installRoot -ExpectedBom $bom -ExecutableName $executableName
         } catch {
-            if (Test-Path -LiteralPath $installRoot) {
-                Remove-Item -LiteralPath $installRoot -Recurse -Force
+            $freshError = $_
+            if ($freshMoved) {
+                try {
+                    Assert-ControlStudioLayoutInventory -Root $installRoot -Expected $freshInventory
+                    $failedRoot = Join-Path $installParent ($installLeaf + '.failed-' + [guid]::NewGuid().ToString('N'))
+                    Move-ControlStudioInstallDirectory -SourceRoot $installRoot -DestinationRoot $failedRoot -Parent $installParent
+                } catch {
+                    Write-Warning 'ControlStudio fresh install failed; the current directory was preserved because its ownership could not be confirmed.'
+                }
             }
-            throw
+            throw $freshError
         }
     }
 } finally {

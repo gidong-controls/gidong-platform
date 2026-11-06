@@ -241,6 +241,7 @@ CONTROLLER_ENDPOINT_FIELDS = ("host", "port", "timeout_seconds")
 MUTATING_MCP_TOOLS = frozenset(
     {
         "xg5000.editor",
+        "xg5000.reviewed_no_save_close",
         "xg5000.settle_abandoned_operation",
         
         
@@ -1560,6 +1561,7 @@ class MCPGateway:
                 "hwnd",
                 "operation_id",
                 "preflight_receipt_digest",
+                "preflight_observed_at",
                 "profile_digest",
                 "timeout_seconds",
                 "schema_version",
@@ -1578,8 +1580,17 @@ class MCPGateway:
             if tool is None:
                 continue
             meta = getattr(tool, "meta", None)
+            properties = tool.inputSchema.get("properties")
+            required = tool.inputSchema.get("required")
             if (
-                set(tool.inputSchema.get("properties") or ()) != expected_fields
+                not isinstance(properties, dict)
+                or not isinstance(required, list)
+                or set(properties) != expected_fields
+                or (name == "controller.begin_restore_handoff" and (
+                    "preflight_observed_at" not in required
+                    or properties["preflight_observed_at"] != {
+                        "type": "string", "minLength": 1, "maxLength": 64, "format": "date-time"}
+                ))
                 or not isinstance(meta, dict)
                 or meta.get("controlstudio/endpointAuthority")
                 != "host-selected-xg5000-window"
@@ -1663,6 +1674,12 @@ class MCPGateway:
                     f"MCP mutation contract is incomplete for {name}"
                 )
         restore_contract = contracts.get("controller.restore_preflight")
+        reviewed_close_contract = contracts.get("xg5000.reviewed_no_save_close")
+        if (
+            reviewed_close_contract is None
+            or reviewed_close_contract.idempotency_behavior != "explicit-confirmation-no-replay"
+        ):
+            raise MCPStartupError("MCP reviewed close replay contract is incompatible")
         if (
             restore_contract is None
             or restore_contract.required_capability != "read"

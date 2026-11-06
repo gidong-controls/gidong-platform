@@ -116,7 +116,7 @@ function isCoverageItem(value: unknown): value is ChangeCoverageItem {
   );
 }
 
-function isCoverage(value: unknown, exact = false): value is ChangeCoverageItem[] {
+function isCoverage(value: unknown): value is ChangeCoverageItem[] {
   if (
     !Array.isArray(value) ||
     value.length > COVERAGE_AREAS.size ||
@@ -124,8 +124,7 @@ function isCoverage(value: unknown, exact = false): value is ChangeCoverageItem[
   ) {
     return false;
   }
-  const areas = new Set(value.map((item) => item.area));
-  return !exact || (value.length === COVERAGE_AREAS.size && areas.size === value.length);
+  return true;
 }
 
 export function isLegacyChangePlanV1(value: unknown): value is ChangePlanV1 {
